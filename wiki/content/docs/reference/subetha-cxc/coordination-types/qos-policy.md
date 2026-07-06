@@ -82,12 +82,12 @@ if let Some(target) = snap.recommends_locale_change(ring.current_locale()) {
 
 ## E2E proof
 
-[`examples/qos_driven_morph.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/qos_driven_morph.rs)
+[`examples/qos_driven_morph.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/qos_driven_morph.rs)
 runs three QoS stages (streaming -> reliable_pubsub -> persistent_log)
 against a single LocaleAdaptiveRing; each stage's snapshot drives
 the matching locale morph. Deterministic across multiple runs.
 
-[`examples/qos_ordering_morph.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/qos_ordering_morph.rs)
+[`examples/qos_ordering_morph.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/qos_ordering_morph.rs)
 exercises the ordering knob end to end: 400,000 items stream from
 two producers through a live consumer while the driver declares
 `Ordering::GlobalFifo` mid-traffic; the `spawn_with_qos` sidecar
@@ -106,4 +106,4 @@ per-producer FIFO asserted on every pop.
   `KeepAll` -> 1024).
 - [`LocaleAdaptiveRing`](../../rings/locale-adaptive-ring/) - the
   primary morph target for `recommends_locale_change`.
-- [Polymorphic substrate design doc](https://github.com/Variably-Constant/subetha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).
+- [Polymorphic substrate design doc](https://github.com/Variably-Constant/SubEtha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).

@@ -31,7 +31,7 @@
 //! A `DequeDispatcher` lives in the producer process. Each variant
 //! it owns is backed by its own MMF file path; consumer processes
 //! open those same paths to drain. See the
-//! [`dispatcher_demo`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/dispatcher_demo.rs)
+//! [`dispatcher_demo`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/dispatcher_demo.rs)
 //! example for the parent/child split.
 
 #![allow(clippy::missing_errors_doc)]

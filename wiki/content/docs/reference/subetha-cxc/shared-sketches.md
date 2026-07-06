@@ -31,7 +31,7 @@ Op kinds: `OP_SET = 1`, `OP_CLEAR = 2`, `OP_GET = 3`,
 `OP_TOGGLE = 4`, `OP_RANGE = 5`, `OP_COUNT_ONES = 6`.
 
 Canonical doc:
-[SHARED_BIT_VEC.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BIT_VEC.md).
+[SHARED_BIT_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BIT_VEC.md).
 
 ## `SharedBloomFilter`
 
@@ -48,7 +48,7 @@ Op kinds use the `sketch` module: `OP_INSERT = 1`, `OP_QUERY = 2`,
 `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_BLOOM_FILTER.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BLOOM_FILTER.md).
+[SHARED_BLOOM_FILTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BLOOM_FILTER.md).
 
 ## `SharedCountMinSketch`
 
@@ -62,7 +62,7 @@ Op kinds use the `sketch` module: `OP_INSERT = 1`,
 `OP_QUERY = 2`, `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md).
+[SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md).
 
 ## `SharedHyperLogLog`
 
@@ -78,7 +78,7 @@ and a smaller standard error at the cost of larger footprint.
 Op kinds use the `sketch` module.
 
 Canonical doc:
-[SHARED_HYPER_LOG_LOG.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HYPER_LOG_LOG.md).
+[SHARED_HYPER_LOG_LOG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HYPER_LOG_LOG.md).
 
 ## `SharedHistogram`
 
@@ -97,7 +97,7 @@ Op kinds use the `histogram` module: `OP_RECORD = 1`,
 `OP_COUNT = 2`, `OP_PERCENTILE = 3`.
 
 Canonical doc:
-[SHARED_HISTOGRAM.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HISTOGRAM.md).
+[SHARED_HISTOGRAM.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HISTOGRAM.md).
 
 ## `SharedReservoirSampler`
 
@@ -111,7 +111,7 @@ analysis. Op kinds use the `reservoir` module: `OP_RECORD = 1`,
 `OP_SNAPSHOT = 2`.
 
 Canonical doc:
-[SHARED_RESERVOIR_SAMPLER.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RESERVOIR_SAMPLER.md).
+[SHARED_RESERVOIR_SAMPLER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RESERVOIR_SAMPLER.md).
 
 ## `SharedStringArena`
 
@@ -128,7 +128,7 @@ Op kinds use the `string_arena` module: `OP_INTERN = 1`,
 `OP_GET_BYTES = 2`, `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md).
+[SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md).
 
 ## `SharedHandleTable`
 
@@ -146,7 +146,7 @@ Op kinds use the `ownership` module: `OP_ACQUIRE = 1`,
 `OP_RELEASE = 2`, `OP_GET = 3`, `OP_BEAT = 4`, `OP_CLAIM = 5`.
 
 Canonical doc:
-[SHARED_HANDLE_TABLE.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HANDLE_TABLE.md).
+[SHARED_HANDLE_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HANDLE_TABLE.md).
 
 ## See also
 

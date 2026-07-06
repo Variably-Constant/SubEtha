@@ -108,7 +108,7 @@ silicon, with kernel uninvolved in the steal hot path. The MMF
 deployment is a free upgrade.
 
 Bench file:
-[`crates/subetha-cxc/benches/shared_deque.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/benches/shared_deque.rs).
+[`crates/subetha-cxc/benches/shared_deque.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/benches/shared_deque.rs).
 
 ## API surface
 

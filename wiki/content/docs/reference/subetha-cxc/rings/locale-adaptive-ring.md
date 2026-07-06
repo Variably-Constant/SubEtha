@@ -195,14 +195,14 @@ default because every migration copies all in-flight items between backings.
 
 ## E2E proof
 
-[`examples/locale_morph.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/locale_morph.rs)
+[`examples/locale_morph.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/locale_morph.rs)
 exercises anon -- file with in-flight item transfer.
 
-[`examples/locale_shmfs.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/locale_shmfs.rs)
+[`examples/locale_shmfs.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/locale_shmfs.rs)
 exercises the full three-locale walk (anon -> shmfs -> file)
 through the four-axis pin chain.
 
-[`examples/locale_migrate_sidecar_e2e.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/locale_migrate_sidecar_e2e.rs)
+[`examples/locale_migrate_sidecar_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/locale_migrate_sidecar_e2e.rs)
 exercises the sidecar's hysteresis behaviour: 4 rapid user
 requests collapse into 3 migrations because one falls inside the
 cooldown window. Prints every observed migration with a timestamp
@@ -237,4 +237,4 @@ so the trace is human-auditable.
   underneath each locale backing.
 - [`ShmFile`](../../specialized/shm-file/) - the cross-platform
   named-shm helper that powers the ShmFs locale.
-- [Polymorphic substrate design doc](https://github.com/Variably-Constant/subetha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).
+- [Polymorphic substrate design doc](https://github.com/Variably-Constant/SubEtha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).

@@ -93,7 +93,7 @@ sub_b.try_next(&mut out)?;  // sub_b independently at position 1
 
 ## E2E proof
 
-[`examples/pubsub_fanout.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/pubsub_fanout.rs)
+[`examples/pubsub_fanout.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/pubsub_fanout.rs)
 runs 1 producer + 3 subscribers: subs A and B drain every item
 (full sum), sub C uses `skip()` to consume only even positions
 (half sum). 10000 items integrity, deterministic.

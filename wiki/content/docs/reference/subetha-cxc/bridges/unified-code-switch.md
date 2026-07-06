@@ -34,7 +34,7 @@ hovering near the boundary does not flap the code. An up-switch confirms over
 not cross either way on its own. The loss at which RS's raw throughput
 overtakes RLC's is workload-dependent (on an MTU-item link RS leads from low
 loss); the measured per-code matrix is in
-[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md).
+[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md).
 
 ## The code-agnostic loss estimate
 
@@ -148,7 +148,7 @@ assert_eq!(rx.join().unwrap(), (0..ITEMS).collect::<Vec<_>>());
 
 A short run stays on RLC (it finishes inside the warmup). The loss-driven
 switch shows at sustained scale: in
-[`bridge_lan`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
+[`bridge_lan`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
 (`--transport sens --fec auto`), a 500k-item run holds RLC at 6% loss
 (0 switches) and switches once to RS at 9-15% loss, every item in order
 (integrity-asserted) with no flapping. The bidirectional handover is driven

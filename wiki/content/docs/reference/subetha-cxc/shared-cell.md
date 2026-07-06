@@ -39,7 +39,7 @@ loop:
 Op kinds: `OP_GET = 1`, `OP_SET = 2`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_CELL.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_CELL.md).
+[crates/subetha-cxc/docs/pointers/SHARED_CELL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_CELL.md).
 
 ## `SharedOnceCell`
 
@@ -74,7 +74,7 @@ process).
 the `cell` module: `OP_GET = 1`, `OP_SET = 2`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_ONCE_CELL.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ONCE_CELL.md).
+[crates/subetha-cxc/docs/pointers/SHARED_ONCE_CELL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ONCE_CELL.md).
 
 ## Picking between them
 

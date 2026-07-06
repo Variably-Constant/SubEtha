@@ -83,7 +83,7 @@ host idle (no parallel workloads):
 | `SharedDequeUrd::publish_to(0, ..)` | 2304 ns | 36.0 | LOH wins 3.57x |
 
 Bench source:
-[`crates/subetha-cxc/benches/shared_deque_loh.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/benches/shared_deque_loh.rs).
+[`crates/subetha-cxc/benches/shared_deque_loh.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/benches/shared_deque_loh.rs).
 
 The 1.94x LOH-vs-Chase-Lev margin is the architectural lever's
 payoff: amortizing one `tail.fetch_add(64)` across the batch beats

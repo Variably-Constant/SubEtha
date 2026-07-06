@@ -1,10 +1,10 @@
 # subetha-cxc
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/subetha/docs/reference/subetha-cxc/)
+[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/)
 
 The MMF-backed cross-process primitive family for
-[SubEtha](https://github.com/Variably-Constant/subetha). Roughly
+[SubEtha](https://github.com/Variably-Constant/SubEtha). Roughly
 forty primitives across nine categories, all sitting on a single
 mechanism: a memory-mapped file. The same byte layout serves
 cross-thread, cross-process, and disk-persistent.
@@ -58,7 +58,7 @@ There is no separate "shared memory" abstraction versus a
 | Linux-only | `DirectFileRing` (O_DIRECT), `HugepageRegion` (MAP_HUGETLB), `VsockSocket`, `fd_handoff::send_fd` / `recv_fd`, `AfXdpSocket` (`wire-locale` feature) |
 
 Full primitive catalog at the wiki:
-<https://variably-constant.github.io/subetha/docs/reference/subetha-cxc/catalog/>.
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/catalog/>.
 
 ## Cargo feature flags
 
@@ -173,12 +173,12 @@ Per-primitive reference + bench numbers in
 documents, one per primitive).
 
 Category overview at the published wiki:
-<https://variably-constant.github.io/subetha/docs/reference/subetha-cxc/>.
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/>.
 
 Architectural background:
-- [Frozen handshakes](https://variably-constant.github.io/subetha/docs/explanation/frozen-handshake/) -
+- [Frozen handshakes](https://variably-constant.github.io/SubEtha/docs/explanation/frozen-handshake/) -
   the thesis behind topology-axis un-freezing.
-- [MMF substrate](https://variably-constant.github.io/subetha/docs/explanation/mmf-substrate/) -
+- [MMF substrate](https://variably-constant.github.io/SubEtha/docs/explanation/mmf-substrate/) -
   why one byte layout serves three deployment modes.
 
 ## License

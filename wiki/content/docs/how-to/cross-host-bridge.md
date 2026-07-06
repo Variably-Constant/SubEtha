@@ -134,7 +134,7 @@ chain: app ring, bridge, wire, remote ring, echo, and back.
 ## What to expect
 
 Numbers from the project's measured runs
-([`docs/TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md), the Ubuntu <-> FreeBSD virtio matrix):
+([`docs/TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md), the Ubuntu <-> FreeBSD virtio matrix):
 
 - **LAN RTT p50** (real wire, Ubuntu <-> FreeBSD over virtio NICs):
   the TCP bridges ~244 us, QUIC ~287 us, blocking TCP ~348 us, the
@@ -148,7 +148,7 @@ Numbers from the project's measured runs
   (head-of-line blocking), while QUIC and both Sens-O-Matic codes hold
   throughput and Sens-O-Matic holds a 1.6-30 ms tail. Full matrix and
   confidence intervals in
-  [`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md).
+  [`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md).
 
 If your one-way run reports `order_ok=false` or a count mismatch,
 the bridge contract is broken and that is a bug worth filing, not

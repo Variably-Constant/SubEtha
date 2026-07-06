@@ -1,7 +1,7 @@
 # subetha-core
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/subetha/docs/reference/subetha-core/)
+[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/docs/reference/subetha-core/)
 
 > **You probably want the [`subetha`](https://crates.io/crates/subetha)
 > umbrella crate instead.** It pulls in `subetha-core` plus both
@@ -11,7 +11,7 @@
 > directly only when you are writing a third-party primitive that
 > sits on the substrate.
 
-The substrate for the [SubEtha](https://github.com/Variably-Constant/subetha)
+The substrate for the [SubEtha](https://github.com/Variably-Constant/SubEtha)
 adaptive primitives library. Six modules covering the
 per-instance state every primitive carries at a known offset:
 
@@ -98,7 +98,7 @@ is the dependency floor every other SubEtha crate sits on.
 ## Documentation
 
 Full reference at the published wiki:
-<https://variably-constant.github.io/subetha/docs/reference/subetha-core/>.
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-core/>.
 
 ## License
 

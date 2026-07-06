@@ -114,7 +114,7 @@ assert!(!pin.is_still_valid());
 
 ## E2E proof
 
-[`examples/virtual_endpoint_lifecycle.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/virtual_endpoint_lifecycle.rs)
+[`examples/virtual_endpoint_lifecycle.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/virtual_endpoint_lifecycle.rs)
 walks the full five-axis pin chain end-to-end across two local
 targets + one remote target; deterministic integrity across 3
 runs.
@@ -150,4 +150,4 @@ a bridge client for the remote address).
 - [`QuicBridgeClient` / `QuicBridgeServer`](../../bridges/quic-bridge/),
   [`TcpBridgeClient` / `TcpBridgeServer`](../../bridges/tcp-bridge/) -
   consume RemoteEndpoint addresses for cross-host transport.
-- [Polymorphic substrate design doc](https://github.com/Variably-Constant/subetha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).
+- [Polymorphic substrate design doc](https://github.com/Variably-Constant/SubEtha/blob/main/docs/POLYMORPHIC_SUBSTRATE_AXES.md).

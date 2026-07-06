@@ -61,7 +61,7 @@ microseconds. This is what the head-to-head calls `rlctls`.
 Measured on real wire between separate OS processes (an Ubuntu 24.04 and a
 FreeBSD 15.0 host) and over a real ~22 ms internet path - full matrix,
 confidence intervals, and methodology in
-[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md).
+[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md).
 On the clean LAN the RLC code moves ~890 Mbit/s (FEC parity is the gap to
 the raw stream bridges). Under loss it holds where the TCP bridges collapse:
 **~870 Mbit/s at 3% LAN loss and ~550 at 8%, versus ~115 and ~10 for the TCP
@@ -106,9 +106,9 @@ assert_eq!(rx.join().unwrap(), (0..1000).collect::<Vec<_>>());
 ```
 
 The full transport (TLS, packet-pair rate control, migration) runs in
-[`rlc_transport_e2e`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/rlc_transport_e2e.rs)
+[`rlc_transport_e2e`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/rlc_transport_e2e.rs)
 and the cross-host head-to-head in
-[`bridge_lan`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
+[`bridge_lan`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
 (`--transport sens --fec rlc --tls`).
 
 ## References

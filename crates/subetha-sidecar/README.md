@@ -1,7 +1,7 @@
 # subetha-sidecar
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/subetha/docs/reference/subetha-sidecar/)
+[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/docs/reference/subetha-sidecar/)
 
 > **You probably want the [`subetha`](https://crates.io/crates/subetha)
 > umbrella crate instead.** It pulls in `subetha-sidecar` along
@@ -10,7 +10,7 @@
 > when you are writing a third-party primitive that needs the
 > control plane without the rest of the workspace.
 
-The control plane for the [SubEtha](https://github.com/Variably-Constant/subetha)
+The control plane for the [SubEtha](https://github.com/Variably-Constant/SubEtha)
 adaptive primitives library. One background thread per detected
 NUMA node drains every registered instance's observation ring,
 folds the observations into per-instance `InstanceStats`, and
@@ -57,7 +57,7 @@ asks each instance's `Policy` whether to migrate the strategy.
 
 The instance cap is configurable via `Sidecar::set_max_instances`.
 The rest are fixed by design. See the
-[`tune-sidecar` how-to](https://variably-constant.github.io/subetha/docs/how-to/tune-sidecar/)
+[`tune-sidecar` how-to](https://variably-constant.github.io/SubEtha/docs/how-to/tune-sidecar/)
 for the rationale behind each constant.
 
 ## Quick start
@@ -90,7 +90,7 @@ let stats: Option<InstanceStats> = prim.stats();
 For composing primitives via `SidecarBox`, including the
 `Arc<SidecarBox<T>>` cross-thread pattern and the
 `register_raw` escape hatch, see
-[Compose primitives via SidecarBox](https://variably-constant.github.io/subetha/docs/how-to/sidecar-box/).
+[Compose primitives via SidecarBox](https://variably-constant.github.io/SubEtha/docs/how-to/sidecar-box/).
 
 ## Requirements
 
@@ -110,7 +110,7 @@ your code
 ## Documentation
 
 Full reference at the published wiki:
-<https://variably-constant.github.io/subetha/docs/reference/subetha-sidecar/>.
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-sidecar/>.
 
 ## License
 

@@ -1,10 +1,10 @@
 # subetha-pointers
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/subetha/)
+[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/)
 
 Exotic pointer types for the
-[SubEtha](https://github.com/Variably-Constant/subetha) (CXC) adaptive
+[SubEtha](https://github.com/Variably-Constant/SubEtha) (CXC) adaptive
 primitives library. Each pointer carries a fixed-size auxiliary payload
 beside the address, and declares a `K_*` direction signature via
 `subetha_core::AxisMask` so the MMF dispatcher can route a workload to
@@ -67,7 +67,7 @@ downstream projects need only a recent stable toolchain.
 ## Documentation
 
 Full reference at the published wiki:
-<https://variably-constant.github.io/subetha/>.
+<https://variably-constant.github.io/SubEtha/>.
 
 ## License
 

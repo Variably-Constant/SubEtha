@@ -52,7 +52,7 @@ is backed by its own MMF file path; consumer processes open those
 same paths via the variant's `open_as_thief` / `open` constructors.
 
 The
-[`dispatcher_demo`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/dispatcher_demo.rs)
+[`dispatcher_demo`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/dispatcher_demo.rs)
 example demonstrates the full parent / child pattern: the parent
 dispatches 30 per-item jobs (Chase-Lev route) plus a 60-item batch
 (KHPD route) through one dispatcher; the child opens both MMF deques

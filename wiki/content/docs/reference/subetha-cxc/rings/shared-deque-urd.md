@@ -85,7 +85,7 @@ small URD win because `MAILBOX_ITEMS = 3` amortizes one
 Release-store across three items.
 
 Bench file:
-[`crates/subetha-cxc/benches/shared_deque_urd.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/benches/shared_deque_urd.rs).
+[`crates/subetha-cxc/benches/shared_deque_urd.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/benches/shared_deque_urd.rs).
 
 ## Publish strategy: MOVDIR64B vs scalar stores
 

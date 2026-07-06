@@ -1,7 +1,7 @@
 # subetha
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/subetha/)
+[![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/)
 
 **Cross-Context Channel (CXC) for Rust.** Kernel-bypass IPC - lock-free,
 thread- and process-safe - that spans threads, processes, disk, and
@@ -20,7 +20,7 @@ Measured 80-528x faster than the fastest kernel IPC mechanism on every
 platform tested (Windows, WSL2, Linux, FreeBSD, macOS) and 4.8-8.8x
 faster than iceoryx2's zero-copy shared memory. The full benchmark set,
 dot plots, and methodology live in the
-[GitHub README](https://github.com/Variably-Constant/subetha#readme).
+[GitHub README](https://github.com/Variably-Constant/SubEtha#readme).
 
 ## This crate
 
@@ -74,7 +74,7 @@ SubEtha builds on **stable Rust** (edition 2024, MSRV 1.96).
 ## Documentation
 
 Full reference at the wiki:
-<https://variably-constant.github.io/subetha/>.
+<https://variably-constant.github.io/SubEtha/>.
 
 ## License
 

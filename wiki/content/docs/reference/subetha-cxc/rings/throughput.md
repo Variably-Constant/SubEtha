@@ -74,7 +74,7 @@ The pinned path approximates the underlying native primitive (`spsc`, `mpsc`, `m
 
 ## What the numbers don't mean
 
-- **Per-op latency** (mean / stddev / p99) is NOT in these tables - it's measured by the criterion benches under [`crates/subetha-cxc/benches/`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/benches/) (look for `capacity_adaptive_ring.rs`, `capacity_broadcast_ring.rs`, `capacity_pubsub_ring.rs`, plus the pre-existing `shared_ring.rs` and `shared_broadcast_ring.rs`). Run `cargo bench -p subetha-cxc --bench <name>` to reproduce.
+- **Per-op latency** (mean / stddev / p99) is NOT in these tables - it's measured by the criterion benches under [`crates/subetha-cxc/benches/`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/benches/) (look for `capacity_adaptive_ring.rs`, `capacity_broadcast_ring.rs`, `capacity_pubsub_ring.rs`, plus the pre-existing `shared_ring.rs` and `shared_broadcast_ring.rs`). Run `cargo bench -p subetha-cxc --bench <name>` to reproduce.
 - These numbers are SINGLE-machine. Cross-host throughput rides on the QUIC / TCP bridges (separately benched) and depends on network conditions.
 - The "best per primitive" table picks the best-of-matrix cell. Real workloads won't always hit those cells; the per-cell deep-dive tables are the honest picture.
 

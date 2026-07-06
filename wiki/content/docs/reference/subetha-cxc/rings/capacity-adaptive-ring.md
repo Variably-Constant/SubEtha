@@ -380,7 +380,7 @@ producer.join().unwrap();
 
 ## E2E proof
 
-[`examples/capacity_morph_e2e.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/capacity_morph_e2e.rs)
+[`examples/capacity_morph_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/capacity_morph_e2e.rs)
 ships 100,000 items through the ring at 200us morph cadence,
 cycling capacities through `[1024, 4096, 1024, 256, 64, 512]`.
 Verified: every ID 0..N appears in the consumed set exactly once;
@@ -389,7 +389,7 @@ per-producer FIFO holds across the full
 {shape x locale x capacity} matrix verified by
 `examples/capacity_morph_matrix.rs`.
 
-[`examples/cap_morph_sidecar_e2e.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/cap_morph_sidecar_e2e.rs)
+[`examples/cap_morph_sidecar_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/cap_morph_sidecar_e2e.rs)
 runs a 6-cycle burst-then-drain workload with the sidecar attached
 and prints every grow / shrink the policy fires. Typical run on
 Windows: ~36 sidecar-triggered morphs over ~2 seconds, 48000 items

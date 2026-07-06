@@ -46,7 +46,7 @@ Op kinds use the `ownership` module: `OP_ACQUIRE = 1`,
 `OP_RELEASE = 2`, `OP_GET = 3`, `OP_BEAT = 4`, `OP_CLAIM = 5`.
 
 Canonical doc:
-[OWNER_LEASE.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/OWNER_LEASE.md).
+[OWNER_LEASE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/OWNER_LEASE.md).
 
 ## `SharedLeaderElection`
 
@@ -77,7 +77,7 @@ failover.
 in heartbeat epochs.
 
 Canonical doc:
-[SHARED_LEADER_ELECTION.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LEADER_ELECTION.md).
+[SHARED_LEADER_ELECTION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LEADER_ELECTION.md).
 
 ## `LazyConfig`
 
@@ -108,7 +108,7 @@ Op kinds use the `lazy_config` module: `OP_GET = 1`,
 `OP_FETCH = 2`.
 
 Canonical doc:
-[LAZY_CONFIG.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/LAZY_CONFIG.md).
+[LAZY_CONFIG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LAZY_CONFIG.md).
 
 ## Picking between them
 

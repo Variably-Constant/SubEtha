@@ -103,7 +103,7 @@ which return `SidecarBox<Self>` directly.
 ## Op_kind constants
 
 Each primitive defines its op_kind constants in
-[`subetha_cxc::sidecar_ops`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/sidecar_ops.rs).
+[`subetha_cxc::sidecar_ops`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/sidecar_ops.rs).
 Twenty-plus modules, one per primitive family. The constants
 follow a consistent naming pattern: `OP_INSERT`, `OP_GET`,
 `OP_REMOVE` for maps; `OP_PUSH`, `OP_POP` for rings; `OP_LOAD`,

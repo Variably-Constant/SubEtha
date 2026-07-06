@@ -23,10 +23,10 @@ implementation against the source paper.
 - **Source**: Dmitry Vyukov, *Bounded MPMC queue*, 1024cores.net, ~2010.
   <https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue>
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_ring.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_ring.rs)
+  [`crates/subetha-cxc/src/shared_ring.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_ring.rs)
   (`SharedRing`, the MPMC ring),
   and the SPMC sequence-number protocol in
-  [`crates/subetha-cxc/src/shared_broadcast_ring.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_broadcast_ring.rs).
+  [`crates/subetha-cxc/src/shared_broadcast_ring.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_broadcast_ring.rs).
 - **Role**: producer and consumer coordinate through one atomic
   sequence number per slot, never touching a mutex, at one CAS per
   enqueue / dequeue. The byte layout works the same way whether the
@@ -39,12 +39,12 @@ implementation against the source paper.
   Parallelism*, IBM Almaden Research Center Technical Report RJ 5118,
   April 1986.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_treiber_stack.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_treiber_stack.rs)
+  [`crates/subetha-cxc/src/shared_treiber_stack.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_treiber_stack.rs)
   (`SharedTreiberStack`, the standalone stack),
   the free-list inside
-  [`crates/subetha-cxc/src/shared_handle_table.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_handle_table.rs),
+  [`crates/subetha-cxc/src/shared_handle_table.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_handle_table.rs),
   and the free-list inside
-  [`crates/subetha-cxc/src/shared_region.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_region.rs).
+  [`crates/subetha-cxc/src/shared_region.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_region.rs).
 - **Role**: lock-free LIFO with ABA defence via a packed
   `(counter, head_index)` u64 head; one CAS per push or pop.
 
@@ -56,7 +56,7 @@ implementation against the source paper.
   proactive top-down split/merge variant follows Cormen, Leiserson,
   Rivest, Stein, *Introduction to Algorithms* (B-Trees chapter).
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_btree_map.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_btree_map.rs).
+  [`crates/subetha-cxc/src/shared_btree_map.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_btree_map.rs).
 - **Role**: cross-process ordered map with O(log N) bounds and
   cache-friendly multi-key nodes; a global seqlock makes reads
   lock-free against a single writer, and the contiguous per-node key
@@ -69,7 +69,7 @@ implementation against the source paper.
   in Algorithms and Architectures (SPAA), 2005, pp. 21-28.
   <https://doi.org/10.1145/1073970.1073974>
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_deque.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_deque.rs)
+  [`crates/subetha-cxc/src/shared_deque.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_deque.rs)
   (`SharedDeque<T>`).
 - **Role**: asymmetric SPMC deque with owner-side `push` and `pop` that
   pay no atomic CAS on the fast path (just Relaxed loads / stores on
@@ -100,11 +100,11 @@ implementation against the source paper.
   direct application of the standard parallel-systems result that
   cross-core coherence cost is per-line, not per-byte. The
   particular three-item-per-64-byte layout used in
-  [`SharedDequeKhpd`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_deque_khpd.rs)
+  [`SharedDequeKhpd`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_deque_khpd.rs)
   comes from internal research on sub-Chase-Lev MMF deque variants
   benchmarked on Zen+ R7 2700 + EPYC 9B14 Genoa.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_deque_khpd.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_deque_khpd.rs)
+  [`crates/subetha-cxc/src/shared_deque_khpd.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_deque_khpd.rs)
   (`SharedDequeKhpd`).
 - **Role**: a sibling to `SharedDeque` (Chase-Lev) for workloads
   where the producer can batch several items per publication and
@@ -132,7 +132,7 @@ implementation against the source paper.
   at zero atomic cost. Comes from internal research on sub-Chase-
   Lev MMF deque variants.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_deque_loh.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_deque_loh.rs)
+  [`crates/subetha-cxc/src/shared_deque_loh.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_deque_loh.rs)
   (`SharedDequeLoh`).
 - **Role**: a sibling to `SharedDeque` (Chase-Lev) and
   `SharedDequeKhpd` (publication-line) for workloads where the
@@ -157,10 +157,10 @@ implementation against the source paper.
   the sole reader. Push-based instead of pull-based; the owner picks
   the target by round-robin or by an explicit policy.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_deque_urd.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_deque_urd.rs)
+  [`crates/subetha-cxc/src/shared_deque_urd.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_deque_urd.rs)
   (`SharedDequeUrd`),
   with the runtime wait-strategy dispatch in
-  [`crates/subetha-core/src/cpuid.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-core/src/cpuid.rs)
+  [`crates/subetha-core/src/cpuid.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-core/src/cpuid.rs)
   (`subetha_core::has_waitpkg`).
 - **Role**: the right primitive for multi-thief workloads where the
   shared-head CAS becomes the contention bottleneck. URD's per-thief
@@ -179,7 +179,7 @@ implementation against the source paper.
   Proceedings of Parallel and Distributed Computing and Systems
   (PDCS), 1998.
 - **Used in**:
-  [`crates/subetha-core/src/handshake.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-core/src/handshake.rs)
+  [`crates/subetha-core/src/handshake.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-core/src/handshake.rs)
   (`HandshakeHeader` documents the standard RCU/epoch double-check
   pattern explicitly), and indirectly by `AdaptiveIpc<T>` whenever
   it reads the strategy tag to pick its underlying primitive.
@@ -196,14 +196,14 @@ implementation against the source paper.
   (The pattern itself comes from the Linux kernel; Boehm's paper is
   the formal C++/Rust-style memory-model treatment.)
 - **Used in**:
-  [`crates/subetha-cxc/src/heartbeat.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/heartbeat.rs)
+  [`crates/subetha-cxc/src/heartbeat.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/heartbeat.rs)
   (`HeartbeatTable::snapshot`, the SeqLock-protected slot read),
-  [`crates/subetha-cxc/src/event_state_log.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/event_state_log.rs)
+  [`crates/subetha-cxc/src/event_state_log.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/event_state_log.rs)
   (the materialised state cell),
-  [`crates/subetha-cxc/src/owner_lease.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/owner_lease.rs)
+  [`crates/subetha-cxc/src/owner_lease.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/owner_lease.rs)
   (the SeqLock-protected payload cell),
   and the per-slot writes in
-  [`crates/subetha-cxc/src/shared_broadcast_ring.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_broadcast_ring.rs).
+  [`crates/subetha-cxc/src/shared_broadcast_ring.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_broadcast_ring.rs).
 - **Role**: even-odd version counter around payload writes; multi-word
   reads detect torn updates and retry without locking writers.
 
@@ -215,7 +215,7 @@ implementation against the source paper.
   with Allowable Errors*, Communications of the ACM 13(7), July 1970.
   <https://doi.org/10.1145/362686.362692>
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_bloom_filter.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_bloom_filter.rs).
+  [`crates/subetha-cxc/src/shared_bloom_filter.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_bloom_filter.rs).
 
 ### Bloom-filter double-hashing
 
@@ -234,7 +234,7 @@ implementation against the source paper.
   Journal of Algorithms 55(1), 2005 (preliminary version at LATIN 2004).
   <https://doi.org/10.1016/j.jalgor.2003.12.001>
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_count_min_sketch.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_count_min_sketch.rs).
+  [`crates/subetha-cxc/src/shared_count_min_sketch.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_count_min_sketch.rs).
 
 ### HyperLogLog
 
@@ -243,7 +243,7 @@ implementation against the source paper.
   Estimation Algorithm*, AofA Conference on Analysis of Algorithms,
   2007.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_hyper_log_log.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_hyper_log_log.rs)
+  [`crates/subetha-cxc/src/shared_hyper_log_log.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_hyper_log_log.rs)
   (2^p AtomicU8 registers, harmonic-mean estimator with bias
   correction).
 
@@ -253,7 +253,7 @@ implementation against the source paper.
   ACM Transactions on Mathematical Software 11(1), March 1985.
   <https://doi.org/10.1145/3147.3165>
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_reservoir_sampler.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_reservoir_sampler.rs).
+  [`crates/subetha-cxc/src/shared_reservoir_sampler.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_reservoir_sampler.rs).
 
 ## Hash functions and probing
 
@@ -263,10 +263,10 @@ implementation against the source paper.
   family specification*, 1991. Public-domain reference at
   <http://www.isthe.com/chongo/tech/comp/fnv/>.
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_bloom_filter.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_bloom_filter.rs)
+  [`crates/subetha-cxc/src/shared_bloom_filter.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_bloom_filter.rs)
   (the double-hashing seed pair),
   and
-  [`crates/subetha-cxc/src/shared_hash_map.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_hash_map.rs)
+  [`crates/subetha-cxc/src/shared_hash_map.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_hash_map.rs)
   (`fnv1a_64`, the probe hash for the open-addressed table).
 
 ### Linear probing (open-addressed hash table)
@@ -275,7 +275,7 @@ implementation against the source paper.
   3: Sorting and Searching*, section 6.4 (1973; algorithm analysed in
   the 1962-63 working notes that inform this section).
 - **Used in**:
-  [`crates/subetha-cxc/src/shared_hash_map.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/shared_hash_map.rs)
+  [`crates/subetha-cxc/src/shared_hash_map.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_hash_map.rs)
   (each slot lives in its own cache line; the entire table is a flat
   array in the MMF, so sequential probing dominates probe-variance on
   speculative-prefetch CPUs).
@@ -315,7 +315,7 @@ implementation against the source paper.
   (The same pattern recurs under different names in Akka typed actors
   and Erlang OTP supervised processes.)
 - **Used in**:
-  [`crates/subetha-cxc/src/pass_registry.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/pass_registry.rs).
+  [`crates/subetha-cxc/src/pass_registry.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/pass_registry.rs).
 - **Role**: Rust closures cannot safely cross address spaces (function
   pointers are not position-stable; captured environment can hold
   non-portable types). Each process pre-registers a

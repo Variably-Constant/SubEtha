@@ -169,7 +169,7 @@ reclaim entries the subscriber has fully advanced past.
 
 ## E2E proof
 
-[`examples/capacity_pubsub_morph_matrix.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/capacity_pubsub_morph_matrix.rs)
+[`examples/capacity_pubsub_morph_matrix.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/capacity_pubsub_morph_matrix.rs)
 ships the full {2,4,8} subs x {anon,file,shmfs} x {100k,1M items}
 matrix with morphs every 200us. The producer implements KeepAll
 back-pressure (waits when `head < cap`) so no subscriber loses

@@ -142,7 +142,7 @@ block_on(async {
 
 ## E2E proof
 
-[`examples/channel_async.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/channel_async.rs)
+[`examples/channel_async.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/channel_async.rs)
 drives both front doors - `build_channel` -> `Channel<u64>` and
 `build_adaptive` -> `AdaptiveIpc<u64>` - through all three conventions,
 pushing 300,000 items through each endpoint split evenly across sync,

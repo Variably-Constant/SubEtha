@@ -127,7 +127,7 @@ any CXC primitive without translation.
 
 `AdaptiveIpc::send` carries an in-source
 `TypeId::of::<T>() == TypeId::of::<u64>()` branch
-([`adaptive_ipc.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/src/adaptive_ipc.rs)).
+([`adaptive_ipc.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/adaptive_ipc.rs)).
 LLVM monomorphises the comparison to a constant per instantiation
 and dead-code-eliminates the unused arm, so the right
 specialisation is picked at codegen time with no opt-in and no

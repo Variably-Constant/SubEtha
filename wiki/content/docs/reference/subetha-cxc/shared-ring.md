@@ -32,7 +32,7 @@ pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, Ri
 
 Op kinds: `OP_PUSH = 1`, `OP_POP = 2`. The canonical source-tree
 doc with bench numbers and protocol detail is
-[crates/subetha-cxc/docs/pointers/SHARED_RING.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RING.md).
+[crates/subetha-cxc/docs/pointers/SHARED_RING.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RING.md).
 
 ## `SharedBroadcastRing`
 
@@ -56,7 +56,7 @@ pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, Br
 `OP_UNREGISTER = 4`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_BROADCAST_RING.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BROADCAST_RING.md).
+[crates/subetha-cxc/docs/pointers/SHARED_BROADCAST_RING.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BROADCAST_RING.md).
 
 ## `SharedTreiberStack`
 
@@ -79,7 +79,7 @@ follow the `ordered` module: `OP_INSERT = 1`, `OP_GET = 2`,
 `OP_REMOVE = 3`, `OP_ITER = 4`, `OP_POP = 5`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_TREIBER_STACK.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TREIBER_STACK.md).
+[crates/subetha-cxc/docs/pointers/SHARED_TREIBER_STACK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TREIBER_STACK.md).
 
 ## Picking between them
 

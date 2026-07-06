@@ -78,17 +78,17 @@ starts with an 8-byte big-endian item count `N`, followed by
 
 ## E2E proof
 
-[`examples/quic_bridge_e2e.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/quic_bridge_e2e.rs)
+[`examples/quic_bridge_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/quic_bridge_e2e.rs)
 runs producer-side AdaptiveRing -> QuicBridgeClient -> QUIC ->
 QuicBridgeServer -> consumer-side AdaptiveRing on 127.0.0.1
 (100,000 items, integrity verified).
 
-[`examples/bridge_lan.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
+[`examples/bridge_lan.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
 runs the same chain between two PHYSICAL hosts with the cert
 shipped as DER bytes: 1,000,000 items each direction with strict
 sequence assertions, plus a ping/pong round-trip mode. Measured
 numbers live in
-[`docs/LAN_BRIDGE_PERFORMANCE.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/LAN_BRIDGE_PERFORMANCE.md).
+[`docs/LAN_BRIDGE_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/LAN_BRIDGE_PERFORMANCE.md).
 
 ## References
 

@@ -7,9 +7,11 @@
 # Local: `hugo serve` then open the printed http://localhost:1313/.
 # CI deploy: .github/workflows/wiki-deploy.yml.
 
-# Case matters: GitHub Pages project paths are case-sensitive and the
-# repository slug is lowercase `subetha`.
-baseURL: https://variably-constant.github.io/subetha/
+# Case matters: GitHub Pages project paths are case-sensitive and GitHub
+# does NOT case-redirect them, so this must match the repository slug
+# `SubEtha` exactly. The deploy workflow overrides it with a slug-derived
+# --baseURL at build time; this value is the local-build fallback.
+baseURL: https://variably-constant.github.io/SubEtha/
 title: SubEtha
 languageCode: en-us
 
@@ -41,7 +43,7 @@ menu:
         type: search
     - name: GitHub
       weight: 9
-      url: https://github.com/Variably-Constant/subetha
+      url: https://github.com/Variably-Constant/SubEtha
       params:
         icon: github
 
@@ -82,7 +84,7 @@ params:
   # pointing at the source markdown on GitHub.
   editURL:
     enable: true
-    base: https://github.com/Variably-Constant/subetha/edit/main/wiki/content
+    base: https://github.com/Variably-Constant/SubEtha/edit/main/wiki/content
 
   theme:
     default: system

@@ -39,7 +39,7 @@ let sum = block_on(async {
 
 The same `recv_async()` future also drives from inside a
 `#[tokio::main]` runtime, so the substrate sits under an existing async
-app when you want it to ([`tokio_interop`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/tokio_interop.rs)).
+app when you want it to ([`tokio_interop`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/tokio_interop.rs)).
 
 ## The reactor - bridging a shared-memory wake to a `Waker`
 
@@ -151,11 +151,11 @@ sockets, with no async runtime in the build.
 
 ## E2E proofs
 
-- [`channel_async`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/channel_async.rs) - `block_on` driving sync + blocking + async, 300k items.
-- [`xproc_async_ring`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/xproc_async_ring.rs) - a `recv_async().await` parked in one process, woken by a push from a separate process through the reactor bridge.
-- [`net_async_ring`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/net_async_ring.rs) - the same await woken by a TCP packet through `net_bridge`, on blocking `std::net` sockets.
-- [`async_subscriber_scale`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/async_subscriber_scale.rs) - 10,000 `WakerRing` consumers on a `TaskPool`, no thread per subscriber.
-- [`ring_async_executor`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/ring_async_executor.rs) - the `RingExecutor` driving awaiting tasks.
+- [`channel_async`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/channel_async.rs) - `block_on` driving sync + blocking + async, 300k items.
+- [`xproc_async_ring`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/xproc_async_ring.rs) - a `recv_async().await` parked in one process, woken by a push from a separate process through the reactor bridge.
+- [`net_async_ring`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/net_async_ring.rs) - the same await woken by a TCP packet through `net_bridge`, on blocking `std::net` sockets.
+- [`async_subscriber_scale`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/async_subscriber_scale.rs) - 10,000 `WakerRing` consumers on a `TaskPool`, no thread per subscriber.
+- [`ring_async_executor`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/ring_async_executor.rs) - the `RingExecutor` driving awaiting tasks.
 
 ## See also
 

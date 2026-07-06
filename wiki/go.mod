@@ -1,4 +1,4 @@
-module github.com/Variably-Constant/subetha/wiki
+module github.com/Variably-Constant/SubEtha/wiki
 
 go 1.26
 

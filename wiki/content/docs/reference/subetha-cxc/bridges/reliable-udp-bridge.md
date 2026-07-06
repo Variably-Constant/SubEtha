@@ -138,7 +138,7 @@ already saturates the wire, so sharding is the fast-link lever.
 Measured on real wire between separate OS processes, integrity-asserted
 (order + count + sum) on every run; the full matrix, confidence intervals,
 and methodology are in
-[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md).
+[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md).
 The LAN is an Ubuntu 24.04 and a FreeBSD 15.0 host (each a VM on one Zen3 /
 Ryzen 7 5700G machine, cross-OS over virtio NICs); the transport builds and
 runs natively on both. Sampling is interleaved over ten rounds, reported as
@@ -160,9 +160,9 @@ interleaving spreads a burst across blocks, and `ShardedSender` /
 fast-link lever for when one core cannot drive the wire. The A/B, burst trace, the cross-OS matrix, the
 per-shard scaling curve, pacing root-cause, and hold-time demonstration
 are in
-[`SENS_O_MATIC_PERFORMANCE.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/SENS_O_MATIC_PERFORMANCE.md)
+[`SENS_O_MATIC_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/SENS_O_MATIC_PERFORMANCE.md)
 and
-[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/TRANSPORT_COMPARISON.md).
+[`TRANSPORT_COMPARISON.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/TRANSPORT_COMPARISON.md).
 
 ## Verify
 
@@ -198,7 +198,7 @@ assert_eq!(rx.join().unwrap(), (0..1000).collect::<Vec<_>>());
 ```
 
 The full example, including the flow-control and grace-feedback details,
-is [`udp_bridge_e2e`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/udp_bridge_e2e.rs):
+is [`udp_bridge_e2e`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/udp_bridge_e2e.rs):
 
 ```bash
 cargo run --release --example udp_bridge_e2e -p subetha-cxc

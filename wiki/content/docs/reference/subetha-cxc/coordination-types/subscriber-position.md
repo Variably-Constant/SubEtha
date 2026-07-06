@@ -51,7 +51,7 @@ assert_eq!(resume_from, 50);
 
 ## E2E proof
 
-[`examples/subscriber_restart.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/subscriber_restart.rs)
+[`examples/subscriber_restart.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/subscriber_restart.rs)
 runs the producer-subscriber-crash-resume lifecycle end-to-end:
 sub1 consumes 50 items + checkpoints + crashes, sub2 reopens and
 resumes, all 300 items integrity verified.

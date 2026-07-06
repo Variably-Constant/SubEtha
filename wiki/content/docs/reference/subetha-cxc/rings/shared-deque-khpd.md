@@ -82,7 +82,7 @@ pays a Vec resize + per-byte memcpy that the MMF publication-line
 layout sidesteps.
 
 Bench file:
-[`crates/subetha-cxc/benches/shared_deque_khpd.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/benches/shared_deque_khpd.rs).
+[`crates/subetha-cxc/benches/shared_deque_khpd.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/benches/shared_deque_khpd.rs).
 
 ## API surface
 

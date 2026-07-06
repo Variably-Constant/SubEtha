@@ -100,7 +100,7 @@ bench checks your host matches it with a single-threaded `Channel<u64>`
 round-trip (send + recv):
 
 ```bash
-git clone https://github.com/Variably-Constant/subetha.git
+git clone https://github.com/Variably-Constant/SubEtha.git
 cd subetha
 cargo bench -p subetha-cxc --bench async_overhead
 ```

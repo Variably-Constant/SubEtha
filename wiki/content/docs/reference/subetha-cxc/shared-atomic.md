@@ -77,4 +77,4 @@ inside a larger primitive (e.g., as the version field of a
 - [`SharedFenceClock`](shared-locks.md#sharedfenceclock) - hybrid
   logical clock built on shared atomics.
 - Canonical doc:
-  [crates/subetha-cxc/docs/pointers/SHARED_ATOMIC.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ATOMIC.md).
+  [crates/subetha-cxc/docs/pointers/SHARED_ATOMIC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ATOMIC.md).

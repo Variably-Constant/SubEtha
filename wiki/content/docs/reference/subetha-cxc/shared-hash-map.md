@@ -49,7 +49,7 @@ on `OP_INSERT` is set when `Err(MapError::Full)`; flag bit 1 on
 
 Canonical doc with bench numbers, the worked insert/get protocol,
 and the SeqLock retry logic:
-[crates/subetha-cxc/docs/pointers/SHARED_HASH_MAP.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HASH_MAP.md).
+[crates/subetha-cxc/docs/pointers/SHARED_HASH_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HASH_MAP.md).
 
 ## `SharedBTreeMap`
 
@@ -75,7 +75,7 @@ Op kinds use the `ordered` module: `OP_INSERT = 1`, `OP_GET = 2`,
 `OP_REMOVE = 3`, `OP_ITER = 4`, `OP_POP = 5`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md).
+[crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md).
 
 ## Picking between them
 

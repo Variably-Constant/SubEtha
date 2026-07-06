@@ -307,7 +307,7 @@ versions of this section.
 ![Ordering modes comparison](/images/ordering_modes_comparison-light.png)
 
 Numbers, methodology, and the bench-audit notes live in
-[`docs/ORDERING_MODES_PERFORMANCE.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/ORDERING_MODES_PERFORMANCE.md);
+[`docs/ORDERING_MODES_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/ORDERING_MODES_PERFORMANCE.md);
 the raw JSON is `docs/ordering_modes_results.json`. Each contender's
 consumer CHECKS the guarantee it charges for: per-producer sequence
 monotonicity everywhere, and zero inversions for the STRICT merge rows

@@ -58,16 +58,16 @@ MSS-filled regardless.
 
 ## E2E proof
 
-[`examples/tcp_bridge_e2e.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/tcp_bridge_e2e.rs)
+[`examples/tcp_bridge_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/tcp_bridge_e2e.rs)
 runs producer AdaptiveRing -> TcpBridgeClient -> TCP ->
 TcpBridgeServer -> consumer AdaptiveRing on 127.0.0.1
 (100,000 items, integrity verified).
 
-[`examples/bridge_lan.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
+[`examples/bridge_lan.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
 runs the same chain between two PHYSICAL hosts: 1,000,000 items
 each direction with strict sequence assertions, plus a ping/pong
 round-trip mode. Measured numbers live in
-[`docs/LAN_BRIDGE_PERFORMANCE.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/LAN_BRIDGE_PERFORMANCE.md).
+[`docs/LAN_BRIDGE_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/LAN_BRIDGE_PERFORMANCE.md).
 
 ## TLS variant
 

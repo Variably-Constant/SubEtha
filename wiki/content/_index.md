@@ -72,7 +72,7 @@ The exact numbers on the Linux host:
 | ZeroMQ (`ipc://` REQ/REP) | 70,891 ns | **1315x slower** |
 
 The methodology audit and reproducibility instructions are in
-[`docs/CROSS_PROCESS_IPC_PERFORMANCE.md`](https://github.com/Variably-Constant/subetha/blob/main/docs/CROSS_PROCESS_IPC_PERFORMANCE.md).
+[`docs/CROSS_PROCESS_IPC_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/CROSS_PROCESS_IPC_PERFORMANCE.md).
 
 ### In-process, too
 
@@ -203,7 +203,7 @@ Explanation. They are independent. Read in any order.
 ## License
 
 SubEtha is licensed under the MIT License. See
-[LICENSE-MIT](https://github.com/Variably-Constant/subetha/blob/main/LICENSE-MIT)
+[LICENSE-MIT](https://github.com/Variably-Constant/SubEtha/blob/main/LICENSE-MIT)
 for the full text.
 
 > *"So long, and thanks for all the pipes."*

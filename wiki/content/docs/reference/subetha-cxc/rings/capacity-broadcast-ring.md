@@ -239,7 +239,7 @@ for h in sub_handles { h.join().unwrap(); }
 
 ## E2E proof
 
-[`examples/capacity_broadcast_morph_matrix.rs`](https://github.com/Variably-Constant/subetha/blob/main/crates/subetha-cxc/examples/capacity_broadcast_morph_matrix.rs)
+[`examples/capacity_broadcast_morph_matrix.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/capacity_broadcast_morph_matrix.rs)
 ships the full {2,4,8} subs x {anon,file,shmfs} x {100k,1M items}
 matrix with morphs every 200us. Verified: every subscriber receives
 every item exactly once in strict send-order across hundreds of
