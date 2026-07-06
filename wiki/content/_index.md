@@ -27,6 +27,22 @@ conventional channels. CXC does the same thing: it skips the kernel's
 "conventional channel" (named pipes, sockets, IPC handles) and writes
 directly to user-space memory the kernel page-aliases between participants.
 
+## The Guide
+
+{{< cards >}}
+  {{< card link="docs/tutorial/" title="Tutorial" subtitle="Zero to a working cross-process channel in twenty minutes." icon="academic-cap" >}}
+  {{< card link="docs/how-to/" title="How-To" subtitle="Targeted recipes: pick a primitive, tune the sidecar, bridge two hosts." icon="book-open" >}}
+  {{< card link="docs/reference/" title="Reference" subtitle="Every type, every trait, every guarantee - the dry spec." icon="document-text" >}}
+  {{< card link="docs/explanation/" title="Explanation" subtitle="The design rationale: why the byte layout, the dispatcher, the morphs." icon="light-bulb" >}}
+{{< /cards >}}
+
+Jumping-off points inside the reference:
+[the full primitive catalog](docs/reference/subetha-cxc/catalog/) ·
+[rings, stacks, and queues](docs/reference/subetha-cxc/rings/) ·
+[the adaptive shape-morphing ring](docs/reference/subetha-cxc/rings/shared-ring-adaptive/) ·
+[cross-platform benchmarks](docs/reference/subetha-cxc/cross-platform-benchmarks/) ·
+[the crate family](docs/reference/).
+
 ## How fast?
 
 Measured on five hosts (native Windows + WSL2 on a Ryzen 7 2700; a Linux
