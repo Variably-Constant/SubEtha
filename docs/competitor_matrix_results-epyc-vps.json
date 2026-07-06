@@ -1,0 +1,119 @@
+{
+  "machine": "unknown host",
+  "payload_bytes": 16,
+  "total_items": 1000000,
+  "runs_per_contender": 11,
+  "scenarios": [
+    {
+      "name": "1 producer / 1 consumer",
+      "producers": 1,
+      "consumers": 1,
+      "rows": [
+        {
+          "name": "rtrb (SPSC)",
+          "is_subetha": false,
+          "ns_per_item": 21.033196,
+          "m_items_per_s": 47.54389204569767
+        },
+        {
+          "name": "SubEtha Vyukov",
+          "is_subetha": true,
+          "ns_per_item": 50.975039,
+          "m_items_per_s": 19.61744453005715
+        },
+        {
+          "name": "SubEtha Spsc (Lamport pair)",
+          "is_subetha": true,
+          "ns_per_item": 68.701663,
+          "m_items_per_s": 14.555688411792886
+        },
+        {
+          "name": "SubEtha Spsc (AdaptiveRing)",
+          "is_subetha": true,
+          "ns_per_item": 105.719802,
+          "m_items_per_s": 9.458965880393912
+        },
+        {
+          "name": "flume",
+          "is_subetha": false,
+          "ns_per_item": 188.18302,
+          "m_items_per_s": 5.313975724270978
+        },
+        {
+          "name": "crossbeam_channel",
+          "is_subetha": false,
+          "ns_per_item": 202.10847,
+          "m_items_per_s": 4.947838158390888
+        },
+        {
+          "name": "std::sync::mpsc",
+          "is_subetha": false,
+          "ns_per_item": 210.370355,
+          "m_items_per_s": 4.7535214740689105
+        }
+      ]
+    },
+    {
+      "name": "4 producers / 1 consumer",
+      "producers": 4,
+      "consumers": 1,
+      "rows": [
+        {
+          "name": "crossbeam_channel",
+          "is_subetha": false,
+          "ns_per_item": 181.388919,
+          "m_items_per_s": 5.51301593015172
+        },
+        {
+          "name": "flume",
+          "is_subetha": false,
+          "ns_per_item": 299.822417,
+          "m_items_per_s": 3.335307646459271
+        },
+        {
+          "name": "std::sync::mpsc",
+          "is_subetha": false,
+          "ns_per_item": 349.623432,
+          "m_items_per_s": 2.8602201925642103
+        },
+        {
+          "name": "SubEtha Mpsc (composed)",
+          "is_subetha": true,
+          "ns_per_item": 498.009882,
+          "m_items_per_s": 2.007992283173208
+        }
+      ]
+    },
+    {
+      "name": "4 producers / 4 consumers",
+      "producers": 4,
+      "consumers": 4,
+      "rows": [
+        {
+          "name": "flume",
+          "is_subetha": false,
+          "ns_per_item": 361.964433,
+          "m_items_per_s": 2.7627023785510993
+        },
+        {
+          "name": "SubEtha Mpmc (composed grid)",
+          "is_subetha": true,
+          "ns_per_item": 375.164415,
+          "m_items_per_s": 2.6654980057210382
+        },
+        {
+          "name": "crossbeam_channel",
+          "is_subetha": false,
+          "ns_per_item": 385.046603,
+          "m_items_per_s": 2.5970882283046657
+        },
+        {
+          "name": "SubEtha Vyukov",
+          "is_subetha": true,
+          "ns_per_item": 409.94444,
+          "m_items_per_s": 2.4393549525882094
+        }
+      ]
+    }
+  ]
+}

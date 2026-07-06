@@ -1,0 +1,39 @@
+[package]
+name = "subetha-pointers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+description = "Exotic pointer types for the CXC / SubEtha IPC stack: content-prefix (Umbra), bloom-filtered, log2-strided, multi-segment, type-tagged, versioned, cardinality-tagged, and CHERI-style bounds-checked. All declare a `K_*` direction signature via `subetha-core::AxisMask`."
+
+[dependencies]
+subetha-core = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "bitsteal_pointers"
+harness = false
+
+[[bench]]
+name = "unified"
+harness = false
+
+[[bench]]
+name = "hybrid_pointers"
+harness = false
+
+[[bench]]
+name = "versioned_bloom"
+harness = false
+
+[[bench]]
+name = "umbra_pointer"
+harness = false

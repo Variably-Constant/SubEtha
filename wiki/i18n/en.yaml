@@ -1,0 +1,7 @@
+# Hextra theme i18n overrides for English. The keys here shadow
+# the defaults from github.com/imfing/hextra/blob/main/i18n/en.yaml
+# (`copyright` defaults to "(C) 2026 Hextra Project.",
+# `poweredBy` defaults to "Powered by Hextra"). Hugo's i18n system
+# merges this file with the theme's, with the site copy winning.
+
+copyright: "SubEtha (C) 2026 Variably-Constant. MIT licensed."

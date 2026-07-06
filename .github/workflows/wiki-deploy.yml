@@ -1,0 +1,63 @@
+# Build the Hugo/Hextra wiki from wiki/ and deploy it to GitHub
+# Pages. Referenced by wiki/hugo.yaml's build notes.
+#
+# Requirements the steps encode:
+# - Hextra is consumed as a Hugo MODULE, so the build needs a Go
+#   toolchain alongside hugo extended.
+# - GitHub Pages project paths are case-sensitive; the baseURL is
+#   derived from the actual owner/repo slug at build time so a repo
+#   rename can never ship wrong-case absolute URLs.
+name: wiki-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "latest"
+          extended: true
+
+      - name: Build site
+        working-directory: wiki
+        run: |
+          OWNER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          hugo --gc --minify --baseURL "https://${OWNER}.github.io/${REPO}/"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: wiki/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

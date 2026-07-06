@@ -1,0 +1,35 @@
+[package]
+name = "subetha"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+description = "SubEtha (CXC, Cross-Context Channel): MMF-backed cross-process IPC plus adaptive in-process primitives - one byte layout for cross-thread, cross-process, disk, and network. Umbrella crate re-exporting the subetha-core / -pointers / -sidecar / -cxc stack."
+
+[dependencies]
+subetha-core = { workspace = true }
+subetha-pointers = { workspace = true }
+subetha-sidecar = { workspace = true }
+subetha-cxc = { workspace = true }
+
+[features]
+default = []
+# Forward subetha-cxc's optional capability features. The platform- and
+# library-specific dependencies behind each one stay gated exactly as
+# they are in subetha-cxc, so the default build pulls none of them.
+quic-bridge = ["subetha-cxc/quic-bridge"]
+tcp-bridge = ["subetha-cxc/tcp-bridge"]
+tcp-tls-bridge = ["subetha-cxc/tcp-tls-bridge"]
+tls = ["subetha-cxc/tls"]
+wire-locale = ["subetha-cxc/wire-locale"]
+linux-futex-raw = ["subetha-cxc/linux-futex-raw"]
+
+[package.metadata.docs.rs]
+# Build docs for the bridge/TLS surface too (wire-locale and zmq are
+# platform- / C-library-gated, so they are left off the docs.rs build).
+features = ["quic-bridge", "tcp-bridge", "tcp-tls-bridge", "tls"]

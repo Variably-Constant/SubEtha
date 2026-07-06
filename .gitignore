@@ -1,0 +1,48 @@
+# Build outputs
+/target/
+Cargo.lock
+wiki/public/
+wiki/.hugo_build.lock
+
+# Local tooling folders - never published
+/scripts/
+/colab/
+__pycache__/
+
+# Session scratch (underscore-prefixed orchestration scripts, staged
+# bench artifacts, deploy tars) - never publishable.
+/_*
+
+# Dot-folders are local tooling; only .github (CI workflows) ships.
+# Enumerated explicitly because gitignore cannot re-include children
+# of an excluded directory, so a `.*/` + `!.github/` pair is a trap.
+/.beads/
+/.cargo/
+/.claude/
+/.dolt/
+/.git-pre-reset-backup/
+.beads-credential-key
+*.db
+
+# Internal working notes / research ledgers - stay local
+/DOC_AUDIT_TRACKER.md
+/docs/ADAPTIVE_FEC_TRANSPORT_TRACKER.md
+/docs/ADAPTIVE_OPTIMIZER_EXPERIMENTS.md
+/docs/ADAPTIVE_ORDERING_TRACKER.md
+/docs/CONTROL_PLANE_SIGNAL_TRACKER.md
+/docs/CROSS_PROCESS_WAKER_TRACKER.md
+/docs/GEOMETRIC_CONCURRENT_EXPERIMENTS.md
+/docs/NETWORK_SIGNAL_RESEARCH.md
+/docs/TRANSPORT_EVOLUTION.md
+/docs/WIKI_SOURCE_AUDIT.md
+/docs/SKIP_LIST_DESIGN_NOTES.md
+
+# Agent instruction files
+CLAUDE.md
+AGENTS.md
+
+# Misc artifacts
+*.bin
+*.tmp
+rustc-ice-*.txt
+/docs/COLAB_E2E_HOWTO_NOTES.md

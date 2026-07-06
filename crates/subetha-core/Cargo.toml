@@ -1,0 +1,17 @@
+[package]
+name = "subetha-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+description = "Substrate for the CXC / SubEtha IPC stack: handshake header, observation ring, migration generation, marshal trait, CPU-feature CPUID helpers, and the AxisSignature direction catalog."
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { workspace = true }

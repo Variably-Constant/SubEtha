@@ -1,0 +1,601 @@
+[package]
+name = "subetha-cxc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+description = "MMF-backed cross-process IPC primitives for SubEtha: SharedRing, SharedHashMap, SharedRWLock, SharedSemaphore, SharedLRUCache, OwnerLease, HeartbeatTable, plus 30+ more. One byte layout serves cross-thread, cross-process, and disk-persistent."
+
+[dependencies]
+arc-swap = { workspace = true }
+memmap2 = "0.9"
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+subetha-core = { workspace = true }
+subetha-sidecar = { workspace = true }
+subetha-pointers = { workspace = true }
+# Cross-platform SO_RCVBUF / SO_SNDBUF sizing for the reliable-UDP bridge,
+# so the flow-controlled in-flight block backlog cannot overflow the socket
+# buffer and manufacture loss on a fast clean link.
+socket2 = "0.6"
+
+# QuicBridge + TcpBridge primitive backends. Cross-platform; opt-in
+# via the quic-bridge / tcp-bridge Cargo features.
+quinn = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+# Async TLS record layer for the TcpBridge (the TCP+TLS bench contender).
+# Reuses the same rustls ServerConfig/ClientConfig the RLC --tls path builds,
+# so TCP and TCP+TLS share one wire protocol and differ only in the AEAD layer.
+tokio-rustls = { workspace = true, optional = true }
+# ZeroMQ (ipc:// transport) as a cross-process bench contender, opt-in behind
+# the `zmq-bench` feature (off by default). The `zmq` crate links the C
+# `libzmq`, which is not present on every build host, so the default build
+# pulls nothing - the feature is the gate. Run the ZeroMQ comparison with
+# `--features zmq-bench` where libzmq is installed (Cargo has no optional
+# dev-dependency, so this bench-only dep is an optional regular dependency
+# that the production graph never sees unless the feature is enabled).
+zmq = { version = "0.10", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Linux io_uring backing for the KernelAsyncRing primitive (the Windows
+# IoRing side rides windows-sys, no extra crate). Linux-target only.
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
+# AF_XDP datapath for the Linux Locale::Wire (UMEM + RX/TX/FILL/COMPLETION
+# rings + libxdp's redirect program). Opt-in behind the wire-locale
+# feature; Linux-target only.
+xsk-rs = { version = "0.8", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_NetworkManagement_WiFi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+] }
+
+# iceoryx2 is the cross_process_compare bench's zero-copy peer
+# contender. Excluded on FreeBSD (its platform layer binds via bindgen,
+# the wrong cost for a dev-only bench peer that does not run there) and on
+# macOS (iceoryx2's POSIX layer uses MSG_NOSIGNAL, which does not exist on
+# macOS - it uses the SO_NOSIGPIPE socket option instead - so it does not
+# compile there). The comparison numbers are produced on Linux / Windows.
+[target.'cfg(not(any(target_os = "freebsd", target_os = "macos")))'.dev-dependencies]
+iceoryx2 = { workspace = true }
+
+[features]
+default = []
+# Pulls in quinn + rcgen + rustls + tokio for the QuicBridge primitive and the
+# one-port QUIC + Sens demux endpoint (sens_quic, which needs tokio/net for the
+# async UdpSocket the AsyncUdpSocket impl wraps).
+quic-bridge = ["dep:quinn", "dep:rcgen", "dep:rustls", "dep:tokio", "tokio/net"]
+# Optional TLS 1.3 record layer for the Sens / RLC transport: drives the rustls
+# QUIC handshake over the transport's reliable delivery and AEAD-protects every
+# datagram with the derived 1-RTT packet keys (ring provider).
+tls = ["dep:rustls", "dep:rcgen"]
+# Pulls in tokio (net + io-util + rt) for the TcpBridge primitive.
+tcp-bridge = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/rt-multi-thread", "tokio/macros"]
+# TCP+TLS bridge: the plain TcpBridge wire protocol carried inside a rustls
+# 1.3 record layer (tokio-rustls). Reuses the `tls` feature's config builders.
+tcp-tls-bridge = ["tcp-bridge", "tls", "dep:tokio-rustls"]
+# Exposes the direct futex syscall surface (FUTEX_WAIT_BITSET,
+# FUTEX_REQUEUE, etc) on CrossProcessWaker for callers that need
+# capabilities the portable atomic-wait wrapper does not expose.
+# Linux-only.
+linux-futex-raw = []
+# Locale::Wire NIC-bypass datapath: AF_XDP on Linux (xsk-rs/libxdp, the only
+# extra crate), netmap on FreeBSD (in-base libnetmap), BPF on macOS (in-libc),
+# XDP on Windows (in-box xdpapi.dll). Default off; needs root + a NIC (or
+# veth/feth) at runtime. xsk-rs is Linux-target-gated, so the feature pulls no
+# extra dependency on the other targets.
+wire-locale = ["dep:xsk-rs"]
+# ZeroMQ (ipc://) cross-process bench contender in cross_process_compare. Off
+# by default; pulls the `zmq` crate (links C libzmq). Enable where libzmq is
+# installed: `cargo run --release --example cross_process_compare --features zmq-bench`.
+zmq-bench = ["dep:zmq"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+crossbeam-channel = { workspace = true }
+crossbeam-deque = { workspace = true }
+# Pure-Rust channel contenders for the in-process SPSC shootout (no system
+# deps): flume (ergonomic MPSC/MPMC), rtrb (SPSC-specialized real-time ring).
+flume = "0.12"
+rtrb = "0.3"
+interprocess = { workspace = true }
+ipc-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+quinn = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true }
+
+[[bench]]
+name = "shared_ring"
+harness = false
+
+[[bench]]
+name = "shared_deque"
+harness = false
+
+[[bench]]
+name = "shared_deque_khpd"
+harness = false
+
+[[bench]]
+name = "shared_deque_loh"
+harness = false
+
+[[bench]]
+name = "multi_thief"
+harness = false
+
+[[bench]]
+name = "transport_indirection"
+harness = false
+
+[[bench]]
+name = "concurrent_methods"
+harness = false
+
+[[bench]]
+name = "umbra_port_ab"
+harness = false
+
+[[bench]]
+name = "bloom_filter_ab"
+harness = false
+
+[[bench]]
+name = "adaptive_send_specialized_ab"
+harness = false
+
+[[bench]]
+name = "adaptive_ring_overhead"
+harness = false
+
+[[bench]]
+name = "adaptive_ipc_overhead"
+harness = false
+
+[[bench]]
+name = "async_overhead"
+harness = false
+
+[[bench]]
+name = "async_fanout"
+harness = false
+
+[[bench]]
+name = "adaptive_khl_batch"
+harness = false
+
+[[example]]
+name = "dispatcher_demo"
+path = "examples/dispatcher_demo.rs"
+
+[[example]]
+name = "mmf_dispatcher_demo"
+path = "examples/mmf_dispatcher_demo.rs"
+
+[[example]]
+name = "auto_ipc_demo"
+path = "examples/auto_ipc_demo.rs"
+
+[[example]]
+name = "adaptive_ipc_demo"
+path = "examples/adaptive_ipc_demo.rs"
+
+[[example]]
+name = "adaptive_khl_e2e"
+path = "examples/adaptive_khl_e2e.rs"
+
+[[example]]
+name = "udp_bridge_e2e"
+path = "examples/udp_bridge_e2e.rs"
+
+[[example]]
+name = "cross_process_throughput"
+path = "examples/cross_process_throughput.rs"
+
+[[example]]
+name = "stress_test"
+path = "examples/stress_test.rs"
+
+[[example]]
+name = "cross_process_compare"
+path = "examples/cross_process_compare.rs"
+
+[[example]]
+name = "quic_bridge_e2e"
+path = "examples/quic_bridge_e2e.rs"
+required-features = ["quic-bridge"]
+
+[[example]]
+name = "one_port_e2e"
+path = "examples/one_port_e2e.rs"
+required-features = ["quic-bridge"]
+
+[[example]]
+name = "one_port_tls_e2e"
+path = "examples/one_port_tls_e2e.rs"
+required-features = ["quic-bridge", "tls"]
+
+[[example]]
+name = "stuck_slot_recovery"
+path = "examples/stuck_slot_recovery.rs"
+
+[[example]]
+name = "mpmc_shootout"
+path = "examples/mpmc_shootout.rs"
+
+[[example]]
+name = "adaptive_ring_morph"
+path = "examples/adaptive_ring_morph.rs"
+
+[[example]]
+name = "adaptive_ring_sidecar"
+path = "examples/adaptive_ring_sidecar.rs"
+
+[[example]]
+name = "adaptive_ipc_pinned"
+path = "examples/adaptive_ipc_pinned.rs"
+
+[[example]]
+name = "locale_morph"
+path = "examples/locale_morph.rs"
+
+[[example]]
+name = "locale_shmfs"
+path = "examples/locale_shmfs.rs"
+
+[[example]]
+name = "virtual_endpoint_lifecycle"
+path = "examples/virtual_endpoint_lifecycle.rs"
+
+[[example]]
+name = "qos_driven_morph"
+path = "examples/qos_driven_morph.rs"
+
+[[example]]
+name = "subscriber_restart"
+path = "examples/subscriber_restart.rs"
+
+[[example]]
+name = "pubsub_fanout"
+path = "examples/pubsub_fanout.rs"
+
+[[example]]
+name = "direct_file_round_trip"
+path = "examples/direct_file_round_trip.rs"
+
+[[example]]
+name = "wire_veth_e2e"
+path = "examples/wire_veth_e2e.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "wire_xdp_win_e2e"
+path = "examples/wire_xdp_win_e2e.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "rlc_wire_e2e"
+path = "examples/rlc_wire_e2e.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "wire_netmap_e2e"
+path = "examples/wire_netmap_e2e.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "wire_feth_e2e"
+path = "examples/wire_feth_e2e.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "dgram_wire_gate"
+path = "examples/dgram_wire_gate.rs"
+required-features = ["wire-locale"]
+
+[[example]]
+name = "direct_file_xproc"
+path = "examples/direct_file_xproc.rs"
+
+[[example]]
+name = "fd_handoff_xproc"
+path = "examples/fd_handoff_xproc.rs"
+
+[[example]]
+name = "tcp_bridge_e2e"
+path = "examples/tcp_bridge_e2e.rs"
+required-features = ["tcp-bridge"]
+
+[[example]]
+name = "blocking_ring_demo"
+path = "examples/blocking_ring_demo.rs"
+
+[[example]]
+name = "async_ring_demo"
+path = "examples/async_ring_demo.rs"
+
+[[example]]
+name = "condvar_xproc_notifier"
+path = "examples/condvar_xproc_notifier.rs"
+
+[[example]]
+name = "condvar_xproc_waiter"
+path = "examples/condvar_xproc_waiter.rs"
+
+[[example]]
+name = "blocking_locks_demo"
+path = "examples/blocking_locks_demo.rs"
+
+[[example]]
+name = "blocking_tcp_bridge_e2e"
+path = "examples/blocking_tcp_bridge_e2e.rs"
+required-features = ["tcp-bridge"]
+
+[[example]]
+name = "large_pages_demo"
+path = "examples/large_pages_demo.rs"
+
+[[example]]
+name = "qos_ordering_morph"
+path = "examples/qos_ordering_morph.rs"
+
+[[example]]
+name = "ordering_xproc_producer"
+path = "examples/ordering_xproc_producer.rs"
+
+[[example]]
+name = "ordering_xproc_consumer"
+path = "examples/ordering_xproc_consumer.rs"
+
+[[example]]
+name = "ordering_modes_compare"
+path = "examples/ordering_modes_compare.rs"
+
+[[example]]
+name = "bridge_lan"
+path = "examples/bridge_lan.rs"
+required-features = ["quic-bridge", "tcp-bridge"]
+
+[[example]]
+name = "monitor_wait_probe"
+path = "examples/monitor_wait_probe.rs"
+
+[[example]]
+name = "cacheline_probe"
+path = "examples/cacheline_probe.rs"
+
+[[bench]]
+name = "shared_deque_urd"
+harness = false
+
+[[bench]]
+name = "shared_lift_trio"
+harness = false
+
+[[bench]]
+name = "shared_handle_table"
+harness = false
+
+[[bench]]
+name = "event_state_log"
+harness = false
+
+[[bench]]
+name = "progress_task"
+harness = false
+
+[[bench]]
+name = "shared_semaphore"
+harness = false
+
+[[bench]]
+name = "priority_fanout"
+harness = false
+
+[[bench]]
+name = "epoch_barrier"
+harness = false
+
+[[bench]]
+name = "shared_fence_clock"
+harness = false
+
+[[bench]]
+name = "shared_vec"
+harness = false
+
+[[bench]]
+name = "shared_broadcast_ring"
+harness = false
+
+[[bench]]
+name = "shared_hash_map"
+harness = false
+
+[[bench]]
+name = "shared_hash_map_compact"
+harness = false
+
+[[bench]]
+name = "shared_string_arena"
+harness = false
+
+[[bench]]
+name = "shared_topology_map"
+harness = false
+
+[[bench]]
+name = "shared_region"
+harness = false
+
+[[bench]]
+name = "tagged_offset_ptr"
+harness = false
+
+[[bench]]
+name = "shared_nan_value"
+harness = false
+
+[[bench]]
+name = "shared_nan_tagged_value"
+harness = false
+
+[[bench]]
+name = "shared_async_pointer"
+harness = false
+
+[[bench]]
+name = "k_tower_cascade"
+harness = false
+
+[[bench]]
+name = "shared_bit_vec"
+harness = false
+
+[[bench]]
+name = "shared_bloom_filter"
+harness = false
+
+[[bench]]
+name = "shared_blocked_bloom_filter"
+harness = false
+
+[[bench]]
+name = "shared_btree_map"
+harness = false
+
+[[bench]]
+name = "shared_rate_limiter"
+harness = false
+
+[[bench]]
+name = "shared_histogram"
+harness = false
+
+[[bench]]
+name = "shared_linked_list"
+harness = false
+
+[[bench]]
+name = "shared_lru_cache"
+harness = false
+
+[[bench]]
+name = "shared_rw_lock"
+harness = false
+
+[[bench]]
+name = "shared_hyper_log_log"
+harness = false
+
+[[bench]]
+name = "shared_count_min_sketch"
+harness = false
+
+[[bench]]
+name = "shared_treiber_stack"
+harness = false
+
+[[bench]]
+name = "shared_umbra_pointer"
+harness = false
+
+[[bench]]
+name = "shared_universal"
+harness = false
+
+[[bench]]
+name = "shared_reservoir_sampler"
+harness = false
+
+[[bench]]
+name = "shared_graph"
+harness = false
+
+[[bench]]
+name = "shared_atomic"
+harness = false
+
+[[bench]]
+name = "shared_cell"
+harness = false
+
+[[bench]]
+name = "shared_once_cell"
+harness = false
+
+[[bench]]
+name = "shared_leader_election"
+harness = false
+
+[[bench]]
+name = "failover"
+harness = false
+
+[[bench]]
+name = "heartbeat"
+harness = false
+
+[[bench]]
+name = "lazy_config"
+harness = false
+
+[[bench]]
+name = "owner_lease"
+harness = false
+
+[[bench]]
+name = "pass_registry"
+harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
+
+[[bench]]
+name = "shared_time_point"
+harness = false
+
+[[bench]]
+name = "shared_versioned_chain"
+harness = false
+
+[[bench]]
+name = "capacity_adaptive_ring"
+harness = false
+
+[[bench]]
+name = "capacity_broadcast_ring"
+harness = false
+
+[[bench]]
+name = "capacity_pubsub_ring"
+harness = false
+
+[[bench]]
+name = "fec_gf_simd"
+harness = false

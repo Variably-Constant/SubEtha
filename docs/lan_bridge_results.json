@@ -1,0 +1,50 @@
+{
+  "description": "Cross-host LAN bridge runs via examples/bridge_lan.rs: two physical hosts per run, real LAN hop, every run integrity-asserted (strict per-item sequence + count + sum on the receiving app). The Windows box is one end of every pair; the peer VMs (Ubuntu, FreeBSD) run on the same Ryzen 7 5700G hypervisor host.",
+  "hosts": {
+    "windows": {
+      "ip": "192.168.1.210",
+      "os": "Windows 11 Pro",
+      "cpu": "AMD Ryzen 7 2700 (Zen+)",
+      "link": "Wi-Fi (the bandwidth-limiting hop)"
+    },
+    "linux": {
+      "ip": "192.168.1.213",
+      "os": "Ubuntu 24.04.4 LTS (KVM guest)",
+      "cpu": "AMD Ryzen 7 5700G (Zen3)",
+      "link": "virtio / wired to the AP"
+    },
+    "freebsd": {
+      "ip": "192.168.1.74",
+      "os": "FreeBSD 15.0-RELEASE (VM guest)",
+      "cpu": "AMD Ryzen 7 5700G (Zen3)",
+      "link": "wired to the AP"
+    }
+  },
+  "icmp_rtt_ms": 1,
+  "payload_bytes_per_slot": 64,
+  "ring_capacity": 8192,
+  "oneway_items": 1000000,
+  "rtt_rounds": 2000,
+  "oneway": [
+    { "peer": "linux",   "transport": "tcp",  "direction": "windows_to_peer", "client_ship_ns_per_item": 2061.9, "client_mbit_per_s": 248.3, "server_drain_ns_per_item": 2157.6, "server_mbit_per_s": 237.3, "order_ok": true, "sum_ok": true },
+    { "peer": "linux",   "transport": "quic", "direction": "windows_to_peer", "client_ship_ns_per_item": 2604.4, "client_mbit_per_s": 196.6, "server_drain_ns_per_item": 2595.1, "server_mbit_per_s": 197.3, "order_ok": true, "sum_ok": true },
+    { "peer": "linux",   "transport": "btcp", "direction": "windows_to_peer", "client_ship_ns_per_item": 2157.4, "client_mbit_per_s": 237.3, "server_drain_ns_per_item": 2405.5, "server_mbit_per_s": 212.8, "order_ok": true, "sum_ok": true },
+    { "peer": "linux",   "transport": "tcp",  "direction": "peer_to_windows", "client_ship_ns_per_item": 2193.4, "client_mbit_per_s": 233.4, "server_drain_ns_per_item": 2257.4, "server_mbit_per_s": 226.8, "order_ok": true, "sum_ok": true },
+    { "peer": "linux",   "transport": "quic", "direction": "peer_to_windows", "client_ship_ns_per_item": 2394.1, "client_mbit_per_s": 213.9, "server_drain_ns_per_item": 2383.6, "server_mbit_per_s": 214.8, "order_ok": true, "sum_ok": true },
+    { "peer": "linux",   "transport": "btcp", "direction": "peer_to_windows", "client_ship_ns_per_item": 1877.5, "client_mbit_per_s": 272.7, "server_drain_ns_per_item": 1899.7, "server_mbit_per_s": 269.5, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "tcp",  "direction": "windows_to_peer", "client_ship_ns_per_item": 1948.5, "client_mbit_per_s": 262.8, "server_drain_ns_per_item": 2000.8, "server_mbit_per_s": 255.9, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "quic", "direction": "windows_to_peer", "client_ship_ns_per_item": 2667.6, "client_mbit_per_s": 191.9, "server_drain_ns_per_item": 2656.8, "server_mbit_per_s": 192.7, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "btcp", "direction": "windows_to_peer", "client_ship_ns_per_item": 1961.2, "client_mbit_per_s": 261.1, "server_drain_ns_per_item": 2004.6, "server_mbit_per_s": 255.4, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "tcp",  "direction": "peer_to_windows", "client_ship_ns_per_item": 2153.9, "client_mbit_per_s": 237.7, "server_drain_ns_per_item": 2148.2, "server_mbit_per_s": 238.3, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "quic", "direction": "peer_to_windows", "client_ship_ns_per_item": 2080.0, "client_mbit_per_s": 246.2, "server_drain_ns_per_item": 2073.3, "server_mbit_per_s": 247.0, "order_ok": true, "sum_ok": true },
+    { "peer": "freebsd", "transport": "btcp", "direction": "peer_to_windows", "client_ship_ns_per_item": 2135.2, "client_mbit_per_s": 239.8, "server_drain_ns_per_item": 2147.7, "server_mbit_per_s": 238.4, "order_ok": true, "sum_ok": true }
+  ],
+  "rtt": [
+    { "peer": "linux",   "transport": "tcp",  "ping_host": "windows", "min_ns": 679900, "avg_ns": 1816071, "p50_ns": 918900,  "p99_ns": 6213400,  "max_ns": 1020615800, "echoed_ok": true },
+    { "peer": "linux",   "transport": "quic", "ping_host": "windows", "min_ns": 698200, "avg_ns": 1340761, "p50_ns": 1002800, "p99_ns": 5348700,  "max_ns": 100633000,  "echoed_ok": true },
+    { "peer": "linux",   "transport": "btcp", "ping_host": "windows", "min_ns": 767900, "avg_ns": 1722781, "p50_ns": 1003900, "p99_ns": 4085300,  "max_ns": 1063054000, "echoed_ok": true },
+    { "peer": "freebsd", "transport": "tcp",  "ping_host": "windows", "min_ns": 668100, "avg_ns": 1680706, "p50_ns": 884600,  "p99_ns": 6223600,  "max_ns": 1057685300, "echoed_ok": true },
+    { "peer": "freebsd", "transport": "quic", "ping_host": "windows", "min_ns": 670700, "avg_ns": 1891973, "p50_ns": 1055100, "p99_ns": 15332100, "max_ns": 116089900,  "echoed_ok": true },
+    { "peer": "freebsd", "transport": "btcp", "ping_host": "windows", "min_ns": 872700, "avg_ns": 2519446, "p50_ns": 1204200, "p99_ns": 15336900, "max_ns": 1056789400, "echoed_ok": true }
+  ]
+}

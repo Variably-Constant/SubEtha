@@ -1,0 +1,87 @@
+{{- /*
+  Render hook for markdown links.
+
+  Source content was ported verbatim from mdBook, which uses
+  page-relative `.md` link targets (e.g. `(installation.md)`,
+  `(../how-to/foo.md)`, `(reference/subetha/index.md)`). Hugo
+  serves pages at extension-less pretty URLs; without absolute
+  hrefs, the browser resolves these relative to the current URL
+  and produces 404s when the relative depth differs from the
+  source-tree depth (cross-section links bite hardest).
+
+  This hook resolves every internal `.md` link to the target
+  page's canonical `.RelPermalink`, which Hugo computes as an
+  absolute URL including the baseURL's path prefix
+  (e.g. `/SubEtha/docs/tutorial/installation/`). External URLs,
+  `mailto:`, and same-page fragments pass through unchanged.
+
+  Path conventions handled:
+    - `installation.md`              -> sibling page
+    - `../how-to/role-pair.md`       -> parent-traversal
+    - `reference/subetha/index.md`   -> mdBook section landing
+                                         (strips /index.md -> section)
+    - `page.md#fragment`             -> preserves fragment
+
+  Verified against:
+    - https://gohugo.io/render-hooks/links/      (file path
+                                                  layouts/_markup/render-link.html)
+    - https://gohugo.io/methods/page/getpage/    (relative + .. resolution)
+    - https://gohugo.io/methods/page/relpermalink/  (absolute URL
+                                                     w/ baseURL prefix)
+*/ -}}
+{{- $dest := .Destination -}}
+{{- $title := .Title -}}
+{{- $text := .Text -}}
+
+{{- $isExternal := or
+  (hasPrefix $dest "http://")
+  (hasPrefix $dest "https://")
+  (hasPrefix $dest "mailto:")
+  (hasPrefix $dest "//")
+  (hasPrefix $dest "#") -}}
+
+{{- $finalHref := $dest -}}
+
+{{- if not $isExternal -}}
+  {{- /* Split off fragment so resolution works on the path alone. */ -}}
+  {{- $fragment := "" -}}
+  {{- $path := $dest -}}
+  {{- if in $dest "#" -}}
+    {{- $parts := split $dest "#" -}}
+    {{- $path = index $parts 0 -}}
+    {{- $fragment = printf "#%s" (index $parts 1) -}}
+  {{- end -}}
+
+  {{- /* mdBook section landings used `index.md`; Hugo uses
+         `_index.md` and addresses sections by their directory.
+         Strip a trailing `/index.md` first, then any plain `.md`. */ -}}
+  {{- $lookup := $path -}}
+  {{- if hasSuffix $lookup "/index.md" -}}
+    {{- $lookup = strings.TrimSuffix "/index.md" $lookup -}}
+  {{- else if hasSuffix $lookup ".md" -}}
+    {{- $lookup = strings.TrimSuffix ".md" $lookup -}}
+  {{- end -}}
+
+  {{- /* Resolve via current page's GetPage so relative and `..`
+         paths work. If the target exists, emit absolute permalink. */ -}}
+  {{- $resolved := false -}}
+  {{- if and (ne $lookup "") (not (hasPrefix $lookup "#")) -}}
+    {{- with .Page.GetPage $lookup -}}
+      {{- $finalHref = printf "%s%s" .RelPermalink $fragment -}}
+      {{- $resolved = true -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- /* Fallback when GetPage returns nil: emit the cleaned
+         path (no `.md`) + fragment so at least the path is
+         consistent, even if it 404s. Surfaces broken links
+         clearly instead of silently corrupting them. */ -}}
+  {{- if not $resolved -}}
+    {{- $finalHref = printf "%s%s" $lookup $fragment -}}
+  {{- end -}}
+{{- end -}}
+
+<a href="{{ $finalHref | safeURL }}"
+  {{- with $title }} title="{{ . }}"{{ end }}
+  {{- if $isExternal }} target="_blank" rel="noopener"{{ end -}}
+>{{- $text | safeHTML -}}</a>

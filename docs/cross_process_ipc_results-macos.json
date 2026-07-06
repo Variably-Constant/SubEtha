@@ -1,0 +1,97 @@
+{
+  "machine": "macos (x86_64)",
+  "timestamp": 1783018445,
+  "payload_bytes": 8,
+  "results": [
+    {
+      "name": "SubEtha pinned MPSC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 829982,
+      "rt_ns": 82.9982,
+      "one_way_ns": 41.4991,
+      "rank": 1,
+      "vs_fastest": 1.0
+    },
+    {
+      "name": "SubEtha pinned Vyukov MPMC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 1173220,
+      "rt_ns": 117.322,
+      "one_way_ns": 58.661,
+      "rank": 2,
+      "vs_fastest": 1.4135487275627665
+    },
+    {
+      "name": "SubEtha pinned SPSC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 2010893,
+      "rt_ns": 201.0893,
+      "one_way_ns": 100.54465,
+      "rank": 3,
+      "vs_fastest": 2.4228151935825117
+    },
+    {
+      "name": "SubEtha pinned MPMC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 2296805,
+      "rt_ns": 229.6805,
+      "one_way_ns": 114.84025,
+      "rank": 4,
+      "vs_fastest": 2.7672949533845315
+    },
+    {
+      "name": "Anonymous stdio pipe",
+      "transport_kind": "kernel anonymous pipe",
+      "n_roundtrips": 10000,
+      "total_ns": 115955576,
+      "rt_ns": 11595.5576,
+      "one_way_ns": 5797.7788,
+      "rank": 5,
+      "vs_fastest": 139.70854307683783
+    },
+    {
+      "name": "Named pipe (interprocess)",
+      "transport_kind": "kernel named pipe / UDS",
+      "n_roundtrips": 10000,
+      "total_ns": 135861078,
+      "rt_ns": 13586.1078,
+      "one_way_ns": 6793.0539,
+      "rank": 6,
+      "vs_fastest": 163.691595721353
+    },
+    {
+      "name": "ipc-channel (Mozilla)",
+      "transport_kind": "kernel + bincode serialize",
+      "n_roundtrips": 10000,
+      "total_ns": 164821164,
+      "rt_ns": 16482.1164,
+      "one_way_ns": 8241.0582,
+      "rank": 7,
+      "vs_fastest": 198.58402230409817
+    },
+    {
+      "name": "UDP loopback",
+      "transport_kind": "kernel UDP/IP stack",
+      "n_roundtrips": 10000,
+      "total_ns": 394355460,
+      "rt_ns": 39435.546,
+      "one_way_ns": 19717.773,
+      "rank": 8,
+      "vs_fastest": 475.1373644247707
+    },
+    {
+      "name": "TCP loopback",
+      "transport_kind": "kernel TCP/IP stack",
+      "n_roundtrips": 10000,
+      "total_ns": 505545865,
+      "rt_ns": 50554.5865,
+      "one_way_ns": 25277.29325,
+      "rank": 9,
+      "vs_fastest": 609.1046131120916
+    }
+  ]
+}

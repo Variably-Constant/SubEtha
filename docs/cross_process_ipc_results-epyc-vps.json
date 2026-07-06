@@ -1,0 +1,108 @@
+{
+ "machine": "linux (x86_64)",
+ "timestamp": 1783021355,
+ "payload_bytes": 8,
+ "results": [
+  {
+   "name": "SubEtha pinned MPSC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 737452,
+   "rt_ns": 73.7452,
+   "one_way_ns": 36.8726,
+   "rank": 1,
+   "vs_fastest": 1.0
+  },
+  {
+   "name": "SubEtha pinned Vyukov MPMC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 817001,
+   "rt_ns": 81.7001,
+   "one_way_ns": 40.85005,
+   "rank": 2,
+   "vs_fastest": 1.1078700715436396
+  },
+  {
+   "name": "SubEtha pinned MPMC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 966969,
+   "rt_ns": 96.6969,
+   "one_way_ns": 48.34845,
+   "rank": 3,
+   "vs_fastest": 1.3112297478344355
+  },
+  {
+   "name": "SubEtha pinned SPSC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 998958,
+   "rt_ns": 99.8958,
+   "one_way_ns": 49.9479,
+   "rank": 4,
+   "vs_fastest": 1.3546074863177535
+  },
+  {
+   "name": "iceoryx2 (Eclipse)",
+   "transport_kind": "shared memory zero-copy",
+   "n_roundtrips": 10000,
+   "total_ns": 8426710,
+   "rt_ns": 842.671,
+   "one_way_ns": 421.3355,
+   "rank": 5,
+   "vs_fastest": 11.426791167425135
+  },
+  {
+   "name": "Named pipe (interprocess)",
+   "transport_kind": "kernel named pipe / UDS",
+   "n_roundtrips": 10000,
+   "total_ns": 93172398,
+   "rt_ns": 9317.2398,
+   "one_way_ns": 4658.6199,
+   "rank": 6,
+   "vs_fastest": 126.34367796141308
+  },
+  {
+   "name": "Anonymous stdio pipe",
+   "transport_kind": "kernel anonymous pipe",
+   "n_roundtrips": 10000,
+   "total_ns": 99228877,
+   "rt_ns": 9922.8877,
+   "one_way_ns": 4961.44385,
+   "rank": 7,
+   "vs_fastest": 134.55638739877307
+  },
+  {
+   "name": "ipc-channel (Mozilla)",
+   "transport_kind": "kernel + bincode serialize",
+   "n_roundtrips": 10000,
+   "total_ns": 121992936,
+   "rt_ns": 12199.2936,
+   "one_way_ns": 6099.6468,
+   "rank": 8,
+   "vs_fastest": 165.42491714714993
+  },
+  {
+   "name": "UDP loopback",
+   "transport_kind": "kernel UDP/IP stack",
+   "n_roundtrips": 10000,
+   "total_ns": 167254586,
+   "rt_ns": 16725.4586,
+   "one_way_ns": 8362.7293,
+   "rank": 9,
+   "vs_fastest": 226.80064058406518
+  },
+  {
+   "name": "TCP loopback",
+   "transport_kind": "kernel TCP/IP stack",
+   "n_roundtrips": 10000,
+   "total_ns": 188229103,
+   "rt_ns": 18822.9103,
+   "one_way_ns": 9411.45515,
+   "rank": 10,
+   "vs_fastest": 255.2425147670628
+  }
+ ],
+ "runs_per_scenario_note": "per-scenario best of 2 runs (shared-tenancy VPS: single draws land one scenario several times high at random)"
+}

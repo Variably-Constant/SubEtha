@@ -1,0 +1,107 @@
+{
+  "machine": "linux (x86_64)",
+  "timestamp": 1783021090,
+  "payload_bytes": 8,
+  "results": [
+    {
+      "name": "SubEtha pinned Vyukov MPMC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 1750389,
+      "rt_ns": 175.0389,
+      "one_way_ns": 87.51945,
+      "rank": 1,
+      "vs_fastest": 1.0
+    },
+    {
+      "name": "SubEtha pinned SPSC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 1760082,
+      "rt_ns": 176.0082,
+      "one_way_ns": 88.0041,
+      "rank": 2,
+      "vs_fastest": 1.00553762620766
+    },
+    {
+      "name": "SubEtha pinned MPSC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 1868548,
+      "rt_ns": 186.8548,
+      "one_way_ns": 93.4274,
+      "rank": 3,
+      "vs_fastest": 1.0675044233024773
+    },
+    {
+      "name": "SubEtha pinned MPMC (MMF)",
+      "transport_kind": "MMF (kernel-bypass)",
+      "n_roundtrips": 10000,
+      "total_ns": 2187027,
+      "rt_ns": 218.7027,
+      "one_way_ns": 109.35135,
+      "rank": 4,
+      "vs_fastest": 1.2494519789601053
+    },
+    {
+      "name": "iceoryx2 (Eclipse)",
+      "transport_kind": "shared memory zero-copy",
+      "n_roundtrips": 10000,
+      "total_ns": 8746398,
+      "rt_ns": 874.6398,
+      "one_way_ns": 437.3199,
+      "rank": 5,
+      "vs_fastest": 4.996830990139906
+    },
+    {
+      "name": "Named pipe (interprocess)",
+      "transport_kind": "kernel named pipe / UDS",
+      "n_roundtrips": 10000,
+      "total_ns": 872430464,
+      "rt_ns": 87243.0464,
+      "one_way_ns": 43621.5232,
+      "rank": 6,
+      "vs_fastest": 498.420901868099
+    },
+    {
+      "name": "Anonymous stdio pipe",
+      "transport_kind": "kernel anonymous pipe",
+      "n_roundtrips": 10000,
+      "total_ns": 992512023,
+      "rt_ns": 99251.2023,
+      "one_way_ns": 49625.60115,
+      "rank": 7,
+      "vs_fastest": 567.0236861634756
+    },
+    {
+      "name": "ipc-channel (Mozilla)",
+      "transport_kind": "kernel + bincode serialize",
+      "n_roundtrips": 10000,
+      "total_ns": 1128305208,
+      "rt_ns": 112830.5208,
+      "one_way_ns": 56415.2604,
+      "rank": 8,
+      "vs_fastest": 644.6025472052212
+    },
+    {
+      "name": "UDP loopback",
+      "transport_kind": "kernel UDP/IP stack",
+      "n_roundtrips": 10000,
+      "total_ns": 1199887323,
+      "rt_ns": 119988.7323,
+      "one_way_ns": 59994.36615,
+      "rank": 9,
+      "vs_fastest": 685.4975225507015
+    },
+    {
+      "name": "TCP loopback",
+      "transport_kind": "kernel TCP/IP stack",
+      "n_roundtrips": 10000,
+      "total_ns": 1259229845,
+      "rt_ns": 125922.9845,
+      "one_way_ns": 62961.49225,
+      "rank": 10,
+      "vs_fastest": 719.3999990859174
+    }
+  ]
+}

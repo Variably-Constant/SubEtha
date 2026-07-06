@@ -1,0 +1,129 @@
+{
+  "machine": "linux (x86_64)",
+  "timestamp": 1783021058,
+  "payload_bytes": 16,
+  "capacity": 16384,
+  "items_per_producer": 50000,
+  "runs": [
+    {
+      "name": "composed",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 200.71724,
+      "producer_ns_per_push_mean": 200.93,
+      "inversions": 0,
+      "stamp_kind": "none",
+      "guarantee": "per-producer FIFO"
+    },
+    {
+      "name": "stamped",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 230.47398,
+      "producer_ns_per_push_mean": 227.64,
+      "inversions": 0,
+      "stamp_kind": "Tsc",
+      "guarantee": "per-producer FIFO + inversion metric"
+    },
+    {
+      "name": "merge_tsc",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 131.749,
+      "producer_ns_per_push_mean": 128.34,
+      "inversions": 0,
+      "stamp_kind": "Tsc",
+      "guarantee": "global FIFO within stamp skew"
+    },
+    {
+      "name": "merge_strict",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 195.53772,
+      "producer_ns_per_push_mean": 180.58,
+      "inversions": 0,
+      "stamp_kind": "Tsc",
+      "guarantee": "exact global FIFO (in-flight gate)"
+    },
+    {
+      "name": "merge_exact",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 440.17996,
+      "producer_ns_per_push_mean": 440.13,
+      "inversions": 0,
+      "stamp_kind": "SharedCounter",
+      "guarantee": "exact global FIFO, total stamp order"
+    },
+    {
+      "name": "vyukov",
+      "producers": 1,
+      "items_total": 50000,
+      "consumer_ns_per_item": 40.2492,
+      "producer_ns_per_push_mean": 40.3,
+      "inversions": 0,
+      "stamp_kind": "none",
+      "guarantee": "exact global FIFO (shared CAS)"
+    },
+    {
+      "name": "composed",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 76.577885,
+      "producer_ns_per_push_mean": 266.34000000000003,
+      "inversions": 0,
+      "stamp_kind": "none",
+      "guarantee": "per-producer FIFO"
+    },
+    {
+      "name": "stamped",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 125.92401,
+      "producer_ns_per_push_mean": 404.825,
+      "inversions": 43287,
+      "stamp_kind": "Tsc",
+      "guarantee": "per-producer FIFO + inversion metric"
+    },
+    {
+      "name": "merge_tsc",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 265.21074,
+      "producer_ns_per_push_mean": 918.53,
+      "inversions": 0,
+      "stamp_kind": "Tsc",
+      "guarantee": "global FIFO within stamp skew"
+    },
+    {
+      "name": "merge_strict",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 316.426555,
+      "producer_ns_per_push_mean": 1077.965,
+      "inversions": 0,
+      "stamp_kind": "Tsc",
+      "guarantee": "exact global FIFO (in-flight gate)"
+    },
+    {
+      "name": "merge_exact",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 360.521925,
+      "producer_ns_per_push_mean": 1212.4825,
+      "inversions": 0,
+      "stamp_kind": "SharedCounter",
+      "guarantee": "exact global FIFO, total stamp order"
+    },
+    {
+      "name": "vyukov",
+      "producers": 4,
+      "items_total": 200000,
+      "consumer_ns_per_item": 69.614865,
+      "producer_ns_per_push_mean": 261.13,
+      "inversions": 0,
+      "stamp_kind": "none",
+      "guarantee": "exact global FIFO (shared CAS)"
+    }
+  ]
+}

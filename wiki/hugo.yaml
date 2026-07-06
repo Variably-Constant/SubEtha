@@ -1,0 +1,98 @@
+# Hugo config for the SubEtha documentation site, built with the
+# Hextra theme. Migrated from mdBook on 2026-06-03 because the
+# mdBook preprocessor zoo (mdbook-katex + mdbook-mermaid) kept
+# producing layout-breaking JS crashes on each release bump.
+#
+# Build: `hugo --gc --minify --baseURL <pages-base-url>/`
+# Local: `hugo serve` then open the printed http://localhost:1313/.
+# CI deploy: .github/workflows/wiki-deploy.yml.
+
+# Case matters: GitHub Pages project paths are case-sensitive and the
+# repository slug is lowercase `subetha`.
+baseURL: https://variably-constant.github.io/subetha/
+title: SubEtha
+languageCode: en-us
+
+# Hextra is consumed as a Hugo Module - no submodule, no copy of the
+# theme tree in this repo. `hugo mod get -u` updates it.
+module:
+  imports:
+    - path: github.com/imfing/hextra
+
+markup:
+  goldmark:
+    renderer:
+      # Required for Hextra shortcodes that emit raw HTML (cards,
+      # callouts, tabs).
+      unsafe: true
+  highlight:
+    noClasses: false
+
+# Navbar entries. The Search entry is a magic Hextra item that
+# expands into the search-bar input + index lookup; do not remove it.
+menu:
+  main:
+    - name: Docs
+      pageRef: /docs
+      weight: 1
+    - name: Search
+      weight: 8
+      params:
+        type: search
+    - name: GitHub
+      weight: 9
+      url: https://github.com/Variably-Constant/subetha
+      params:
+        icon: github
+
+params:
+  description: >-
+    MMF-backed cross-process Rust primitives plus adaptive
+    in-process primitives, on one shared substrate with a sidecar
+    control plane.
+
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      # Served from wiki/static/images/ - Hugo copies the static
+      # tree to the site root, so the rendered URL is
+      # <baseURL>/images/SubethaLogo.png. The path here is
+      # static-tree-relative without leading slash per Hextra docs.
+      path: images/SubethaLogo.png
+      # `link:` deliberately omitted. Hextra's navbar-title.html
+      # defaults the logo href to `.Site.Home.RelPermalink`, which
+      # correctly includes the baseURL path prefix
+      # (/SubEtha/ for this deployment). Setting `link: /` here
+      # would emit raw `href="/"` and the browser resolves that
+      # against the bare domain, not the project subpath.
+      width: 40
+      height: 40
+
+  footer:
+    displayCopyright: true
+    # Powered-by line removed to keep the footer compact. The
+    # theme's outer hx:py-12 wrapper only renders when at least
+    # one of displayCopyright / displayPoweredBy is true, so the
+    # copyright line still gets its breathing room without the
+    # full two-line block.
+    displayPoweredBy: false
+
+  # Each page renders an "Edit this page" link in the top right
+  # pointing at the source markdown on GitHub.
+  editURL:
+    enable: true
+    base: https://github.com/Variably-Constant/subetha/edit/main/wiki/content
+
+  theme:
+    default: system
+    displayToggle: true
+
+  # Built-in client-side search via Pagefind/Lunr equivalent that
+  # Hextra ships. No external preprocessor; no JS injection.
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+      tokenize: forward

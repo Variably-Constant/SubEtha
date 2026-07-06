@@ -1,0 +1,98 @@
+{
+ "machine": "windows (x86_64)",
+ "timestamp": 1783020633,
+ "payload_bytes": 8,
+ "results": [
+  {
+   "name": "SubEtha pinned SPSC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 1429000,
+   "rt_ns": 142.9,
+   "one_way_ns": 71.45,
+   "rank": 1,
+   "vs_fastest": 1.0
+  },
+  {
+   "name": "SubEtha pinned Vyukov MPMC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 1647200,
+   "rt_ns": 164.72,
+   "one_way_ns": 82.36,
+   "rank": 2,
+   "vs_fastest": 1.1526941917424771
+  },
+  {
+   "name": "SubEtha pinned MPMC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 1762300,
+   "rt_ns": 176.23,
+   "one_way_ns": 88.115,
+   "rank": 3,
+   "vs_fastest": 1.2332400279916025
+  },
+  {
+   "name": "SubEtha pinned MPSC (MMF)",
+   "transport_kind": "MMF (kernel-bypass)",
+   "n_roundtrips": 10000,
+   "total_ns": 1850500,
+   "rt_ns": 185.05,
+   "one_way_ns": 92.525,
+   "rank": 4,
+   "vs_fastest": 1.294961511546536
+  },
+  {
+   "name": "Named pipe (interprocess)",
+   "transport_kind": "kernel named pipe / UDS",
+   "n_roundtrips": 10000,
+   "total_ns": 243354700,
+   "rt_ns": 24335.47,
+   "one_way_ns": 12167.735,
+   "rank": 5,
+   "vs_fastest": 170.2972008397481
+  },
+  {
+   "name": "ipc-channel (Mozilla)",
+   "transport_kind": "kernel + bincode serialize",
+   "n_roundtrips": 10000,
+   "total_ns": 271707800,
+   "rt_ns": 27170.78,
+   "one_way_ns": 13585.39,
+   "rank": 6,
+   "vs_fastest": 190.13841847445764
+  },
+  {
+   "name": "Anonymous stdio pipe",
+   "transport_kind": "kernel anonymous pipe",
+   "n_roundtrips": 10000,
+   "total_ns": 303132300,
+   "rt_ns": 30313.23,
+   "one_way_ns": 15156.615,
+   "rank": 7,
+   "vs_fastest": 212.12897130860742
+  },
+  {
+   "name": "UDP loopback",
+   "transport_kind": "kernel UDP/IP stack",
+   "n_roundtrips": 10000,
+   "total_ns": 531727500,
+   "rt_ns": 53172.75,
+   "one_way_ns": 26586.375,
+   "rank": 8,
+   "vs_fastest": 372.09762071378583
+  },
+  {
+   "name": "TCP loopback",
+   "transport_kind": "kernel TCP/IP stack",
+   "n_roundtrips": 10000,
+   "total_ns": 592337500,
+   "rt_ns": 59233.75,
+   "one_way_ns": 29616.875,
+   "rank": 9,
+   "vs_fastest": 414.5118964310707
+  }
+ ],
+ "runs_per_scenario_note": "per-scenario median of 3 idle-machine runs (Windows scheduling makes single draws land one scenario ~3x high at random)"
+}
