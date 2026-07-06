@@ -22,4 +22,4 @@ unsupported, so the workspace stays buildable everywhere.
 
 E2E verification of these primitives runs their real example
 binaries on a hosted Linux VM (the Linux-only locales never execute
-on a Windows dev box, so that VM is where their close gate runs).
+on Windows, so that VM is where their close gate runs).

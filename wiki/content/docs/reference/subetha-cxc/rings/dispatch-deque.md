@@ -78,7 +78,8 @@ The batched route is **12x faster per-item** than the
 request-reply route end-to-end in the captured run. The
 dispatcher's per-call routing + delegation overhead (the cost of
 `pick_with_fallback` + the variant match) is observable in the
-per-job cost; on this host the delegation overhead is sub-50 ns.
+per-job cost; in the captured run (Zen+ R7 2700) the delegation
+overhead is sub-50 ns.
 
 ## API surface
 

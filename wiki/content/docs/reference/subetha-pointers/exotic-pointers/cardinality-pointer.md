@@ -328,7 +328,7 @@ Two design choices keep the comparison honest:
 | **`dispatch_parallel_vecs`** | **6.28 us** | **0.63 ns** |
 | `dispatch_inline` (CardinalityPointer) | 9.50 us | 0.95 ns |
 
-### Reading the results on this host
+### Reading the results
 
 The architectural claim for CardinalityPointer is that packing the
 tier into the pointer gives a single-stream, single-load dispatch

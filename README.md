@@ -190,7 +190,7 @@ flowchart LR
     style DONE fill:#1e3a8a,color:#fff
 ```
 
-`AdaptiveIpc<T>::send` adds one branch on `TypeId::of::<T>() == TypeId::of::<u64>()`, which monomorphises to a known constant and lets LLVM eliminate the dead arm. For `T = u64`, the call collapses to a direct invocation of `send_u64`: 8-byte stack buffer, `to_le_bytes`, ring push. **Because `send::<u64>` routes through this very branch, the explicit `send_u64` runs the identical code, so the two measure at parity (~147 ns/item on this Zen+ box).** LLVM already inlines the `u64` path to equivalent machine code here, so the branch's payoff is the guaranteed 8-byte buffer across toolchains rather than a separate win on this host.
+`AdaptiveIpc<T>::send` adds one branch on `TypeId::of::<T>() == TypeId::of::<u64>()`, which monomorphises to a known constant and lets LLVM eliminate the dead arm. For `T = u64`, the call collapses to a direct invocation of `send_u64`: 8-byte stack buffer, `to_le_bytes`, ring push. **Because `send::<u64>` routes through this very branch, the explicit `send_u64` runs the identical code, so the two measure at parity (~147 ns/item on a Ryzen 7 2700).** LLVM already inlines the `u64` path to equivalent machine code, so the branch's payoff is the guaranteed 8-byte buffer across toolchains rather than a separate measured win.
 
 ---
 

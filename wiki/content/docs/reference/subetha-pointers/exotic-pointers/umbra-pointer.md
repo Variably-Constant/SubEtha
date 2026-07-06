@@ -413,7 +413,7 @@ The native path dereferences every Arc. The umbra path checks
 every prefix; none match, so it skips every deref.
 
 In principle the umbra path should save more here than in
-`scan_late_match` (zero derefs vs one), but on this host the two
+`scan_late_match` (zero derefs vs one), but in the shipped bench the two
 paths land within measurement noise of each other and the native
 path is marginally faster (667 ns vs 686 ns). The compiler
 auto-vectorizes the native u64 compare in a tight loop, and the
@@ -492,7 +492,7 @@ Two-axis decision matrix:
 
 | | Small payload (<32 B) | Large payload (>=64 B) |
 |---|---|---|
-| **High miss rate** (most candidates rejected) | Umbra is parity-to-marginal (0.97x-1.05x on this host); for small in-cache `u64` the skipped deref barely pays for the prefix check | Umbra wins (1.21x in the shipped scattered bench; more with even larger payloads); the canonical design point |
+| **High miss rate** (most candidates rejected) | Umbra is parity-to-marginal (0.97x-1.05x); for small in-cache `u64` the skipped deref barely pays for the prefix check | Umbra wins (1.21x in the shipped scattered bench; more with even larger payloads); the canonical design point |
 | **Low miss rate** (most candidates accessed) | Native wins (0.69x is the loss case); the prefix is dead overhead | Native wins for sequential access; Umbra still helps for scattered access via cache-line-stride dense scan |
 
 The "low miss rate, small payload" cell is the failure mode -

@@ -508,7 +508,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     /// R7 2700: generic 2.01 ms vs specialized 1.92 ms) - LLVM
     /// already inlines the generic `u64` Marshal path to equivalent
     /// code, so the branch's value is the small-buffer GUARANTEE
-    /// across toolchains, not a measured win on this host.
+    /// across toolchains, not a separate measured win.
     /// For other `T`, the branch monomorphizes away to the generic
     /// path.
     #[inline]

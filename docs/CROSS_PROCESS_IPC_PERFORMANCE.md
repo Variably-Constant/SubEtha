@@ -78,7 +78,7 @@ For each contender, the bench:
 ```bash
 cd crates/subetha-cxc
 cargo run --release --example cross_process_compare
-# save the emitted JSON for this host
+# save the emitted JSON for the host you ran it on
 cp ../../docs/cross_process_ipc_results.json ../../docs/cross_process_ipc_results-<platform>.json
 ```
 

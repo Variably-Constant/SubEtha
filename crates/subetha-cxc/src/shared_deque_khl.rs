@@ -809,8 +809,8 @@ mod tests {
     #[test]
     fn publish_then_drain_works_under_both_radius_modes() {
         // Round-trip a batch under whichever radius pick_auto chose
-        // for this host (Local on Zen+ R7 2700; Distant on Zen 5+/
-        // Tiger Lake+). Either path produces bit-exact slots.
+        // for the running CPU (Local on Zen+ R7 2700; Distant on
+        // Zen 5+/Tiger Lake+). Either path produces bit-exact slots.
         let path = temp_path("radius_round_trip");
         let d = SharedDequeKhl::create(&path, 8).expect("create");
         let items: Vec<LineItem> = (1..=6u32).map(u32_item).collect();

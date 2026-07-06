@@ -138,8 +138,8 @@ The A/B harness (`benches/adaptive_send_specialized_ab.rs`)
 measures the two paths within noise of each other on the current
 toolchain - LLVM already inlines the generic `Marshal` path for
 `u64` to equivalent code - so the branch's value is the GUARANTEE
-of the small-buffer path across toolchains, not a measured win on
-this host.
+of the small-buffer path across toolchains, not a separate
+measured win.
 
 ## See also
 

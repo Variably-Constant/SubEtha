@@ -138,7 +138,7 @@ choices:
 The bottom two rows do logically the same thing. The packing into
 a `u64` was expected to help codegen (a `#[repr(transparent)] u64`
 loads in one 8-byte read, then shift-and-mask splits the segments),
-but the [benchmark](#benchmark-results) on this host shows the
+but the [benchmark](#benchmark-results) shows the
 opposite: the shift+mask cost more than two adjacent `u32` loads
 from the tuple, so the tuple was ~1.31x faster. The packed form's
 real, host-independent benefit is that it is a single `u64` value
@@ -332,7 +332,7 @@ struct contender does the SAME table lookup + offset add + deref,
 isolating the encoding cost from the indirection cost - the honest
 3-way comparison the table above reports.
 
-**Reading the results on this host:**
+**Reading the results:**
 
 - **One indirection costs ~2.7-3.6x a pre-resolved pointer.** That
   is the price of cross-process portability and tiered-storage

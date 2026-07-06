@@ -27,7 +27,7 @@ ping-pong one-way latency of the
 the two benches measure different regimes on purpose. Magnitudes
 are stable across runs; absolute ns drift with system load.
 
-| Rung | Guarantee | Stamp (this host) | Consumer ns/item | Producer ns/push | Inversions |
+| Rung | Guarantee | Stamp (Zen3 KVM guest) | Consumer ns/item | Producer ns/push | Inversions |
 |---|---|---|---:|---:|---:|
 | Composed (unstamped MPSC) | per-producer FIFO | none | 19 | 58 | (unobservable) |
 | Composed + stamps, `Unordered` | per-producer FIFO + inversion metric | counter | 69 | 239 | 55,595 reported |

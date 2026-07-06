@@ -329,7 +329,7 @@ checked read.
 | `RaspBatch::count_valid_scalar` | 17.8 us | 1.78 ns | Compiler-auto-vectorized scalar |
 | **`RaspBatch::count_valid_avx2`** | **6.48 us** | **0.65 ns** | Hand-rolled AVX2 |
 
-On this host the AVX2 capability validation (~0.65 ns/pointer) is
+On the Zen+ R7 2700 the AVX2 capability validation (~0.65 ns/pointer) is
 **at parity with a plain native bounds-checked read** (~0.63 ns)
 and **~2.7x faster than the auto-vectorized scalar path**
 (1.78 ns). The full bounds + permission + sealed + region-end

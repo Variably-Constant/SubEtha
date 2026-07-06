@@ -28,7 +28,7 @@ with [`examples/bridge_lan.rs`](../crates/subetha-cxc/examples/bridge_lan.rs).
 | `192.168.1.213` | client / server / pong | Ubuntu 24.04 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
 | `192.168.1.74` | client / server / pong | FreeBSD 15.0-RELEASE VM guest, Ryzen 7 5700G (Zen3) | wired to the AP |
 
-The Windows box is one end of every pair; the Ubuntu and FreeBSD
+The Windows host is one end of every pair; the Ubuntu and FreeBSD
 peers were measured in separate sessions on the same hypervisor
 host. Baseline ICMP RTT between the hosts: ~1 ms. The Wi-Fi hop
 caps sustained throughput in the low-hundreds of Mbit/s; the
@@ -65,7 +65,7 @@ with the SNI naming the cert rather than the wire address.
 
 The same rtt mode with both bridge halves on one machine isolates
 the stack's own cost from the wire. The calibration point: a raw
-8-byte TCP socket ping-pong on this host round-trips at ~73 µs
+8-byte TCP socket ping-pong on the Windows Ryzen 7 2700 round-trips at ~73 µs
 (one-way 36.7 µs in the IPC leaderboard), so the TCP bridge's full
 ring -> wire -> ring -> echo chain matches a bare socket.
 

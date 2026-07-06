@@ -401,8 +401,8 @@ stable point estimates.
 
 **Reading the results:**
 
-- **The owned wrappers land in the same band as plain `Box`.** On
-  this host both `owned_readable` (684 ns) and `owned_writable`
+- **The owned wrappers land in the same band as plain `Box`.** In
+  the shipped bench both `owned_readable` (684 ns) and `owned_writable`
   (350 ns) measured at or below the noisy `baseline_box_new_drop`
   (755 ns). The RAII wrapper is construction (4 field writes +
   `Box::into_raw`) plus a `Box::from_raw` on drop; against
