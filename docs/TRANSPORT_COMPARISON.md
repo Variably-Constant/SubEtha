@@ -14,6 +14,15 @@ so they sit in one table. Two kinds:
   **sliding-window RLC** code (adaptive, optionally wrapped in TLS 1.3).
   It ships MTU-sized items as forward-error-corrected datagrams.
 
+The two codes are measured below forced on individually, the head-to-head
+that isolates each one's characteristics. In production the `UnifiedSens*`
+endpoint (`sens_unified`) carries both on one UDP port and auto-switches
+between them on the loss the receiver measures - RLC below the ~15%
+crossover for its lower latency tail, RS above it for throughput - and its
+TLS 1.3 handshake seals every item across the switch, so RS is encrypted
+too when it rides the unified endpoint. The standalone `Sens-O-Matic / RS`
+row below is the code on its own, which is `std`-only.
+
 A raw `udp` blast (no reliability, no congestion control) is the
 unprotected-datagram reference. Application goodput and round-trip latency
 are the common metrics, wire loss the dividing line. Every run asserts
@@ -183,7 +192,10 @@ on Apple hardware also surfaced three portability fixes (`O_DIRECT` ->
   on both. Pick the **block-RS** code for the best under-loss throughput and
   the lowest tail on a trusted link (`std`-only, no crypto deps); pick the
   **RLC** code for the adaptive, optionally-encrypted path tuned to a
-  variable internet route.
+  variable internet route. Not sure which, or a route whose loss shifts?
+  The `UnifiedSens*` endpoint carries both and auto-switches on the
+  measured loss (RLC below ~15%, RS above), TLS 1.3 over both codes; force
+  a single code only when you want to pin one.
 - **A datagram you are willing to lose**: raw `udp` - fastest on the wire,
   but no reliability (36% delivered on a clean link here).
 
