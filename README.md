@@ -227,31 +227,49 @@ graph TD
     style NATIVE fill:#0f766e,color:#fff
 ```
 
-The ordering axis is the runtime answer to the composed-vs-Vyukov trade:
-the zero-CAS composed rings give per-producer FIFO; a ring constructed
-with `with_ordering_stamps()` prepends an 8-byte stamp (invariant-TSC
-`rdtsc` when the CPUID probe passes, shared counter or monotonic clock
-otherwise) to every push, counts cross-producer inversions at pop as the
-observable signal, and switches to global FIFO with ONE store on a
-shared flag: the consumer k-way-merges ring heads by stamp, ordering the
-in-flight backlog retroactively because the stamps were already there.
-Declare the need on the `QosPolicy` `Ordering` knob (unstamped rings
-morph to Vyukov instead), or pre-authorize an automatic response with
-`auto_order(threshold)`: the sidecar watches the inversion rate and,
-past the threshold, promotes the ring to global FIFO with that same
-single store - producers never coordinate, detection rides the
-consumer's existing pop, and the backlog orders itself because the
-stamps were already paid for. The substrate never changes ordering
-semantics uninvited; the threshold IS the authorization. The cheap
-by-stamp merge is best-effort (global FIFO within stamp skew): when the
-stamps fall back to a shared counter (no invariant TSC) it can hand back
-a lower stamp late under producer lag, so for exact delivery
-`AdaptiveOrderedReceiver` auto-selects between a consumer-side reorder
-buffer (sized to the producer count, provably exact, ~9% over the raw
-merge) and the watermark-gated strict merge, per host. Full loop,
-one-way-arm semantics, exact-delivery consumer, and a custom-policy hook:
+Two rings, one trade. The zero-CAS composed rings give per-producer FIFO
+and nothing stronger; a single Vyukov ring gives global FIFO but pays a
+CAS on every push. Most workloads never need the global order, so the
+default declines to pay for it. The ordering axis is what lets a ring
+change its mind at runtime.
+
+Build a ring with `with_ordering_stamps()` and every push carries an
+8-byte stamp (invariant-TSC `rdtsc` when the CPUID probe passes, a shared
+counter or the monotonic clock when it does not). The stamps do nothing
+visible at first. What they buy is a signal: the consumer counts
+cross-producer inversions as it pops, and that rate is the ring telling
+you whether per-producer order still resembles global order. When it
+stops, one store on a shared flag flips the ring to global FIFO, and the
+consumer starts k-way-merging the ring heads by stamp.
+
+And the items already in flight? They order themselves. The stamps were
+written at push time, so the backlog sorts retroactively the moment the
+merge turns on. No drain, no barrier, no re-send.
+
+You reach the switch two ways. Declare the need up front on the
+`QosPolicy` `Ordering` knob, and a ring with no stamps morphs to Vyukov
+instead, paying the CAS it now needs. Or pre-authorize the automatic
+response with `auto_order(threshold)`: the sidecar watches the inversion
+rate, and once it crosses the line you set, throws that same single
+store. Producers never coordinate. Detection rides the pop the consumer
+was already doing. The backlog orders itself because the stamps were
+already paid for. The substrate never changes ordering semantics on its
+own. The threshold you set is the authorization.
+
+One caveat, stated plainly. The by-stamp merge is best-effort: global
+FIFO within the stamp skew, no tighter. With an invariant TSC that skew
+is tight enough that you will not notice it. Without one, the stamps fall
+back to a shared counter, and under producer lag that counter can hand
+back a low stamp late, after the merge has already moved past it. So when
+the contract is exact delivery, `AdaptiveOrderedReceiver` chooses per
+host: a consumer-side reorder buffer (sized to the producer count,
+provably exact, about 9% over the raw merge) or the watermark-gated
+strict merge. It measures first, then picks.
+
+The full loop (one-way-arm semantics, the exact-delivery consumer, and a
+custom-policy hook) is on
 [the adaptive-ordering page](wiki/content/docs/reference/subetha-cxc/rings/adaptive-ordering.md).
-Measured ladder:
+The measured ladder is in
 [`docs/ORDERING_MODES_PERFORMANCE.md`](docs/ORDERING_MODES_PERFORMANCE.md).
 
 Each axis member ships as a `pub struct` you can use independently OR
@@ -265,7 +283,8 @@ overriding the substrate's defaults.
 
 ### Primitives under this axis layout
 
-Cross-platform, in default features:
+<details>
+<summary>Cross-platform primitives (default features)</summary>
 
 | Primitive | Axis | Module |
 |---|---|---|
@@ -286,7 +305,10 @@ Cross-platform, in default features:
 | [`SensOMaticRlcSender`](crates/subetha-cxc/src/sens_rlc.rs) / `SensOMaticRlcReceiver` | Sens-O-Matic sliding-window RLC code alone (low-to-moderate loss, low latency tail; FEC + ARQ, optional TLS 1.3) | `subetha_cxc::sens_rlc` |
 | [`ReliableUdpSender`](crates/subetha-cxc/src/udp_bridge.rs) / `ReliableUdpReceiver` (`SensOMaticRs*`) | Sens-O-Matic block Reed-Solomon code alone (high sustained loss, parity-efficient; FEC + ARQ). Standalone it is `std`-only; the unified endpoint above adds TLS to the RS stream | `subetha_cxc::udp_bridge` |
 
-Behind Cargo feature flags:
+</details>
+
+<details>
+<summary>Behind Cargo feature flags</summary>
 
 | Primitive | Feature | Notes |
 |---|---|---|
@@ -294,7 +316,10 @@ Behind Cargo feature flags:
 | [`TcpBridgeClient`](crates/subetha-cxc/src/tcp_bridge.rs) / `TcpBridgeServer` | `tcp-bridge` | Pulls tokio (net + io-util + rt). |
 | [`WireSocket`](crates/subetha-cxc/src/locale_wire.rs) | `wire-locale` | Raw-L2 NIC-bypass socket: AF_XDP (Linux), XDP (Windows), netmap (FreeBSD), BPF (macOS). |
 
-OS-specific, no extra deps:
+</details>
+
+<details>
+<summary>OS-specific primitives (no extra deps)</summary>
 
 | Primitive | Module | Use case |
 |---|---|---|
@@ -304,6 +329,8 @@ OS-specific, no extra deps:
 | [`HugepageRegion`](crates/subetha-cxc/src/hugepages.rs) | `hugepages` | Linux `MAP_HUGETLB` anon mmap (2 MB or 1 GB pages). |
 | [`SuperPageRegion`](crates/subetha-cxc/src/super_pages.rs) | `super_pages` | Superpage anon mmap: FreeBSD `MAP_ALIGNED_SUPER`, macOS x86_64 `VM_FLAGS_SUPERPAGE_SIZE_2MB`. |
 | [`VsockSocket`](crates/subetha-cxc/src/locale_vsock.rs) | `locale_vsock` | Host-VM byte streaming: `AF_VSOCK` (Linux), Hyper-V `AF_HYPERV` (Windows). |
+
+</details>
 
 Design notes for the axis composition pattern live in
 [`docs/POLYMORPHIC_SUBSTRATE_AXES.md`](docs/POLYMORPHIC_SUBSTRATE_AXES.md).
