@@ -198,11 +198,16 @@ flowchart LR
 
 > *The only machine on record to change its fundamental nature mid-journey without losing its passengers was the starship Heart of Gold, an achievement universally admired by everyone except a sperm whale and a bowl of petunias, who were briefly and terminally involved. SubEtha's substrate performs the same trick with less collateral botany: the channel you are sending through can change its storage, its protocol, its shape, its capacity, and its ordering guarantee while you hold a live handle to it, and the handle finds out in exactly one Acquire-load.*
 
-Beyond the per-call dispatch above, SubEtha composes five orthogonal axes
-of runtime morphability under one pin-protocol contract. Each axis morphs
-independently; the pin handle at every layer carries a single Acquire-load
-generation check so steady-state ops stay native-primitive fast and
-shape-shifts during morph stay observable to callers.
+The per-call dispatch above is the shape axis at work. Four more compose
+with it, all orthogonal: a channel morphs its locale, its protocol family,
+its capacity, and its ordering discipline, each on its own timeline and
+none disturbing the rest. One pin-protocol contract binds the five. At
+every layer the pin handle carries a single Acquire-load generation check,
+so a steady-state op keeps native-primitive speed and a morph underneath it
+never slips by unseen: the next check returns false, and the caller re-pins
+to the new backing. The `VirtualEndpoint` at the top of the diagram sits
+above these five as the identity entry, routing local-or-remote once at
+construction rather than morphing at runtime.
 
 ```mermaid
 graph TD
@@ -272,14 +277,13 @@ custom-policy hook) is on
 The measured ladder is in
 [`docs/ORDERING_MODES_PERFORMANCE.md`](docs/ORDERING_MODES_PERFORMANCE.md).
 
-Each axis member ships as a `pub struct` you can use independently OR
-compose into the stack above. The composition is **automatic by default**
-(`AdaptiveIpc::create()` wires AdaptiveRing as the ring backing;
-`LocaleAdaptiveRing` pre-allocates all three locales) and **overridable
-via the explicit handle accessors** (`ring_handle()`, `as_<axis>()`).
-`SpscRingCore` is the underlying primitive that `AdaptiveRing` dispatches
-to when the active shape is SPSC; reach it directly only when explicitly
-overriding the substrate's defaults.
+Every axis member is a `pub struct` in its own right. Use one alone, or
+stack them. The stack assembles itself by default: `AdaptiveIpc::create()`
+wires an `AdaptiveRing` in as the ring backing, and a `LocaleAdaptiveRing`
+pre-allocates all three locales up front. When you want something else, the
+explicit accessors are there (`ring_handle()`, `as_<axis>()`). `SpscRingCore`
+is the primitive `AdaptiveRing` dispatches to on the SPSC shape; reach for it
+directly only when you mean to override the substrate's defaults.
 
 ### Primitives under this axis layout
 
@@ -376,9 +380,9 @@ For the **full ring-primitive throughput matrix** (every shape x locale x capaci
 
 ## Is it safe?
 
-Yes - fully, atomically, and across the process boundary, with no lock for you to write and no shape for you to choose. Every ring is lock-free, its synchronization atomics live *inside* the shared file, and the default ring changes its own shape under live traffic without dropping an item. The short version is below; the complete model - including what you must *not* do - is in [Concurrency and safety](wiki/content/docs/explanation/concurrency-and-safety.md).
-
 > *The Guide observes that "safe" is among the galaxy's most overloaded words, applied with equal confidence to spacecraft, financial instruments, and the act of wrapping a shared queue in a `Mutex`. At least one of those is a category error. SubEtha keeps its atomics inside the mapped file, where a lock bolted on from the outside guards nothing the ring does not already guard - and could not reach across the process boundary even if it tried.*
+
+Yes - fully, atomically, and across the process boundary, with no lock for you to write and no shape for you to choose. Every ring is lock-free, its synchronization atomics live *inside* the shared file, and the default ring changes its own shape under live traffic without dropping an item. The short version is below; the complete model - including what you must *not* do - is in [Concurrency and safety](wiki/content/docs/explanation/concurrency-and-safety.md).
 
 <details>
 <summary>Do I need a Mutex / RwLock / Arc&lt;Mutex&lt;T&gt;&gt;?</summary>
@@ -540,15 +544,15 @@ flowchart LR
 <details>
 <summary>Per-bridge notes</summary>
 
-**Sens-O-Matic (unified)** is the QUIC peer of this set. Forward error correction recovers loss with no retransmit round-trip, and ARQ is the floor. The `UnifiedSens*` endpoint (`sens_unified`) carries both erasure codes on one UDP port and auto-switches on the measured forward loss: the sliding-window RLC code below the ~15% crossover (incremental recovery, low latency tail) and the block Reed-Solomon code above it (MDS Cauchy, parity-efficient, holds throughput at high sustained loss), with a hysteresis band so a loss level at the boundary does not flap. TLS 1.3 AEAD-seals every item across the switch. Measured exactly-once across three OSes: 15% loss meets or beats clean throughput, and 30% loss holds ~86% of clean where a TCP path stalls behind the gap ([`SENS_O_MATIC_PERFORMANCE.md`](docs/SENS_O_MATIC_PERFORMANCE.md)).
+* **Sens-O-Matic (unified)** is the QUIC peer of this set. Forward error correction recovers loss with no retransmit round-trip, and ARQ is the floor. The `UnifiedSens*` endpoint (`sens_unified`) carries both erasure codes on one UDP port and auto-switches on the measured forward loss: the sliding-window RLC code below the ~15% crossover (incremental recovery, low latency tail) and the block Reed-Solomon code above it (MDS Cauchy, parity-efficient, holds throughput at high sustained loss), with a hysteresis band so a loss level at the boundary does not flap. TLS 1.3 AEAD-seals every item across the switch. Measured exactly-once across three OSes: 15% loss meets or beats clean throughput, and 30% loss holds ~86% of clean where a TCP path stalls behind the gap ([`SENS_O_MATIC_PERFORMANCE.md`](docs/SENS_O_MATIC_PERFORMANCE.md)).
 
-**`QuicBridge`** is for when you want QUIC itself: multiplexed streams (one per `Channel<T>`, no cross-channel head-of-line blocking), connection migration (peers change IPs without losing the channel), 0-RTT resumption (cheap reconnect after a crash, matching MMF's re-`mmap()` recovery story), or interop with a QUIC peer. BBR-style control holds throughput under mild loss where TCP backs off; under heavy loss its single loss-recovery path degrades where Sens-O-Matic's adaptive FEC does not.
+* **`QuicBridge`** is for when you want QUIC itself: multiplexed streams (one per `Channel<T>`, no cross-channel head-of-line blocking), connection migration (peers change IPs without losing the channel), 0-RTT resumption (cheap reconnect after a crash, matching MMF's re-`mmap()` recovery story), or interop with a QUIC peer. BBR-style control holds throughput under mild loss where TCP backs off; under heavy loss its single loss-recovery path degrades where Sens-O-Matic's adaptive FEC does not.
 
-**`TcpTlsBridge`** is the encrypted-TCP option: identical framing and batching to `TcpBridge`, the only wire delta the AEAD record layer. Reach for it on a clean untrusted link where QUIC's dependency footprint is unwanted. It collapses under loss like any TCP.
+* **`TcpTlsBridge`** is the encrypted-TCP option: identical framing and batching to `TcpBridge`, the only wire delta the AEAD record layer. Reach for it on a clean untrusted link where QUIC's dependency footprint is unwanted. It collapses under loss like any TCP.
 
-**`TcpBridge`** is for trusted networks (same rack, VPN, lab LAN) where TLS cost and the QUIC dependency footprint buy nothing. One ring per connection, so QUIC's multiplexing is moot. Burst-batched egress plus `TCP_NODELAY`: a backlog ships 256 slots per socket write, a lone item ships immediately.
+* **`TcpBridge`** is for trusted networks (same rack, VPN, lab LAN) where TLS cost and the QUIC dependency footprint buy nothing. One ring per connection, so QUIC's multiplexing is moot. Burst-batched egress plus `TCP_NODELAY`: a backlog ships 256 slots per socket write, a lone item ships immediately.
 
-**`BlockingTcpBridge`** shares `TcpBridge`'s trust model and adds zero CPU at idle: the forwarder parks on the cross-process waker (`recv_blocking` / `send_blocking` via `spawn_blocking`) instead of `yield_now`-polling, so an idle bridge costs nothing and a fresh item ships one wake plus socket-write later.
+* **`BlockingTcpBridge`** shares `TcpBridge`'s trust model and adds zero CPU at idle: the forwarder parks on the cross-process waker (`recv_blocking` / `send_blocking` via `spawn_blocking`) instead of `yield_now`-polling, so an idle bridge costs nothing and a fresh item ships one wake plus socket-write later.
 
 </details>
 
