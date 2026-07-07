@@ -79,9 +79,13 @@ The rings are not only a cross-process tool. The same lock-free shapes run threa
   <img alt="In-process throughput by host: SubEtha ring shapes vs crossbeam, flume, rtrb, std::sync::mpsc" src="docs/platform_inprocess_dotplot.png">
 </picture>
 
-<p align="center">
-A SubEtha shape <strong>wins 4 producers / 4 consumers on every multi-core host</strong> (the composed MPMC grid at 36.6 ns/item on Linux, ~2.8x faster than crossbeam_channel; the Vyukov shape leads at 73.8 ns on FreeBSD, 96.4 on Windows, and 115.2 on WSL2), though the 13-year-old Intel Mac and the 3-vCPU EPYC VPS - both starved for cores at 4x4 - flip that one cell to crossbeam and flume respectively. rtrb's purpose-built SPSC leads raw 1P/1C on every host; 4P/1C goes to crossbeam or `std::sync::mpsc` depending on the host. Each contender appears only in the scenarios its API supports - rtrb (SPSC) in 1P/1C alone, <code>std::sync::mpsc</code> (single-consumer) through 4P/1C, crossbeam and flume (MPMC) in all three - and <strong>none of them crosses a process boundary</strong>: this whole field is in-process only, so none can do what the cross-process chart above measures. SubEtha gives up a little single-shape peak in exchange for one structure that morphs across all four shapes <em>and</em> runs the same code cross-thread, cross-process, and cross-host.
-</p>
+At 4 producers / 4 consumers, a SubEtha shape **wins on every multi-core host**. The composed MPMC grid runs 36.6 ns/item on Linux, about 2.8x faster than `crossbeam_channel`; the Vyukov shape takes FreeBSD at 73.8 ns, Windows at 96.4, and WSL2 at 115.2. Two hosts flip that one cell: the 13-year-old Intel Mac and the 3-vCPU EPYC VPS, both starved for cores at 4x4, hand it to `crossbeam` and `flume` respectively.
+
+The specialists win where they are built to. `rtrb`'s purpose-built SPSC takes raw 1P/1C on every host, and 4P/1C goes to `crossbeam` or `std::sync::mpsc` depending on the machine.
+
+Read the fine print on the comparison, though. Each contender shows up only in the scenarios its API supports: `rtrb` (SPSC) in 1P/1C alone, `std::sync::mpsc` (single-consumer) through 4P/1C, `crossbeam` and `flume` (MPMC) in all three. And **none of them crosses a process boundary**. The whole field is in-process only, so not one of them can do what the cross-process chart above measures.
+
+That is the trade. SubEtha gives up a little single-shape peak, and in return you get one structure that morphs across all four shapes *and* runs the same code cross-thread, cross-process, and cross-host.
 
 ---
 
