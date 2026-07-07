@@ -529,13 +529,28 @@ flowchart LR
 
 **Choosing a bridge.** For an untrusted or lossy real-world WAN, reach for **Sens-O-Matic**: it is encrypted end to end (TLS 1.3 on *both* erasure codes) and its adaptive forward error correction holds throughput and a bounded latency tail across the whole loss range, auto-switching RLC <-> RS on the loss the receiver measures - where QUIC and TCP recover loss with a single path that degrades as loss climbs. `QuicBridge` is the alternative when you specifically want QUIC's stream multiplexing, connection migration, 0-RTT, or interop with a QUIC peer. The TCP bridges are for trusted links (same rack, VPN, lab LAN) where encryption and FEC buy nothing.
 
-| Bridge | Cargo feature | Transport | Encryption | When |
+| Bridge | Feature | Transport | Encryption | Best for |
 |---|---|---|---|---|
-| **Sens-O-Matic (unified)** | none (`std`) / `tls` | Reliable UDP, adaptive FEC (RLC <-> RS) + ARQ floor | none, or **TLS 1.3 via rustls, on both codes** | **The default for an untrusted or lossy WAN** - the QUIC peer of this set. Forward error correction recovers loss with no retransmit round-trip; ARQ is the floor. The `UnifiedSens*` endpoint (`sens_unified`) carries BOTH erasure codes on one UDP port and auto-switches on the measured forward loss: the **sliding-window RLC** code below the ~15% crossover (incremental recovery, low latency tail) and the **block Reed-Solomon** code above it (MDS Cauchy, parity-efficient, holds throughput at high sustained loss), with a hysteresis band so a loss level at the boundary does not flap. TLS 1.3 AEAD-seals every item transparently across the switch. Measured exactly-once across three OSes: 15% loss meets or beats clean throughput and 30% loss holds ~86% of clean where a TCP path stalls behind the gap ([`SENS_O_MATIC_PERFORMANCE.md`](docs/SENS_O_MATIC_PERFORMANCE.md)). |
-| `QuicBridge` | `quic-bridge` | QUIC over UDP | TLS 1.3 via rustls | When you want QUIC specifically: multiplexed streams (one per `Channel<T>`, no cross-channel head-of-line blocking), connection migration (peers change IPs without losing the channel), 0-RTT resumption (cheap reconnect after a crash, matching MMF's re-`mmap()` recovery story), or interop with a QUIC peer. BBR-style control holds throughput under mild loss where TCP backs off; under heavy loss its single loss-recovery path degrades where Sens-O-Matic's adaptive FEC does not. |
-| `TcpTlsBridge` | `tcp-tls-bridge` | TCP + rustls record layer | TLS 1.3 via rustls | The encrypted-TCP option: identical framing/batching to `TcpBridge`, the only wire delta the AEAD record layer. A clean-link untrusted path where QUIC's dependency footprint is unwanted; collapses under loss like any TCP. |
-| `TcpBridge` | `tcp-bridge` | Plain TCP | none | Trusted networks (same rack, VPN, lab LAN) where TLS cost and the QUIC dependency footprint buy nothing. One ring per connection so QUIC's multiplexing is moot. Burst-batched egress + `TCP_NODELAY`: a backlog ships 256 slots per socket write, a lone item ships immediately. |
-| `BlockingTcpBridge` | `tcp-bridge` | Plain TCP | none | Same trust model as `TcpBridge`, plus zero CPU at idle: the forwarder parks on the cross-process waker (`recv_blocking` / `send_blocking` via `spawn_blocking`) instead of `yield_now`-polling, so an idle bridge costs nothing and a fresh item ships one wake + socket-write later. |
+| **Sens-O-Matic (unified)** | none (`std`) / `tls` | Reliable UDP, adaptive FEC (RLC <-> RS) + ARQ | none, or TLS 1.3 (both codes) | **Default: untrusted / lossy WAN** |
+| `QuicBridge` | `quic-bridge` | QUIC over UDP | TLS 1.3 (rustls) | QUIC multiplexing / migration / 0-RTT |
+| `TcpTlsBridge` | `tcp-tls-bridge` | TCP + rustls record | TLS 1.3 (rustls) | Encrypted TCP, clean untrusted link |
+| `TcpBridge` | `tcp-bridge` | Plain TCP | none | Trusted LAN, lowest latency |
+| `BlockingTcpBridge` | `tcp-bridge` | Plain TCP | none | Trusted LAN, zero idle CPU |
+
+<details>
+<summary>Per-bridge notes</summary>
+
+**Sens-O-Matic (unified)** is the QUIC peer of this set. Forward error correction recovers loss with no retransmit round-trip, and ARQ is the floor. The `UnifiedSens*` endpoint (`sens_unified`) carries both erasure codes on one UDP port and auto-switches on the measured forward loss: the sliding-window RLC code below the ~15% crossover (incremental recovery, low latency tail) and the block Reed-Solomon code above it (MDS Cauchy, parity-efficient, holds throughput at high sustained loss), with a hysteresis band so a loss level at the boundary does not flap. TLS 1.3 AEAD-seals every item across the switch. Measured exactly-once across three OSes: 15% loss meets or beats clean throughput, and 30% loss holds ~86% of clean where a TCP path stalls behind the gap ([`SENS_O_MATIC_PERFORMANCE.md`](docs/SENS_O_MATIC_PERFORMANCE.md)).
+
+**`QuicBridge`** is for when you want QUIC itself: multiplexed streams (one per `Channel<T>`, no cross-channel head-of-line blocking), connection migration (peers change IPs without losing the channel), 0-RTT resumption (cheap reconnect after a crash, matching MMF's re-`mmap()` recovery story), or interop with a QUIC peer. BBR-style control holds throughput under mild loss where TCP backs off; under heavy loss its single loss-recovery path degrades where Sens-O-Matic's adaptive FEC does not.
+
+**`TcpTlsBridge`** is the encrypted-TCP option: identical framing and batching to `TcpBridge`, the only wire delta the AEAD record layer. Reach for it on a clean untrusted link where QUIC's dependency footprint is unwanted. It collapses under loss like any TCP.
+
+**`TcpBridge`** is for trusted networks (same rack, VPN, lab LAN) where TLS cost and the QUIC dependency footprint buy nothing. One ring per connection, so QUIC's multiplexing is moot. Burst-batched egress plus `TCP_NODELAY`: a backlog ships 256 slots per socket write, a lone item ships immediately.
+
+**`BlockingTcpBridge`** shares `TcpBridge`'s trust model and adds zero CPU at idle: the forwarder parks on the cross-process waker (`recv_blocking` / `send_blocking` via `spawn_blocking`) instead of `yield_now`-polling, so an idle bridge costs nothing and a fresh item ships one wake plus socket-write later.
+
+</details>
 
 The unified transport can share one UDP port with QUIC (demuxed by first
 wire byte), so a single endpoint speaks both -
@@ -556,7 +571,10 @@ and that Ubuntu host to a remote datacenter VPS over the public internet
 ten rounds), reported as the median with a bootstrap 95% confidence interval;
 loss is `tc ... netem loss X%` on the sender's egress.
 
-**1. Clean LAN throughput (Mbit/s goodput).** On a clean link the stream
+<details>
+<summary>1. Clean LAN throughput (Mbit/s goodput)</summary>
+
+On a clean link the stream
 bridges lead on raw rate - they ferry bytes without parity, where
 Sens-O-Matic spends part of the link on FEC. TLS is nearly free (`TcpTlsBridge`
 ties `TcpBridge`; Sens-O-Matic / RLC with TLS ties it without).
@@ -570,7 +588,12 @@ ties `TcpBridge`; Sens-O-Matic / RLC with TLS ties it without).
 | `QuicBridge` (TLS) | 831 |
 | Sens-O-Matic / RS | 801 |
 
-**2. Under loss - the dividing line (Mbit/s goodput, LAN).** The instant
+</details>
+
+<details>
+<summary>2. Under loss: the dividing line (Mbit/s goodput, LAN)</summary>
+
+The instant
 loss appears the order inverts. The TCP bridges collapse (their congestion
 control reads loss as congestion and backs the window toward zero);
 QUIC's BBR and both Sens-O-Matic codes hold by recovering loss from parity
@@ -590,7 +613,12 @@ Sens-O-Matic recovers in-band, so the stream never stalls: **block-RS holds a
 1.6-2.0 ms p99 - a ~130x lower tail than TCP at the same 3% loss** (the RLC
 code ~30 ms, QUIC ~30-38 ms).
 
-**3. Real internet (WAN, secure transports, Mbit/s goodput).** Same
+</details>
+
+<details>
+<summary>3. Real internet (WAN, secure transports, Mbit/s goodput)</summary>
+
+Same
 inversion over a real ~22 ms path: clean, all three are within noise
 (~300-335); under loss `TcpTlsBridge` collapses to single digits and finally
 zero, while QUIC and Sens-O-Matic / RLC hold ~260-300.
@@ -610,7 +638,9 @@ Apple hardware exactly as on Linux. Full matrix, confidence intervals, the
 macOS cross-platform table, and the round-trip latency table:
 [`docs/TRANSPORT_COMPARISON.md`](docs/TRANSPORT_COMPARISON.md).
 
-**Why QUIC is the default for untrusted networks.** Userspace transport matches CXC's no-kernel-on-data-path philosophy: the kernel is touched at `sendto`/`recvfrom` on UDP, and everything between (multiplexing, framing, encryption, retransmit) stays in userspace. Raw TCP gives one stream per connection with HOL-blocking; HTTP/2 multiplexes but is still TCP-HOL-blocked at the transport layer. None of that matters on a trusted single-channel link - which is exactly the niche the TCP bridges fill.
+</details>
+
+**Why the untrusted path rides a userspace UDP transport.** Userspace transport matches CXC's no-kernel-on-data-path philosophy: the kernel is touched at `sendto`/`recvfrom` on UDP, and everything between (multiplexing, framing, encryption, retransmit) stays in userspace. Raw TCP gives one stream per connection with HOL-blocking; HTTP/2 multiplexes but is still TCP-HOL-blocked at the transport layer. None of that matters on a trusted single-channel link - which is exactly the niche the TCP bridges fill.
 
 **Memory / process / concurrency control on both sides.** Each host owns its own MMF layout, capacity, and primitive choice. The sidecar runs per-host. The bridge sits in the middle as a transport detail; it does not dictate memory layout or concurrency model on either end. The same `Channel<T>` API works whether the other end is in the same thread, another process on the same host, or a process on a different host reachable through the bridge.
 
