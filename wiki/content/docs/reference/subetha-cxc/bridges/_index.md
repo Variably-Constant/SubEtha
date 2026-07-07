@@ -17,6 +17,15 @@ swappable detail (like a cipher suite); a unified endpoint also switches between
 the codes mid-stream on measured loss. It appears below once per code (block
 Reed-Solomon and sliding-window RLC) plus the unified auto-switch.
 
+**For an untrusted or lossy real-world WAN, the [unified Sens-O-Matic
+endpoint](unified-code-switch/) is the default choice** - it is encrypted
+(TLS 1.3 on both codes) and its adaptive FEC holds throughput and a bounded
+latency tail across the whole loss range, where the stream bridges below
+degrade under loss. Reach for [QuicBridge](quic-bridge/) when you want QUIC's
+stream multiplexing / migration / 0-RTT, and the TCP bridges on a trusted link.
+(The standalone `RS` row is `std`-only and unencrypted; TLS on the RS stream
+comes via the unified endpoint, which AEAD-seals both codes.)
+
 | Bridge | Transport | Cargo feature | Encryption | Ring type | Idle behavior |
 |---|---|---|---|---|---|
 | [QuicBridge](quic-bridge/) | QUIC over UDP | `quic-bridge` | TLS 1.3 via rustls | `AdaptiveRing` | `tokio::task::yield_now` on empty/full |

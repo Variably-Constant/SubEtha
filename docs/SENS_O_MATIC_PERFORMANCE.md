@@ -8,6 +8,51 @@ exactly-once in-order delivery on that run. Reproduce with the
 [`udp_xhost` example](../crates/subetha-cxc/examples/udp_xhost.rs)
 (`cargo run --release -p subetha-cxc --example udp_xhost -- --role ...`).
 
+## Two erasure codes, one adaptive transport, TLS on both
+
+The transport treats the erasure code as a swappable detail, like a
+cipher suite. The unified endpoint
+([`UnifiedSensSender`](../crates/subetha-cxc/src/sens_unified.rs) /
+`UnifiedSensReceiver`) carries BOTH codes on one UDP port and switches
+between them mid-stream on the forward loss the receiver already feeds
+back:
+
+- **Sliding-window RLC** ([`sens_rlc`](../crates/subetha-cxc/src/sens_rlc.rs))
+  below the crossover: incremental forward recovery from the next repair,
+  no block-wait and no retransmit round-trip, so it holds a low latency
+  tail at low-to-moderate loss.
+- **Block Cauchy Reed-Solomon** ([`udp_bridge`](../crates/subetha-cxc/src/udp_bridge.rs))
+  above it: an MDS systematic block code recovers any `r` erasures per
+  `k + r` shards, the most parity-efficient recovery once loss is dense,
+  and it has no redundancy ceiling (`k + r <= 256`) where RLC's adaptive
+  rate hard-caps at one repair per source symbol.
+
+The loss-driven controller (`CodeSwitchController`, immediate-up /
+conservative-down hysteresis) switches UP to RS at the measured
+crossover (~15% forward loss, `CROSSOVER_LOSS_Q8 = 38`) and back DOWN to
+RLC at ~10%, with the hysteresis band keeping a loss level at the
+boundary from flapping. A persistent RLC flow-block escapes to RS on its
+own as a backstop. Delivery stays exactly-once and in order across the
+switch - proven by the `sens_unified` switch tests (`auto_starts_on_rlc_then_up_switches_when_loss_sustains`,
+`unified_delivers_in_order_across_a_forced_switch`, and the hysteresis /
+anti-flap set).
+
+**TLS 1.3 seals both codes.** `UnifiedSensSender::connect_tls` runs a
+TLS 1.3 handshake and AEAD-seals every item payload, so the RLC <-> RS
+switch is crypto-transparent and the whole stream is confidential; the
+standalone RLC sender also takes `with_tls_client` / `with_tls_server`.
+The encrypted transport can even share one UDP port with QUIC, demuxed
+by first wire byte:
+[`examples/one_port_tls_e2e.rs`](../crates/subetha-cxc/examples/one_port_tls_e2e.rs)
+drives QUIC and the encrypted, adaptive Sens-O-Matic stream on one port
+and asserts both arrive exactly-once, the Sens side encrypted and (under
+loss) having switched codes.
+
+The numbers below are the **high-loss RS regime** - selective NAK, raw
+throughput under injected loss, head-of-line behaviour - the regime the
+unified transport runs above the crossover. RLC holds the sub-crossover
+regime for its lower time-to-first-delivery and median latency.
+
 ## What this measures
 
 Three things, all of which the transport is built for:

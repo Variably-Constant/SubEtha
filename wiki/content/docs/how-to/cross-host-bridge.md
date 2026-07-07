@@ -13,13 +13,20 @@ which is also how the project's own cross-host numbers were measured.
 
 ## Pick a bridge
 
+For an untrusted or lossy real-world WAN, reach for **Sens-O-Matic**: it
+is encrypted (TLS 1.3 on both erasure codes) and auto-switches RLC <-> RS
+on measured loss, holding throughput and a bounded latency tail across
+the whole loss range. `QuicBridge` is the alternative when you want
+QUIC's stream multiplexing / migration / 0-RTT; the TCP bridges are for
+trusted links.
+
 | Bridge | Wire | Encrypted | Idle CPU | Reach for it when |
 |---|---|---|---|---|
-| `QuicBridge` | QUIC over UDP | TLS 1.3 (rustls) | polling forwarder | untrusted networks; holds throughput under loss (BBR) |
+| [Sens-O-Matic (unified)](../reference/subetha-cxc/bridges/unified-code-switch.md) | reliable-UDP adaptive FEC (RLC <-> RS) | none, or TLS 1.3 on **both codes** | polling forwarder | **the default for untrusted or lossy WAN**: forward error correction holds throughput and a bounded latency tail across the whole loss range, auto-switching codes at the ~15% crossover, where the TCP bridges collapse and QUIC's single recovery path degrades |
+| `QuicBridge` | QUIC over UDP | TLS 1.3 (rustls) | polling forwarder | you want QUIC specifically: multiplexed streams, connection migration, 0-RTT, or interop with a QUIC peer |
 | `TcpTlsBridge` | TCP + rustls record layer | TLS 1.3 (rustls) | polling forwarder | encrypted TCP on a clean untrusted link where QUIC's dependency footprint is unwanted |
 | `TcpBridge` | TCP | no | polling forwarder | trusted LAN, lowest latency (loopback RTT matches a bare socket) |
 | `BlockingTcpBridge` | TCP | no | zero (parked waker) | trusted LAN, idle links that must not burn CPU |
-| [Sens-O-Matic](../reference/subetha-cxc/bridges/reliable-udp-bridge.md) | reliable-UDP FEC datagrams | none, or TLS 1.3 (RLC code) | polling forwarder | lossy or wireless links: forward error correction holds throughput and a low latency tail where the TCP bridges collapse |
 
 The stream bridges (`QuicBridge` / `TcpTlsBridge` / `TcpBridge` /
 `BlockingTcpBridge`) ship 64-byte ring slots with burst-batched egress
