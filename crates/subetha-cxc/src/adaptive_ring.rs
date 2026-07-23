@@ -711,6 +711,104 @@ impl AdaptiveRing {
         })
     }
 
+    /// Attach to an AdaptiveRing whose four backings already live in the
+    /// named shared-memory regions a *different* process created with
+    /// [`create_shmfs`](Self::create_shmfs).
+    ///
+    /// The critical difference from `create_shmfs`: this validates each
+    /// backing's magic and attaches WITHOUT re-initialising the layout,
+    /// so a snapshot the creator already enqueued survives the attach.
+    /// (`create_shmfs` unconditionally re-lays-out every backing, which
+    /// zeroes any data already in the region - correct for the creator,
+    /// data-loss for a late attacher.) Use `create_shmfs` in the process
+    /// that owns the region's lifetime and `open_shmfs` in every process
+    /// that joins it afterwards.
+    ///
+    /// The peer directory is the source of truth for how many
+    /// per-producer backings exist right now; `max_producers` /
+    /// `max_consumers` are pre-attach floor hints only. Returns
+    /// [`RingError::LayoutMismatch`] if a backing is absent or its
+    /// header magic / capacity does not match (e.g. the creator has not
+    /// run yet, or ran with a different capacity).
+    pub fn open_shmfs(
+        name_prefix: &str,
+        max_producers: usize,
+        max_consumers: usize,
+        expected_capacity: usize,
+    ) -> Result<Self, RingError> {
+        assert!(max_producers >= 1, "max_producers must be >= 1");
+        assert!(max_consumers >= 1, "max_consumers must be >= 1");
+
+        let spsc_size = crate::spsc_ring::spsc_ring_file_size(expected_capacity);
+        let vyukov_size = crate::shared_ring::ring_file_size(expected_capacity);
+
+        // Directory first: create_or_open_shm only initialises when the
+        // magic is absent, so attaching never wipes the creator's live
+        // claims; its published count is how many per-producer rings
+        // really exist (the creator's hint may have grown since).
+        let directory = Arc::new(PeerDirectory::create_or_open_shm(
+            &format!("{name_prefix}_peers"),
+        )?);
+        let n_rings = directory.published().max(1);
+
+        // SPSC backing - attach, validate magic, NO re-init.
+        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named(
+            &format!("{name_prefix}_spsc"), spsc_size,
+        ).map_err(|_| RingError::PayloadTooLarge)?;
+        let spsc = Arc::new(SpscRingCore::open_from_shm(spsc_shm, expected_capacity)?);
+
+        // MPSC backings.
+        let mut mpsc_rings = Vec::with_capacity(n_rings);
+        for i in 0..n_rings {
+            let shm = crate::shm_file::ShmFile::create_or_open_named(
+                &format!("{name_prefix}_mpsc_{i}"), spsc_size,
+            ).map_err(|_| RingError::PayloadTooLarge)?;
+            mpsc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
+        }
+        let mpsc = Arc::new(MpscBacking {
+            rings: ArcSwap::from_pointee(mpsc_rings),
+            next_drain: AtomicUsize::new(0),
+        });
+
+        // MPMC backings (one ring per producer; consumers partition).
+        let mut mpmc_rings = Vec::with_capacity(n_rings);
+        for i in 0..n_rings {
+            let shm = crate::shm_file::ShmFile::create_or_open_named(
+                &format!("{name_prefix}_mpmc_{i}"), spsc_size,
+            ).map_err(|_| RingError::PayloadTooLarge)?;
+            mpmc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
+        }
+        let mpmc = Arc::new(MpmcBacking {
+            rings: ArcSwap::from_pointee(mpmc_rings),
+            consumer_cursors: consumer_cursor_table(),
+        });
+
+        // Vyukov backing.
+        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named(
+            &format!("{name_prefix}_vyukov"), vyukov_size,
+        ).map_err(|_| RingError::PayloadTooLarge)?;
+        let vyukov = Arc::new(SharedRing::open_from_shm(vyukov_shm, expected_capacity)?);
+
+        Ok(Self {
+            shape_tag: AtomicU8::new(RingShape::Spsc as u8),
+            stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pin_generation: AtomicU64::new(0),
+            frame_region: OnceLock::new(),
+            spsc, mpsc, mpmc, vyukov,
+            max_producers, max_consumers,
+            capacity: expected_capacity,
+            directory,
+            synced_epoch: AtomicU64::new(u64::MAX),
+            grow_lock: parking_lot::Mutex::new(()),
+            contract: None,
+            shape_auto: AtomicBool::new(true),
+            ordering: None,
+            backing_id: BackingId::Shm { prefix: name_prefix.to_owned() },
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
     /// Attach the ordering substrate: every subsequent push carries
     /// an 8-byte stamp in slot bytes `[0..8)` and the payload cap
     /// drops to [`STAMPED_PAYLOAD_BYTES`] (56 - the same 8 bytes
