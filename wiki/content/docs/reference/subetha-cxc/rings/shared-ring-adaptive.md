@@ -70,6 +70,16 @@ Two execution paths through the same primitive:
   descriptor, so a consumer that opens it on receipt always finds the
   already-initialised region. (Inline frames never touch the region;
   only records above the inline budget do.)
+- **A single frame cannot exceed the region block size** (8 KB
+  default), so a payload larger than ~8187 bytes returns
+  `PayloadTooLarge` unless you enlarge the block. On a cross-process
+  ring, call `with_frames(block_size, block_count)` with the SAME
+  arguments on BOTH the creating side (`create` / `create_shmfs`) and
+  every attaching side (`open` / `open_shmfs`) BEFORE the first
+  `send_frame` - both sides must agree on the region geometry or the
+  attaching side's `recv_frame` reports a layout mismatch. The default
+  geometry (no `with_frames`) already matches on both sides, so records
+  up to ~8 KB need no coordination.
 - **Initial shape is `RingShape::Spsc`** (the cheapest backing).
 - **`max_producers` + `max_consumers` are sizing HINTS**, not
   ceilings: they set how many per-producer backings are
