@@ -59,7 +59,17 @@ Two execution paths through the same primitive:
   shape). The **frame path** (`send_frame`) lifts this: records up to
   `FRAME_INLINE_BUDGET` (51 bytes) inline, and larger records up to
   the region block size (8 KB by default, set with `with_frames`)
-  spill to the shared payload region.
+  spill to the payload region.
+- **The payload region rides the ring's own locale**, so offset
+  (spilled) frames cross a process boundary. An `create_anon` ring gets
+  a private in-process region; a `create` / `open` (file) or
+  `create_shmfs` / `open_shmfs` (shm) ring gets a SHARED region named
+  off the backing prefix (`<prefix>.frames.bin` / `<prefix>_frames`)
+  that every attached process maps. The region is created lazily on the
+  first offset frame - the producer creates it before pushing the
+  descriptor, so a consumer that opens it on receipt always finds the
+  already-initialised region. (Inline frames never touch the region;
+  only records above the inline budget do.)
 - **Initial shape is `RingShape::Spsc`** (the cheapest backing).
 - **`max_producers` + `max_consumers` are sizing HINTS**, not
   ceilings: they set how many per-producer backings are

@@ -48,7 +48,7 @@ fn unpack(v: u64) -> (u32, u32) {
 /// false-share.
 #[repr(C, align(64))]
 struct FrameRegionHeader {
-    magic: u64,
+    magic: AtomicU64,
     block_size: u64,
     block_count: u64,
     _pad_meta: [u8; 64 - 24],
@@ -98,7 +98,7 @@ fn validate(block_size: usize, block_count: usize) -> Result<(), RingError> {
 unsafe fn init_region(ptr: *mut u8, block_size: usize, block_count: usize) {
     unsafe {
         std::ptr::write(ptr as *mut FrameRegionHeader, FrameRegionHeader {
-            magic: FRAME_REGION_MAGIC,
+            magic: AtomicU64::new(FRAME_REGION_MAGIC),
             block_size: block_size as u64,
             block_count: block_count as u64,
             _pad_meta: [0; 64 - 24],
@@ -179,6 +179,89 @@ impl FrameRegion {
         Ok(Self::from_parts(RegionBacking::Shm(shm), raw_ptr, block_size, block_count))
     }
 
+    /// Create-or-open a named ShmFs frame region. The first attacher
+    /// CAS-initialises the layout and publishes the magic; racing
+    /// attachers spin until it lands, so a late-joining consumer never
+    /// wipes a region a producer already filled. This is the shared
+    /// payload region the cross-process offset-frame path needs: the
+    /// producer create-or-opens it on the first offset `send_frame`,
+    /// and every consumer create-or-opens the SAME region on the first
+    /// offset `recv_frame` (the descriptor it popped implies the
+    /// producer already created it).
+    pub fn create_or_open_shm(
+        name: &str, block_size: usize, block_count: usize,
+    ) -> Result<Self, RingError> {
+        validate(block_size, block_count)?;
+        let total = frame_region_file_size(block_size, block_count);
+        let mut shm = crate::shm_file::ShmFile::create_or_open_named(name, total)
+            .map_err(|_| RingError::LayoutMismatch)?;
+        if shm.len() < total {
+            return Err(RingError::LayoutMismatch);
+        }
+        let raw_ptr = shm.as_mut_slice().as_mut_ptr();
+        Self::guarded_init_or_attach(raw_ptr, block_size, block_count)?;
+        Ok(Self::from_parts(RegionBacking::Shm(shm), raw_ptr, block_size, block_count))
+    }
+
+    /// Create-or-open a file-backed frame region: the file-locale peer
+    /// of [`create_or_open_shm`](Self::create_or_open_shm), for rings
+    /// backed by [`AdaptiveRing::create`] / `open`.
+    pub fn create_or_open_file(
+        path: impl AsRef<Path>, block_size: usize, block_count: usize,
+    ) -> Result<Self, RingError> {
+        validate(block_size, block_count)?;
+        let total = frame_region_file_size(block_size, block_count);
+        let file = OpenOptions::new()
+            .read(true).write(true).create(true).truncate(false)
+            .open(path.as_ref())?;
+        if (file.metadata()?.len() as usize) < total {
+            file.set_len(total as u64)?;
+        }
+        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        let raw_ptr = mmap.as_mut_ptr();
+        Self::guarded_init_or_attach(raw_ptr, block_size, block_count)?;
+        Ok(Self::from_parts(RegionBacking::File(file, mmap), raw_ptr, block_size, block_count))
+    }
+
+    /// CAS-guarded init used by both create-or-open paths: the winner of
+    /// the `magic: 0 -> in-progress` CAS writes the geometry + cursors
+    /// and publishes `FRAME_REGION_MAGIC` (Release); racing attachers
+    /// spin until they observe it (Acquire), then both validate the
+    /// geometry matches what the caller asked for.
+    fn guarded_init_or_attach(
+        raw_ptr: *mut u8, block_size: usize, block_count: usize,
+    ) -> Result<(), RingError> {
+        const INIT_INPROGRESS: u64 = 1;
+        let h = unsafe { &*(raw_ptr as *const FrameRegionHeader) };
+        if h
+            .magic
+            .compare_exchange(0, INIT_INPROGRESS, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            unsafe {
+                let hdr = raw_ptr as *mut FrameRegionHeader;
+                (*hdr).block_size = block_size as u64;
+                (*hdr).block_count = block_count as u64;
+                (*hdr).bump_next.store(0, Ordering::Relaxed);
+                (*hdr).free_head.store(pack(0, NIL), Ordering::Relaxed);
+            }
+            h.magic.store(FRAME_REGION_MAGIC, Ordering::Release);
+        } else {
+            let mut spins = 0u32;
+            while h.magic.load(Ordering::Acquire) != FRAME_REGION_MAGIC {
+                std::hint::spin_loop();
+                spins += 1;
+                if spins > 100_000_000 {
+                    return Err(RingError::LayoutMismatch);
+                }
+            }
+        }
+        if h.block_size != block_size as u64 || h.block_count != block_count as u64 {
+            return Err(RingError::LayoutMismatch);
+        }
+        Ok(())
+    }
+
     fn from_parts(
         backing: RegionBacking, raw_ptr: *mut u8, block_size: usize, block_count: usize,
     ) -> Self {
@@ -190,7 +273,7 @@ impl FrameRegion {
 
     fn check_header(ptr: *const u8, block_size: usize, block_count: usize) -> Result<(), RingError> {
         let h = unsafe { &*(ptr as *const FrameRegionHeader) };
-        if h.magic != FRAME_REGION_MAGIC
+        if h.magic.load(Ordering::Acquire) != FRAME_REGION_MAGIC
             || h.block_size != block_size as u64
             || h.block_count != block_count as u64
         {
