@@ -1560,23 +1560,48 @@ impl AdaptiveRing {
     /// the first time a record is too large to inline. No-op if the
     /// region already exists. Returns the ring for chaining.
     pub fn with_frames(self, block_size: usize, block_count: usize) -> Self {
-        self.frame_region.get_or_init(|| {
-            Arc::new(
-                FrameRegion::create_anon(block_size, block_count)
-                    .expect("frame region create"),
-            )
-        });
+        self.frame_region
+            .get_or_init(|| self.build_frame_region(block_size, block_count));
         self
     }
 
     fn frame_region(&self) -> &FrameRegion {
         self.frame_region.get_or_init(|| {
             let blocks = self.spsc.capacity().max(16);
-            Arc::new(
-                FrameRegion::create_anon(Self::FRAME_DEFAULT_BLOCK_SIZE, blocks)
-                    .expect("frame region create"),
-            )
+            self.build_frame_region(Self::FRAME_DEFAULT_BLOCK_SIZE, blocks)
         })
+    }
+
+    /// Build the payload region on the SAME locale as the ring's own
+    /// backings, so offset frames cross a process boundary. An Anon ring
+    /// gets a private in-process region; a file- or shm-backed ring gets
+    /// a SHARED region named off the backing prefix (`<prefix>.frames.bin`
+    /// / `<prefix>_frames`) that every process attached to the ring maps.
+    ///
+    /// This is the fix for the cross-process offset-frame gap: previously
+    /// EVERY backing used a private anon region, so a payload above the
+    /// inline budget spilled to a region the peer process could not see,
+    /// and offset frames never crossed the boundary on the file or shm
+    /// locales. The region is created lazily on the first offset frame -
+    /// the producer create-or-opens it before pushing the descriptor, so
+    /// a consumer that create-or-opens it on receipt always finds the
+    /// already-initialised region (the descriptor it popped proves the
+    /// producer got there first).
+    fn build_frame_region(&self, block_size: usize, block_count: usize) -> Arc<FrameRegion> {
+        let region = match &self.backing_id {
+            BackingId::Anon => FrameRegion::create_anon(block_size, block_count),
+            BackingId::Shm { prefix } => FrameRegion::create_or_open_shm(
+                &format!("{prefix}_frames"),
+                block_size,
+                block_count,
+            ),
+            BackingId::File { prefix, .. } => FrameRegion::create_or_open_file(
+                with_suffix(prefix, ".frames.bin"),
+                block_size,
+                block_count,
+            ),
+        };
+        Arc::new(region.expect("frame region create-or-open"))
     }
 
     /// Frame-path send: carries any payload size on whatever shape the
@@ -3690,6 +3715,50 @@ mod tests {
         for suffix in [".spsc.bin", ".mpsc.0.bin", ".mpsc.1.bin",
                        ".mpmc.0.bin", ".mpmc.1.bin", ".vyukov.bin",
                        ".ordering.bin"] {
+            let mut p = prefix.as_os_str().to_owned();
+            p.push(suffix);
+            std::fs::remove_file(std::path::PathBuf::from(p)).ok();
+        }
+    }
+
+    #[test]
+    fn offset_frame_crosses_a_shared_file_backing() {
+        // The frame payload region must live on the ring's own locale, not
+        // a private anon mmap: a large (offset-class) frame sent through a
+        // creator handle must be recoverable byte-exact through an opener
+        // handle to the SAME file set. Regression for the cross-process
+        // offset-frame gap - previously build_frame_region always used
+        // create_anon, so offset payloads never crossed a boundary on the
+        // file or shm locales (only inline frames did).
+        let mut prefix = std::env::temp_dir();
+        prefix.push(format!(
+            "subetha_offset_frame_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos()).unwrap_or(0),
+        ));
+
+        let creator = AdaptiveRing::create(&prefix, 1, 1, 64).unwrap();
+        let opener = AdaptiveRing::open(&prefix, 1, 1, 64).unwrap();
+
+        let small = vec![0xABu8; 20];    // inline (under the budget)
+        let large = vec![0xCDu8; 5000];  // offset (spills to the region)
+        assert_eq!(creator.send_frame(0, &small).unwrap(), FrameClass::Inline);
+        assert_eq!(creator.send_frame(0, &large).unwrap(), FrameClass::Offset);
+
+        let mut out = Vec::new();
+        assert_eq!(opener.recv_frame(0, &mut out).unwrap(), FrameClass::Inline);
+        assert_eq!(out, small, "inline frame must cross the boundary");
+        assert_eq!(opener.recv_frame(0, &mut out).unwrap(), FrameClass::Offset,
+                   "offset frame must cross via the shared payload region");
+        assert_eq!(out, large,
+                   "offset payload must be byte-exact across the boundary");
+
+        drop(creator);
+        drop(opener);
+        for suffix in [".spsc.bin", ".mpsc.0.bin", ".mpmc.0.bin",
+                       ".vyukov.bin", ".peers.bin", ".frames.bin"] {
             let mut p = prefix.as_os_str().to_owned();
             p.push(suffix);
             std::fs::remove_file(std::path::PathBuf::from(p)).ok();
