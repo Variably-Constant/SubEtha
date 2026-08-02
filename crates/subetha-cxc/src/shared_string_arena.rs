@@ -65,9 +65,45 @@ use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use memmap2::{MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 
 pub const ARENA_MAGIC: u64 = 0x4150_5341_524E_4131;
+
+/// How this process mapped the file. `MmapMut` demands a read+write
+/// file handle, which a consumer holding read access alone cannot get.
+enum Mapping {
+    Writable(MmapMut),
+    ReadOnly(Mmap),
+}
+
+impl Mapping {
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        match self {
+            Mapping::Writable(m) => m.as_ptr(),
+            Mapping::ReadOnly(m) => m.as_ptr(),
+        }
+    }
+
+    #[inline]
+    fn is_writable(&self) -> bool {
+        matches!(self, Mapping::Writable(_))
+    }
+
+    fn flush(&self) -> Result<(), std::io::Error> {
+        match self {
+            Mapping::Writable(m) => m.flush(),
+            Mapping::ReadOnly(_) => Ok(()),
+        }
+    }
+
+    fn flush_async(&self) -> Result<(), std::io::Error> {
+        match self {
+            Mapping::Writable(m) => m.flush_async(),
+            Mapping::ReadOnly(_) => Ok(()),
+        }
+    }
+}
 
 #[repr(C, align(64))]
 pub struct ArenaHeader {
@@ -91,6 +127,8 @@ pub enum ArenaError {
     InvalidRef,
     InvalidUtf8,
     LayoutMismatch,
+    /// The arena was opened read-only and something tried to write it.
+    ReadOnly,
     IoError(std::io::ErrorKind),
 }
 
@@ -124,7 +162,7 @@ impl StringRef {
 
 pub struct SharedStringArena {
     _file: File,
-    mmap: MmapMut,
+    mmap: Mapping,
     capacity_bytes: usize,
     header_sidecar: subetha_core::HandshakeHeader,
     ring_sidecar: Box<subetha_core::ObservationRing>,
@@ -164,7 +202,7 @@ impl SharedStringArena {
             });
         }
         Ok(Self {
-            _file: file, mmap, capacity_bytes,
+            _file: file, mmap: Mapping::Writable(mmap), capacity_bytes,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
@@ -179,15 +217,54 @@ impl SharedStringArena {
             return Err(ArenaError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const ArenaHeader) };
+        let this = Self {
+            _file: file, mmap: Mapping::Writable(mmap),
+            capacity_bytes: expected_capacity_bytes,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(expected_capacity_bytes)?;
+        Ok(this)
+    }
+
+    /// Open an arena this process may only read.
+    ///
+    /// [`open`](Self::open) needs a read+write file handle, which a
+    /// consumer of a privileged producer's arena does not have. Reads
+    /// behave identically; [`intern`](Self::intern) and friends return
+    /// [`ArenaError::ReadOnly`].
+    pub fn open_read_only(
+        path: impl AsRef<Path>, expected_capacity_bytes: usize,
+    ) -> Result<Self, ArenaError> {
+        let total = arena_file_size(expected_capacity_bytes);
+        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        if file.metadata()?.len() < total as u64 {
+            return Err(ArenaError::LayoutMismatch);
+        }
+        let mmap = unsafe { MmapOptions::new().len(total).map(&file)? };
+        let this = Self {
+            _file: file, mmap: Mapping::ReadOnly(mmap),
+            capacity_bytes: expected_capacity_bytes,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(expected_capacity_bytes)?;
+        Ok(this)
+    }
+
+    /// Whether the header on disk is the one this mapping expects.
+    fn validate(&self, expected_capacity_bytes: usize) -> Result<(), ArenaError> {
+        let hdr = self.header();
         if hdr.magic != ARENA_MAGIC || hdr.capacity_bytes != expected_capacity_bytes as u64 {
             return Err(ArenaError::LayoutMismatch);
         }
-        Ok(Self {
-            _file: file, mmap, capacity_bytes: expected_capacity_bytes,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Ok(())
+    }
+
+    /// Whether this mapping may be written.
+    #[inline]
+    pub fn is_writable(&self) -> bool {
+        self.mmap.is_writable()
     }
 
     #[inline]
@@ -221,6 +298,9 @@ impl SharedStringArena {
     /// with `get_bytes`; `get` will reject non-UTF-8 with
     /// `InvalidUtf8`.
     pub fn intern_bytes(&self, bytes: &[u8]) -> Result<StringRef, ArenaError> {
+        if !self.mmap.is_writable() {
+            return Err(ArenaError::ReadOnly);
+        }
         let len = bytes.len() as u64;
         if len > self.capacity_bytes as u64 {
             self.ring_sidecar
@@ -293,6 +373,9 @@ impl SharedStringArena {
     /// Existing StringRefs become invalid (their bytes may be
     /// overwritten by subsequent interns).
     pub fn clear(&self) {
+        if !self.mmap.is_writable() {
+            return;
+        }
         self.header().used_bytes.store(0, Ordering::Release);
         self.ring_sidecar
             .push_op(crate::sidecar_ops::string_arena::OP_CLEAR, 0);
@@ -323,6 +406,43 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-arena-{name}-{pid}.bin"));
         p
+    }
+
+    #[test]
+    fn a_read_only_arena_resolves_refs_and_refuses_interning() {
+        let p = tmp("readonly");
+        let r = {
+            let w = SharedStringArena::create(&p, 4096).unwrap();
+            let r = w.intern("notepad.exe").unwrap();
+            w.flush().unwrap();
+            r
+        };
+        let ro = SharedStringArena::open_read_only(&p, 4096).unwrap();
+        assert!(!ro.is_writable());
+        assert_eq!(ro.get(r), Ok("notepad.exe"));
+        assert_eq!(ro.get_bytes(r), Ok(&b"notepad.exe"[..]));
+        assert_eq!(ro.used_bytes(), 11);
+        assert_eq!(ro.intern("more"), Err(ArenaError::ReadOnly));
+        assert_eq!(ro.intern_bytes(b"more"), Err(ArenaError::ReadOnly));
+        ro.clear();
+        assert_eq!(ro.used_bytes(), 11, "clear on a read-only arena is inert");
+        ro.flush().unwrap();
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn a_read_only_open_still_validates_the_header() {
+        let p = tmp("readonly-mismatch");
+        {
+            let w = SharedStringArena::create(&p, 4096).unwrap();
+            w.intern("x").unwrap();
+            w.flush().unwrap();
+        }
+        assert_eq!(
+            SharedStringArena::open_read_only(&p, 2048).err(),
+            Some(ArenaError::LayoutMismatch)
+        );
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

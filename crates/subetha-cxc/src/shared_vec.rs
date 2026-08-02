@@ -53,10 +53,48 @@ use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use memmap2::{MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 
 pub const VEC_MAGIC: u32 = 0x4150_5656;
 pub const VEC_PAYLOAD_BYTES: usize = 52;
+
+/// How this process mapped the file. `MmapMut` demands a read+write
+/// file handle, which a consumer holding read access alone cannot get.
+enum Mapping {
+    Writable(MmapMut),
+    ReadOnly(Mmap),
+}
+
+impl Mapping {
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        match self {
+            Mapping::Writable(m) => m.as_ptr(),
+            Mapping::ReadOnly(m) => m.as_ptr(),
+        }
+    }
+
+    #[inline]
+    fn is_writable(&self) -> bool {
+        matches!(self, Mapping::Writable(_))
+    }
+
+    /// A no-op on a read-only mapping, so a caller flushing on a timer
+    /// need not know which kind it holds.
+    fn flush(&self) -> Result<(), std::io::Error> {
+        match self {
+            Mapping::Writable(m) => m.flush(),
+            Mapping::ReadOnly(_) => Ok(()),
+        }
+    }
+
+    fn flush_async(&self) -> Result<(), std::io::Error> {
+        match self {
+            Mapping::Writable(m) => m.flush_async(),
+            Mapping::ReadOnly(_) => Ok(()),
+        }
+    }
+}
 
 #[repr(C, align(64))]
 pub struct VecHeader {
@@ -89,6 +127,8 @@ pub enum VecError {
     OutOfBounds,
     LayoutMismatch,
     PayloadTooLarge,
+    /// The vec was opened read-only and something tried to write it.
+    ReadOnly,
     IoError(std::io::ErrorKind),
 }
 
@@ -98,7 +138,7 @@ impl From<std::io::Error> for VecError {
 
 pub struct SharedVec<T: Copy + 'static> {
     _file: File,
-    mmap: MmapMut,
+    mmap: Mapping,
     capacity: usize,
     _phantom: PhantomData<T>,
     header_sidecar: subetha_core::HandshakeHeader,
@@ -155,7 +195,7 @@ impl<T: Copy + 'static> SharedVec<T> {
             }
         }
         Ok(Self {
-            _file: file, mmap, capacity, _phantom: PhantomData,
+            _file: file, mmap: Mapping::Writable(mmap), capacity, _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
@@ -173,15 +213,58 @@ impl<T: Copy + 'static> SharedVec<T> {
             return Err(VecError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const VecHeader) };
+        let this = Self {
+            _file: file, mmap: Mapping::Writable(mmap), capacity: expected_capacity,
+            _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(expected_capacity)?;
+        Ok(this)
+    }
+
+    /// Open a vec this process may only read.
+    ///
+    /// [`open`](Self::open) needs a read+write file handle, which a
+    /// consumer of a privileged producer's vec does not have - granting
+    /// it would let any reader corrupt the state for all of them.
+    /// Reads behave identically, under the same per-slot SeqLock;
+    /// writes return [`VecError::ReadOnly`].
+    pub fn open_read_only(
+        path: impl AsRef<Path>, expected_capacity: usize,
+    ) -> Result<Self, VecError> {
+        if size_of::<T>() > VEC_PAYLOAD_BYTES {
+            return Err(VecError::PayloadTooLarge);
+        }
+        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        let total = vec_file_size(expected_capacity);
+        if file.metadata()?.len() < total as u64 {
+            return Err(VecError::LayoutMismatch);
+        }
+        let mmap = unsafe { MmapOptions::new().len(total).map(&file)? };
+        let this = Self {
+            _file: file, mmap: Mapping::ReadOnly(mmap), capacity: expected_capacity,
+            _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(expected_capacity)?;
+        Ok(this)
+    }
+
+    /// Whether the header on disk is the one this mapping expects.
+    fn validate(&self, expected_capacity: usize) -> Result<(), VecError> {
+        let hdr = self.header();
         if hdr.magic != VEC_MAGIC || hdr.capacity != expected_capacity as u64 {
             return Err(VecError::LayoutMismatch);
         }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Ok(())
+    }
+
+    /// Whether this mapping may be written.
+    #[inline]
+    pub fn is_writable(&self) -> bool {
+        self.mmap.is_writable()
     }
 
     #[inline]
@@ -260,6 +343,9 @@ impl<T: Copy + 'static> SharedVec<T> {
     /// Append a value. Returns the index it landed at.
     /// Returns `Err(Full)` when the vec is at capacity.
     pub fn push_back(&self, v: T) -> Result<usize, VecError> {
+        if !self.mmap.is_writable() {
+            return Err(VecError::ReadOnly);
+        }
         let idx = self.header().len.fetch_add(1, Ordering::AcqRel) as usize;
         if idx >= self.capacity {
             self.header().len.fetch_sub(1, Ordering::AcqRel);
@@ -275,6 +361,9 @@ impl<T: Copy + 'static> SharedVec<T> {
 
     /// Remove and return the last element. Returns None when empty.
     pub fn pop_back(&self) -> Option<T> {
+        if !self.mmap.is_writable() {
+            return None;
+        }
         loop {
             let cur = self.header().len.load(Ordering::Acquire);
             if cur == 0 {
@@ -310,6 +399,9 @@ impl<T: Copy + 'static> SharedVec<T> {
     /// Overwrite the value at index `i`. Returns `Err(OutOfBounds)`
     /// when `i >= len`.
     pub fn set(&self, i: usize, v: T) -> Result<(), VecError> {
+        if !self.mmap.is_writable() {
+            return Err(VecError::ReadOnly);
+        }
         if i >= self.len() {
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::ordered::OP_INSERT, 1); // out of bounds (positional write rejected)
@@ -324,6 +416,9 @@ impl<T: Copy + 'static> SharedVec<T> {
     /// Clear the vec by resetting len to 0. Slot payloads are not
     /// zeroed; they become unreachable through bounded indexing.
     pub fn clear(&self) {
+        if !self.mmap.is_writable() {
+            return;
+        }
         self.header().len.store(0, Ordering::Release);
         self.ring_sidecar
             .push_op(crate::sidecar_ops::ordered::OP_REMOVE, 0);
@@ -342,6 +437,35 @@ impl<T: Copy + 'static> SharedVec<T> {
         self.ring_sidecar
             .push_op(crate::sidecar_ops::ordered::OP_ITER, 0);
         out
+    }
+
+    /// Read every live slot in order and hand each to `f`, without
+    /// building a `Vec`.
+    ///
+    /// For a consumer that looks at every element rather than keeping
+    /// them. [`snapshot`](Self::snapshot) costs an allocation the size
+    /// of the data plus a pass to fill it; this costs neither.
+    ///
+    /// Each slot is read through its own SeqLock into a local, as `get`
+    /// does, so `f` never sees a torn value. A reference into the
+    /// mapping would let a writer change the bytes under the reader.
+    ///
+    /// `f` is called in index order, over `len` as of entry.
+    pub fn for_each<F: FnMut(usize, &T)>(&self, f: F) {
+        self.for_each_range(0, self.len(), f);
+    }
+
+    /// [`for_each`](Self::for_each) over `start..end`, clamped to the
+    /// live length. The range form lets workers take disjoint spans
+    /// without materializing their share first.
+    pub fn for_each_range<F: FnMut(usize, &T)>(&self, start: usize, end: usize, mut f: F) {
+        let end = end.min(self.len());
+        for i in start..end {
+            let v = self.read_slot(i);
+            f(i, &v);
+        }
+        self.ring_sidecar
+            .push_op(crate::sidecar_ops::ordered::OP_ITER, 0);
     }
 
     pub fn flush(&self) -> Result<(), VecError> {
@@ -363,6 +487,93 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn for_each_visits_every_live_slot_in_order() {
+        let p = tmp("foreach");
+        let v = SharedVec::<u64>::create(&p, 256).unwrap();
+        for i in 0..100u64 {
+            v.push_back(i * 3).unwrap();
+        }
+        let mut seen = Vec::new();
+        v.for_each(|i, x| seen.push((i, *x)));
+        assert_eq!(seen.len(), 100, "capacity beyond len is not visited");
+        assert!(seen.iter().enumerate().all(|(n, (i, x))| *i == n && *x == n as u64 * 3));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn for_each_range_is_clamped_and_disjoint() {
+        let p = tmp("foreach-range");
+        let v = SharedVec::<u64>::create(&p, 64).unwrap();
+        for i in 0..40u64 {
+            v.push_back(i).unwrap();
+        }
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        v.for_each_range(0, 20, |_, x| first.push(*x));
+        v.for_each_range(20, 40, |_, x| second.push(*x));
+        // Together the spans are the whole vec, once each.
+        first.extend_from_slice(&second);
+        assert_eq!(first, (0..40u64).collect::<Vec<_>>());
+        // An end past len is clamped, not out of bounds.
+        let mut over = Vec::new();
+        v.for_each_range(30, 9999, |_, x| over.push(*x));
+        assert_eq!(over.len(), 10);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn for_each_agrees_with_snapshot() {
+        let p = tmp("foreach-vs-snapshot");
+        let v = SharedVec::<u64>::create(&p, 512).unwrap();
+        for i in 0..300u64 {
+            v.push_back(i ^ 0xa5a5).unwrap();
+        }
+        let mut walked = Vec::new();
+        v.for_each(|_, x| walked.push(*x));
+        assert_eq!(walked, v.snapshot());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn a_read_only_vec_reads_the_same_and_refuses_writes() {
+        let p = tmp("readonly");
+        {
+            let w = SharedVec::<u64>::create(&p, 64).unwrap();
+            for i in 0..10u64 {
+                w.push_back(i * 7).unwrap();
+            }
+            w.flush().unwrap();
+        }
+        let r = SharedVec::<u64>::open_read_only(&p, 64).unwrap();
+        assert!(!r.is_writable());
+        assert_eq!(r.len(), 10);
+        assert_eq!(r.get(3), Some(21));
+        assert_eq!(r.snapshot(), (0..10u64).map(|i| i * 7).collect::<Vec<_>>());
+        assert_eq!(r.push_back(1), Err(VecError::ReadOnly));
+        assert_eq!(r.set(0, 1), Err(VecError::ReadOnly));
+        assert_eq!(r.pop_back(), None);
+        r.clear();
+        assert_eq!(r.len(), 10, "clear on a read-only vec changes nothing");
+        r.flush().unwrap();
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn a_read_only_open_still_validates_the_header() {
+        let p = tmp("readonly-mismatch");
+        {
+            let w = SharedVec::<u64>::create(&p, 64).unwrap();
+            w.push_back(1).unwrap();
+            w.flush().unwrap();
+        }
+        assert_eq!(
+            SharedVec::<u64>::open_read_only(&p, 32).err(),
+            Some(VecError::LayoutMismatch)
+        );
+        std::fs::remove_file(&p).ok();
+    }
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();

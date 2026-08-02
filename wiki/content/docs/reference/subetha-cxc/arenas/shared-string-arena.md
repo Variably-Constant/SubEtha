@@ -35,6 +35,11 @@ Any process resolves the same StringRef to the same bytes.
 - **StringRef = (offset: u32, len: u32)**: position-independent;
   `to_u64()` / `from_u64()` pack it into one word for transport.
 - **Bounded capacity at create**: arena size in bytes.
+- **`open_read_only` maps without write access**: `open` needs a
+  read+write file handle, which a consumer of a privileged
+  producer's arena does not hold. `get` / `get_bytes` are
+  identical; `intern` / `intern_bytes` return
+  `ArenaError::ReadOnly`. `is_writable()` reports which.
 - **Cross-process backed by MMF.**
 
 ---
@@ -145,6 +150,9 @@ grows linearly with unique metadata, not with event count.
 
 - **Wrapping in a Mutex.** Pointless; the bump-pointer
   fetch_add is already concurrency-safe.
+
+- **`open()` on a file you only have read access to.** It asks
+  for a read+write handle and fails. Use `open_read_only`.
 
 ---
 

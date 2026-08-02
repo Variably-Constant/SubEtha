@@ -35,12 +35,21 @@ create. Indexable `get(i)` is lock-free.
   torn read.
 - **`get(i)` is lock-free**: one Acquire load + SeqLock read.
 - **`len()` is one atomic load**.
+- **`for_each` / `for_each_range` walk without a `Vec`**: each
+  slot is SeqLock-read into a local and handed to the closure,
+  so a scan costs no allocation and no second pass. The range
+  form lets workers take disjoint spans.
+- **`open_read_only` maps without write access**: `open` needs a
+  read+write file handle, which a consumer of a privileged
+  producer's vec does not hold. Reads are identical; writes
+  return `VecError::ReadOnly`. `is_writable()` reports which.
 - **Full surface**: `push_back` / `pop_back` (CAS on len) /
   `get` / `set(i, v)` (bounds-checked positional write) /
-  `clear` / `snapshot() -> Vec<T>` / `capacity` / `len` /
-  `is_empty` / `flush` / `flush_async`. `VecError` is
+  `clear` / `snapshot() -> Vec<T>` / `for_each` /
+  `for_each_range` / `capacity` / `len` / `is_empty` /
+  `is_writable` / `flush` / `flush_async`. `VecError` is
   `Full` / `OutOfBounds` / `LayoutMismatch` / `PayloadTooLarge`
-  / `IoError`.
+  / `ReadOnly` / `IoError`.
 - **Cross-process backed by MMF.**
 
 ---
@@ -152,6 +161,14 @@ before potentially migrating to SharedHashMap.
 
 - **Wrapping in a Mutex.** Pointless; per-slot SeqLock is
   already concurrency-safe.
+
+- **`snapshot()` to scan.** It allocates a copy the size of the
+  vec and leaves a second pass to read it. `for_each` is the
+  primitive for looking at every element; `snapshot` is for
+  keeping them.
+
+- **`open()` on a file you only have read access to.** It asks
+  for a read+write handle and fails. Use `open_read_only`.
 
 ---
 
