@@ -314,13 +314,15 @@ Op kinds use the `region` module: `OP_ALLOCATE = 1`,
 Canonical doc:
 [SHARED_REGION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_REGION.md).
 
-### `PassRegistry`
+### `pass_registry`
 
-Cross-process closure registry. Application registers handlers
-by `Pass` ID; remote processes look up the handler by ID and
-invoke it. The function pointers stay in the registering
-process's address space; the remote process gets a registered
-handle, not the address.
+Cross-process closure registry, a process-global module rather
+than a type: `register(id, f)` / `unregister(id)` /
+`is_registered(id)` / `registered_count()` / `execute(&Pass)`.
+An application registers handlers by `Pass` id; a remote process
+sends the id and its argument bytes, and the handler runs in
+whichever process registered it. The function pointers never
+leave the registering process's address space.
 
 Used to coordinate cross-process dispatch when the work runs
 in a specific process (because of resource ownership, security

@@ -47,6 +47,36 @@ many *other* packets it drops, so the gap measures capacity independently
 of loss. The sender cruises just under the measured capacity and lets the
 FEC cover the residual loss, rather than probing into the cliff.
 
+## Surviving a peer restart
+
+The connection id identifies the SESSION, and a restarted process draws a
+new one. The receiver does not latch the first id it sees: a datagram
+announcing an unknown id arms a `PATH_CHALLENGE` carrying that candidate
+id and a fresh nonce, and the session is adopted when the nonce returns.
+The provoking datagram is not delivered in the meantime, so a forged id
+costs the receiver one challenge and leaves the established session
+untouched; an unanswered challenge is retired after `CHALLENGE_TIMEOUT`.
+
+Adopting is gated on the answer rather than the id alone because the two
+are indistinguishable from a datagram: without the challenge, anyone able
+to guess the 4-tuple could reset a receiver's decode window with a single
+packet. What the answer proves is return-routability - the responder
+echoes the challenge without inspecting the id - which is what an
+off-path attacker cannot supply.
+
+Adoption drops the decode state keyed to the dead session's source-id
+space and keeps the path sensors, which describe the link rather than the
+session. The delivery frontier anchors on the first source id a session
+presents, so a receiver that binds mid-stream starts where the stream is
+instead of waiting on ids it could never have received.
+
+| Call | Answers |
+|---|---|
+| `take_session_changed()` | whether a replacement session was adopted since the last call; edge-triggered, one report per adoption |
+| `session_adoption_counts()` | `(adopted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
+
+Both are also on `UnifiedSensReceiver`.
+
 ## Optional TLS 1.3
 
 `with_tls_client` / `with_tls_server` wrap the transport in a rustls TLS

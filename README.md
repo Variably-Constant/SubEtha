@@ -18,7 +18,7 @@
   <a href="LICENSE-MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <a href="rust-toolchain.toml"><img alt="Rust: stable" src="https://img.shields.io/badge/Rust-stable-brightgreen?logo=rust"></a>
   <img alt="Platforms: Win/Linux/macOS x86_64+ARM64" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20x86__64%20%7C%20ARM64-blue">
-  <img alt="Tests: 1123 passing" src="https://img.shields.io/badge/tests-1123%20passing-brightgreen">
+  <img alt="Tests: 1273 passing" src="https://img.shields.io/badge/tests-1273%20passing-brightgreen">
   <img alt="Cross-process: 37 ns one-way" src="https://img.shields.io/badge/cross--process-37%20ns%20one--way-orange">
 </p>
 
@@ -60,7 +60,7 @@ Local IPC normally means picking the least-bad option from a menu that all goes 
 </picture>
 
 <p align="center">
-  <strong>Measured 126-498x faster than the fastest canonical kernel IPC mechanism on every platform tested</strong> (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback) and 5.0-11.4x faster than iceoryx2's zero-copy shared memory on the platforms where it builds. All four pinned channel shapes (SPSC / MPSC / composed MPMC / Vyukov MPMC) land between 37 and 115 ns one-way across the six platforms.<br><br>
+  <strong>Measured 126-498x faster than the fastest canonical kernel IPC mechanism on every platform tested</strong> (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback) and 5.0-11.4x faster than iceoryx2's zero-copy shared memory on the platforms where it builds (that contender is behind the `iceoryx-bench` feature, since its platform layer binds via bindgen and needs libclang on the build host). All four pinned channel shapes (SPSC / MPSC / composed MPMC / Vyukov MPMC) land between 37 and 115 ns one-way across the six platforms.<br><br>
   
 </p>
 
@@ -324,6 +324,14 @@ directly only when you mean to override the substrate's defaults.
 | [`TcpBridgeClient`](crates/subetha-cxc/src/tcp_bridge.rs) / `TcpBridgeServer` | `tcp-bridge` | Pulls tokio (net + io-util + rt). |
 | [`WireSocket`](crates/subetha-cxc/src/locale_wire.rs) | `wire-locale` | Raw-L2 NIC-bypass socket: AF_XDP (Linux), XDP (Windows), netmap (FreeBSD), BPF (macOS). |
 
+Two further features add bench contenders rather than primitives, both
+off by default because each needs a toolchain a correctness run does
+not: `iceoryx-bench` (iceoryx2, whose platform layer binds via bindgen
+and needs libclang) and `zmq-bench` (ZeroMQ, which links the C libzmq).
+Without them [`cross_process_compare`](crates/subetha-cxc/examples/cross_process_compare.rs)
+prints the contender as `NOT MEASURED` rather than dropping it from the
+leaderboard.
+
 </details>
 
 <details>
@@ -485,10 +493,33 @@ The Guide is occasionally honest, mostly in sections nobody is selling anything.
 | [`subetha-sidecar`](crates/subetha-sidecar) | Control plane: per-NUMA scan thread, policy, `SidecarBox`, `AdaptiveInstance` trait. |
 | [`subetha-pointers`](crates/subetha-pointers) | Nine exotic pointer types: Umbra (content-prefix), Bloom (set summary), KStep (log2 stride), KTower (multi-segment), SelfDesc (type tag), Versioned + HLC (MVCC), Cardinality (size class), CHERI capability (ARM Morello bounds), RaspBatch + RaspBatchIndex (x86 AVX2/AVX-512F SIMD-batched bounds). |
 | [`subetha`](crates/subetha) | Umbrella crate: pulls in the whole stack and re-exports each member as a module (`subetha::cxc` / `::core` / `::sidecar` / `::pointers`). `cargo add subetha` for the lot; most users reach for `subetha-cxc` directly. |
+| [`subetha-e2e`](crates/subetha-e2e) | End-to-end gate, not published. One binary whose scenarios each spawn a real child process, so the boundary under test is a genuine one. `cargo run -p subetha-e2e -- list`. |
 
 The cross-host test harness for the reliable-UDP FEC transport is the
 [`udp_xhost` example](crates/subetha-cxc/examples/udp_xhost.rs)
 (`cargo run --release -p subetha-cxc --example udp_xhost -- --role ...`).
+
+### The end-to-end gate
+
+Anything that has to cross a process boundary to mean anything lives in
+`subetha-e2e`. The parent half of each scenario spawns this same
+executable through `std::env::current_exe()` as the child half, so both
+sides compile from one source and ship as one artifact.
+
+```console
+$ cargo run -p subetha-e2e
+== failover PASS (23 ms)          a KILLED process's in-flight work is reclaimed
+== ring-boundary PASS (51 ms)     payloads cross a boundary and survive process death
+== flush-visibility PASS (275 ms) 25 primitives' flush_async state read from a 2nd process
+== session-restart PASS (1882 ms) a killed peer's replacement session is delivered
+== receiver-restart PASS (355 ms) a replacement RECEIVER joins a stream in progress
+== scheduler PASS (28 ms)         a Pass runs in a worker process, collected here
+6 scenario(s): 6 passed, 0 failed
+```
+
+`subetha-e2e run <name>...` runs a subset and `subetha-e2e list`
+enumerates them. Exit status is zero only when every scenario asked for
+passed.
 
 ---
 

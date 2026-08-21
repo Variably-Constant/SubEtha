@@ -141,6 +141,23 @@ toolchain - LLVM already inlines the generic `Marshal` path for
 of the small-buffer path across toolchains, not a separate
 measured win.
 
+## How the boundary is tested
+
+The published crates are gated by `subetha-e2e`, a workspace member
+that is not itself published. Each of its scenarios spawns this same
+executable through `std::env::current_exe()` as a child role, so the
+process boundary under test is a real one rather than two handles to
+one file inside a single process - the distinction that decides whether
+a cross-process claim has been measured or assumed.
+
+Six scenarios run today: a killed process's in-flight work reclaimed by
+the watchdog, ring payloads carried across a boundary and surviving the
+writer's death, 25 primitives' `flush_async` state read back from a
+second process, a killed peer's replacement session delivered, a
+replacement receiver joining a stream in progress, and a `Pass`
+executed by a worker process that holds the only handler for its
+closure id.
+
 ## See also
 
 - [Frozen handshakes](frozen-handshake.md) - the thesis the

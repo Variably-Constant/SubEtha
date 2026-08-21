@@ -99,6 +99,23 @@ to the receiver. `connect_tls` / `bind_tls` wrap the whole endpoint in one
 rustls TLS 1.3 handshake whose 1-RTT key seals every datagram of **both**
 codes, so the switch is crypto-transparent and adds no extra round trip.
 
+## Peer restart across the shared socket
+
+The endpoint's demux routes by wire byte, and the two path-validation
+frames sit outside the contiguous data range, so they are matched by name
+alongside it. That is what carries both address migration and the
+[replacement-session adoption](../sens-rlc/#surviving-a-peer-restart)
+over an endpoint whose codes share one socket.
+
+`take_session_changed()` and `session_adoption_counts()` are surfaced
+here with the same meaning they have on the standalone receiver: one
+report per adoption, and `(adopted, unanswered)` so a refused forgery is
+visible as the second rising without the first.
+
+A code switch is not a session change. The connection id belongs to the
+process, so RLC <-> RS handover leaves it untouched and no window reset
+is triggered by the switch.
+
 ## Verify
 
 ```rust
