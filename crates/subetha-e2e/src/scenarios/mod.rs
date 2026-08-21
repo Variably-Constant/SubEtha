@@ -10,6 +10,7 @@ use crate::harness::{BoxErr, Harness};
 
 pub mod failover;
 pub mod flush_visibility;
+pub mod receiver_restart;
 pub mod ring_boundary;
 pub mod scheduler;
 pub mod session_restart;
@@ -50,6 +51,12 @@ pub static ALL: &[Scenario] = &[
         about: "a KILLED peer's replacement session is delivered, not discarded",
         parent: session_restart::parent,
         child: session_restart::child,
+    },
+    Scenario {
+        name: "receiver-restart",
+        about: "the mirror: a replacement RECEIVER joins a stream already in progress",
+        parent: receiver_restart::parent,
+        child: receiver_restart::child,
     },
     Scenario {
         name: "scheduler",

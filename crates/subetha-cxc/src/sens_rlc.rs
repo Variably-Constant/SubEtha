@@ -1767,6 +1767,11 @@ pub struct SensOMaticRlcReceiver {
     /// is the proof the connection survived a 4-tuple change.
     session_cid: Option<u64>,
     migrations: u64,
+    /// Whether the delivery frontier has been anchored to an observed source
+    /// id. False until the first DATA of a session arrives, so a receiver
+    /// takes its starting point from the stream rather than assuming the
+    /// stream starts where it does.
+    frontier_anchored: bool,
     /// Slice 4 path validation. When the session appears at a NEW address the
     /// receiver migrates optimistically (it keeps delivering - the AEAD / id
     /// already authenticate the frame) but marks the new address unvalidated and
@@ -1878,6 +1883,7 @@ impl SensOMaticRlcReceiver {
             feedback_sent: 0,
             session_cid: None,
             migrations: 0,
+            frontier_anchored: false,
             peer_validated: true,
             pending_challenge: None,
             prev_peer: None,
@@ -2318,6 +2324,13 @@ impl SensOMaticRlcReceiver {
         self.last_data_sid = None;
 
         self.session_cid = Some(cid);
+        // Anchored at zero, deliberately, and NOT left to re-anchor on the
+        // next id observed. A fresh connection id means a fresh sender,
+        // whose ids start at the bottom - and the items it sent between its
+        // restart and this adoption are still inside its window, so ARQ
+        // fetches them. Re-anchoring on the first id seen after the
+        // challenge round trip would skip exactly that head instead.
+        self.frontier_anchored = true;
         self.peer = Some(addr);
         self.prev_peer = None;
         self.peer_validated = true;
@@ -2505,6 +2518,19 @@ impl SensOMaticRlcReceiver {
                     if self.pair_debug && gap > 0.0 {
                         self.pair_gap_log.push(gap);
                     }
+                }
+                // Anchor the delivery frontier to where the stream actually
+                // is. A receiver that starts with the sender sees id 0 first
+                // and this is a no-op; one that joins a stream in progress -
+                // a restarted receiver rebinding the same port - sees an id
+                // far above zero, and a frontier still sitting at the bottom
+                // would hold every arrival as a symbol thousands of ids ahead
+                // of what it is waiting for. Nothing below the join point is
+                // recoverable by this receiver in any case: it was carried
+                // while the process did not exist.
+                if !self.frontier_anchored {
+                    self.skip_to(sid);
+                    self.frontier_anchored = true;
                 }
                 self.last_data_sid = Some(sid);
                 self.last_arrival_us = Some(arrival_us);
