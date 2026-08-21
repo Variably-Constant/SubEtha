@@ -76,8 +76,7 @@ impl Harness {
     }
 }
 
-/// `Err` carrying `msg` unless `cond` holds. The scenario bodies read
-/// as a list of claims rather than a ladder of `if` blocks.
+/// `Err` carrying `msg` unless `cond` holds.
 pub fn require(cond: bool, msg: impl Into<String>) -> Result<(), BoxErr> {
     if cond { Ok(()) } else { Err(msg.into().into()) }
 }

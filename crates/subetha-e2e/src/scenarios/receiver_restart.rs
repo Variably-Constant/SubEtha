@@ -1,27 +1,16 @@
-//! The mirror: the RECEIVING end restarts, mid-stream.
+//! The mirror of [`session_restart`](super::session_restart): the
+//! RECEIVING end restarts, mid-stream.
 //!
-//! [`session_restart`](super::session_restart) kills the sender, so the
-//! receiver meets a session whose source ids start from the bottom. This
-//! kills the other end, which is the opposite problem: a replacement
-//! receiver binds the same port and meets a sender already well into its
-//! id space. Its decode window starts at the bottom; the traffic arrives
-//! at the top.
+//! A replacement receiver binds the same port and meets a sender already
+//! well into its id space - a decode window at the bottom against traffic
+//! at the top. Asserts it takes its batch anyway. Either end can be the
+//! one that restarts, so both directions have to hold.
 //!
-//! Both directions have to hold, because either end can be the one that
-//! restarts and neither knows which case it is in. A transport that only
-//! survives a sender restart leaves a peer-bounce failure to be found in
-//! production by whoever bounced the wrong process.
-//!
-//! # Why the parent only supervises
-//!
-//! Every blocking call lives in a child process. `send_item` on the
-//! unified sender owns RLC's flow-window wait internally, so with nothing
-//! draining the stream it does not return for as long as its deadlock
-//! detection takes to escape - and a deadline checked around such a call
-//! is never reached. A wedged child is killable; a wedged parent thread is
-//! not. So the parent here spawns, watches for marker files, and kills:
-//! its own worst case is bounded by its own clock no matter what the
-//! transport does.
+//! The parent only supervises: it spawns, watches for marker files and
+//! kills, so its worst case is its own clock. Every blocking call lives
+//! in a child, because `send_item` owns RLC's flow-window wait internally
+//! and does not return while nothing drains the stream - a deadline
+//! checked around such a call is never reached.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -104,8 +93,7 @@ fn reserve_port() -> Result<u16, BoxErr> {
     Ok(s.local_addr()?.port())
 }
 
-/// Watch for a child's marker file. The parent blocks on nothing but its
-/// own clock, so a wedged child costs this deadline and no more.
+/// Watch for a child's marker file, blocking on nothing but the clock.
 fn wait_for_marker(marker: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -132,9 +120,8 @@ pub fn child(role: &str, args: &[String]) -> Result<(), BoxErr> {
     }
 }
 
-/// Stream tagged items until killed. Runs in its own process precisely
-/// because `send_item` can sit in RLC's flow-window wait once nothing is
-/// draining, which is the state this scenario deliberately creates.
+/// Stream tagged items until killed. Its own process, because `send_item`
+/// sits in RLC's flow-window wait once nothing is draining.
 fn sender(args: &[String]) -> Result<(), BoxErr> {
     let port = arg_u64(args, 0, "receiver port")? as u16;
     let peer = format!("127.0.0.1:{port}")

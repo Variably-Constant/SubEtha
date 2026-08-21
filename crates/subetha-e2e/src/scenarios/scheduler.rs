@@ -10,10 +10,9 @@
 //! worker thread drains the submit ring, executes against its own
 //! registry, and pushes the result back.
 //!
-//! The parent then collects a result it could not have produced. That
-//! is the closure-id-not-closure-code contract stated as an
-//! observation: the id and the bytes crossed, the code did not, and
-//! the answer came back correlated by token.
+//! The parent then collects a result it could not have produced: the
+//! closure-id-not-closure-code contract, with the id and the bytes
+//! crossing but not the code, correlated back by token.
 
 use std::sync::Arc;
 use std::thread::sleep;

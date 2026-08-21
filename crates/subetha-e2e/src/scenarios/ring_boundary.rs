@@ -1,25 +1,16 @@
 //! Ring payloads across a real boundary, and across process death.
 //!
-//! Two claims, each needing a second process to mean anything.
-//!
 //! **Carry.** The parent pushes into a mapped ring; a child process
-//! opens the same file and pops. Both sides run in their own address
-//! space and share nothing but the file, so a pop that returns the
-//! pushed bytes in push order is the page-aliasing claim measured
-//! rather than assumed.
+//! opens the same file and pops, sharing nothing but the file.
 //!
 //! **Persistence.** A writer child creates a second ring, pushes,
-//! flushes and exits. The parent then opens that file and pops. The
-//! process that wrote the bytes no longer exists when they are read,
-//! which is the property "the MMF is both the channel and the log"
-//! actually asserts.
+//! flushes and exits; the parent then opens that file and pops, so the
+//! process that wrote the bytes is gone when they are read.
 //!
-//! Both claims are checked against the fixed-slot contract this API
-//! offers: a push zero-fills the rest of the slot and the pop yields
-//! the whole slot, so the payload length does not survive the round
-//! trip and the reader is expected to know its own record size. The
-//! variable-length path is `AdaptiveRing::send_frame`, which tags each
-//! record's class and length inline.
+//! Both are checked against the fixed-slot contract: a push zero-fills
+//! the rest of the slot and a pop yields the whole slot, so the payload
+//! length does not survive the round trip. `AdaptiveRing::send_frame` is
+//! the variable-length path.
 
 use subetha_cxc::{SharedRing, PAYLOAD_BYTES};
 

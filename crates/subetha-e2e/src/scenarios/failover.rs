@@ -1,22 +1,17 @@
 //! A process dies holding work; the watchdog reclaims it.
 //!
-//! The holder is a real child process. It registers in the shared
-//! heartbeat table under its own pid, marks two work units in flight,
-//! beats once, and then blocks. The parent kills it outright and runs
-//! the watchdog.
+//! The holder is a child process that registers in the shared heartbeat
+//! table under its own pid, marks two work units in flight, beats once
+//! and blocks. The parent kills it and runs the watchdog.
 //!
-//! Two claims ride on the kill. The first is visibility: the parent
-//! reads the holder's registration, pid and in-flight bitmap out of
-//! the mapped file, so a second address space's stores are observed
-//! here. The second is reclaim: once the holder is gone its slot stops
-//! advancing, and the watchdog reports the slot - with the dead pid and
-//! the exact bitmap it held - on the first scan past the grace window,
-//! which is what lets its work be reassigned.
+//! Asserts two things: that the parent reads the holder's pid and
+//! in-flight bitmap out of the mapped file, and that the watchdog
+//! reports that slot with the dead pid and the exact bitmap on the first
+//! scan past the grace window.
 //!
-//! Killing the process is load-bearing. A crash leaves the mapped file
-//! exactly as the dead process last wrote it, with no unwind, no
-//! destructor and no cooperative deregistration, and that is the state
-//! the watchdog has to be correct against.
+//! The kill is load-bearing. It leaves the file as the dead process last
+//! wrote it - no unwind, no destructor, no cooperative deregistration -
+//! which is the state the watchdog has to be correct against.
 
 use std::thread::sleep;
 use std::time::{Duration, Instant};

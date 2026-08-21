@@ -1,26 +1,17 @@
 //! A peer restarts; its fresh session must still be delivered.
 //!
-//! The receiver runs in the parent and takes a first batch from a sender
-//! child, which advances its decoder state. That child is KILLED, and a
-//! second sender process starts against the same receiver. The second
-//! process is a NEW session: it draws its own connection id and its
-//! sequence numbering starts from the bottom again.
+//! The receiver runs in the parent. A sender child delivers a first
+//! batch, advancing the decoder, and is KILLED - so the transport learns
+//! of the restart only from the frames of the session that replaces it.
+//! A second sender process then runs against the same receiver, drawing
+//! its own connection id and numbering from the bottom again.
 //!
-//! The claim under test is that the receiver delivers the second
-//! session's items. A receiver that latched its session identity at
-//! first contact, or that judges freshness by a sequence number it has
-//! already passed, discards them instead - and discards them silently,
-//! which is what makes the failure hard to see from the application: it
-//! observes only that nothing arrives.
+//! Asserts that the second session's items are delivered, and that a
+//! forged connection id from a socket that answers no challenge is
+//! refused without disturbing the established session.
 //!
-//! The restart must be a KILL rather than a clean shutdown. A peer that
-//! announces its own departure is the easy case; the case that matters
-//! is the one where the transport learns of the restart only from the
-//! frames of the session that replaces it.
-//!
-//! The scenario also reports which erasure code the endpoint is on when
-//! the restart happens, because the two codes reject a new session by
-//! different mechanisms and the answer decides which one this exercises.
+//! Reports the active erasure code at the restart: the two codes reject
+//! a new session by different mechanisms.
 
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -56,11 +47,9 @@ fn tag_of(item: &[u8]) -> Option<u8> {
     item.first().copied()
 }
 
-/// Wire layout of an RLC DATA datagram, restated here because the forgery
-/// case has to build one from outside the crate - which is exactly what an
-/// attacker does. If `sens_rlc` moves these, this case stops forging a
-/// plausible datagram and starts passing for the wrong reason, so it also
-/// asserts the receiver still had to reject something.
+/// Wire layout of an RLC DATA datagram, restated because the forgery case
+/// builds one from outside the crate. Drift here makes the forged datagram
+/// implausible, which is why the case also asserts a challenge was issued.
 const PKT_RLC_DATA: u8 = 10;
 const RLC_DATA_HDR: usize = 1 + 8 + 4 + 4;
 
@@ -151,11 +140,9 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
 /// Send datagrams announcing a connection id the receiver has never seen,
 /// from a socket that is then dropped without answering anything.
 ///
-/// The limit of what this proves, stated so it is not over-read: the
-/// datagrams carry this process's real source address, because forging the
-/// source too needs a raw socket. So it demonstrates that an UNANSWERED
-/// challenge yields no adoption - the mechanism an off-path attacker cannot
-/// beat - rather than exercising source-address spoofing itself.
+/// Covers an UNANSWERED challenge yielding no adoption, not source-address
+/// spoofing: the datagrams carry this process's real source address, since
+/// forging that needs a raw socket.
 fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
     let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let target = format!("127.0.0.1:{port}");

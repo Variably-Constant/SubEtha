@@ -322,11 +322,9 @@ pub(crate) fn route_sens_inbound(
         || b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
         || b0 == crate::sens_rlc::PKT_RLC_PATH_RESPONSE
     {
-        // The RLC data range plus the two path-validation frames, which sit
-        // above the crypto types rather than beside the data ones. They are
-        // named rather than folded into the range because widening it would
-        // swallow PKT_RLC_CRYPTO / CRYPTO_ACK, which the next arm has to
-        // route to the handshake driver instead.
+        // The RLC data range plus the two path-validation frames. Named
+        // rather than folded into the range, which would swallow the crypto
+        // types the next arm routes to the handshake driver.
         rlc_q.lock().unwrap().push_back((data, from, kts));
     } else if (b0 == 15 || b0 == 16)
         && let Some(hq) = hs_q
@@ -1333,17 +1331,14 @@ impl UnifiedSensReceiver {
 
     /// The bound local address.
     /// Whether the RLC decoder adopted a replacement session since this was
-    /// last called, clearing the flag. A caller re-drives its own handshake
-    /// on this edge instead of waiting for a timeout to tell it the peer it
-    /// is talking to is a new process.
+    /// last called, clearing the flag. Edge-triggered: one report per
+    /// adoption.
     pub fn take_session_changed(&mut self) -> bool {
         self.rlc.take_session_changed()
     }
 
     /// `(adopted, challenges_that_went_unanswered)` for replacement
-    /// sessions. The second rising while the first does not is what a
-    /// rejected forgery looks like from here, so the pair is the operator's
-    /// view of whether resets are being attempted against this endpoint.
+    /// sessions. A rejected forgery raises the second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
         self.rlc.session_adoption_counts()
     }

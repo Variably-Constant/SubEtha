@@ -1,22 +1,18 @@
 //! Every MMF-backed primitive, read back from a second process.
 //!
-//! `flush_async` is the non-blocking flush: `msync(MS_ASYNC)` on unix,
-//! `FlushViewOfFile` without `FlushFileBuffers` on Windows. The claim
-//! it has to satisfy is that the mutation it flushes is intact and
-//! visible to another participant.
+//! `flush_async` is the non-blocking flush - `msync(MS_ASYNC)` on unix,
+//! `FlushViewOfFile` without `FlushFileBuffers` on Windows - and what it
+//! flushes must be intact and visible to another participant.
 //!
-//! So the parent creates each primitive, performs one meaningful
-//! state-modifying operation, calls `flush_async`, and holds every
-//! mapping open. A child process then opens each file by path and
-//! reads the value back. Reading from a second address space is what
-//! makes the answer mean something: a re-read inside the writing
-//! process can be served by that process's own mapping whether or not
-//! the state ever became shareable.
+//! The parent creates each primitive, performs one state-modifying
+//! operation, calls `flush_async` and holds every mapping open. A child
+//! then opens each file by path and reads the value back; a re-read
+//! inside the writing process would be served by that process's own
+//! mapping whether or not the state became shareable.
 //!
-//! Handles cross as integers, which is what makes them handles rather
-//! than pointers - `Handle::raw`, `OffsetPtr::index` and
-//! `StringRef::to_u64` are all position-independent, so the child
-//! rebuilds them without knowing where the parent mapped anything.
+//! Handles cross as integers. `Handle::raw`, `OffsetPtr::index` and
+//! `StringRef::to_u64` are position-independent, so the child rebuilds
+//! them without knowing where the parent mapped anything.
 
 use std::sync::Arc;
 
