@@ -6,6 +6,7 @@ members = [
     "crates/subetha-pointers",
     "crates/subetha-cxc",
     "crates/subetha",
+    "crates/subetha-e2e",
 ]
 
 [workspace.package]

@@ -1,0 +1,18 @@
+[package]
+name = "subetha-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "End-to-end gate for SubEtha: every scenario crosses a real process boundary."
+publish = false
+
+[dependencies]
+subetha-cxc = { workspace = true }
+subetha-core = { workspace = true }
+
+[[bin]]
+name = "subetha-e2e"
+path = "src/main.rs"
