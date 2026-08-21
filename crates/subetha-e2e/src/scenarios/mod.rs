@@ -12,6 +12,7 @@ pub mod failover;
 pub mod flush_visibility;
 pub mod ring_boundary;
 pub mod scheduler;
+pub mod session_restart;
 
 /// One end-to-end claim, in its parent and child halves.
 pub struct Scenario {
@@ -43,6 +44,12 @@ pub static ALL: &[Scenario] = &[
         about: "every primitive's flush_async state is readable from a second process",
         parent: flush_visibility::parent,
         child: flush_visibility::child,
+    },
+    Scenario {
+        name: "session-restart",
+        about: "a KILLED peer's replacement session is delivered, not discarded",
+        parent: session_restart::parent,
+        child: session_restart::child,
     },
     Scenario {
         name: "scheduler",

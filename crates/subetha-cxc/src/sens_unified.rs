@@ -318,7 +318,15 @@ pub(crate) fn route_sens_inbound(
     }
     if b0 == 1 || b0 == 4 {
         rs_q.lock().unwrap().push_back((data, from, kts));
-    } else if (10..=14).contains(&b0) {
+    } else if (10..=14).contains(&b0)
+        || b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
+        || b0 == crate::sens_rlc::PKT_RLC_PATH_RESPONSE
+    {
+        // The RLC data range plus the two path-validation frames, which sit
+        // above the crypto types rather than beside the data ones. They are
+        // named rather than folded into the range because widening it would
+        // swallow PKT_RLC_CRYPTO / CRYPTO_ACK, which the next arm has to
+        // route to the handshake driver instead.
         rlc_q.lock().unwrap().push_back((data, from, kts));
     } else if (b0 == 15 || b0 == 16)
         && let Some(hq) = hs_q

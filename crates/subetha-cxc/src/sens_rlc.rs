@@ -63,8 +63,13 @@ const PKT_RLC_FEEDBACK: u8 = 14;
 /// receive at the new address. Cleartext-framed (it carries no payload to
 /// protect) but the nonce is unpredictable, so an off-path attacker cannot
 /// forge a response for a challenge it never saw.
-const PKT_RLC_PATH_CHALLENGE: u8 = 18;
-const PKT_RLC_PATH_RESPONSE: u8 = 19;
+/// Path-validation control frames. `pub(crate)` because a shared-socket
+/// endpoint has to route them by type: they sit outside the contiguous data
+/// range, so a demux that matches only that range drops them and every
+/// validation - address migration and replacement-session adoption alike -
+/// goes unanswered.
+pub(crate) const PKT_RLC_PATH_CHALLENGE: u8 = 18;
+pub(crate) const PKT_RLC_PATH_RESPONSE: u8 = 19;
 
 /// PATH_CHALLENGE / PATH_RESPONSE body: type byte + connection id (u64) + an
 /// 8-byte nonce.
@@ -1772,6 +1777,32 @@ pub struct SensOMaticRlcReceiver {
     peer_validated: bool,
     pending_challenge: Option<(SocketAddr, u64, Instant)>,
     prev_peer: Option<SocketAddr>,
+    /// A candidate REPLACEMENT session under challenge: `(addr, cid, nonce,
+    /// sent_at)`. A datagram announcing a connection id other than the
+    /// established one is either a restarted peer or a forgery, and the two
+    /// are indistinguishable from the datagram alone. Rather than trust it,
+    /// the receiver challenges the address it came from with a fresh nonce
+    /// and adopts the session only when that exact nonce returns - so the
+    /// window reset costs an attacker the ability to RECEIVE at the address
+    /// it is claiming, which an off-path attacker does not have.
+    ///
+    /// What this buys is return-routability, not proof of session ownership:
+    /// the responder echoes the challenge verbatim without inspecting the
+    /// id, so a valid response says "a live endpoint is reachable here", not
+    /// "this endpoint holds the old session". That is the right bar for a
+    /// cleartext transport, and it is what defeats the blind off-path reset;
+    /// the `tls` feature's AEAD is what raises it further.
+    pending_session: Option<(SocketAddr, u64, u64, Instant)>,
+    /// Set when a replacement session is adopted, cleared by
+    /// [`take_session_changed`](Self::take_session_changed). The application
+    /// re-drives its own handshake on this rather than waiting for a
+    /// timeout, because delivery resuming is not by itself a signal that the
+    /// peer it is talking to is a different process than before.
+    session_changed: bool,
+    /// Replacement sessions adopted, and challenges for one that expired
+    /// unanswered - a spoofed reset attempt looks like the latter. Telemetry.
+    session_adoptions: u64,
+    session_adoption_failures: u64,
     /// Monotonic nonce source for challenges (mixed through splitmix64 so the
     /// emitted nonce is not a guessable counter).
     challenge_seq: u64,
@@ -1850,6 +1881,10 @@ impl SensOMaticRlcReceiver {
             peer_validated: true,
             pending_challenge: None,
             prev_peer: None,
+            pending_session: None,
+            session_changed: false,
+            session_adoptions: 0,
+            session_adoption_failures: 0,
             challenge_seq: 0,
             unval_recv_bytes: 0,
             unval_sent_bytes: 0,
@@ -2126,6 +2161,10 @@ impl SensOMaticRlcReceiver {
         // the anti-amplification budget.
         self.expire_stale_challenge();
         self.maybe_send_challenge()?;
+        // Replacement-session validation: the same retire-then-reissue shape,
+        // over the candidate rather than the established session.
+        self.expire_stale_session_challenge();
+        self.maybe_send_session_challenge()?;
         self.maybe_nak()?;
         self.send_ack()?;
         self.maybe_feedback()?;
@@ -2165,7 +2204,16 @@ impl SensOMaticRlcReceiver {
                         self.begin_path_validation(from);
                     }
                 }
-                Some(_) => return false,
+                // A different connection id at this address: either the peer
+                // process restarted with a fresh id, or someone is forging.
+                // Challenge the address and decide on the answer. This frame
+                // is not delivered - the session is not adopted until the
+                // nonce returns - so a forgery costs the receiver one
+                // challenge and nothing else.
+                Some(_) => {
+                    self.begin_session_validation(cid, from);
+                    return false;
+                }
             },
             None => {
                 self.peer = Some(from);
@@ -2191,6 +2239,108 @@ impl SensOMaticRlcReceiver {
         self.unval_sent_bytes = 0;
         let nonce = self.next_challenge_nonce();
         self.pending_challenge = Some((addr, nonce, Instant::now()));
+    }
+
+    /// Send one control frame to an address that is NOT necessarily the
+    /// established peer - the candidate of a replacement session, which may
+    /// answer from anywhere.
+    ///
+    /// Sent in the clear even when TLS is armed: the candidate cannot open
+    /// the established session's keys, and the frame carries nothing secret
+    /// (a connection id its own datagram already put on the wire, and a
+    /// nonce whose only property is being unguessable to anyone who did not
+    /// see it). What that means for the guarantee is stated on
+    /// [`pending_session`](Self::pending_session) - an adopt proves
+    /// reachability, not session ownership, with or without TLS.
+    ///
+    /// No amplification accounting: this is a
+    /// [`PATH_FRAME_LEN`]-byte frame emitted only in response to a full data
+    /// datagram (a symbol plus [`DATA_HDR`]), so it is roughly seventy times
+    /// smaller than the packet that provoked it and cannot be used to
+    /// amplify toward a spoofed address.
+    fn wire_send_to(&mut self, inner: &[u8], addr: SocketAddr) -> io::Result<()> {
+        send_with_retry(&self.sock, inner, addr)
+    }
+
+    /// Arm a challenge for a candidate replacement session, unless one is
+    /// already outstanding for this exact `(addr, cid)` pair - a restarted
+    /// peer keeps sending while it waits, and re-arming on every one of its
+    /// datagrams would roll the nonce faster than the answer to any of them
+    /// could return.
+    fn begin_session_validation(&mut self, cid: u64, addr: SocketAddr) {
+        if let Some((a, c, _, _)) = self.pending_session
+            && a == addr
+            && c == cid
+        {
+            return;
+        }
+        let nonce = self.next_challenge_nonce();
+        self.pending_session = Some((addr, cid, nonce, Instant::now()));
+    }
+
+    /// Send the outstanding replacement-session challenge, carrying the
+    /// CANDIDATE id rather than the established one: the peer that would
+    /// answer knows only its own session, and the responder echoes the frame
+    /// verbatim, so the id on the wire is what comes back and is what
+    /// identifies which candidate an answer belongs to.
+    fn maybe_send_session_challenge(&mut self) -> io::Result<()> {
+        let Some((addr, cid, nonce, _)) = self.pending_session else {
+            return Ok(());
+        };
+        let mut pkt = Vec::with_capacity(PATH_FRAME_LEN);
+        pkt.push(PKT_RLC_PATH_CHALLENGE);
+        pkt.extend_from_slice(&cid.to_le_bytes());
+        pkt.extend_from_slice(&nonce.to_le_bytes());
+        self.wire_send_to(&pkt, addr)
+    }
+
+    /// Adopt a challenged session: drop every piece of decode state keyed to
+    /// the old session's source-id space, so the new session's ids are read
+    /// as the fresh sequence they are rather than as duplicates of ids the
+    /// frontier has already passed.
+    ///
+    /// Path sensors are deliberately NOT reset. Loss rate, burst model and
+    /// capacity describe the LINK, which a peer restarting does not change,
+    /// and discarding them would make the transport re-learn a path it
+    /// already knows every time a peer bounces.
+    fn adopt_session(&mut self, cid: u64, addr: SocketAddr) {
+        self.dec = RlcDecoder::new(self.symbol_len).with_horizon(128);
+        self.delivered_through = 0;
+        self.last_fb_delivered = 0;
+        self.highest_seen = 0;
+        self.fec_recovered.clear();
+        self.data_arrived.clear();
+        self.loss_pending.clear();
+        self.nakd.clear();
+        self.gap_since.clear();
+        self.ge_decided.clear();
+        self.ge_dropped_once.clear();
+        self.last_data_sid = None;
+
+        self.session_cid = Some(cid);
+        self.peer = Some(addr);
+        self.prev_peer = None;
+        self.peer_validated = true;
+        self.pending_challenge = None;
+        self.pending_session = None;
+        self.session_changed = true;
+        self.session_adoptions += 1;
+    }
+
+    /// Whether a replacement session has been adopted since this was last
+    /// called, clearing the flag. The signal is edge-triggered on purpose: a
+    /// caller that re-drives its handshake needs to act once per restart, and
+    /// a level it has to remember to clear is a caller-side bug waiting to
+    /// happen.
+    pub fn take_session_changed(&mut self) -> bool {
+        std::mem::replace(&mut self.session_changed, false)
+    }
+
+    /// Replacement sessions adopted, and challenges for one that went
+    /// unanswered. The second counter rising without the first is what a
+    /// spoofed reset attempt looks like from here.
+    pub fn session_adoption_counts(&self) -> (u64, u64) {
+        (self.session_adoptions, self.session_adoption_failures)
     }
 
     /// An unguessable challenge nonce. Seeded from the high-resolution monotonic
@@ -2226,6 +2376,22 @@ impl SensOMaticRlcReceiver {
         self.wire_send_to_peer(&pkt)
     }
 
+    /// Retire a replacement-session challenge that went unanswered within
+    /// [`CHALLENGE_TIMEOUT`]. A genuinely restarted peer answers within a
+    /// round trip; a forged id from an address that cannot receive never
+    /// does, so the established session is left exactly as it was. Dropping
+    /// the candidate rather than remembering it means a peer that really did
+    /// restart gets challenged again on its next datagram, which it will
+    /// keep sending.
+    fn expire_stale_session_challenge(&mut self) {
+        if let Some((_, _, _, sent)) = self.pending_session
+            && sent.elapsed() > CHALLENGE_TIMEOUT
+        {
+            self.pending_session = None;
+            self.session_adoption_failures += 1;
+        }
+    }
+
     /// Validate an incoming PATH_RESPONSE: it must carry this session's id, come
     /// from the address under challenge, and echo the exact nonce. On a match the
     /// address is confirmed reachable and the anti-amplification cap is lifted.
@@ -2235,6 +2401,18 @@ impl SensOMaticRlcReceiver {
         }
         let cid = u64::from_le_bytes(inner[1..9].try_into().unwrap());
         let nonce = u64::from_le_bytes(inner[9..17].try_into().unwrap());
+        // An answer to a REPLACEMENT-session challenge: it carries the
+        // candidate id rather than the established one, and adopting is what
+        // the challenge was for. Checked before the established-session arm,
+        // since a candidate id by definition does not match `session_cid`.
+        if let Some((addr, want_cid, want_nonce, _)) = self.pending_session
+            && addr == from
+            && want_cid == cid
+            && want_nonce == nonce
+        {
+            self.adopt_session(cid, from);
+            return;
+        }
         if self.session_cid != Some(cid) {
             return;
         }
