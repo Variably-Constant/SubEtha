@@ -404,4 +404,14 @@ mod tests {
         assert_eq!(runs.load(Ordering::Acquire), 1);
         std::fs::remove_file(&p).ok();
     }
+
+    /// The signature catalog lets `MmfDispatcher` route by
+    /// `provided.satisfies(required)` containment, which a pointer
+    /// declaring no axis at all would silently drop out of.
+    #[test]
+    fn signature_engages_the_async_axis() {
+        let sig = SharedAsyncPointer::<u8>::SIGNATURE;
+        assert_ne!(sig, subetha_core::AxisMask::EMPTY);
+        assert!(sig.contains(subetha_core::Axis::Async));
+    }
 }

@@ -3140,8 +3140,8 @@ mod tests {
                     let len = (id as usize % 200) + 4; // 4..203, crosses the budget
                     let mut payload = vec![0u8; len];
                     payload[0..4].copy_from_slice(&id.to_le_bytes());
-                    for k in 4..len {
-                        payload[k] = id.wrapping_add(k as u32) as u8;
+                    for (k, b) in payload.iter_mut().enumerate().skip(4) {
+                        *b = id.wrapping_add(k as u32) as u8;
                     }
                     while ring.send_frame(p as usize, &payload).is_err() {
                         std::hint::spin_loop();
@@ -3162,8 +3162,8 @@ mod tests {
                         let id = u32::from_le_bytes(out[0..4].try_into().unwrap());
                         let len = (id as usize % 200) + 4;
                         assert_eq!(out.len(), len, "id {id} length");
-                        for k in 4..len {
-                            assert_eq!(out[k], id.wrapping_add(k as u32) as u8,
+                        for (k, b) in out.iter().enumerate().skip(4) {
+                            assert_eq!(*b, id.wrapping_add(k as u32) as u8,
                                        "id {id} byte {k}");
                         }
                         let already = seen[id as usize].swap(true, AtOrd::AcqRel);

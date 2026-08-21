@@ -625,4 +625,24 @@ mod tests {
         std::fs::remove_file(&p_region).ok();
         std::fs::remove_file(&p_vec).ok();
     }
+
+    /// The signature catalog lets `MmfDispatcher` route by
+    /// `provided.satisfies(required)` containment, which a pointer
+    /// declaring no axis at all would silently drop out of.
+    #[test]
+    fn signature_engages_the_content_prefix_axis() {
+        let sig = SharedUmbraPointer::<u32>::SIGNATURE;
+        assert_ne!(sig, subetha_core::AxisMask::EMPTY);
+        assert!(sig.contains(subetha_core::Axis::ContentPrefix));
+    }
+
+    /// Two pointers with the same signature are indistinguishable to a
+    /// containment-based router, so the catalog must separate them.
+    #[test]
+    fn signature_differs_from_the_async_pointer() {
+        assert_ne!(
+            crate::shared_async_pointer::SharedAsyncPointer::<u8>::SIGNATURE,
+            SharedUmbraPointer::<u32>::SIGNATURE
+        );
+    }
 }
