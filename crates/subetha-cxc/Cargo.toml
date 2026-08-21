@@ -72,13 +72,18 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 # iceoryx2 is the cross_process_compare bench's zero-copy peer
-# contender. Excluded on FreeBSD (its platform layer binds via bindgen,
-# the wrong cost for a dev-only bench peer that does not run there) and on
-# macOS (iceoryx2's POSIX layer uses MSG_NOSIGNAL, which does not exist on
-# macOS - it uses the SO_NOSIGPIPE socket option instead - so it does not
-# compile there). The comparison numbers are produced on Linux / Windows.
-[target.'cfg(not(any(target_os = "freebsd", target_os = "macos")))'.dev-dependencies]
-iceoryx2 = { workspace = true }
+# contender, behind the `iceoryx-bench` feature (off by default). Its
+# platform layer binds via bindgen, which needs libclang at build time -
+# a toolchain a correctness run has no other use for, and one not present
+# on every build host, so an ungated dev-dependency would make
+# `cargo test` fail to compile where libclang is absent. Optional and
+# NORMAL rather than dev, because Cargo has no optional dev-dependencies
+# (same reason as `zmq` above). Also excluded on FreeBSD and on macOS,
+# where iceoryx2's POSIX layer uses MSG_NOSIGNAL - absent there, which
+# uses the SO_NOSIGPIPE socket option instead - so it does not compile.
+# The comparison numbers are produced on Linux / Windows.
+[target.'cfg(not(any(target_os = "freebsd", target_os = "macos")))'.dependencies]
+iceoryx2 = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -110,6 +115,14 @@ wire-locale = ["dep:xsk-rs"]
 # by default; pulls the `zmq` crate (links C libzmq). Enable where libzmq is
 # installed: `cargo run --release --example cross_process_compare --features zmq-bench`.
 zmq-bench = ["dep:zmq"]
+# iceoryx2 (Eclipse zero-copy) cross-process bench contender in
+# cross_process_compare. Off by default; iceoryx2's platform layer binds
+# via bindgen, which needs libclang on the build host. Enable where
+# libclang is installed: `cargo run --release --example
+# cross_process_compare --features iceoryx-bench`. Without it the
+# leaderboard prints the contender as skipped rather than omitting it
+# silently.
+iceoryx-bench = ["dep:iceoryx2"]
 
 [dev-dependencies]
 criterion = { workspace = true }

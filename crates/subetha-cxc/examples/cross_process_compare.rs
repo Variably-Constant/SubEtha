@@ -91,7 +91,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("--child-localsock") => return run_child_localsock(&args[2]),
         Some("--child-stdio") => return run_child_stdio(),
         Some("--child-ipcchan") => return run_child_ipcchan(&args[2]),
-        #[cfg(not(any(target_os = "freebsd", target_os = "macos")))]
+        #[cfg(all(
+            feature = "iceoryx-bench",
+            not(any(target_os = "freebsd", target_os = "macos"))
+        ))]
         Some("--child-iceoryx2") => return run_child_iceoryx2(&args[2]),
         #[cfg(feature = "zmq-bench")]
         Some("--child-zmq") => return run_child_zmq(&args[2]),
@@ -278,11 +281,15 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("       SKIPPED: {e}"),
     }
 
-    // iceoryx2 is excluded from the FreeBSD build: its platform
-    // layer binds via bindgen there (libclang at build time), the
-    // wrong cost for a dev-only bench peer whose comparison numbers
-    // are produced on Linux.
-    #[cfg(not(any(target_os = "freebsd", target_os = "macos")))]
+    // iceoryx2 rides the `iceoryx-bench` feature: its platform layer
+    // binds via bindgen, which needs libclang on the build host. It is
+    // also absent on FreeBSD and macOS, where that layer does not
+    // compile. Each case announces itself rather than dropping a
+    // contender from the leaderboard in silence.
+    #[cfg(all(
+        feature = "iceoryx-bench",
+        not(any(target_os = "freebsd", target_os = "macos"))
+    ))]
     {
         println!("[10/10] iceoryx2 (Eclipse zero-copy) (best of {REPEATS}) ...");
         match best_of(bench_iceoryx2) {
@@ -293,8 +300,16 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => println!("       SKIPPED: {e}"),
         }
     }
-    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    #[cfg(all(
+        feature = "iceoryx-bench",
+        any(target_os = "freebsd", target_os = "macos")
+    ))]
     println!("[10/10] iceoryx2: not built on this platform (FreeBSD bindgen / macOS MSG_NOSIGNAL)");
+    #[cfg(not(feature = "iceoryx-bench"))]
+    println!(
+        "[10/10] iceoryx2: NOT MEASURED - rebuild with `--features iceoryx-bench` \
+         (needs libclang for bindgen) to include this contender"
+    );
 
     // ZeroMQ (ipc:// REQ/REP) - opt-in behind the `zmq-bench` feature, since
     // it links the C libzmq. Same round-trip ping-pong as the other contenders.
@@ -556,7 +571,10 @@ fn bench_ipcchan() -> Result<Duration, Box<dyn std::error::Error>> {
     Ok(total)
 }
 
-#[cfg(not(any(target_os = "freebsd", target_os = "macos")))]
+#[cfg(all(
+    feature = "iceoryx-bench",
+    not(any(target_os = "freebsd", target_os = "macos"))
+))]
 fn bench_iceoryx2() -> Result<Duration, Box<dyn std::error::Error>> {
     use iceoryx2::prelude::*;
     let service_name = format!("subetha_cmp_{}", std::process::id());
@@ -764,7 +782,10 @@ fn run_child_ipcchan(server_a_name: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-#[cfg(not(any(target_os = "freebsd", target_os = "macos")))]
+#[cfg(all(
+    feature = "iceoryx-bench",
+    not(any(target_os = "freebsd", target_os = "macos"))
+))]
 fn run_child_iceoryx2(service_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     use iceoryx2::prelude::*;
     // iceoryx2 0.9 on Windows requires POSIX user-database lookup
