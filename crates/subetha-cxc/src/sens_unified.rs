@@ -1332,6 +1332,22 @@ impl UnifiedSensReceiver {
     }
 
     /// The bound local address.
+    /// Whether the RLC decoder adopted a replacement session since this was
+    /// last called, clearing the flag. A caller re-drives its own handshake
+    /// on this edge instead of waiting for a timeout to tell it the peer it
+    /// is talking to is a new process.
+    pub fn take_session_changed(&mut self) -> bool {
+        self.rlc.take_session_changed()
+    }
+
+    /// `(adopted, challenges_that_went_unanswered)` for replacement
+    /// sessions. The second rising while the first does not is what a
+    /// rejected forgery looks like from here, so the pair is the operator's
+    /// view of whether resets are being attempted against this endpoint.
+    pub fn session_adoption_counts(&self) -> (u64, u64) {
+        self.rlc.session_adoption_counts()
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.real.local_addr()
     }

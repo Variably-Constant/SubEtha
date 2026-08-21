@@ -40,6 +40,10 @@ const ITEMS_PER_SESSION: usize = 64;
 /// How long the parent waits for a session's items before calling it.
 const DELIVER_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long the parent keeps polling after a forgery, so the challenge it
+/// provokes has time to go unanswered and be retired.
+const FORGERY_SETTLE: Duration = Duration::from_millis(1500);
+
 /// Payload for `session`, item `i`: the tag identifies which process
 /// sent it, so the parent can tell the two sessions apart.
 fn payload(session: u8, i: usize) -> Vec<u8> {
@@ -51,6 +55,14 @@ fn payload(session: u8, i: usize) -> Vec<u8> {
 fn tag_of(item: &[u8]) -> Option<u8> {
     item.first().copied()
 }
+
+/// Wire layout of an RLC DATA datagram, restated here because the forgery
+/// case has to build one from outside the crate - which is exactly what an
+/// attacker does. If `sens_rlc` moves these, this case stops forging a
+/// plausible datagram and starts passing for the wrong reason, so it also
+/// asserts the receiver still had to reject something.
+const PKT_RLC_DATA: u8 = 10;
+const RLC_DATA_HDR: usize = 1 + 8 + 4 + 4;
 
 pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     let mut rx = UnifiedSensReceiver::bind("127.0.0.1:0", UnifiedConfig::new(SYMBOL_LEN))
@@ -72,6 +84,36 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         "   parent: session A delivered {got_a} items, receiver code {:?}, switches {}",
         rx.active_code(),
         rx.switches()
+    );
+
+    // A forgery, before the genuine restart: a datagram announcing an
+    // unknown connection id, from a socket that then refuses to answer the
+    // challenge it provokes. This is the reset an off-path attacker would
+    // want, and the receiver must decline it.
+    let (adopted_before, failed_before) = rx.session_adoption_counts();
+    forge_unknown_session(port)?;
+    let deadline = Instant::now() + FORGERY_SETTLE;
+    while Instant::now() < deadline {
+        rx.poll().ok();
+        sleep(Duration::from_millis(10));
+    }
+    let (adopted_after, failed_after) = rx.session_adoption_counts();
+    require(
+        adopted_after == adopted_before,
+        format!(
+            "a forged connection id was ADOPTED ({adopted_before} -> {adopted_after}); \
+             an unauthenticated peer can reset this receiver's window"
+        ),
+    )?;
+    require(
+        failed_after > failed_before,
+        format!(
+            "the forgery was not even challenged ({failed_before} -> {failed_after} \
+             unanswered); the receiver is not exercising the path check"
+        ),
+    )?;
+    println!(
+        "   parent: forged session refused - adoptions {adopted_after}, unanswered challenges {failed_after}"
     );
 
     // The restart. A kill, so the receiver is told nothing.
@@ -103,6 +145,30 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
              discarding the new session (code {code:?}, {switches} switch(es))"
         ),
     )?;
+    Ok(())
+}
+
+/// Send datagrams announcing a connection id the receiver has never seen,
+/// from a socket that is then dropped without answering anything.
+///
+/// The limit of what this proves, stated so it is not over-read: the
+/// datagrams carry this process's real source address, because forging the
+/// source too needs a raw socket. So it demonstrates that an UNANSWERED
+/// challenge yields no adoption - the mechanism an off-path attacker cannot
+/// beat - rather than exercising source-address spoofing itself.
+fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let target = format!("127.0.0.1:{port}");
+    let mut pkt = vec![0u8; RLC_DATA_HDR + SYMBOL_LEN];
+    pkt[0] = PKT_RLC_DATA;
+    // A connection id no genuine peer here holds.
+    pkt[1..9].copy_from_slice(&0xDEAD_BEEF_FEED_FACEu64.to_le_bytes());
+    for attempt in 0..4u32 {
+        pkt[9..13].copy_from_slice(&attempt.to_le_bytes());
+        sock.send_to(&pkt, &target)?;
+        sleep(Duration::from_millis(5));
+    }
+    println!("   parent: sent 4 forged datagrams under an unknown connection id");
     Ok(())
 }
 
