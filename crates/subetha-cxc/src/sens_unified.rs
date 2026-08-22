@@ -1699,6 +1699,72 @@ mod tests {
         }
     }
 
+    /// poll() must return promptly whether or not traffic is flowing: a mesh
+    /// consumer polls one receiver per node in a loop, and a poll that blocks
+    /// for seconds starves every other duty on that loop. Measured on a
+    /// four-node mesh: a strict 1Hz log printed ~6 samples in ~40s.
+    #[test]
+    fn unified_poll_returns_promptly_under_sparse_traffic() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+
+        // Three peers on heartbeat-shaped traffic, one dying early: the mesh
+        // shape where the seconds-scale poll was measured.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let done_rx = std::sync::Arc::new(std::sync::Mutex::new(done_rx));
+        let mut senders = Vec::new();
+        for p in 0..3u64 {
+            let done_rx = std::sync::Arc::clone(&done_rx);
+            senders.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let buf = vec![7u8; 8];
+                std::thread::sleep(Duration::from_millis(150 * p));
+                let n = if p == 1 { 2 } else { 8 };
+                for _ in 0..n {
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                if p == 1 {
+                    return;
+                }
+                done_rx.lock().unwrap().recv_timeout(Duration::from_secs(20)).ok();
+            }));
+        }
+
+        let mut recv = recv;
+        let mut worst = Duration::ZERO;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(6) {
+            let t = Instant::now();
+            recv.poll().ok();
+            worst = worst.max(t.elapsed());
+        }
+        done_tx.send(()).ok();
+        done_tx.send(()).ok();
+        for s in senders {
+            s.join().ok();
+        }
+        assert!(
+            worst < Duration::from_millis(500),
+            "a single poll() blocked for {worst:?} under sparse traffic",
+        );
+    }
+
     /// Three peers through the unified endpoint on ForceRlc, sending SPARSELY -
     /// one small item every 300ms - with one going silent partway. The
     /// consumer's topology: a heartbeat mesh where a node dies.
@@ -1707,8 +1773,6 @@ mod tests {
     /// demux socket, sparse traffic that lets the receiver's timers run between
     /// frames, and a peer that stops.
     #[test]
-    #[ignore = "harness: poll_from blocks past the loop deadline under sparse traffic, so this \
-                times out rather than asserting; needs a non-blocking drain before it can judge"]
     fn unified_three_sparse_peers_survive_one_going_silent() {
         use std::sync::mpsc;
         let sym = 64usize;
@@ -1729,7 +1793,6 @@ mod tests {
 
         let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
         let addr = recv.local_addr().unwrap();
-        let (tx, rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
@@ -1771,7 +1834,7 @@ mod tests {
             h.join().ok();
         }
         stop_tx.send(()).ok();
-        let got: Vec<(u64, u64)> = rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        let got: Vec<(u64, u64)> = rh.join().expect("collector thread");
 
         let tags: std::collections::BTreeSet<u64> = got.iter().map(|(t, _)| *t).collect();
         for p in 0..2u64 {
