@@ -4327,6 +4327,68 @@ mod tests {
     /// distinguishable; ordering is asserted WITHIN a sender, since nothing
     /// orders one against the other.
     #[test]
+    /// Three concurrent senders, which is the smallest number that forces two
+    /// separate admission challenges. With two peers one always takes the
+    /// free first-admission slot, so a broken challenge path still delivers
+    /// both streams and a two-peer test passes.
+    #[test]
+    fn three_concurrent_rs_senders_all_deliver() {
+        const PER: u64 = 120;
+        const SENDERS: u64 = 3;
+        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap().with_multi_peer();
+        let addr = recv.local_addr().unwrap();
+
+        let gate = Arc::new(std::sync::Barrier::new(SENDERS as usize));
+        let done = Arc::new(AtomicBool::new(false));
+        let mut txs = Vec::new();
+        for s in 0..SENDERS {
+            let stop = Arc::clone(&done);
+            let gate = Arc::clone(&gate);
+            txs.push(std::thread::spawn(move || {
+                let mut send = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+                gate.wait();
+                for i in 0..PER {
+                    send.send_item(&((s << 56) | i).to_le_bytes()).unwrap();
+                }
+                send.flush().unwrap();
+                while !stop.load(AtomicOrdering::Relaxed) {
+                    send.drain_until_acked(Duration::from_millis(50)).ok();
+                }
+            }));
+        }
+
+        let mut got: Vec<u64> = Vec::new();
+        let start = Instant::now();
+        while (got.len() as u64) < PER * SENDERS && start.elapsed() < Duration::from_secs(30) {
+            for item in recv.poll().unwrap() {
+                got.push(u64::from_le_bytes(item.try_into().unwrap()));
+            }
+        }
+        done.store(true, AtomicOrdering::Relaxed);
+        for t in txs {
+            t.join().ok();
+        }
+
+        let live = recv.live_sessions().len();
+        let (admitted, unanswered) = recv.session_adoption_counts();
+        for s in 0..SENDERS {
+            let mine: Vec<u64> =
+                got.iter().filter(|v| (*v >> 56) == s).map(|v| v & 0x00FF_FFFF_FFFF_FFFF).collect();
+            assert_eq!(
+                mine,
+                (0..PER).collect::<Vec<_>>(),
+                "sender {s} of {SENDERS} did not deliver ({live} windows live, \
+                 {admitted} admitted, {unanswered} challenges unanswered)",
+            );
+        }
+        assert_eq!(
+            live, SENDERS as usize,
+            "expected a window per peer, got {live} ({admitted} admitted, \
+             {unanswered} unanswered)",
+        );
+    }
+
+    #[test]
     fn two_concurrent_rs_senders_both_deliver() {
         const PER: u64 = 200;
         const SENDERS: u64 = 2;

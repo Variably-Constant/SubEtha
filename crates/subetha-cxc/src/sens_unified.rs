@@ -1591,6 +1591,179 @@ mod tests {
     /// its RS half a demux socket, which is shared and fed by a reader that
     /// takes every source address, so that receiver has to route by session
     /// epoch rather than serve one peer.
+    /// Three peers through the unified endpoint on block-RS. Two is not enough
+    /// to exercise admission: one peer always takes the free first-admission
+    /// slot, so a broken challenge path still delivers both. Three forces two
+    /// separate challenges, and the challenge answer travels back over the
+    /// sender's demux socket.
+    /// Two peers on DIFFERENT codes through one receiver. Under `Auto` each
+    /// sender runs its own switch controller, so a mesh whose links see
+    /// different loss can have peers disagree about which code is live.
+    ///
+    /// The receiver holds one `active` code and polls only that decoder, so a
+    /// peer sending the other code is never drained. This is the endpoint-wide
+    /// switch boundary meeting a per-peer topology.
+    #[test]
+    #[ignore = "subetha-11: one active code per endpoint; peers on different codes are not both drained"]
+    fn unified_peers_on_different_codes_both_deliver() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let base = UnifiedConfig {
+            policy: CodePolicy::default_auto(),
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", base).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let per_peer: u64 = 40;
+        let total = per_peer * 2;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<u64> = Vec::new();
+            let start = Instant::now();
+            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(20) {
+                let items = recv.poll().unwrap_or_default();
+                let empty = items.is_empty();
+                for it in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push(u64::from_le_bytes(s));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send(got).ok();
+        });
+
+        // One peer pinned to each code, which is the steady state a divergent
+        // Auto switch reaches.
+        let mut handles = Vec::new();
+        for (p, policy) in [CodePolicy::ForceRlc, CodePolicy::ForceRs].into_iter().enumerate() {
+            let mut cfg = base;
+            cfg.policy = policy;
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let mut buf = vec![0u8; 8];
+                for i in 0..per_peer {
+                    buf[..8].copy_from_slice(&(((p as u64) << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                }
+                send.finish().ok();
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+
+        let got = rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        rh.join().ok();
+        for p in 0..2u64 {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|v| (*v >> 56) == p)
+                .map(|v| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..per_peer).collect::<Vec<_>>(),
+                "peer {p} was not drained; the receiver polls one active code",
+            );
+        }
+    }
+
+    #[test]
+    fn unified_three_peers_on_block_rs_all_deliver() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRs,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let per_peer: u64 = 50;
+        let peers: u64 = 3;
+        let total = per_peer * peers;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<u64> = Vec::with_capacity(total as usize);
+            let start = Instant::now();
+            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(30) {
+                let items = recv.poll().unwrap_or_default();
+                let empty = items.is_empty();
+                for it in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push(u64::from_le_bytes(s));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send(got).ok();
+        });
+
+        let gate = Arc::new(std::sync::Barrier::new(peers as usize));
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            let gate = Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let mut buf = vec![0u8; 8];
+                gate.wait();
+                let start = Instant::now();
+                for i in 0..per_peer {
+                    if start.elapsed() > Duration::from_secs(20) {
+                        break;
+                    }
+                    buf[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                }
+                send.finish().ok();
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+
+        let got = rx.recv_timeout(Duration::from_secs(35)).unwrap();
+        rh.join().ok();
+        for p in 0..peers {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|v| (*v >> 56) == p)
+                .map(|v| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..per_peer).collect::<Vec<_>>(),
+                "peer {p} of {peers} did not deliver through the unified block-RS path",
+            );
+        }
+    }
+
     #[test]
     fn unified_two_peers_on_block_rs_both_deliver() {
         use std::sync::mpsc;
