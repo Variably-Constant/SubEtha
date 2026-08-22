@@ -1682,6 +1682,97 @@ mod tests {
         }
     }
 
+    /// Three peers through the unified endpoint on ForceRlc, sending SPARSELY -
+    /// one small item every 300ms - with one going silent partway. The
+    /// consumer's topology: a heartbeat mesh where a node dies.
+    ///
+    /// Combines what the other multi-peer tests each cover separately: the
+    /// demux socket, sparse traffic that lets the receiver's timers run between
+    /// frames, and a peer that stops.
+    #[test]
+    #[ignore = "harness: poll_from blocks past the loop deadline under sparse traffic, so this \
+                times out rather than asserting; needs a non-blocking drain before it can judge"]
+    fn unified_three_sparse_peers_survive_one_going_silent() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let rounds: u64 = 10;
+        let silent_after: u64 = 3;
+        let peers: u64 = 3;
+
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<(u64, u64)> = Vec::new();
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(15) && stop_rx.try_recv().is_err() {
+                let batch: Vec<(u64, Vec<u8>)> = recv.poll_from().unwrap_or_default();
+                for (tag, it) in batch {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    let v = u64::from_le_bytes(s);
+                    got.push((tag, v));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            got
+        });
+
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let mut buf = vec![0u8; 8];
+                let n = if p == 2 { silent_after } else { rounds };
+                for i in 0..n {
+                    buf[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                if p != 2 {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                send.finish().ok();
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+        stop_tx.send(()).ok();
+        let got: Vec<(u64, u64)> = rx.recv_timeout(Duration::from_secs(20)).unwrap();
+
+        let tags: std::collections::BTreeSet<u64> = got.iter().map(|(t, _)| *t).collect();
+        for p in 0..2u64 {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|(_, v)| (*v >> 56) == p)
+                .map(|(_, v)| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..rounds).collect::<Vec<_>>(),
+                "surviving peer {p} stopped being delivered; got {} of {rounds}, \
+                 tags seen {tags:?}",
+                mine.len(),
+            );
+        }
+    }
+
     #[test]
     fn unified_three_peers_on_block_rs_all_deliver() {
         use std::sync::mpsc;

@@ -11,7 +11,7 @@
 //!   and slots recycle on release. Registration in any process is
 //!   visible to every process.
 //! - **Ring publication.** `published()` is the count of per-producer
-//!   ring backings whose files exist and are fully initialised.
+//!   ring backings whose files exist and are fully initialized.
 //!   A grower creates the backing files FIRST, then advances the
 //!   count (Release); openers that observe the count (Acquire) can
 //!   open the files without racing initialisation.
@@ -69,7 +69,7 @@ struct DirHeader {
     _rsvd: u32,
     /// Topology epoch: bumped on every claim / release / publish.
     epoch: AtomicU64,
-    /// Per-producer ring backings that exist and are initialised.
+    /// Per-producer ring backings that exist and are initialized.
     published: AtomicU32,
     active_producers: AtomicU32,
     active_consumers: AtomicU32,
@@ -139,15 +139,33 @@ impl PeerDirectory {
         Ok(Self { _backing: DirBacking::Anon(mmap), raw_ptr })
     }
 
-    /// File-backed directory at `path`, initialised by the creator.
+    /// File-backed directory at `path`, initialized by the creator.
+    /// Obtain the file-backed directory at `path`, initializing it only if it
+    /// does not yet exist. Attaching leaves live claims in place; use
+    /// [`reset`](Self::reset) to deliberately wipe them.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, RingError> {
         let total = peer_directory_size();
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        unsafe { init_dir_layout(mmap.as_mut_ptr()) };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_dir_layout(ptr) },
+            |ptr| {
+                let header = unsafe { &*(ptr as *const DirHeader) };
+                header.magic.load(AtomOrd::Acquire) == DIR_MAGIC
+            },
+        )
+        .map_err(|e| RingError::IoError(e.kind()))?;
+        let raw_ptr = mmap.as_mut_ptr();
+        Ok(Self { _backing: DirBacking::File(file, mmap), raw_ptr })
+    }
+
+    /// Reinitialise the directory at `path`, discarding every claim a live peer
+    /// holds. For a caller that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>) -> Result<Self, RingError> {
+        let total = peer_directory_size();
+        let (file, mut mmap) =
+            crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe { init_dir_layout(ptr) })
+                .map_err(|e| RingError::IoError(e.kind()))?;
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self { _backing: DirBacking::File(file, mmap), raw_ptr })
     }
@@ -170,7 +188,7 @@ impl PeerDirectory {
     }
 
     /// Named-shm directory. `create_or_open` semantics: the region is
-    /// initialised only when its magic is absent, so racing attachers
+    /// initialized only when its magic is absent, so racing attachers
     /// never wipe live claims.
     pub fn create_or_open_shm(name: &str) -> Result<Self, RingError> {
         let mut shm = crate::shm_file::ShmFile::create_or_open_named(
@@ -242,7 +260,7 @@ impl PeerDirectory {
         self.header().epoch.fetch_add(1, AtomOrd::AcqRel) + 1
     }
 
-    /// Ring backings published (files exist + initialised).
+    /// Ring backings published (files exist + initialized).
     #[inline]
     pub fn published(&self) -> usize {
         self.header().published.load(AtomOrd::Acquire) as usize

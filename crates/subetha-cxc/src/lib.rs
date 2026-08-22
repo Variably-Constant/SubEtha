@@ -170,6 +170,7 @@ pub mod udp_bridge;
 pub mod cross_process_waker;
 pub mod shared_condvar;
 pub mod locale_adaptive_ring;
+mod mmf_attach;
 pub mod mmf_warm;
 pub mod monitor_wait;
 pub mod net_tune;

@@ -3121,6 +3121,86 @@ mod tests {
     /// Each sender tags its items with its own index in the high byte so the
     /// two streams stay distinguishable after interleaving; ordering is asserted
     /// WITHIN a stream, since nothing orders one sender against another.
+    /// Three peers sending SPARSELY - one small item every 300ms, the shape a
+    /// heartbeat has - with one going silent partway. The surviving two must
+    /// keep delivering.
+    ///
+    /// The existing multi-peer tests push their items in a burst, so no expiry
+    /// timer ever fires between two frames of the same peer. A mesh sends one
+    /// item per interval, which leaves every timeout in the receiver free to
+    /// run in the gaps.
+    #[test]
+    fn three_sparse_senders_keep_delivering_after_one_goes_silent() {
+        let item_len = 32usize;
+        let symbol_len = 64usize;
+        let rounds: u64 = 10;
+        let silent_after: u64 = 3;
+        let peers: u64 = 3;
+
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let rx = std::thread::spawn(move || {
+            let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+            addr_tx.send(recv.local_addr().unwrap()).unwrap();
+            let mut got: Vec<(u64, u64)> = Vec::new();
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(12)
+                && stop_rx.try_recv().is_err()
+            {
+                for item in recv.poll().unwrap_or_default() {
+                    let tagged = u64::from_le_bytes(item[..8].try_into().unwrap());
+                    got.push((tagged >> 56, tagged & 0x00FF_FFFF_FFFF_FFFF));
+                }
+            }
+            (got, recv.live_sessions().len())
+        });
+
+        let recv_addr = addr_rx.recv().unwrap();
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            handles.push(std::thread::spawn(move || {
+                let mut send =
+                    SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len)
+                        .unwrap();
+                // The third peer stops early, as a node dying mid-run does.
+                let n = if p == 2 { silent_after } else { rounds };
+                for i in 0..n {
+                    let mut item = vec![0u8; item_len];
+                    item[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&item).is_err() {
+                        break;
+                    }
+                    send.pump_once().ok();
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                // Keep the survivors' sockets alive so their sessions stay live.
+                if p != 2 {
+                    let hold = Instant::now();
+                    while hold.elapsed() < Duration::from_secs(2) {
+                        send.pump_once().ok();
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+        stop_tx.send(()).ok();
+        let (got, live) = rx.join().unwrap();
+
+        for p in 0..2u64 {
+            let mine: Vec<u64> = got.iter().filter(|(t, _)| *t == p).map(|(_, i)| *i).collect();
+            assert_eq!(
+                mine,
+                (0..rounds).collect::<Vec<_>>(),
+                "surviving peer {p} stopped being delivered ({live} windows live); \
+                 got {} of {rounds}",
+                mine.len(),
+            );
+        }
+    }
+
     #[test]
     fn two_concurrent_senders_both_deliver() {
         let item_len = 32usize;
