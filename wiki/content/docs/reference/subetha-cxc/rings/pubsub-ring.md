@@ -32,7 +32,8 @@ walk positions independently via its own
 | Call | Locale | Visibility |
 |---|---|---|
 | `PubSubRing::create_anon(capacity)` | Anonymous mmap | In-process only; fastest construction. |
-| `PubSubRing::create(path, capacity)` | File-backed | Cross-process via OS page cache. |
+| `PubSubRing::create(path, capacity)` | File-backed | Cross-process via OS page cache. Obtains the ring: initializes the file only when the path does not yet exist, otherwise attaches with published slots and the head intact; a different capacity is refused. |
+| `PubSubRing::reset(path, capacity)` | File-backed | Truncate and reinitialize, for a caller that owns the path. On Windows it succeeds only once every mapping handle is gone. |
 | `PubSubRing::open(path, expected_capacity)` | File-backed | Open an existing file-backed ring. Validates magic + capacity + slot_size. |
 | `PubSubRing::create_from_shm(shm, capacity)` | Named shared memory | Cross-process RAM-resident (`/dev/shm` on Linux, named section on Windows). |
 | `PubSubRing::open_from_shm(shm, expected_capacity)` | Named shared memory | Open an existing named-shm region without re-initialising. |

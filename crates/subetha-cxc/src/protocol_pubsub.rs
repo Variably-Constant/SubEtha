@@ -124,18 +124,51 @@ impl PubSubRing {
     }
 
     /// Construct a file-backed pub/sub ring. Cross-process via
-    /// the OS page cache.
+    /// the OS page cache. Obtains the ring at `path`: initializes an
+    /// empty one if the path does not yet exist and attaches to it if
+    /// it does, with published slots and the head in place; a ring
+    /// built with a different capacity is refused.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> std::io::Result<Self> {
         assert!(capacity.is_power_of_two() && capacity >= 2,
                 "capacity must be pow2 >= 2");
         let total = pubsub_ring_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| init_pubsub_layout(ptr, capacity),
+            |ptr| unsafe { (*(ptr as *const PubSubHeader)).magic == PUBSUB_MAGIC },
+        )?;
         let raw_ptr = mmap.as_mut_ptr();
-        init_pubsub_layout(raw_ptr, capacity);
+        let header = unsafe { &*(raw_ptr as *const PubSubHeader) };
+        if header.magic != PUBSUB_MAGIC
+            || header.capacity != capacity as u64
+            || header.slot_size != PUBSUB_SLOT_SIZE as u64
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "pubsub file layout mismatch",
+            ));
+        }
+        Ok(Self {
+            _backing: PubSubBacking::File(file, mmap),
+            raw_ptr, capacity,
+        })
+    }
+
+    /// Truncate the ring at `path` and initialize an empty one,
+    /// discarding published slots live subscribers hold. For a caller
+    /// that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> std::io::Result<Self> {
+        assert!(capacity.is_power_of_two() && capacity >= 2,
+                "capacity must be pow2 >= 2");
+        let total = pubsub_ring_file_size(capacity);
+        let (file, mut mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            total,
+            |ptr| init_pubsub_layout(ptr, capacity),
+        )?;
+        let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
             _backing: PubSubBacking::File(file, mmap),
             raw_ptr, capacity,
@@ -349,27 +382,18 @@ impl PubSubSubscriber {
     }
 }
 
+/// Lay out an empty pub/sub ring: the whole region zeroed (a zero
+/// slot sequence is the never-published state and `head` starts at
+/// zero), the geometry fields, then the magic, last, because
+/// attachers spin on it. `ptr` must address at least
+/// `pubsub_ring_file_size(capacity)` writable bytes.
 fn init_pubsub_layout(ptr: *mut u8, capacity: usize) {
-    let header_ptr = ptr as *mut PubSubHeader;
     unsafe {
-        std::ptr::write(header_ptr, PubSubHeader {
-            magic: PUBSUB_MAGIC,
-            capacity: capacity as u64,
-            slot_size: PUBSUB_SLOT_SIZE as u64,
-            _pad_meta: [0; 64 - 24],
-            head: AtomicU64::new(0),
-            _pad_head: [0; 64 - 8],
-        });
-    }
-    let slots_base = unsafe { ptr.add(std::mem::size_of::<PubSubHeader>()) };
-    for i in 0..capacity {
-        let slot_ptr = unsafe { slots_base.add(i * PUBSUB_SLOT_SIZE) as *mut PubSubSlot };
-        unsafe {
-            std::ptr::write(slot_ptr, PubSubSlot {
-                sequence: AtomicU64::new(0),
-                payload: UnsafeCell::new([0; PUBSUB_PAYLOAD_BYTES]),
-            });
-        }
+        std::ptr::write_bytes(ptr, 0, pubsub_ring_file_size(capacity));
+        let header_ptr = ptr as *mut PubSubHeader;
+        (*header_ptr).capacity = capacity as u64;
+        (*header_ptr).slot_size = PUBSUB_SLOT_SIZE as u64;
+        std::ptr::write_volatile(&raw mut (*header_ptr).magic, PUBSUB_MAGIC);
     }
 }
 
@@ -399,6 +423,34 @@ mod tests {
         let mut out = [0u8; PUBSUB_PAYLOAD_BYTES];
         ring.read_at(0, &mut out).expect("read at 0");
         assert_eq!(out, payload);
+    }
+
+    /// A second create attaches with published slots and the head in
+    /// place; reset is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_published() {
+        let p = tmp_pos("attach");
+        let ring = PubSubRing::create(&p, 8).expect("create");
+        let payload = [0x77u8; PUBSUB_PAYLOAD_BYTES];
+        ring.publish(&payload);
+
+        let ring2 = PubSubRing::create(&p, 8).expect("second create");
+        assert_eq!(ring2.head(), 1, "attach lost the head");
+        let mut out = [0u8; PUBSUB_PAYLOAD_BYTES];
+        ring2.read_at(0, &mut out).expect("read after attach");
+        assert_eq!(out, payload, "attach lost a published slot");
+        assert!(PubSubRing::create(&p, 4).is_err());
+
+        // Windows refuses to truncate a mapped file, so every handle
+        // goes before the reset.
+        drop(ring);
+        drop(ring2);
+        let fresh = PubSubRing::reset(&p, 8).expect("reset");
+        assert_eq!(fresh.head(), 0, "reset kept the head");
+        assert_eq!(fresh.read_at(0, &mut out), Err(PubSubReadError::Pending),
+                   "reset kept a published slot");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
