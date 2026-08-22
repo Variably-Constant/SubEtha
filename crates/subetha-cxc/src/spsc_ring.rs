@@ -162,32 +162,19 @@ fn init_spsc_layout(mmap: &mut MmapMut, capacity: usize) {
     unsafe { init_spsc_layout_raw(mmap.as_mut_ptr(), capacity) };
 }
 
-/// Backing-agnostic layout init. Writes the header and zeroes the
-/// payload slots at the given raw pointer. Caller guarantees that
-/// `ptr` points to at least `spsc_ring_file_size(capacity)` bytes
-/// of mutable, suitably-aligned memory.
+/// Backing-agnostic layout init. Zeroes the whole region (the zeroed
+/// slots are the empty payload state and the cursors start at zero),
+/// writes the geometry fields, then the magic, last, because attachers
+/// spin on it. Caller guarantees that `ptr` points to at least
+/// `spsc_ring_file_size(capacity)` bytes of mutable, suitably-aligned
+/// memory.
 unsafe fn init_spsc_layout_raw(ptr: *mut u8, capacity: usize) {
-    let header_ptr = ptr as *mut SpscHeader;
     unsafe {
-        std::ptr::write(header_ptr, SpscHeader {
-            magic: SPSC_MAGIC,
-            capacity: capacity as u64,
-            slot_size: SPSC_SLOT_SIZE as u64,
-            _pad_meta: [0; 64 - 24],
-            head: AtomicU64::new(0),
-            _pad_head: [0; 64 - 8],
-            tail: AtomicU64::new(0),
-            _pad_tail: [0; 64 - 8],
-        });
-    }
-    let slots_base = unsafe { ptr.add(std::mem::size_of::<SpscHeader>()) };
-    for i in 0..capacity {
-        let slot_ptr = unsafe { slots_base.add(i * SPSC_SLOT_SIZE) as *mut SpscSlot };
-        unsafe {
-            std::ptr::write(slot_ptr, SpscSlot {
-                payload: UnsafeCell::new([0; SPSC_PAYLOAD_BYTES]),
-            });
-        }
+        std::ptr::write_bytes(ptr, 0, spsc_ring_file_size(capacity));
+        let header_ptr = ptr as *mut SpscHeader;
+        (*header_ptr).capacity = capacity as u64;
+        (*header_ptr).slot_size = SPSC_SLOT_SIZE as u64;
+        std::ptr::write_volatile(&raw mut (*header_ptr).magic, SPSC_MAGIC);
     }
 }
 
@@ -208,16 +195,47 @@ impl SpscRingCore {
     }
 
     /// File-backed ring; cross-process visibility via the OS page cache.
+    /// Obtains the ring at `path`: initializes an empty one if the path
+    /// does not yet exist and attaches to it if it does. Attaching
+    /// leaves queued items and both cursors in place; a ring built with
+    /// a different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, RingError> {
         assert!(capacity.is_power_of_two() && capacity >= 2,
                 "capacity must be pow2 >= 2");
         let total = spsc_ring_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        init_spsc_layout(&mut mmap, capacity);
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_spsc_layout_raw(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const SpscHeader)).magic == SPSC_MAGIC },
+        )?;
+        let header = unsafe { &*(mmap.as_ptr() as *const SpscHeader) };
+        if header.magic != SPSC_MAGIC
+            || header.capacity != capacity as u64
+            || header.slot_size != SPSC_SLOT_SIZE as u64
+        {
+            return Err(RingError::LayoutMismatch);
+        }
+        let raw_ptr = mmap.as_mut_ptr();
+        Ok(Self {
+            _backing: SpscBacking::File(file, mmap),
+            raw_ptr, capacity,
+        })
+    }
+
+    /// Truncate the ring at `path` and initialize an empty one,
+    /// discarding queued items live peers hold. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, RingError> {
+        assert!(capacity.is_power_of_two() && capacity >= 2,
+                "capacity must be pow2 >= 2");
+        let total = spsc_ring_file_size(capacity);
+        let (file, mut mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_spsc_layout_raw(ptr, capacity) },
+        )?;
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
             _backing: SpscBacking::File(file, mmap),
@@ -548,6 +566,39 @@ mod tests {
         ring.try_pop(&mut out).unwrap();
         assert_eq!(out, payload);
         assert_eq!(ring.try_pop(&mut out).unwrap_err(), RingError::Empty);
+    }
+
+    /// A second create attaches with queued items in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_items() {
+        let p = std::env::temp_dir().join(format!(
+            "subetha-spsc-attach-{}.bin", std::process::id(),
+        ));
+        std::fs::remove_file(&p).ok();
+
+        let ring = SpscRingCore::create(&p, 8).unwrap();
+        let payload = [0x5Eu8; SPSC_PAYLOAD_BYTES];
+        ring.try_push(&payload).unwrap();
+
+        let ring2 = SpscRingCore::create(&p, 8).unwrap();
+        let mut out = [0u8; SPSC_PAYLOAD_BYTES];
+        ring2.try_pop(&mut out).unwrap();
+        assert_eq!(out, payload, "attach lost a queued item");
+        assert!(matches!(
+            SpscRingCore::create(&p, 4),
+            Err(RingError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle
+        // goes before the reset.
+        drop(ring);
+        drop(ring2);
+        let fresh = SpscRingCore::reset(&p, 8).unwrap();
+        assert_eq!(fresh.try_pop(&mut out).unwrap_err(), RingError::Empty,
+                   "reset kept a queued item");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

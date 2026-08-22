@@ -36,6 +36,15 @@ atomic), one Acquire load + one Release store per push or pop.
 - **In-process anonymous** (`create_anon_pair`) or
   **cross-process file-backed** (`create_pair` / `open_pair`) -
   same byte layout, same protocol.
+- **File-backed create obtains the ring** (`create_pair`, and
+  `SpscRingCore::create` under it): it initializes the file only
+  when the path does not yet exist, and otherwise attaches with
+  queued items and both cursors intact; a different capacity is
+  a `LayoutMismatch`. Attaching is for a restarted process
+  resuming its own side - SPSC still means one producer and one
+  consumer total. `SpscRingCore::reset` truncates and
+  reinitializes, and on Windows succeeds only once every mapping
+  handle is gone.
 
 ## Lamport 1983 protocol
 

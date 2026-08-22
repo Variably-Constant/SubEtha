@@ -116,7 +116,8 @@ For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 `SharedReservoirSampler`, `SharedBroadcastRing` (file-backed),
 `SharedTreiberStack`, `SharedVec`, `SharedStringArena`,
 `SharedTopologyMap`, `SharedBTreeMap`, `SharedRegion`, `FrameRing`
-(file-backed), `SharedUniversal`, the
+(file-backed), `SharedUniversal`, `SpscRingCore` (file-backed, and
+the file-backed constructors built on it), the
 `AdaptiveRing` peer directory - and for `SharedHashMap` - `create`
 obtains the instance:
 it initializes the file only when the path does not yet exist, and
