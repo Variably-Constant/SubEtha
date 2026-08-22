@@ -65,6 +65,13 @@ shape (SPSC / MPSC / MPMC / Vyukov), with a producer override, see the
   (`create` / `open`), or **named shared memory**
   (`create_from_shm` / `open_from_shm`) - same byte layout, same
   protocol.
+- **File-backed `create` obtains the ring**: it initializes the file
+  only when the path does not yet exist, and otherwise attaches with
+  queued frames and both region cursors intact; a ring built with
+  different parameters is a `LayoutMismatch`. Racing creators on one
+  path elect one initializer. `reset` is the call that truncates and
+  reinitializes, and on Windows it succeeds only once every mapping
+  handle is gone.
 
 ## Per-record layout selection
 

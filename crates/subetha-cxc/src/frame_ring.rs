@@ -168,31 +168,27 @@ fn validate_params(capacity: usize, slot_size: usize, region_bytes: usize)
     Ok(())
 }
 
+/// Lay out an empty frame ring: header and descriptor slots zeroed
+/// (a zero class byte is an unpublished slot; the four cursors start
+/// at zero), the config fields, then the magic, last, because
+/// attachers spin on it.
+///
+/// # Safety
+/// `ptr` addresses at least `frame_ring_file_size(capacity,
+/// slot_size, region_bytes)` writable bytes.
 unsafe fn init_frame_layout_raw(
     ptr: *mut u8, capacity: usize, slot_size: usize, region_bytes: usize,
 ) {
     let inline_budget = slot_size - DESC_HEADER_BYTES;
     unsafe {
-        std::ptr::write(ptr as *mut FrameHeader, FrameHeader {
-            magic: FRAME_MAGIC,
-            capacity: capacity as u64,
-            slot_size: slot_size as u64,
-            region_bytes: region_bytes as u64,
-            inline_budget: inline_budget as u64,
-            _pad_meta: [0; 64 - 40],
-            desc_head: AtomicU64::new(0),
-            _pad_dh: [0; 64 - 8],
-            desc_tail: AtomicU64::new(0),
-            _pad_dt: [0; 64 - 8],
-            region_head: AtomicU64::new(0),
-            _pad_rh: [0; 64 - 8],
-            region_tail: AtomicU64::new(0),
-            _pad_rt: [0; 64 - 8],
-        });
-        // Zero the descriptor slots so a stale class byte from a prior
-        // mapping cannot be misread before its slot is published.
         let desc_base = std::mem::size_of::<FrameHeader>();
-        std::ptr::write_bytes(ptr.add(desc_base), 0, capacity * slot_size);
+        std::ptr::write_bytes(ptr, 0, desc_base + capacity * slot_size);
+        let hdr = ptr as *mut FrameHeader;
+        (*hdr).capacity = capacity as u64;
+        (*hdr).slot_size = slot_size as u64;
+        (*hdr).region_bytes = region_bytes as u64;
+        (*hdr).inline_budget = inline_budget as u64;
+        std::ptr::write_volatile(&raw mut (*hdr).magic, FRAME_MAGIC);
     }
 }
 
@@ -214,17 +210,42 @@ impl FrameRing {
     }
 
     /// File-backed frame ring; cross-process via the OS page cache.
+    /// Obtains the ring at `path`: initializes an empty one if the path
+    /// does not yet exist and attaches to it if it does. Attaching
+    /// leaves queued frames and both region cursors in place; a ring
+    /// built with different parameters is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, capacity: usize, slot_size: usize, region_bytes: usize,
     ) -> Result<Self, RingError> {
         validate_params(capacity, slot_size, region_bytes)?;
         let total = frame_ring_file_size(capacity, slot_size, region_bytes);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        unsafe { init_frame_layout_raw(mmap.as_mut_ptr(), capacity, slot_size, region_bytes) };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_frame_layout_raw(ptr, capacity, slot_size, region_bytes) },
+            |ptr| unsafe { (*(ptr as *const FrameHeader)).magic == FRAME_MAGIC },
+        )?;
+        Self::check_header(mmap.as_ptr(), capacity, slot_size, region_bytes)?;
+        let raw_ptr = mmap.as_mut_ptr();
+        Ok(Self::from_parts(
+            FrameBacking::File(file, mmap), raw_ptr, capacity, slot_size, region_bytes,
+        ))
+    }
+
+    /// Truncate the ring at `path` and initialize an empty one,
+    /// discarding queued frames live peers hold. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, capacity: usize, slot_size: usize, region_bytes: usize,
+    ) -> Result<Self, RingError> {
+        validate_params(capacity, slot_size, region_bytes)?;
+        let total = frame_ring_file_size(capacity, slot_size, region_bytes);
+        let (file, mut mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_frame_layout_raw(ptr, capacity, slot_size, region_bytes) },
+        )?;
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self::from_parts(
             FrameBacking::File(file, mmap), raw_ptr, capacity, slot_size, region_bytes,
@@ -711,5 +732,39 @@ mod tests {
                          Err(RingError::LayoutMismatch))); // slot < MIN_SLOT_SIZE
         assert!(matches!(FrameRing::create_anon(16, 64, 1000),
                          Err(RingError::LayoutMismatch))); // region not pow2
+    }
+
+    /// A second create attaches with queued frames in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_frames() {
+        let p = std::env::temp_dir().join(format!(
+            "subetha-frame-attach-{}.bin", std::process::id(),
+        ));
+        std::fs::remove_file(&p).ok();
+        let (cap, slot, region) = (16usize, 128usize, 1usize << 16);
+
+        let r = FrameRing::create(&p, cap, slot, region).unwrap();
+        r.send(b"inline survives attach").unwrap();
+        r.send(&vec![9u8; 3000]).unwrap();
+
+        let r2 = FrameRing::create(&p, cap, slot, region).unwrap();
+        assert_eq!(r2.recv().unwrap(), b"inline survives attach",
+                   "attach lost a queued inline frame");
+        assert_eq!(r2.recv().unwrap(), vec![9u8; 3000],
+                   "attach lost a queued region frame");
+        assert!(matches!(
+            FrameRing::create(&p, 8, slot, region),
+            Err(RingError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle
+        // goes before the reset.
+        drop(r);
+        drop(r2);
+        let fresh = FrameRing::reset(&p, cap, slot, region).unwrap();
+        assert_eq!(fresh.approx_len(), 0, "reset kept a queued frame");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 }
