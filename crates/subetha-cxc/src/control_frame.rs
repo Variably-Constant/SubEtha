@@ -66,6 +66,20 @@ pub enum FrameType {
     /// The receiver's detected LEO handover cadence and seconds-to-next-spike, so
     /// the sender pre-arms protection one cycle ahead of a periodic delay spike.
     Periodicity = 0x0E,
+    /// Receiver -> sender: prove you can receive at the address a datagram
+    /// under an unrecognised session epoch came from.
+    SessionChallenge = 0x0F,
+    /// Sender -> receiver: the challenge echoed back.
+    SessionResponse = 0x10,
+    /// Sender -> receiver: the epoch of the session this endpoint is
+    /// sending under, carried on the heartbeat.
+    ///
+    /// The data header carries the same value, but a restarted peer whose
+    /// first burst was discarded has no data in flight to carry it - and
+    /// nothing resends that burst until the receiver asks, which it cannot
+    /// do for a session it has never seen. The beat is what keeps
+    /// arriving, so it is what announces a new session.
+    SessionAnnounce = 0x11,
 }
 
 impl FrameType {
@@ -87,10 +101,31 @@ impl FrameType {
             0x0C => Self::AvailBw,
             0x0D => Self::Forecast,
             0x0E => Self::Periodicity,
+            0x0F => Self::SessionChallenge,
+            0x10 => Self::SessionResponse,
+            0x11 => Self::SessionAnnounce,
             _ => return None,
         })
     }
 }
+
+/// A session-epoch challenge, and the answer echoing it. Both carry the
+/// same pair: the epoch under challenge and a nonce the challenger picked.
+/// Answering requires having received the challenge, so a peer that cannot
+/// receive at the address it claims cannot produce one.
+///
+/// `nonce` MUST fit 62 bits. The varint codec clamps anything wider to the
+/// 62-bit maximum, so a full-width random value would be sent clamped
+/// while the challenger kept the unclamped one and no answer would ever
+/// compare equal. [`NONCE_MASK`] is what generators apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SessionFrame {
+    pub epoch: u32,
+    pub nonce: u64,
+}
+
+/// Mask a nonce into the 62 bits a varint carries without clamping.
+pub const NONCE_MASK: u64 = (1u64 << 62) - 1;
 
 /// Cumulative ack frontier: the next block the receiver still needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -258,6 +293,10 @@ pub struct ControlPacket {
     pub avail_bw: Option<AvailBwFrame>,
     pub forecast: Option<ForecastFrame>,
     pub periodicity: Option<PeriodicityFrame>,
+    pub session_challenge: Option<SessionFrame>,
+    pub session_response: Option<SessionFrame>,
+    /// The epoch the sender is currently sending under.
+    pub session_announce: Option<u32>,
 }
 
 impl ControlPacket {
@@ -446,6 +485,23 @@ pub fn encode_control(p: &ControlPacket) -> Vec<u8> {
         body.push(f.confidence_x255);
         put_frame(&mut out, FrameType::Periodicity, &body);
     }
+    if let Some(f) = p.session_challenge {
+        body.clear();
+        put_varint(&mut body, u64::from(f.epoch));
+        put_varint(&mut body, f.nonce);
+        put_frame(&mut out, FrameType::SessionChallenge, &body);
+    }
+    if let Some(f) = p.session_response {
+        body.clear();
+        put_varint(&mut body, u64::from(f.epoch));
+        put_varint(&mut body, f.nonce);
+        put_frame(&mut out, FrameType::SessionResponse, &body);
+    }
+    if let Some(epoch) = p.session_announce {
+        body.clear();
+        put_varint(&mut body, u64::from(epoch));
+        put_frame(&mut out, FrameType::SessionAnnounce, &body);
+    }
     out
 }
 
@@ -576,6 +632,25 @@ pub fn decode_control(buf: &[u8]) -> Option<ControlPacket> {
                     });
                 }
             }
+            Some(FrameType::SessionAnnounce) => {
+                if let Some((epoch, _)) = get_varint(body, 0) {
+                    p.session_announce = Some(epoch as u32);
+                }
+            }
+            Some(FrameType::SessionChallenge) => {
+                if let Some((epoch, n)) = get_varint(body, 0)
+                    && let Some((nonce, _)) = get_varint(body, n)
+                {
+                    p.session_challenge = Some(SessionFrame { epoch: epoch as u32, nonce });
+                }
+            }
+            Some(FrameType::SessionResponse) => {
+                if let Some((epoch, n)) = get_varint(body, 0)
+                    && let Some((nonce, _)) = get_varint(body, n)
+                {
+                    p.session_response = Some(SessionFrame { epoch: epoch as u32, nonce });
+                }
+            }
             Some(FrameType::Forecast) => {
                 if let Some((fc, _)) = get_varint(body, 0) {
                     p.forecast = Some(ForecastFrame { forecast_kbps: fc });
@@ -696,6 +771,17 @@ mod tests {
                 secs_to_spike_ds: 42,
                 confidence_x255: 200,
             }),
+            session_challenge: Some(SessionFrame {
+                epoch: 0xDEAD_BEEF,
+                nonce: 0x0123_4567_89AB_CDEF,
+            }),
+            session_response: Some(SessionFrame {
+                epoch: 0xFEED_FACE,
+                // Masked, like a real generator: a wider value would come
+                // back clamped and no answer would compare equal.
+                nonce: 0xFEDC_BA98_7654_3210 & NONCE_MASK,
+            }),
+            session_announce: Some(0x1234_5678),
         };
         let wire = encode_control(&p);
         assert_eq!(wire[0], PKT_CONTROL);

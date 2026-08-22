@@ -87,6 +87,28 @@ pub type SensOMaticSender = ReliableUdpSender;
 /// Bare Sens-O-Matic receiver alias (Reed-Solomon code); see [`SensOMaticSender`].
 pub type SensOMaticReceiver = ReliableUdpReceiver;
 
+/// How long a session challenge waits for its answer. A restarted peer
+/// answers within a round trip; a forged epoch from an address that
+/// cannot receive never does.
+const SESSION_CHALLENGE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long the receiver's socket stays bound to one peer after that peer
+/// goes silent.
+///
+/// A connected UDP socket accepts datagrams from its peer alone, which is
+/// what buys the batched and GRO receive paths - and what makes a peer
+/// that restarts on a fresh ephemeral port unhearable, since the kernel
+/// discards it before any of this code runs. Silence past this mark
+/// dissolves the association so the receiver hears the world again; a
+/// validated session re-connects and the fast paths resume.
+const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The address a socket is connected to in order to have no peer.
+const UNSPECIFIED_PEER: SocketAddr = SocketAddr::new(
+    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+    0,
+);
+
 /// Largest datagram the receiver will read. A shard is `DATA_HEADER +
 /// shard_len` bytes; this bounds `shard_len` to a typical MTU payload.
 const RECV_BUF: usize = 2048;
@@ -1078,6 +1100,17 @@ impl ReliableUdpSender {
                         // measures. The in-flight is negligible at scale, so the
                         // ratio converges to the loss fraction.
                         self.ctrl_recv = self.ctrl_recv.wrapping_add(1);
+                        // A receiver that does not recognise this session
+                        // challenges it. Echo the pair verbatim: answering
+                        // is the proof, and only a peer receiving at the
+                        // claimed address can produce one.
+                        eprintln!("[dbg] tx ctrl n={n} challenge={}", cp.session_challenge.is_some());
+                        if let Some(sc) = cp.session_challenge {
+                            let mut ans = ControlPacket::new();
+                            ans.session_response = Some(sc);
+                            let wire = encode_control(&ans);
+                            self.sock.send(&wire).ok();
+                        }
                         // Link-liveness: ANY feedback means the link is alive.
                         // Note whether we were dead; the proactive recovery
                         // burst fires AFTER `on_feedback` below applies this
@@ -1209,6 +1242,12 @@ impl ReliableUdpSender {
                         self.apply_fusion(&fb);
                     }
                 }
+                Err(ref e) if e.kind() != io::ErrorKind::WouldBlock
+                    && e.kind() != io::ErrorKind::TimedOut =>
+                {
+                    eprintln!("[dbg] tx recv err {:?}", e.kind());
+                    break;
+                }
                 Err(e)
                     if e.kind() == io::ErrorKind::WouldBlock
                         || e.kind() == io::ErrorKind::TimedOut
@@ -1307,6 +1346,11 @@ impl ReliableUdpSender {
     fn maybe_send_heartbeat(&mut self) -> io::Result<()> {
         if self.last_hb.elapsed() >= HEARTBEAT_INTERVAL {
             let mut cp = ControlPacket::new();
+            // Which session this endpoint is sending under. The beat is the
+            // only thing that keeps arriving from a peer whose data was
+            // discarded while the receiver was still bound to its dead
+            // predecessor, so it is what tells the receiver to look again.
+            cp.session_announce = Some(self.enc.epoch());
             // The clock beat: drives the receiver's OWD-trend slope and jitter.
             cp.timing = Some(TimingFrame {
                 send_ts: self.start.elapsed().as_micros() as u64,
@@ -2073,6 +2117,21 @@ impl ReliableUdpSender {
 pub struct ReliableUdpReceiver {
     sock: crate::dgram::DgramSock,
     dec: Decoder,
+    /// A session epoch under challenge: `(addr, epoch, nonce, sent_at)`.
+    /// Adopted only when that nonce comes back from that address.
+    pending_session: Option<(SocketAddr, u32, u64, Instant)>,
+    /// Set when a replacement session is adopted; cleared by
+    /// [`take_session_changed`](Self::take_session_changed).
+    session_changed: bool,
+    /// Replacement sessions adopted, and challenges that expired
+    /// unanswered. Telemetry.
+    session_adoptions: u64,
+    session_adoption_failures: u64,
+    /// Monotonic nonce source, mixed so the emitted value is not a
+    /// guessable counter.
+    session_nonce_seq: u64,
+    /// When a datagram last arrived, driving [`PEER_SILENCE_TIMEOUT`].
+    last_data_at: Instant,
     peer: Option<SocketAddr>,
     /// Count of datagrams actually read off the socket (telemetry; lets
     /// a caller distinguish "no packets arriving" from "packets arrive
@@ -2443,6 +2502,12 @@ impl ReliableUdpReceiver {
         Ok(Self {
             sock,
             dec: Decoder::new(),
+            pending_session: None,
+            session_changed: false,
+            session_adoptions: 0,
+            session_adoption_failures: 0,
+            session_nonce_seq: 0,
+            last_data_at: Instant::now(),
             peer: None,
             recv_count: 0,
             nak_history: BTreeMap::new(),
@@ -2534,6 +2599,78 @@ impl ReliableUdpReceiver {
     /// unblock the stream. A long value (the default is 60s) makes
     /// delivery effectively reliable; a short value bounds latency at the
     /// cost of dropping a gap that has not recovered in time.
+    /// Whether a replacement session was adopted since this was last
+    /// called, clearing the flag. Edge-triggered: one report per adoption.
+    pub fn take_session_changed(&mut self) -> bool {
+        std::mem::replace(&mut self.session_changed, false)
+    }
+
+    /// `(adopted, challenges_that_went_unanswered)` for replacement
+    /// sessions. A refused forgery raises the second without the first.
+    pub fn session_adoption_counts(&self) -> (u64, u64) {
+        (self.session_adoptions, self.session_adoption_failures)
+    }
+
+    /// Dissolve the socket's peer association once the peer has been
+    /// silent past [`PEER_SILENCE_TIMEOUT`], so a replacement session on a
+    /// fresh address can be heard at all. Connecting to an unspecified
+    /// address is how "no peer" is expressed through the portable API.
+    fn release_silent_peer(&mut self) {
+        if !self.connected || self.last_data_at.elapsed() <= PEER_SILENCE_TIMEOUT {
+            return;
+        }
+        let ok = self.sock.connect(UNSPECIFIED_PEER).is_ok();
+        eprintln!("[dbg] release_silent_peer -> unconnect ok={ok}");
+        if ok {
+            self.connected = false;
+            #[cfg(target_os = "linux")]
+            {
+                self.gro_on = false;
+            }
+        }
+    }
+
+    /// Arm or retire the challenge for an unrecognised session epoch, and
+    /// (re)send the outstanding one. A challenge already outstanding for
+    /// the same epoch is left alone so its nonce is not rolled faster than
+    /// an answer can return.
+    fn service_session_challenge(&mut self) -> io::Result<()> {
+        if let Some((_, _, _, sent)) = self.pending_session
+            && sent.elapsed() > SESSION_CHALLENGE_TIMEOUT
+        {
+            self.pending_session = None;
+            self.session_adoption_failures += 1;
+            eprintln!("[dbg] challenge EXPIRED");
+        }
+        if let Some(epoch) = self.dec.take_unknown_epoch() {
+            let already = matches!(self.pending_session, Some((_, e, _, _)) if e == epoch);
+            if !already && let Some(addr) = self.peer {
+                self.session_nonce_seq = self.session_nonce_seq.wrapping_add(1);
+                let entropy = self.start.elapsed().as_nanos() as u64;
+                let mut x = entropy ^ self.session_nonce_seq.rotate_left(32) ^ u64::from(epoch);
+                x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                // Masked to what a varint carries without clamping, or the
+                // echo would come back a different number than was stored.
+                let nonce = (x ^ (x >> 31)) & crate::control_frame::NONCE_MASK;
+                self.pending_session = Some((addr, epoch, nonce, Instant::now()));
+                eprintln!("[dbg] challenge ARMED epoch={epoch} addr={addr}");
+            }
+        }
+        if let Some((addr, epoch, nonce, _)) = self.pending_session {
+            let mut cp = ControlPacket::new();
+            cp.session_challenge = Some(crate::control_frame::SessionFrame { epoch, nonce });
+            let wire = encode_control(&cp);
+            let r = self.sock.send_to(&wire, addr);
+            eprintln!(
+                "[dbg] rx challenge -> {addr} connected={} peer={:?} res={:?}",
+                self.connected, self.peer, r.as_ref().map(|n| *n)
+            );
+            r?;
+        }
+        Ok(())
+    }
+
     pub fn with_max_hold(mut self, hold: Duration) -> Self {
         self.max_hold = hold;
         self
@@ -2827,6 +2964,8 @@ impl ReliableUdpReceiver {
     /// decoded and any newly deliverable items are appended to `out`.
     fn process_datagram(&mut self, buf: &[u8], out: &mut Vec<Vec<u8>>) {
         self.recv_count += 1;
+        self.last_data_at = Instant::now();
+        eprintln!("[dbg] rx datagram control={} len={}", is_control(buf), buf.len());
         // Peak-hold this end's active path-event shift: a route / carrier / MTU
         // event spikes the observer's shift, which decays within seconds, so
         // sampling on each arrival captures the transient for the telemetry.
@@ -2856,6 +2995,30 @@ impl ReliableUdpReceiver {
                     && pm.pmtu != 0
                 {
                     self.peer_pmtu = pm.pmtu;
+                }
+                // A beat announcing a session this receiver does not hold.
+                // Recorded, not trusted: it goes through the same challenge
+                // as an unrecognised data epoch.
+                if let Some(announced) = cp.session_announce
+                    && self.dec.session_epoch().is_some_and(|e| e != announced)
+                {
+                    self.dec.note_unknown_epoch(announced);
+                }
+                // The answer to a session challenge. Adopting resets the
+                // decoder to the new session's block-id space and rebinds
+                // to the address that has now proved it can receive.
+                if let Some(sr) = cp.session_response
+                    && let Some((addr, epoch, nonce, _)) = self.pending_session
+                    && sr.epoch == epoch
+                    && sr.nonce == nonce
+                {
+                    self.dec.adopt_epoch(epoch);
+                    self.peer = Some(addr);
+                    self.connected = self.sock.connect(addr).is_ok();
+                    self.pending_session = None;
+                    self.session_changed = true;
+                    self.session_adoptions += 1;
+                    self.last_data_at = Instant::now();
                 }
                 if let Some(t) = cp.timing {
                     let recv_ts = self.start.elapsed().as_micros() as u64;
@@ -2951,7 +3114,7 @@ impl ReliableUdpReceiver {
     /// `recv_from`. Returns `true` when no data arrived (timeout park).
     fn recv_into(&mut self, out: &mut Vec<Vec<u8>>) -> io::Result<bool> {
         #[cfg(target_os = "linux")]
-        if self.peer.is_some() {
+        if self.connected {
             // GRO coalesces a whole burst into one skb; fall back to the
             // per-datagram recvmmsg batch on kernels without GRO.
             if self.gro_on {
@@ -2959,12 +3122,15 @@ impl ReliableUdpReceiver {
             }
             return self.recv_batch(out);
         }
+        // Gated on `connected`, not on having a peer: the fast paths read
+        // an associated socket, and `release_silent_peer` dissolves that
+        // association while leaving `peer` set as the last address known.
         #[cfg(target_os = "freebsd")]
-        if self.peer.is_some() {
+        if self.connected {
             return self.recv_batch(out);
         }
         #[cfg(target_os = "windows")]
-        if self.peer.is_some() {
+        if self.connected {
             return self.recv_wsamsg(out);
         }
         let mut buf = [0u8; RECV_BUF];
@@ -3426,6 +3592,10 @@ impl ReliableUdpReceiver {
         // Release any delayed feedback whose injected link latency has
         // elapsed (no-op unless a feedback delay is configured).
         self.flush_delayed_feedback();
+        // Stop listening to one address only once its peer goes quiet,
+        // then challenge any unrecognised session that turns up.
+        self.release_silent_peer();
+        self.service_session_challenge()?;
         if let Some(peer) = self.peer {
             let base = self.dec.feedback(timed_out);
             let now = Instant::now();
@@ -3633,7 +3803,9 @@ impl ReliableUdpReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::mpsc;
+    use std::sync::Arc;
 
     /// k must fit the u32 shard bitmap: a k > MAX_SHARDS would overflow
     /// `1 << shard_index` and silently corrupt delivery, so bind rejects it.
@@ -3721,6 +3893,79 @@ mod tests {
     fn loopback_heavy_arq() {
         // ~30% injected loss: ARQ fallback must carry the remainder.
         loopback_round_trip(300, 8, 2, 30, 1234);
+    }
+
+    /// A replacement sender is delivered once its epoch is challenged and
+    /// answered. Both senders live in this process, so the second one's
+    /// block ids start at zero against a frontier the first advanced -
+    /// the state a restarted peer presents.
+    ///
+    /// The second sender is driven by `drain_until_acked`, which is what
+    /// retransmits: `pump_feedback` only samples, beats and reads, so a
+    /// sender that flushed once into a socket still bound to its dead
+    /// predecessor would have nothing left to re-offer.
+    #[test]
+    fn restarted_sender_is_adopted_after_the_challenge() {
+        const N: u64 = 40;
+        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap();
+        let addr = recv.local_addr().unwrap();
+
+        let mut first = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+        for i in 0..N {
+            first.send_item(&i.to_le_bytes()).unwrap();
+        }
+        first.flush().unwrap();
+
+        let mut seen = 0u64;
+        let start = Instant::now();
+        while seen < N && start.elapsed() < Duration::from_secs(10) {
+            seen += recv.poll().unwrap().len() as u64;
+            first.pump_feedback().ok();
+        }
+        assert_eq!(seen, N, "first session did not deliver");
+        let epoch_a = recv.dec.session_epoch();
+        assert!(epoch_a.is_some(), "no session epoch learned");
+
+        drop(first);
+        let mut second = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+        assert_ne!(
+            second.enc.epoch(),
+            recv.dec.session_epoch().unwrap(),
+            "the replacement drew the same epoch as its predecessor"
+        );
+        for i in 0..N {
+            second.send_item(&(1000 + i).to_le_bytes()).unwrap();
+        }
+        second.flush().unwrap();
+
+        // The sender runs in its own thread, as every other loopback test
+        // here does. Interleaving both halves in one thread makes each
+        // side's progress depend on the other's blocking read, which is a
+        // property of the test rather than of the transport.
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&done);
+        let tx = std::thread::spawn(move || {
+            while !stop.load(AtomicOrdering::Relaxed) {
+                second.drain_until_acked(Duration::from_millis(50)).ok();
+            }
+        });
+
+        let mut got = Vec::new();
+        let start = Instant::now();
+        while (got.len() as u64) < N && start.elapsed() < Duration::from_secs(25) {
+            got.extend(recv.poll().unwrap());
+        }
+        done.store(true, AtomicOrdering::Relaxed);
+        tx.join().ok();
+        let (adopted, unanswered) = recv.session_adoption_counts();
+        assert_eq!(
+            got.len() as u64,
+            N,
+            "restarted sender delivered {}/{N} (adopted {adopted}, unanswered {unanswered})",
+            got.len(),
+        );
+        assert_eq!(adopted, 1, "expected exactly one adoption");
+        assert!(recv.take_session_changed(), "session_changed never raised");
     }
 
     /// The item-12 active path-event slice over a real loopback bridge: an

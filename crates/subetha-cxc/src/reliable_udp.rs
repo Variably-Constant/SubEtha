@@ -44,8 +44,11 @@ use crate::tower::SegmentCode;
 const PKT_DATA: u8 = 1;
 
 /// Fixed data-packet header length: `type(1) block_id(4) shard_index(1)
-/// k(1) r(1) flags(1)`.
-pub const DATA_HEADER: usize = 9;
+/// k(1) r(1) flags(1) epoch(4)`.
+pub const DATA_HEADER: usize = 13;
+
+/// Offset of the session epoch within the data header.
+const EPOCH_OFFSET: usize = 9;
 
 /// `flags` bit: this shard is a parity shard (index `>= k`).
 const FLAG_PARITY: u8 = 0b0000_0001;
@@ -134,11 +137,17 @@ struct PendingBlock {
 }
 
 impl PendingBlock {
-    fn datagram(&self, block_id: u32, idx: usize) -> Vec<u8> {
-        self.datagram_flagged(block_id, idx, 0)
+    fn datagram(&self, block_id: u32, idx: usize, epoch: u32) -> Vec<u8> {
+        self.datagram_flagged(block_id, idx, 0, epoch)
     }
 
-    fn datagram_flagged(&self, block_id: u32, idx: usize, extra_flags: u8) -> Vec<u8> {
+    fn datagram_flagged(
+        &self,
+        block_id: u32,
+        idx: usize,
+        extra_flags: u8,
+        epoch: u32,
+    ) -> Vec<u8> {
         let mut pkt = Vec::with_capacity(DATA_HEADER + self.shard_len);
         pkt.push(PKT_DATA);
         pkt.extend_from_slice(&block_id.to_le_bytes());
@@ -147,9 +156,44 @@ impl PendingBlock {
         pkt.push(self.r);
         let parity = if idx >= self.k as usize { FLAG_PARITY } else { 0 };
         pkt.push(parity | extra_flags);
+        pkt.extend_from_slice(&epoch.to_le_bytes());
         pkt.extend_from_slice(&self.shards[idx]);
         pkt
     }
+}
+
+/// A session epoch that does not repeat across a restart of this sender.
+///
+/// Two sources, because neither alone is enough. The invariant-TSC read
+/// (the same userspace `rdtsc` the ordering stamps use, via
+/// [`crate::ordering::stamp_now`]) separates two encoders built in the
+/// same instant - a wall clock cannot, its granularity being tens of
+/// milliseconds on some hosts, so back-to-back encoders would draw one
+/// epoch and read as a single continuing session. The wall clock in turn
+/// separates two encoders built at the same point after different boots,
+/// which the TSC cannot, since it restarts near zero at boot.
+fn derive_epoch() -> u32 {
+    // The ladder is chosen here rather than taken from
+    // `default_stamp_kind`, whose SharedCounter arm reads as 0 through
+    // `stamp_now` - that arm means "the ring's own atom orders this",
+    // which is not a clock and would leave this epoch on the wall clock
+    // alone. Monotonic nanoseconds is the right fallback for a value.
+    let kind = if crate::ordering::has_invariant_tsc() {
+        crate::ordering::StampKind::Tsc
+    } else {
+        crate::ordering::StampKind::Monotonic
+    };
+    let tsc = crate::ordering::stamp_now(kind);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut x = tsc ^ wall.rotate_left(32) ^ ((std::process::id() as u64) << 16);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    // Never zero: zero reads as "no epoch recorded" to a peer built
+    // before this field existed.
+    ((x ^ (x >> 31)) as u32) | 1
 }
 
 /// Sender side: groups items into FEC-protected blocks and answers
@@ -163,6 +207,9 @@ pub struct Encoder {
     r_max: usize,
     /// Usable payload bytes per shard (item + length prefix).
     shard_len: usize,
+    /// Session epoch stamped into every data datagram this encoder emits.
+    /// Constant for the encoder's life; a restarted peer draws a new one.
+    epoch: u32,
     next_block: u32,
     /// Highest `ack_through` reported by the receiver; below this every
     /// block is delivered.
@@ -193,6 +240,13 @@ impl Encoder {
     /// Create an encoder. `k` data shards per block, initial `r` parity
     /// shards (clamped to `r_min..=r_max`), `max_item` largest item
     /// byte length.
+    /// This encoder's session epoch. Stamped into every data datagram and
+    /// announced on the heartbeat, since a restarted peer whose burst was
+    /// discarded has no data in flight to carry it.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     pub fn new(k: usize, r: usize, max_item: usize) -> Self {
         // r_min = 0 lets the fusion controller drop to zero parity
         // (CodingLevel::Passthrough) on a provably-clean link: the block
@@ -215,6 +269,7 @@ impl Encoder {
             r_min,
             r_max,
             shard_len: max_item + ITEM_LEN_PREFIX,
+            epoch: derive_epoch(),
             next_block: 0,
             acked_through: 0,
             flow_window: 256,
@@ -400,7 +455,7 @@ impl Encoder {
             shards,
         };
         let mut datagrams: Vec<Vec<u8>> =
-            (0..self.k + r).map(|i| pb.datagram(block_id, i)).collect();
+            (0..self.k + r).map(|i| pb.datagram(block_id, i, self.epoch)).collect();
         self.pending.insert(block_id, pb);
         self.staged = Vec::with_capacity(self.k);
         // Tower: accumulate this block's info; emit outer-parity blocks
@@ -469,7 +524,7 @@ impl Encoder {
                 | (seg_id << 8)
                 | oidx as u32;
             for i in 0..self.k + r {
-                out.push(opb.datagram_flagged(oid, i, FLAG_OUTER));
+                out.push(opb.datagram_flagged(oid, i, FLAG_OUTER, self.epoch));
             }
         }
         out
@@ -520,7 +575,7 @@ impl Encoder {
             let n = pb.shards.len();
             for idx in 0..n {
                 if fb.nak_mask & (1 << idx) != 0 {
-                    out.push(pb.datagram_flagged(fb.nak_block, idx, FLAG_RETRANSMIT));
+                    out.push(pb.datagram_flagged(fb.nak_block, idx, FLAG_RETRANSMIT, self.epoch));
                 }
             }
         }
@@ -545,7 +600,7 @@ impl Encoder {
     pub fn probe_block(&self, block_id: u32) -> Vec<Vec<u8>> {
         match self.pending.get(&block_id) {
             Some(pb) => (0..pb.k as usize)
-                .map(|idx| pb.datagram_flagged(block_id, idx, FLAG_RETRANSMIT))
+                .map(|idx| pb.datagram_flagged(block_id, idx, FLAG_RETRANSMIT, self.epoch))
                 .collect(),
             None => Vec::new(),
         }
@@ -564,7 +619,7 @@ impl Encoder {
         // BTreeMap iterates in key order, i.e. oldest block first.
         for (&id, pb) in &self.pending {
             for idx in 0..pb.k as usize {
-                out.push(pb.datagram_flagged(id, idx, FLAG_RETRANSMIT));
+                out.push(pb.datagram_flagged(id, idx, FLAG_RETRANSMIT, self.epoch));
             }
         }
         out
@@ -616,6 +671,13 @@ impl RxBlock {
 /// Receiver side: reassembles blocks, FEC-recovers losses, emits items
 /// in order, and produces ARQ feedback.
 pub struct Decoder {
+    /// Session epoch this decoder's state belongs to, learned from the
+    /// first data datagram. `None` before any arrives.
+    session_epoch: Option<u32>,
+    /// The most recent epoch seen that is not [`session_epoch`]. Either a
+    /// restarted peer or a forgery; the receiver challenges it and calls
+    /// [`adopt_epoch`](Self::adopt_epoch) only on a valid answer.
+    unknown_epoch: Option<u32>,
     window: BTreeMap<u32, RxBlock>,
     /// Next block id to deliver; everything below is delivered.
     next_deliver: AtomicU32,
@@ -700,6 +762,8 @@ impl Decoder {
     /// the receiver will buffer.
     pub fn with_window(window_cap: usize) -> Self {
         Self {
+            session_epoch: None,
+            unknown_epoch: None,
             window: BTreeMap::new(),
             next_deliver: AtomicU32::new(0),
             highest_seen: 0,
@@ -782,6 +846,47 @@ impl Decoder {
         self.false_recoveries
     }
 
+    /// The session epoch this decoder's state belongs to, once one
+    /// datagram has arrived.
+    pub fn session_epoch(&self) -> Option<u32> {
+        self.session_epoch
+    }
+
+    /// Record an epoch learned from somewhere other than a data datagram -
+    /// the heartbeat announce, which is the only path that keeps arriving
+    /// from a peer whose data is being discarded. Recording is not
+    /// adopting; the caller still challenges it.
+    pub fn note_unknown_epoch(&mut self, epoch: u32) {
+        if self.session_epoch != Some(epoch) {
+            self.unknown_epoch = Some(epoch);
+        }
+    }
+
+    /// An epoch seen that is not the established one, taken and cleared.
+    /// The caller challenges the address it arrived from and adopts only
+    /// on a valid answer.
+    pub fn take_unknown_epoch(&mut self) -> Option<u32> {
+        self.unknown_epoch.take()
+    }
+
+    /// Adopt `epoch` as the session: drop every block, gap and outer-code
+    /// record keyed to the previous session's block-id space, and restart
+    /// the delivery frontier where the new sender's ids begin.
+    ///
+    /// Called only once the challenge for `epoch` has been answered.
+    pub fn adopt_epoch(&mut self, epoch: u32) {
+        self.session_epoch = Some(epoch);
+        self.unknown_epoch = None;
+        self.window.clear();
+        self.next_deliver.store(0, Ordering::Relaxed);
+        self.highest_seen = 0;
+        self.highest_decoded = 0;
+        self.data_infos.clear();
+        self.outer_rx.clear();
+        self.seg_outer.clear();
+        self.seg_d.clear();
+    }
+
     /// Block id the receiver next needs (everything below is delivered).
     pub fn next_needed(&self) -> u32 {
         self.next_deliver.load(Ordering::Relaxed)
@@ -811,6 +916,25 @@ impl Decoder {
         let k = buf[6] as usize;
         let r = buf[7] as usize;
         let is_retransmit = buf[8] & FLAG_RETRANSMIT != 0;
+        let epoch = u32::from_le_bytes([
+            buf[EPOCH_OFFSET],
+            buf[EPOCH_OFFSET + 1],
+            buf[EPOCH_OFFSET + 2],
+            buf[EPOCH_OFFSET + 3],
+        ]);
+        // Session gate, ABOVE the block-id checks below. A restarted peer's
+        // ids start at the bottom again, so those checks read its whole
+        // stream as already-delivered duplicates. Record the epoch for the
+        // receiver to challenge; nothing under it is delivered until the
+        // answer returns and `adopt_epoch` runs.
+        match self.session_epoch {
+            None => self.session_epoch = Some(epoch),
+            Some(current) if current == epoch => {}
+            Some(_) => {
+                self.unknown_epoch = Some(epoch);
+                return Vec::new();
+            }
+        }
         let payload = &buf[DATA_HEADER..];
         // r == 0 is the Passthrough block: k data shards, no parity. It is a
         // valid shape (the block completes when all k data shards arrive, via
