@@ -45,8 +45,9 @@ File layout:
 
 | Call | Behavior |
 |---|---|
-| `DirectFileRing::create(base_path, capacity) -> Result<Self, DirectFileError>` | Create the three files. Capacity must be pow2 >= 2. |
-| `DirectFileRing::open(base_path, expected_capacity)` | Reopen existing ring. |
+| `DirectFileRing::create(base_path, capacity) -> Result<Self, DirectFileError>` | Obtain the three files: initialize the ones that do not yet exist, attach to the ones that do with queued slots and counters intact. Capacity must be pow2 >= 2; the data file carries no header, so capacity is checked against its exact byte size and a different one is a `LayoutMismatch`. |
+| `DirectFileRing::reset(base_path, capacity)` | Truncate the three files and initialize an empty ring, for a caller that owns the base path. |
+| `DirectFileRing::open(base_path, expected_capacity)` | Reopen existing ring. Exact-size check, same as attach. |
 | `ring.capacity() -> usize` | Slot count. |
 | `ring.head() / ring.tail() -> u64` | Acquire loads of the counter files. |
 | `ring.try_push(payload: &[u8]) -> Result<(), DirectFileError>` | Aligned-buf copy + pwrite at slot offset + Release head. |

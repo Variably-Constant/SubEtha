@@ -139,11 +139,13 @@ impl Drop for AlignedBuf {
 }
 
 /// Open `path` for unbuffered, page-cache-bypassing positioned I/O.
-fn open_unbuffered(path: &Path, create: bool) -> std::io::Result<std::fs::File> {
+/// `create_new` opens exclusively, failing with `AlreadyExists` when
+/// the path is already there.
+fn open_unbuffered(path: &Path, create_new: bool) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true).write(true);
-    if create {
-        opts.create(true).truncate(true);
+    if create_new {
+        opts.create_new(true);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -191,10 +193,15 @@ unsafe impl Send for DirectFileRing {}
 unsafe impl Sync for DirectFileRing {}
 
 impl DirectFileRing {
-    /// Construct a fresh ring at `base_path`. Creates three files:
+    /// Obtain the ring at `base_path` over three files:
     /// `{base}.directfile.data.bin` (the slot array, unbuffered),
     /// `{base}.directfile.head.bin` (head counter, MMF),
     /// `{base}.directfile.tail.bin` (tail counter, MMF).
+    /// Initializes them only where they do not yet exist, and
+    /// otherwise attaches with queued slots and both counters in
+    /// place. The data file carries no header, so capacity is checked
+    /// against its exact byte size; a different capacity is a
+    /// `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
     pub fn create(
         base_path: impl AsRef<Path>,
         capacity: usize,
@@ -206,12 +213,73 @@ impl DirectFileRing {
         let head_path = with_suffix(&base, ".directfile.head.bin");
         let tail_path = with_suffix(&base, ".directfile.tail.bin");
 
-        let data_file = open_unbuffered(&data_path, true)?;
-        data_file.set_len((capacity * DIRECT_FILE_SLOT_SIZE) as u64)?;
+        let expected_size = (capacity * DIRECT_FILE_SLOT_SIZE) as u64;
+        let data_file = match open_unbuffered(&data_path, true) {
+            Ok(f) => {
+                f.set_len(expected_size)?;
+                f
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let f = open_unbuffered(&data_path, false)?;
+                // The size doubles as the ready signal: the creator's
+                // set_len publishes it, so a mid-init file reads short.
+                let deadline = std::time::Instant::now() + crate::mmf_attach::INIT_WAIT;
+                loop {
+                    let len = f.metadata()?.len();
+                    if len == expected_size {
+                        break;
+                    }
+                    if len > expected_size {
+                        return Err(DirectFileError::LayoutMismatch);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "the ring's creator did not finish initializing it",
+                        ).into());
+                    }
+                    std::thread::yield_now();
+                }
+                f
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let head = Arc::new(SharedAtomicU64::create(&head_path, 0)
             .map_err(|e| std::io::Error::other(format!("{e:?}")))?);
         let tail = Arc::new(SharedAtomicU64::create(&tail_path, 0)
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?);
+
+        Ok(Self { data_file, head, tail, capacity, base_path: base })
+    }
+
+    /// Truncate the three files at `base_path` and initialize an
+    /// empty ring, discarding queued slots live peers hold. For a
+    /// caller that knows it owns the base path.
+    pub fn reset(
+        base_path: impl AsRef<Path>,
+        capacity: usize,
+    ) -> Result<Self, DirectFileError> {
+        assert!(capacity.is_power_of_two() && capacity >= 2,
+                "capacity must be pow2 >= 2");
+        let base = base_path.as_ref().to_path_buf();
+        let data_path = with_suffix(&base, ".directfile.data.bin");
+        let head_path = with_suffix(&base, ".directfile.head.bin");
+        let tail_path = with_suffix(&base, ".directfile.tail.bin");
+
+        let data_file = match open_unbuffered(&data_path, true) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                open_unbuffered(&data_path, false)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        data_file.set_len(0)?;
+        data_file.set_len((capacity * DIRECT_FILE_SLOT_SIZE) as u64)?;
+
+        let head = Arc::new(SharedAtomicU64::reset(&head_path, 0)
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?);
+        let tail = Arc::new(SharedAtomicU64::reset(&tail_path, 0)
             .map_err(|e| std::io::Error::other(format!("{e:?}")))?);
 
         Ok(Self { data_file, head, tail, capacity, base_path: base })
@@ -230,7 +298,10 @@ impl DirectFileRing {
         let data_file = open_unbuffered(&data_path, false)?;
         let actual_size = data_file.metadata()?.len();
         let expected_size = (expected_capacity * DIRECT_FILE_SLOT_SIZE) as u64;
-        if actual_size < expected_size {
+        // The data file carries no header; its exact byte size is the
+        // capacity record. A merely-large-enough file would let two
+        // processes disagree on the slot modulo.
+        if actual_size != expected_size {
             return Err(DirectFileError::LayoutMismatch);
         }
 
@@ -434,6 +505,34 @@ mod tests {
         let n = ring.try_pop(&mut out).expect("pop");
         assert_eq!(n, DIRECT_FILE_SLOT_SIZE);
         assert_eq!(&out[..payload.len()], payload);
+    }
+
+    /// A second create attaches with queued slots in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_slots() {
+        let path = tmp("attach");
+        let ring = DirectFileRing::create(&path, 4).expect("create");
+        let payload = b"slot survives attach";
+        ring.try_push(payload).expect("push");
+
+        let ring2 = DirectFileRing::create(&path, 4).expect("second create");
+        let mut out = [0u8; DIRECT_FILE_SLOT_SIZE];
+        let n = ring2.try_pop(&mut out).expect("pop after attach");
+        assert_eq!(n, DIRECT_FILE_SLOT_SIZE);
+        assert_eq!(&out[..payload.len()], payload, "attach lost a queued slot");
+        assert!(matches!(
+            DirectFileRing::create(&path, 2),
+            Err(DirectFileError::LayoutMismatch),
+        ));
+
+        drop(ring);
+        drop(ring2);
+        let fresh = DirectFileRing::reset(&path, 4).expect("reset");
+        assert!(matches!(
+            fresh.try_pop(&mut out),
+            Err(DirectFileError::Empty),
+        ), "reset kept a queued slot");
     }
 
     #[test]

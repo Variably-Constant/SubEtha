@@ -14,7 +14,7 @@ use memmap2::{MmapMut, MmapOptions};
 /// How long an attacher waits for the elected creator to finish initializing
 /// before giving up. Bounded so a creator that dies mid-initialisation surfaces
 /// as an error rather than an unbounded spin.
-const INIT_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const INIT_WAIT: Duration = Duration::from_secs(5);
 
 /// Map the region at `path`, initializing it only if this caller wins the
 /// creation election.
