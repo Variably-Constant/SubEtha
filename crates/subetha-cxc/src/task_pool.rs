@@ -108,8 +108,16 @@ impl TaskPool {
 
     /// Stop the workers once the current ready queue drains. Joins all
     /// threads. Call after the work you spawned has completed.
+    ///
+    /// The flag is set while holding the queue lock, which is what
+    /// makes a worker's check-then-park atomic against it: a worker
+    /// between the two holds that lock, so this store waits for it to
+    /// park before the notify goes out.
     pub fn shutdown(self) {
-        self.ready.shutdown.store(true, Ordering::Release);
+        {
+            let _q = self.ready.queue.lock().unwrap();
+            self.ready.shutdown.store(true, Ordering::Release);
+        }
         self.ready.signal.notify_all();
         for w in self.workers {
             w.join().ok();
