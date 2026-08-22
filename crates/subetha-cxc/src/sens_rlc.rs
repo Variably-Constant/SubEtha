@@ -70,7 +70,7 @@ pub(crate) const PKT_RLC_PATH_RESPONSE: u8 = 19;
 
 /// PATH_CHALLENGE / PATH_RESPONSE body: type byte + connection id (u64) + an
 /// 8-byte nonce.
-const PATH_FRAME_LEN: usize = 1 + 8 + 8;
+pub(crate) const PATH_FRAME_LEN: usize = 1 + 8 + 8;
 
 /// Anti-amplification factor (RFC 9000 §8): until a new peer address validates,
 /// the receiver sends at most this multiple of the bytes it received from that
@@ -82,6 +82,23 @@ const AMPLIFICATION_FACTOR: u64 = 3;
 /// address unreachable and reverting to the previous one (a spoofed move never
 /// answers; a genuine migration answers within a round trip).
 const CHALLENGE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Minimum interval between resends of one admission challenge. Bounds the
+/// challenges a candidate receives per arm/expire cycle to
+/// `CHALLENGE_TIMEOUT / ADMISSION_RESEND_INTERVAL`, so a responder that
+/// services its socket on a coarse cadence drains tens of frames, not a
+/// poll-rate flood, before its answer.
+const ADMISSION_RESEND_INTERVAL: Duration = Duration::from_millis(50);
+
+/// One admission candidate: the address to validate, the nonce it must echo,
+/// when the challenge was armed (expiry clock) and when it was last resent
+/// (resend pacing clock).
+struct PendingAdmission {
+    addr: SocketAddr,
+    nonce: u64,
+    armed_at: Instant,
+    last_sent: Option<Instant>,
+}
 
 /// Consecutive latched-reset receives one drain absorbs before giving up. Each
 /// reset reports a previous send to a dead peer, so the drain reads past them
@@ -1753,6 +1770,11 @@ struct RlcSession {
     naks_sent: u64,
     /// Cumulative ACK frames this session sent toward its peer.
     acks_sent: u64,
+    /// When the last ACK left, for the idle re-ack pacing.
+    last_ack_sent: Instant,
+    /// The delivery frontier the last ACK carried; a frontier past it
+    /// sends immediately.
+    last_acked_through: u32,
     /// Control sends silently dropped: no peer address, or the
     /// anti-amplification budget was exhausted while unvalidated.
     sends_skipped: u64,
@@ -1907,7 +1929,7 @@ pub struct SensOMaticRlcReceiver {
     /// Connection ids that have asked for a window and are under challenge:
     /// `cid -> (addr, nonce, sent_at)`. Bounded, so a forged-id spray cannot
     /// grow this either.
-    pending_admissions: HashMap<u64, (SocketAddr, u64, Instant)>,
+    pending_admissions: HashMap<u64, PendingAdmission>,
     /// Ceiling on live windows and on candidates under challenge. `None` is
     /// unbounded; set by [`with_session_ceiling`](Self::with_session_ceiling).
     /// A peer turned away by it is counted in `session_refusals`.
@@ -1969,6 +1991,8 @@ impl RlcSession {
             rlc_recovered: 0,
             naks_sent: 0,
             acks_sent: 0,
+            last_ack_sent: Instant::now(),
+            last_acked_through: u32::MAX,
             sends_skipped: 0,
             drop_pct: 0,
             drop_rng: 0,
@@ -2551,6 +2575,16 @@ impl RlcSession {
     }
 
     fn send_ack(&mut self) -> io::Result<()> {
+        // An ACK goes out immediately whenever the delivery frontier advanced,
+        // so a live flow's window releases at wire latency. A frontier that
+        // has NOT moved re-acks at most once per interval: the cumulative
+        // frontier + SACK bitmap carries the full receive state, so each ACK
+        // supersedes every prior one and the idle re-ack is pure keep-current.
+        if self.delivered_through == self.last_acked_through
+            && self.last_ack_sent.elapsed() < Duration::from_millis(10)
+        {
+            return Ok(());
+        }
         if self.peer.is_some() {
             // Cumulative in-order received frontier plus a 64-bit SACK bitmap of
             // ids received ABOVE the current hole (`delivered_through` is the
@@ -2568,6 +2602,8 @@ impl RlcSession {
             pkt.extend_from_slice(&sack.to_le_bytes());
             self.wire_send_to_peer(&pkt)?;
             self.acks_sent += 1;
+            self.last_ack_sent = Instant::now();
+            self.last_acked_through = self.delivered_through;
         }
         Ok(())
     }
@@ -3015,23 +3051,37 @@ impl SensOMaticRlcReceiver {
             self.session_refusals += 1;
             return;
         }
-        if let Some((a, _, _)) = self.pending_admissions.get(&cid)
-            && *a == addr
+        if let Some(p) = self.pending_admissions.get(&cid)
+            && p.addr == addr
         {
             return;
         }
         let nonce = self.next_admission_nonce(cid);
-        self.pending_admissions.insert(cid, (addr, nonce, Instant::now()));
+        self.pending_admissions.insert(cid, PendingAdmission {
+            addr,
+            nonce,
+            armed_at: Instant::now(),
+            last_sent: None,
+        });
     }
 
-    /// (Re)send every outstanding admission challenge, carrying the candidate
-    /// id. The responder echoes the frame verbatim, so the id identifies which
-    /// candidate an answer belongs to.
+    /// (Re)send outstanding admission challenges, carrying the candidate id so
+    /// the responder's verbatim echo identifies which candidate an answer
+    /// belongs to. Each entry is resent at most once per
+    /// [`ADMISSION_RESEND_INTERVAL`], so a candidate that services its socket
+    /// on a coarse cadence finds a bounded backlog, not a poll-rate flood.
     fn send_admission_challenges(&mut self) -> io::Result<()> {
+        let now = Instant::now();
         let pending: Vec<(u64, SocketAddr, u64)> = self
             .pending_admissions
-            .iter()
-            .map(|(cid, (addr, nonce, _))| (*cid, *addr, *nonce))
+            .iter_mut()
+            .filter(|(_, p)| {
+                p.last_sent.is_none_or(|t| now.duration_since(t) >= ADMISSION_RESEND_INTERVAL)
+            })
+            .map(|(cid, p)| {
+                p.last_sent = Some(now);
+                (*cid, p.addr, p.nonce)
+            })
             .collect();
         for (cid, addr, nonce) in pending {
             let mut pkt = Vec::with_capacity(PATH_FRAME_LEN);
@@ -3049,7 +3099,7 @@ impl SensOMaticRlcReceiver {
     fn expire_stale_admissions(&mut self) {
         let before = self.pending_admissions.len();
         self.pending_admissions
-            .retain(|_, (_, _, sent)| sent.elapsed() < CHALLENGE_TIMEOUT);
+            .retain(|_, p| p.armed_at.elapsed() < CHALLENGE_TIMEOUT);
         self.session_admission_failures += (before - self.pending_admissions.len()) as u64;
     }
 
@@ -3062,10 +3112,10 @@ impl SensOMaticRlcReceiver {
         }
         let cid = u64::from_le_bytes(inner[1..9].try_into().unwrap());
         let nonce = u64::from_le_bytes(inner[9..17].try_into().unwrap());
-        let Some((addr, want, _)) = self.pending_admissions.get(&cid).copied() else {
+        let Some(p) = self.pending_admissions.get(&cid) else {
             return false;
         };
-        if addr != from || want != nonce {
+        if p.addr != from || p.nonce != nonce {
             return false;
         }
         self.pending_admissions.remove(&cid);

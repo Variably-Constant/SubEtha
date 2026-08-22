@@ -399,6 +399,20 @@ fn spawn_demux(
                         }
                     }
                     last_from = Some(from);
+                    // A path challenge is a verbatim echo needing no session
+                    // state, so it is answered here at wire latency and kept
+                    // out of the queue: admission completes in one round trip
+                    // whatever the pump's cadence, and a challenge burst
+                    // cannot pile ahead of control frames in FIFO order.
+                    if b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
+                        && n >= crate::sens_rlc::PATH_FRAME_LEN
+                    {
+                        let mut resp = Vec::with_capacity(crate::sens_rlc::PATH_FRAME_LEN);
+                        resp.push(crate::sens_rlc::PKT_RLC_PATH_RESPONSE);
+                        resp.extend_from_slice(&buf[1..crate::sens_rlc::PATH_FRAME_LEN]);
+                        sock.send_to(&resp, from).ok();
+                        continue;
+                    }
                     // Uniform link-loss injection on the forward data/repair
                     // stream (RS data 1, RLC data 10 / repair 11): drop BEFORE
                     // counting or routing, so the raw-loss estimate AND the codes
