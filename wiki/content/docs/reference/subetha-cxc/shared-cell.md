@@ -15,13 +15,21 @@ of inline payload. The header carries a SeqLock version field so
 readers can detect torn writes and retry.
 
 ```rust,no_run
-pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedCellError>;
+pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedCellError>;  // attaches if the path exists
 pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedCellError>;
+pub fn reset(path: impl AsRef<Path>) -> Result<Self, SharedCellError>;   // truncates and zeroes
 
 pub fn get(&self) -> T;
 pub fn set(&self, value: T);
 pub fn version(&self) -> u32;
 ```
+
+`create` initializes a zeroed cell only when the path does not yet
+exist, and otherwise attaches with the current value and version in
+place - racing creators all reach the same cell. A region built for
+a different payload type is a `LayoutMismatch`. `reset` truncates
+and reinitializes; on Windows it succeeds only once every process
+has unmapped the region.
 
 `T` is required to be `Copy + 'static` and to fit in `PAYLOAD_BYTES`.
 The SeqLock protocol on the read path is:
@@ -59,8 +67,9 @@ pub const STATE_INITIALIZED: u8 = 2;
 Constructor:
 
 ```rust,no_run
-pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;
+pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;  // attaches if the path exists
 pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;
+pub fn reset(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;   // truncates; re-arms the once
 ```
 
 The winning initialiser writes the payload then transitions to
