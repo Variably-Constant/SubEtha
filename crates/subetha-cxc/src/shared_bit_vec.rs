@@ -96,24 +96,67 @@ impl subetha_sidecar::AdaptiveInstance for SharedBitVec {
 }
 
 impl SharedBitVec {
+    /// Obtain the bit vector at `path`, initializing an all-zero one
+    /// if the path does not yet exist and attaching to it if it does.
+    /// Attaching leaves set bits in place; a region built with a
+    /// different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, capacity_bits: usize,
     ) -> Result<Self, BitVecError> {
         assert!(capacity_bits >= 1);
-        let word_count = capacity_bits.div_ceil(BITS_PER_WORD);
-        let total = bit_vec_file_size(capacity_bits);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut BitVecHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            bit_vec_file_size(capacity_bits),
+            |ptr| unsafe { Self::init_region(ptr, capacity_bits) },
+            |ptr| unsafe { (*(ptr as *const BitVecHeader)).magic == BITVEC_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity_bits)
+    }
+
+    /// Truncate the bit vector at `path` and initialize an all-zero
+    /// one, discarding the bits live peers share. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, capacity_bits: usize,
+    ) -> Result<Self, BitVecError> {
+        assert!(capacity_bits >= 1);
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            bit_vec_file_size(capacity_bits),
+            |ptr| unsafe { Self::init_region(ptr, capacity_bits) },
+        )?;
+        Self::from_region(file, mmap, capacity_bits)
+    }
+
+    /// Lay out an all-zero vector: sizes first, magic last, because
+    /// attachers spin on it. The zeroed region is already every word
+    /// at zero.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `bit_vec_file_size(capacity_bits)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity_bits: usize) {
+        let hdr = ptr as *mut BitVecHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<BitVecHeader>());
-            (*hdr).magic = BITVEC_MAGIC;
             (*hdr).capacity_bits = capacity_bits as u64;
-            (*hdr).word_count = word_count as u64;
+            (*hdr).word_count = capacity_bits.div_ceil(BITS_PER_WORD) as u64;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, BITVEC_MAGIC);
         }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity_bits: usize,
+    ) -> Result<Self, BitVecError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const BitVecHeader) };
+        if hdr.magic != BITVEC_MAGIC || hdr.capacity_bits != capacity_bits as u64 {
+            return Err(BitVecError::LayoutMismatch);
+        }
+        let word_count = hdr.word_count as usize;
         Ok(Self {
             _file: file, mmap, capacity_bits, word_count,
             header_sidecar: subetha_core::HandshakeHeader::new(),
@@ -130,16 +173,7 @@ impl SharedBitVec {
             return Err(BitVecError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const BitVecHeader) };
-        if hdr.magic != BITVEC_MAGIC || hdr.capacity_bits != expected_capacity_bits as u64 {
-            return Err(BitVecError::LayoutMismatch);
-        }
-        let word_count = hdr.word_count as usize;
-        Ok(Self {
-            _file: file, mmap, capacity_bits: expected_capacity_bits, word_count,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity_bits)
     }
 
     #[inline]
@@ -356,6 +390,32 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-bitvec-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second create attaches with set bits in place; reset is what
+    /// clears them.
+    #[test]
+    fn second_create_attaches_and_keeps_bits() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let b = SharedBitVec::create(&p, 100).unwrap();
+        b.set(42).unwrap();
+
+        let b2 = SharedBitVec::create(&p, 100).unwrap();
+        assert!(b2.get(42).unwrap(), "attach cleared a live bit");
+        assert!(matches!(
+            SharedBitVec::create(&p, 50),
+            Err(BitVecError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(b);
+        drop(b2);
+        let fresh = SharedBitVec::reset(&p, 100).unwrap();
+        assert!(fresh.is_all_clear(), "reset left a bit set");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

@@ -40,6 +40,14 @@ correctly with no lost updates.
 - **Range ops mix RMW and store**: boundary words use RMW (preserves
   bits outside the range); fully-covered interior words use plain
   Release-store (overwrites every bit in the word).
+- **`create` obtains, `reset` truncates**: `create(path, bits)`
+  initializes an all-zero vector only when the path does not yet
+  exist, and otherwise attaches with set bits intact - racing
+  creators all reach the same vector. A region built with a
+  different capacity is a `LayoutMismatch`. `reset(path, bits)`
+  truncates and reinitializes, for a caller that owns the path; on
+  Windows it succeeds only once every process has unmapped the
+  region. The in-place `clear_all()` zeroes without truncating.
 - **Cross-process backed by MMF.**
 
 ---
