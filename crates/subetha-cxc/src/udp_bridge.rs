@@ -4313,27 +4313,6 @@ mod tests {
         loopback_round_trip(300, 8, 2, 30, 1234);
     }
 
-    /// A replacement sender is delivered once its epoch is challenged and
-    /// answered. Both senders live in this process, so the second one's
-    /// block ids start at zero against a frontier the first advanced -
-    /// the state a restarted peer presents.
-    ///
-    /// The second sender is driven by `drain_until_acked`, which is what
-    /// retransmits: `pump_feedback` only samples, beats and reads, so a
-    /// sender that flushed once into a socket still bound to its dead
-    /// predecessor would have nothing left to re-offer.
-    /// Two independent block-RS senders, distinct session epochs, delivering
-    /// to ONE receiver at the same time - the replication-mesh shape, where a
-    /// node receives from several peers concurrently rather than from one peer
-    /// that restarted.
-    ///
-    /// The RLC code carries this (each connection id decodes in its own
-    /// window); block-RS holds a single session epoch, so the second sender's
-    /// blocks are gated out by the epoch check ahead of the block-id checks.
-    /// Each sender tags its items in the high byte so the streams stay
-    /// distinguishable; ordering is asserted WITHIN a sender, since nothing
-    /// orders one against the other.
-    #[test]
     /// Three concurrent senders, which is the smallest number that forces two
     /// separate admission challenges. With two peers one always takes the
     /// free first-admission slot, so a broken challenge path still delivers
@@ -4395,6 +4374,17 @@ mod tests {
         );
     }
 
+    /// Two independent block-RS senders, distinct session epochs, delivering
+    /// to ONE receiver at the same time - the replication-mesh shape, where a
+    /// node receives from several peers concurrently rather than from one peer
+    /// that restarted.
+    ///
+    /// The RLC code carries this (each connection id decodes in its own
+    /// window); block-RS holds a single session epoch, so the second sender's
+    /// blocks are gated out by the epoch check ahead of the block-id checks.
+    /// Each sender tags its items in the high byte so the streams stay
+    /// distinguishable; ordering is asserted WITHIN a sender, since nothing
+    /// orders one against the other.
     #[test]
     fn two_concurrent_rs_senders_both_deliver() {
         const PER: u64 = 200;
@@ -4466,6 +4456,15 @@ mod tests {
         );
     }
 
+    /// A replacement sender is delivered once its epoch is challenged and
+    /// answered. Both senders live in this process, so the second one's
+    /// block ids start at zero against a frontier the first advanced -
+    /// the state a restarted peer presents.
+    ///
+    /// The second sender is driven by `drain_until_acked`, which is what
+    /// retransmits: `pump_feedback` only samples, beats and reads, so a
+    /// sender that flushed once into a socket still bound to its dead
+    /// predecessor would have nothing left to re-offer.
     #[test]
     fn restarted_sender_is_adopted_after_the_challenge() {
         const N: u64 = 40;
