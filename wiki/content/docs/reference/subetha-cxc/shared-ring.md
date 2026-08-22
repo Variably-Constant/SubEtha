@@ -68,9 +68,17 @@ with both mappings pointing into the same physical pages).
 Constructor:
 
 ```rust,no_run
-pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, StackError>;
+pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, StackError>;  // attaches if the path exists
 pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, StackError>;
+pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, StackError>;   // truncates and empties
 ```
+
+`create` initializes an empty stack only when the path does not yet
+exist, and otherwise attaches with pushed entries and the free list
+intact - racing creators all reach the same stack. A region built
+with a different capacity or payload type is a `LayoutMismatch`.
+`reset` truncates and reinitializes; on Windows it succeeds only
+once every process has unmapped the region.
 
 The classic ABA problem on the head pointer is avoided by
 versioning the head with a counter in the same atomic word
