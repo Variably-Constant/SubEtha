@@ -24,7 +24,7 @@
 //! idle CPU; the timeout also drives tail-ARQ), and the sender socket is
 //! non-blocking so item throughput never waits on feedback.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
@@ -42,7 +42,9 @@ use crate::net_events::NetEventObserver;
 use crate::path_model_sensor::PathModel;
 use crate::path_sensor::PathSensor;
 use crate::rtt_shape_sensor::RttShape;
-use crate::reliable_udp::{is_outer_datagram, Decoder, Encoder, Feedback, NAK_NONE};
+use crate::reliable_udp::{
+    datagram_epoch, is_outer_datagram, Decoder, Encoder, Feedback, NAK_NONE,
+};
 
 /// Receive-buffer size for an inbound CONTROL datagram. Generous: a control
 /// packet carrying every frame is well under this, and over-sizing costs only
@@ -2114,25 +2116,12 @@ impl ReliableUdpSender {
 }
 
 /// Receiver half of the reliable-UDP bridge.
-pub struct ReliableUdpReceiver {
-    /// Shared with every per-session decode window: `DgramSock::send_to` and
-    /// `recv_from` take `&self`, so a session drives the wire toward its own
-    /// peer without owning the socket. One socket, N sessions.
+/// One peer's block-RS decode window, keyed by session epoch: its decoder,
+/// delivery frontier, NAK history and feedback cadence. The receiver holds one
+/// per live sender and owns the socket the session sends through.
+struct RsSession {
     sock: std::sync::Arc<crate::dgram::DgramSock>,
     dec: Decoder,
-    /// A session epoch under challenge: `(addr, epoch, nonce, sent_at)`.
-    /// Adopted only when that nonce comes back from that address.
-    pending_session: Option<(SocketAddr, u32, u64, Instant)>,
-    /// Set when a replacement session is adopted; cleared by
-    /// [`take_session_changed`](Self::take_session_changed).
-    session_changed: bool,
-    /// Replacement sessions adopted, and challenges that expired
-    /// unanswered. Telemetry.
-    session_adoptions: u64,
-    session_adoption_failures: u64,
-    /// Monotonic nonce source, mixed so the emitted value is not a
-    /// guessable counter.
-    session_nonce_seq: u64,
     /// When a datagram last arrived, driving [`PEER_SILENCE_TIMEOUT`].
     last_data_at: Instant,
     peer: Option<SocketAddr>,
@@ -2227,19 +2216,16 @@ pub struct ReliableUdpReceiver {
     /// Zero length = off.
     burst_at: u64,
     burst_len: u64,
-    /// Whether the receive socket is connected to the peer. Linux/FreeBSD
-    /// (for recvmmsg / GRO) and Windows (for `WSARecvMsg`) connect after the
-    /// first datagram; feedback then goes via `send()`, because BSD rejects
-    /// `send_to()` on a connected UDP socket with EISCONN. A platform that
-    /// stays unconnected keeps `send_to()`.
+    /// Whether the socket is connected to this session's peer. Set only while
+    /// the receiver holds one session; feedback then rides `send()`, since BSD
+    /// rejects `send_to()` on a connected socket with EISCONN.
     connected: bool,
     /// Reused receive buffers for the batched `recvmmsg` path.
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     rbufs: Vec<Vec<u8>>,
-    /// Whether `UDP_GRO` took on the socket (Linux). When set, the receiver
-    /// reads coalesced super-buffers via `recvmsg` and splits them by the
-    /// GRO segment size - the receive-side counterpart of GSO. When unset
-    /// (old kernel) it keeps the per-datagram `recvmmsg` path.
+    /// Whether `UDP_GRO` took on the socket (Linux): coalesced super-buffers
+    /// read via `recvmsg` and split by the GRO segment size, the receive-side
+    /// counterpart of GSO. Unset on an old kernel, which keeps `recvmmsg`.
     #[cfg(target_os = "linux")]
     gro_on: bool,
     /// 64 KiB buffer for one coalesced GRO read (Linux).
@@ -2267,17 +2253,76 @@ pub struct ReliableUdpReceiver {
     /// trace for a periodic delay spike and reports the period + seconds-to-next
     /// in a `Periodicity` frame, so the sender pre-arms one cycle ahead.
     periodicity: crate::periodicity_sensor::PeriodicitySensor,
-    /// Active OS path-event observer (this end's route / carrier / MTU
-    /// watcher). Reports its egress MTU to the peer in a `Pmtu` frame; its
-    /// event count is the proof a real path event fired on this host.
-    net_events: NetEventObserver,
     /// The peer's last reported path MTU (from its `Pmtu` frame), 0 = none yet.
     peer_pmtu: u16,
-    /// Peak path shift this end's active observer reached over the run, sampled
-    /// as datagrams arrive. The instantaneous shift decays within seconds of
-    /// the event, so this peak-hold is what makes a mid-transfer route / MTU
-    /// event on this (receiver) end visible in the end-of-run telemetry.
+    /// This host's egress path MTU, set by the receiver each poll and echoed to
+    /// the sender in a `Pmtu` frame. 0 = unknown.
+    local_pmtu: u16,
+}
+
+/// Receiver side of the block-RS code. Owns the socket and the drain, and
+/// routes each datagram to the [`RsSession`] holding its session epoch.
+///
+/// Point-to-point by default: the socket connects to its one peer and reads
+/// through the GRO / `recvmmsg` / `WSARecvMsg` fast paths.
+/// [`with_multi_peer`](Self::with_multi_peer) keeps it unconnected and reads
+/// per datagram with the source captured.
+pub struct ReliableUdpReceiver {
+    sock: std::sync::Arc<crate::dgram::DgramSock>,
+    /// Live decode windows by session epoch, with `order` holding the epochs in
+    /// first-seen order; sessions are serviced in that order.
+    sessions: HashMap<u32, RsSession>,
+    order: Vec<u32>,
+    /// Epochs under admission challenge, `epoch -> (addr, nonce, sent_at)`,
+    /// capped at [`MAX_PENDING_RS_ADMISSIONS`].
+    pending_admissions: HashMap<u32, (SocketAddr, u64, Instant)>,
+    /// Monotonic nonce source, mixed so the emitted value is not a guessable
+    /// counter.
+    session_nonce_seq: u64,
+    session_changed: bool,
+    session_admissions: u64,
+    session_admission_failures: u64,
+    start: Instant,
+    /// Active OS path-event observer (this end's route / carrier / MTU
+    /// watcher). Reports its egress MTU to the peer in a `Pmtu` frame; its
+    /// event count is the proof a real path event fired on this host. One per
+    /// receiver: it watches this host's routes, not a peer.
+    net_events: NetEventObserver,
+    /// Serve several peers: socket left unconnected, every datagram read
+    /// singly and routed by its epoch. A connected socket accepts one address,
+    /// so this is what admits any peer past the first.
+    multi_peer: bool,
+    /// Highest path shift this end's observer has reported, sampled each poll.
+    /// The live shift decays within seconds; this is peak-held.
     net_event_shift_peak: f32,
+    /// Configuration captured by the builder methods before any peer is seen,
+    /// stamped onto each session as it opens.
+    cfg: RsSessionConfig,
+}
+
+/// Decode windows one block-RS receiver carries at once.
+const MAX_LIVE_RS_SESSIONS: usize = 256;
+
+/// Session epochs under admission challenge at once. Each holds its slot for at
+/// most [`SESSION_CHALLENGE_TIMEOUT`].
+const MAX_PENDING_RS_ADMISSIONS: usize = 64;
+
+/// Receiver settings captured before any peer exists, copied into each session
+/// as it opens.
+#[derive(Clone, Copy)]
+struct RsSessionConfig {
+    max_hold: Duration,
+    fb_delay: Duration,
+    nak_batch: usize,
+    debug_drop_pct: u32,
+    drop_rng: u64,
+    ge_loss_p: u32,
+    ge_loss_r: u32,
+    drop_block_mod: u32,
+    burst_at: u64,
+    burst_len: u64,
+    fb_drop_pct: u32,
+    fb_drop_rng: u64,
 }
 
 /// Enable `UDP_GRO` on a connected receive socket so the kernel coalesces
@@ -2485,31 +2530,12 @@ pub fn gro_stats() -> (u64, u64) {
     }
 }
 
-impl ReliableUdpReceiver {
-    /// Bind `local`. The socket gets a 20ms read timeout so the receiver
-    /// parks on data yet wakes often enough to drive tail-ARQ feedback.
-    pub fn bind(local: impl ToSocketAddrs) -> io::Result<Self> {
-        let sock = UdpSocket::bind(local)?;
-        sock.set_read_timeout(Some(Duration::from_millis(4)))?;
-        size_socket_buffers(&sock);
-        // Observe each datagram's TTL / ECN passively: request the cmsgs here
-        // (Linux / FreeBSD via IP_RECVTTL / IP_RECVTOS, Windows via
-        // IP_HOPLIMIT / IP_RECVTOS / IP_ECN) and read them on the recv path.
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        enable_ttl_ecn(&sock);
-        #[cfg(target_os = "windows")]
-        enable_ttl_ecn_win(&sock);
-        // Wrap as the plain-UDP DgramSock backend after the raw-fd cmsg setup;
-        // the standalone path keeps the fd (via as_udp) for the TTL/ECN recvmsg.
-        let sock = crate::dgram::DgramSock::from_udp(sock);
-        Ok(Self {
-            sock: std::sync::Arc::new(sock),
+impl RsSession {
+    /// A decode window over the receiver's socket, configured from `cfg`.
+    fn new(sock: std::sync::Arc<crate::dgram::DgramSock>, cfg: RsSessionConfig) -> Self {
+        Self {
+            sock,
             dec: Decoder::new(),
-            pending_session: None,
-            session_changed: false,
-            session_adoptions: 0,
-            session_adoption_failures: 0,
-            session_nonce_seq: 0,
             last_data_at: Instant::now(),
             peer: None,
             recv_count: 0,
@@ -2528,25 +2554,23 @@ impl ReliableUdpReceiver {
             peer_link_class: 0,
             peer_link_quality: 0,
             ack_interval: ACK_INTERVAL,
-            fb_drop_pct: 0,
-            fb_drop_rng: 0x243F6A8885A308D3,
-            fb_delay: Duration::ZERO,
+            fb_drop_pct: cfg.fb_drop_pct,
+            fb_drop_rng: cfg.fb_drop_rng,
+            fb_delay: cfg.fb_delay,
             fb_pending: VecDeque::new(),
-            nak_batch: MAX_NAKS_PER_CYCLE,
-            // Default: hold a gap for a long time so delivery is
-            // effectively reliable; recovery almost always lands first.
-            max_hold: Duration::from_secs(60),
+            nak_batch: cfg.nak_batch,
+            max_hold: cfg.max_hold,
             head_block: 0,
             head_since: Instant::now(),
             start: Instant::now(),
-            debug_drop_pct: 0,
-            drop_rng: 0x9E3779B97F4A7C15,
-            ge_loss_p: 0,
-            ge_loss_r: 0,
+            debug_drop_pct: cfg.debug_drop_pct,
+            drop_rng: cfg.drop_rng,
+            ge_loss_p: cfg.ge_loss_p,
+            ge_loss_r: cfg.ge_loss_r,
             ge_bad: false,
-            drop_block_mod: 0,
-            burst_at: 0,
-            burst_len: 0,
+            drop_block_mod: cfg.drop_block_mod,
+            burst_at: cfg.burst_at,
+            burst_len: cfg.burst_len,
             connected: false,
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             rbufs: Vec::new(),
@@ -2562,139 +2586,9 @@ impl ReliableUdpReceiver {
             fc_bytes: 0,
             fc_last: Instant::now(),
             periodicity: crate::periodicity_sensor::PeriodicitySensor::new(),
-            net_events: NetEventObserver::start(None),
             peer_pmtu: 0,
-            net_event_shift_peak: 0.0,
-        })
-    }
-
-    /// Enable diagnostic whole-block loss: drop every shard of any data
-    /// block whose id is a multiple of `m` (outer-parity blocks are never
-    /// dropped). Such blocks are unrecoverable by ARQ, so successful
-    /// delivery proves tower recovery.
-    pub fn with_block_drop_mod(mut self, m: u32) -> Self {
-        self.drop_block_mod = m;
-        self
-    }
-
-    /// Enable a diagnostic loss BURST: drop every data datagram arriving in
-    /// the window `[at, at + len)` (by arrival index) - one concentrated
-    /// loss event - so the throughput trace shows a blip followed by full
-    /// recovery as the held backlog drains.
-    pub fn with_burst_loss(mut self, at: u64, len: u64) -> Self {
-        self.burst_at = at;
-        self.burst_len = len;
-        self
-    }
-
-    /// Swap the datagram socket for one the caller already built (a demux socket
-    /// the unified endpoint shares across both codes).
-    pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
-        self.sock = std::sync::Arc::new(sock);
-    }
-
-    /// The bound local address (useful when binding to port 0).
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.sock.local_addr()
-    }
-
-    /// Set how long a gap is held for recovery before being skipped to
-    /// unblock the stream. A long value (the default is 60s) makes
-    /// delivery effectively reliable; a short value bounds latency at the
-    /// cost of dropping a gap that has not recovered in time.
-    /// Whether a replacement session was adopted since this was last
-    /// called, clearing the flag. Edge-triggered: one report per adoption.
-    /// The session epoch this receiver is currently decoding, or `None` before
-    /// the first data datagram. The block-RS identity of the peer, and the
-    /// counterpart to the RLC connection id.
-    pub fn session_epoch(&self) -> Option<u32> {
-        self.dec.session_epoch()
-    }
-
-    pub fn take_session_changed(&mut self) -> bool {
-        std::mem::replace(&mut self.session_changed, false)
-    }
-
-    /// `(adopted, challenges_that_went_unanswered)` for replacement
-    /// sessions. A refused forgery raises the second without the first.
-    pub fn session_adoption_counts(&self) -> (u64, u64) {
-        (self.session_adoptions, self.session_adoption_failures)
-    }
-
-    /// Dissolve the socket's peer association once the peer has been
-    /// silent past [`PEER_SILENCE_TIMEOUT`], so a replacement session on a
-    /// fresh address can be heard at all. Connecting to an unspecified
-    /// address is how "no peer" is expressed through the portable API.
-    fn release_silent_peer(&mut self) {
-        if !self.connected || self.last_data_at.elapsed() <= PEER_SILENCE_TIMEOUT {
-            return;
+            local_pmtu: 0,
         }
-        if self.sock.connect(UNSPECIFIED_PEER).is_ok() {
-            self.connected = false;
-            #[cfg(target_os = "linux")]
-            {
-                self.gro_on = false;
-            }
-        }
-    }
-
-    /// Arm or retire the challenge for an unrecognised session epoch, and
-    /// (re)send the outstanding one. A challenge already outstanding for
-    /// the same epoch is left alone so its nonce is not rolled faster than
-    /// an answer can return.
-    fn service_session_challenge(&mut self) -> io::Result<()> {
-        if let Some((_, _, _, sent)) = self.pending_session
-            && sent.elapsed() > SESSION_CHALLENGE_TIMEOUT
-        {
-            self.pending_session = None;
-            self.session_adoption_failures += 1;
-        }
-        if let Some(epoch) = self.dec.take_unknown_epoch() {
-            let already = matches!(self.pending_session, Some((_, e, _, _)) if e == epoch);
-            if !already && let Some(addr) = self.peer {
-                self.session_nonce_seq = self.session_nonce_seq.wrapping_add(1);
-                let entropy = self.start.elapsed().as_nanos() as u64;
-                let mut x = entropy ^ self.session_nonce_seq.rotate_left(32) ^ u64::from(epoch);
-                x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-                x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-                // Masked to what a varint carries without clamping, or the
-                // echo would come back a different number than was stored.
-                let nonce = (x ^ (x >> 31)) & crate::control_frame::NONCE_MASK;
-                self.pending_session = Some((addr, epoch, nonce, Instant::now()));
-            }
-        }
-        if let Some((addr, epoch, nonce, _)) = self.pending_session {
-            let mut cp = ControlPacket::new();
-            cp.session_challenge = Some(crate::control_frame::SessionFrame { epoch, nonce });
-            let wire = encode_control(&cp);
-            self.sock.send_to(&wire, addr)?;
-        }
-        Ok(())
-    }
-
-    pub fn with_max_hold(mut self, hold: Duration) -> Self {
-        self.max_hold = hold;
-        self
-    }
-
-    /// Test knob: inject an artificial one-way delay on the feedback path,
-    /// so a loopback run reproduces the recovery round-trip of a real
-    /// (Wi-Fi / LAN) link. With zero delay feedback is sent inline; with a
-    /// delay it queues and releases when due. Used to demonstrate that
-    /// selective (parallel) NAK keeps throughput up where serial
-    /// one-gap-per-round-trip recovery would stall.
-    pub fn with_feedback_delay(mut self, delay: Duration) -> Self {
-        self.fb_delay = delay;
-        self
-    }
-
-    /// Cap the gaps NAK'd per poll cycle. The default re-requests every
-    /// held gap in parallel (one round-trip for all); `1` reproduces the
-    /// serial head-only recovery (one gap per round-trip) for A/B
-    /// measurement of the head-of-line behavior.
-    pub fn with_nak_batch(mut self, batch: usize) -> Self {
-        self.nak_batch = batch.max(1);
-        self
     }
 
     /// Datagrams read off the socket so far (telemetry).
@@ -2734,15 +2628,6 @@ impl ReliableUdpReceiver {
 
     pub fn owd_trend_debiased(&self) -> f64 {
         self.dec.owd_trend_debiased()
-    }
-
-    /// Inject reverse-path (feedback) loss: drop `pct` percent of OUTGOING
-    /// feedback packets, the counterpart of [`with_debug_loss`](Self::with_debug_loss)
-    /// (which drops inbound data). Used to show the feedback-redundancy response
-    /// without netem.
-    pub fn with_feedback_drop(mut self, pct: u32) -> Self {
-        self.fb_drop_pct = pct.min(100);
-        self
     }
 
     /// The current ACK cadence (telemetry); shortens under reverse-path loss.
@@ -2810,75 +2695,16 @@ impl ReliableUdpReceiver {
         Some((period, conf, self.periodicity.secs_to_next_spike().unwrap_or(0.0)))
     }
 
-    /// Count of OS path events (route / carrier / MTU changes) this end's
-    /// active observer has seen. The durable proof a real path event fired on
-    /// this host - flapping a route or dropping the MTU bumps it (telemetry).
-    pub fn net_event_count(&self) -> u64 {
-        self.net_events.event_count()
-    }
-
-    /// This (receiver) endpoint's egress path MTU in bytes (0 = unknown),
-    /// reported to the sender in the `Pmtu` frame (telemetry).
-    pub fn local_pmtu(&self) -> u16 {
-        self.net_events.pmtu().unwrap_or(0)
-    }
-
     /// The peer's (sender's) last reported path MTU in bytes (0 = none yet),
     /// from its `Pmtu` frame (telemetry).
     pub fn peer_pmtu(&self) -> u16 {
         self.peer_pmtu
     }
 
-    /// The active observer's current decaying path-shift (telemetry).
-    pub fn net_event_shift(&self) -> f32 {
-        self.net_events.path_shift()
-    }
-
-    /// The peak path shift this end's active observer reached over the run. A
-    /// mid-transfer route / carrier / MTU event spikes this toward 1.0 even
-    /// though the live shift has since decayed (telemetry).
-    pub fn net_event_shift_peak(&self) -> f32 {
-        self.net_event_shift_peak
-    }
-
-    /// Synthetically fire a path event on this end (the `--sim-path-event`
-    /// demo). The production path is the active OS observer.
-    pub fn inject_path_event(&self) {
-        self.net_events.inject_event();
-    }
-
-    /// Synthetically set this endpoint's egress MTU (a drop also records a path
-    /// event), as a real OS MTU change would. For tests / demos; production
-    /// reads it from the active observer.
-    pub fn inject_pmtu(&self, mtu: u16) {
-        self.net_events.inject_pmtu(mtu);
-    }
-
     /// Diagnostic snapshot of the block blocking in-order delivery:
     /// `(block_id, received_shards, k, decoded)`, or `None` if unseen.
     pub fn head_status(&self) -> Option<(u32, u32, usize, bool)> {
         self.dec.head_status()
-    }
-
-    /// Enable diagnostic loss injection: drop `pct` percent of incoming
-    /// DATA datagrams (seeded, reproducible) to exercise FEC / ARQ on a
-    /// link that does not lose packets on its own.
-    pub fn with_debug_loss(mut self, pct: u32, seed: u64) -> Self {
-        self.debug_drop_pct = pct.min(100);
-        self.drop_rng = seed | 1;
-        self
-    }
-
-    /// Enable diagnostic Gilbert-Elliott BURST loss: a two-state chain with
-    /// per-10000 transition probabilities `p` (Good->Bad) and `r` (Bad->Good),
-    /// dropping every datagram in the Bad state. Mean burst length is
-    /// `10000 / r`, steady loss `p / (p + r)`. A known bursty channel for
-    /// validating the burst model against the jitter heuristic.
-    pub fn with_gilbert_loss(mut self, p_per_10k: u32, r_per_10k: u32, seed: u64) -> Self {
-        self.ge_loss_p = p_per_10k;
-        self.ge_loss_r = r_per_10k.max(1);
-        self.drop_rng = seed | 1;
-        self
     }
 
     /// Change the diagnostic loss rate at runtime (0 disables). Lets a test
@@ -2970,13 +2796,6 @@ impl ReliableUdpReceiver {
     fn process_datagram(&mut self, buf: &[u8], out: &mut Vec<Vec<u8>>) {
         self.recv_count += 1;
         self.last_data_at = Instant::now();
-        // Peak-hold this end's active path-event shift: a route / carrier / MTU
-        // event spikes the observer's shift, which decays within seconds, so
-        // sampling on each arrival captures the transient for the telemetry.
-        let evt_shift = self.net_events.path_shift();
-        if evt_shift > self.net_event_shift_peak {
-            self.net_event_shift_peak = evt_shift;
-        }
         if self.roll_drop() {
             return;
         }
@@ -3008,28 +2827,8 @@ impl ReliableUdpReceiver {
                 {
                     self.dec.note_unknown_epoch(announced);
                 }
-                // The answer to a session challenge. Adopting resets the
-                // decoder to the new session's block-id space and rebinds
-                // to the address that has now proved it can receive.
-                if let Some(sr) = cp.session_response
-                    && let Some((addr, epoch, nonce, _)) = self.pending_session
-                    && sr.epoch == epoch
-                    && sr.nonce == nonce
-                {
-                    self.dec.adopt_epoch(epoch);
-                    // The receiver's own per-block state is keyed to the
-                    // dead session's ids too. Left in place, its NAK
-                    // rate-limiter suppresses requests for the new
-                    // session's blocks 0..n as though they had just been
-                    // asked for, and recovery walks one block and stops.
-                    self.nak_history.clear();
-                    self.peer = Some(addr);
-                    self.connected = self.sock.connect(addr).is_ok();
-                    self.pending_session = None;
-                    self.session_changed = true;
-                    self.session_adoptions += 1;
-                    self.last_data_at = Instant::now();
-                }
+                // Session-challenge answers name a candidate epoch and are
+                // handled by the receiver's drain, not here.
                 if let Some(t) = cp.timing {
                     let recv_ts = self.start.elapsed().as_micros() as u64;
                     self.dec.on_heartbeat(t.send_ts, recv_ts);
@@ -3593,19 +3392,11 @@ impl ReliableUdpReceiver {
     /// feedback to the peer, and return any items that became
     /// deliverable in stream order. On timeout, feedback is sent with
     /// tail-ARQ drive so a stalled final block recovers.
-    pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
+    fn service(&mut self, timed_out: bool) -> io::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
-        // Read one datagram, or a whole batch in one syscall where the
-        // platform supports it. `timed_out` is true when no data arrived
-        // (the read-timeout park), which drives tail-ARQ feedback.
-        let timed_out = self.recv_into(&mut out)?;
         // Release any delayed feedback whose injected link latency has
         // elapsed (no-op unless a feedback delay is configured).
         self.flush_delayed_feedback();
-        // Stop listening to one address only once its peer goes quiet,
-        // then challenge any unrecognised session that turns up.
-        self.release_silent_peer();
-        self.service_session_challenge()?;
         if let Some(peer) = self.peer {
             let base = self.dec.feedback(timed_out);
             let now = Instant::now();
@@ -3715,9 +3506,11 @@ impl ReliableUdpReceiver {
             });
         }
         // Our egress path MTU, so a handoff on this (receiver) end rides the
-        // feedback to the sender's controller.
-        if let Some(pm) = self.net_events.pmtu() {
-            cp.pmtu = Some(PmtuFrame { pmtu: pm });
+        // feedback to the sender's controller. The observer watches this host's
+        // routes rather than any one peer, so the receiver samples it and the
+        // session echoes what it was given.
+        if self.local_pmtu != 0 {
+            cp.pmtu = Some(PmtuFrame { pmtu: self.local_pmtu });
         }
         // Bidirectional loss accounting: report how many feedback packets we
         // have sent and how many sender heartbeats we have received, so the
@@ -3830,6 +3623,569 @@ impl ReliableUdpReceiver {
             self.send_feedback_bytes(&fbuf, peer);
         }
         Ok(())
+    }
+}
+
+impl ReliableUdpReceiver {
+    /// Bind `local`. The socket gets a short read timeout so the receiver parks
+    /// on data yet wakes often enough to drive tail-ARQ feedback. No session
+    /// exists until a peer is seen; each session epoch that arrives opens one.
+    pub fn bind(local: impl ToSocketAddrs) -> io::Result<Self> {
+        let sock = UdpSocket::bind(local)?;
+        sock.set_read_timeout(Some(Duration::from_millis(4)))?;
+        size_socket_buffers(&sock);
+        // Observe each datagram's TTL / ECN passively: request the cmsgs here
+        // (Linux / FreeBSD via IP_RECVTTL / IP_RECVTOS, Windows via
+        // IP_HOPLIMIT / IP_RECVTOS / IP_ECN) and read them on the recv path.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        enable_ttl_ecn(&sock);
+        #[cfg(target_os = "windows")]
+        enable_ttl_ecn_win(&sock);
+        // Wrap as the plain-UDP DgramSock backend after the raw-fd cmsg setup;
+        // the standalone path keeps the fd (via as_udp) for the TTL/ECN recvmsg.
+        let sock = crate::dgram::DgramSock::from_udp(sock);
+        Ok(Self {
+            sock: std::sync::Arc::new(sock),
+            sessions: HashMap::new(),
+            order: Vec::new(),
+            pending_admissions: HashMap::new(),
+            session_nonce_seq: 0,
+            session_changed: false,
+            session_admissions: 0,
+            session_admission_failures: 0,
+            start: Instant::now(),
+            net_events: NetEventObserver::start(None),
+            multi_peer: false,
+            net_event_shift_peak: 0.0,
+            cfg: RsSessionConfig {
+                // Default: hold a gap for a long time so delivery is
+                // effectively reliable; recovery almost always lands first.
+                max_hold: Duration::from_secs(60),
+                fb_delay: Duration::ZERO,
+                nak_batch: MAX_NAKS_PER_CYCLE,
+                debug_drop_pct: 0,
+                drop_rng: 0x9E3779B97F4A7C15,
+                ge_loss_p: 0,
+                ge_loss_r: 0,
+                drop_block_mod: 0,
+                burst_at: 0,
+                burst_len: 0,
+                fb_drop_pct: 0,
+                fb_drop_rng: 0x243F6A8885A308D3,
+            },
+        })
+    }
+
+    /// Open a window for `epoch`, or `None` when the receiver will not carry
+    /// another peer.
+    fn open_session(&mut self, epoch: u32) -> Option<&mut RsSession> {
+        if !self.sessions.contains_key(&epoch) {
+            if self.sessions.len() >= MAX_LIVE_RS_SESSIONS {
+                return None;
+            }
+            // Past the first session the socket must accept every address.
+            if !self.sessions.is_empty() {
+                self.dissolve_peer_association();
+            }
+            let s = RsSession::new(std::sync::Arc::clone(&self.sock), self.cfg);
+            self.sessions.insert(epoch, s);
+            self.order.push(epoch);
+        }
+        self.sessions.get_mut(&epoch)
+    }
+
+    /// Drop the socket's single-peer association and the fast paths that read
+    /// through it. Connecting to an unspecified address is how "no peer" is
+    /// expressed through the portable API.
+    fn dissolve_peer_association(&mut self) {
+        if self.sock.connect(UNSPECIFIED_PEER).is_ok() {
+            for s in self.sessions.values_mut() {
+                s.connected = false;
+                #[cfg(target_os = "linux")]
+                {
+                    s.gro_on = false;
+                }
+            }
+        }
+    }
+
+    /// Whether the one live session still holds the socket association, or has
+    /// yet to bind one.
+    fn solo_connected(&self) -> bool {
+        match self.order.first().and_then(|e| self.sessions.get(e)) {
+            Some(s) => s.connected || s.peer.is_none(),
+            None => true,
+        }
+    }
+
+    /// Give up the socket association once its peer has been silent past
+    /// [`PEER_SILENCE_TIMEOUT`], so a peer arriving on a fresh address is heard.
+    fn release_silent_peer(&mut self) {
+        if self.multi_peer || self.sessions.len() != 1 {
+            return;
+        }
+        let stale = self
+            .order
+            .first()
+            .and_then(|e| self.sessions.get(e))
+            .is_some_and(|s| s.connected && s.last_data_at.elapsed() > PEER_SILENCE_TIMEOUT);
+        if stale {
+            self.dissolve_peer_association();
+        }
+    }
+
+    /// Receive whatever has arrived and deliver in-order items, each tagged
+    /// with the session epoch of the peer that sent it.
+    ///
+    /// Items are ordered within an epoch and unordered across epochs.
+    pub fn poll_from(&mut self) -> io::Result<Vec<(u32, Vec<u8>)>> {
+        let mut tagged: Vec<(u32, Vec<u8>)> = Vec::new();
+        let shift = self.net_events.path_shift();
+        if shift > self.net_event_shift_peak {
+            self.net_event_shift_peak = shift;
+        }
+        let pmtu = self.net_events.pmtu().unwrap_or(0);
+
+        // A connected socket hears one address, so a peer that has gone quiet
+        // past PEER_SILENCE_TIMEOUT gives up the association and the receiver
+        // reads unconnected until the next session binds one.
+        self.release_silent_peer();
+
+        // One peer: the connected fast path. Several: per-datagram reads with
+        // source capture, routed by epoch.
+        let timed_out = if !self.multi_peer && self.sessions.len() == 1 && self.solo_connected() {
+            let mut items = Vec::new();
+            let epoch = self.order[0];
+            let t = {
+                let s = self.sessions.get_mut(&epoch).expect("len == 1");
+                s.local_pmtu = pmtu;
+                s.recv_into(&mut items)?
+            };
+            tagged.extend(items.into_iter().map(|i| (epoch, i)));
+            t
+        } else {
+            self.drain_unconnected(&mut tagged, pmtu)?
+        };
+
+        self.expire_stale_admissions();
+        self.send_admission_challenges()?;
+
+        let ids = self.order.clone();
+        for epoch in ids {
+            if let Some(mut s) = self.sessions.remove(&epoch) {
+                s.local_pmtu = pmtu;
+                let r = s.service(timed_out);
+                self.sessions.insert(epoch, s);
+                tagged.extend(r?.into_iter().map(|i| (epoch, i)));
+            }
+        }
+        Ok(tagged)
+    }
+
+    /// Receive one datagram, decode it, send feedback, and return any items
+    /// that became deliverable in stream order. Peer attribution is dropped;
+    /// use [`poll_from`](Self::poll_from) when several peers are live.
+    pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
+        Ok(self.poll_from()?.into_iter().map(|(_, item)| item).collect())
+    }
+
+    /// The unconnected multi-peer receive path: one datagram at a time, with
+    /// the source captured, routed by the epoch the datagram carries.
+    fn drain_unconnected(
+        &mut self,
+        tagged: &mut Vec<(u32, Vec<u8>)>,
+        pmtu: u16,
+    ) -> io::Result<bool> {
+        let mut buf = [0u8; RECV_BUF];
+        match self.sock.recv_from(&mut buf) {
+            Ok((n, src)) => {
+                self.route_datagram(&buf[..n], src, tagged, pmtu);
+                Ok(false)
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Route one datagram to the window that owns its session epoch. The first
+    /// epoch seen opens a window directly; every epoch after it is challenged
+    /// first.
+    fn route_datagram(
+        &mut self,
+        buf: &[u8],
+        src: SocketAddr,
+        tagged: &mut Vec<(u32, Vec<u8>)>,
+        pmtu: u16,
+    ) {
+        if self.try_admit(buf, src) {
+            return;
+        }
+        let epoch = match datagram_epoch(buf) {
+            Some(e) => e,
+            // No epoch in the datagram (a control packet): it belongs to the
+            // session bound to this address, else the one that spoke last.
+            None => {
+                let by_addr = self
+                    .order
+                    .iter()
+                    .find(|e| self.sessions.get(e).and_then(|s| s.peer) == Some(src))
+                    .copied();
+                match by_addr.or_else(|| self.order.last().copied()) {
+                    Some(e) => e,
+                    None => return,
+                }
+            }
+        };
+        if !self.sessions.contains_key(&epoch) && !self.sessions.is_empty() {
+            self.begin_admission(epoch, src);
+            return;
+        }
+        let mut items = Vec::new();
+        if let Some(s) = self.open_session(epoch) {
+            s.local_pmtu = pmtu;
+            if s.peer != Some(src) {
+                s.peer = Some(src);
+            }
+            s.process_datagram(buf, &mut items);
+        }
+        tagged.extend(items.into_iter().map(|i| (epoch, i)));
+    }
+
+    /// Arm a challenge for an epoch asking to be admitted.
+    fn begin_admission(&mut self, epoch: u32, addr: SocketAddr) {
+        if self.pending_admissions.len() >= MAX_PENDING_RS_ADMISSIONS {
+            return;
+        }
+        if let Some((a, _, _)) = self.pending_admissions.get(&epoch)
+            && *a == addr
+        {
+            return;
+        }
+        self.session_nonce_seq = self.session_nonce_seq.wrapping_add(1);
+        let entropy = self.start.elapsed().as_nanos() as u64;
+        let mut x = entropy ^ self.session_nonce_seq.rotate_left(32) ^ u64::from(epoch);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        // Masked to what a varint carries without clamping, or the echo would
+        // come back a different number than was stored.
+        let nonce = (x ^ (x >> 31)) & crate::control_frame::NONCE_MASK;
+        self.pending_admissions.insert(epoch, (addr, nonce, Instant::now()));
+    }
+
+    /// (Re)send every outstanding admission challenge.
+    fn send_admission_challenges(&mut self) -> io::Result<()> {
+        let pending: Vec<(u32, SocketAddr, u64)> = self
+            .pending_admissions
+            .iter()
+            .map(|(e, (a, n, _))| (*e, *a, *n))
+            .collect();
+        for (epoch, addr, nonce) in pending {
+            let mut cp = ControlPacket::new();
+            cp.session_challenge = Some(crate::control_frame::SessionFrame { epoch, nonce });
+            let wire = encode_control(&cp);
+            self.sock.send_to(&wire, addr)?;
+        }
+        Ok(())
+    }
+
+    /// Retire challenges unanswered past [`SESSION_CHALLENGE_TIMEOUT`],
+    /// counting each into `session_admission_failures`.
+    fn expire_stale_admissions(&mut self) {
+        let before = self.pending_admissions.len();
+        self.pending_admissions
+            .retain(|_, (_, _, sent)| sent.elapsed() <= SESSION_CHALLENGE_TIMEOUT);
+        self.session_admission_failures += (before - self.pending_admissions.len()) as u64;
+    }
+
+    /// Open a window for an epoch whose challenge nonce came back from the
+    /// address it was sent to. Returns whether `buf` was such an answer.
+    fn try_admit(&mut self, buf: &[u8], src: SocketAddr) -> bool {
+        if !is_control(buf) {
+            return false;
+        }
+        let Some(cp) = decode_control(buf) else { return false };
+        let Some(sr) = cp.session_response else { return false };
+        let Some((addr, nonce, _)) = self.pending_admissions.get(&sr.epoch).copied() else {
+            return false;
+        };
+        if addr != src || nonce != sr.nonce {
+            return false;
+        }
+        self.pending_admissions.remove(&sr.epoch);
+        if let Some(s) = self.open_session(sr.epoch) {
+            s.peer = Some(src);
+            s.dec.adopt_epoch(sr.epoch);
+            s.nak_history.clear();
+            s.last_data_at = Instant::now();
+            self.session_admissions += 1;
+            self.session_changed = true;
+            return true;
+        }
+        false
+    }
+
+    /// Serve several peers concurrently. The socket stays unconnected and each
+    /// datagram is read singly, its source captured, and routed by the session
+    /// epoch it carries. Gives up the GRO / `recvmmsg` / `WSARecvMsg` fast
+    /// paths, which read an address-associated socket, so throughput is below
+    /// the point-to-point figures.
+    pub fn with_multi_peer(mut self) -> Self {
+        self.multi_peer = true;
+        self
+    }
+
+    /// Swap the datagram socket for one the caller already built (a demux
+    /// socket the unified endpoint shares across both codes). Live sessions
+    /// pick it up, since they hold the same handle.
+    pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
+        let sock = std::sync::Arc::new(sock);
+        self.sock = std::sync::Arc::clone(&sock);
+        for s in self.sessions.values_mut() {
+            s.sock = std::sync::Arc::clone(&sock);
+            s.connected = false;
+        }
+    }
+
+    /// The epoch of the most recently opened session, or `None` before any peer
+    /// is seen. Ambiguous once several peers are live - prefer
+    /// [`live_sessions`](Self::live_sessions).
+    pub fn session_epoch(&self) -> Option<u32> {
+        self.order.last().copied()
+    }
+
+    /// Send one feedback round to every live peer without waiting for a
+    /// datagram.
+    pub fn nudge_feedback(&mut self) -> io::Result<()> {
+        let ids = self.order.clone();
+        for epoch in ids {
+            if let Some(mut s) = self.sessions.remove(&epoch) {
+                let r = s.nudge_feedback();
+                self.sessions.insert(epoch, s);
+                r?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop `pct` percent of incoming data datagrams (seeded, reproducible) to
+    /// exercise FEC / ARQ on a lossless link. Stamped onto each session as it
+    /// opens, so every peer sees the same injected rate.
+    pub fn with_debug_loss(mut self, pct: u32, seed: u64) -> Self {
+        self.cfg.debug_drop_pct = pct.min(100);
+        self.cfg.drop_rng = seed | 1;
+        self
+    }
+
+    /// Gilbert-Elliott burst-loss injection, per-10000 transition
+    /// probabilities.
+    pub fn with_gilbert_loss(mut self, p_per_10k: u32, r_per_10k: u32, seed: u64) -> Self {
+        self.cfg.ge_loss_p = p_per_10k;
+        self.cfg.ge_loss_r = r_per_10k.max(1);
+        self.cfg.drop_rng = seed | 1;
+        self
+    }
+
+    /// How long a gap is held while FEC and ARQ recover it before the stream is
+    /// advanced past it.
+    pub fn with_max_hold(mut self, hold: Duration) -> Self {
+        self.cfg.max_hold = hold;
+        self
+    }
+
+    /// Inject a one-way feedback delay, to model a link's return latency.
+    pub fn with_feedback_delay(mut self, delay: Duration) -> Self {
+        self.cfg.fb_delay = delay;
+        self
+    }
+
+    /// Cap how many gaps one selective-NAK cycle re-requests.
+    pub fn with_nak_batch(mut self, batch: usize) -> Self {
+        self.cfg.nak_batch = batch.max(1);
+        self
+    }
+
+    /// Drop `pct` percent of outbound feedback datagrams (diagnostics).
+    pub fn with_feedback_drop(mut self, pct: u32) -> Self {
+        self.cfg.fb_drop_pct = pct.min(100);
+        self
+    }
+
+    /// Drop every shard of any data block whose id is a multiple of `m`.
+    pub fn with_block_drop_mod(mut self, m: u32) -> Self {
+        self.cfg.drop_block_mod = m;
+        self
+    }
+
+    /// Drop every data datagram arriving in `[at, at + len)` by arrival index.
+    pub fn with_burst_loss(mut self, at: u64, len: u64) -> Self {
+        self.cfg.burst_at = at;
+        self.cfg.burst_len = len;
+        self
+    }
+
+    /// The bound local address (useful when binding to port 0).
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.sock.local_addr()
+    }
+
+    /// Count of OS path events this end's active observer has seen.
+    pub fn net_event_count(&self) -> u64 {
+        self.net_events.event_count()
+    }
+
+    /// This endpoint's egress path MTU in bytes (0 = unknown).
+    pub fn local_pmtu(&self) -> u16 {
+        self.net_events.pmtu().unwrap_or(0)
+    }
+
+    /// The observer's current decaying path-shift (telemetry).
+    pub fn net_event_shift(&self) -> f32 {
+        self.net_events.path_shift()
+    }
+
+    /// The peak path shift reached over the run (telemetry).
+    pub fn net_event_shift_peak(&self) -> f32 {
+        self.net_event_shift_peak
+    }
+
+    /// Synthetically fire a path event on this end (demo path).
+    pub fn inject_path_event(&self) {
+        self.net_events.inject_event();
+    }
+
+    /// Synthetically set this endpoint's egress MTU (demo path).
+    pub fn inject_pmtu(&self, mtu: u16) {
+        self.net_events.inject_pmtu(mtu);
+    }
+
+    /// Datagrams read off the socket, summed over peers.
+    pub fn recv_count(&self) -> u64 {
+        self.sessions.values().map(|s| s.recv_count()).sum()
+    }
+
+    /// The path MTU last reported by the most recently opened peer (0 = none
+    /// yet). Per-peer by nature; use [`peer_pmtu_of`](Self::peer_pmtu_of) when
+    /// several are live.
+    pub fn peer_pmtu(&self) -> u16 {
+        self.order.last().and_then(|e| self.sessions.get(e)).map(|s| s.peer_pmtu()).unwrap_or(0)
+    }
+
+    /// The path MTU reported by one peer.
+    pub fn peer_pmtu_of(&self, epoch: u32) -> Option<u16> {
+        self.sessions.get(&epoch).map(|s| s.peer_pmtu())
+    }
+
+    /// The session epochs with a live decode window, in first-seen order.
+    pub fn live_sessions(&self) -> Vec<u32> {
+        self.order.clone()
+    }
+
+    /// The most recently opened session, which the per-peer telemetry below
+    /// reports for.
+    fn newest(&self) -> Option<&RsSession> {
+        self.order.last().and_then(|e| self.sessions.get(e))
+    }
+
+    /// Peak per-block loss seen, x255, over every peer.
+    pub fn peak_loss_x255(&self) -> u8 {
+        self.sessions.values().map(|s| s.peak_loss_x255()).max().unwrap_or(0)
+    }
+
+    /// Blocks the decoder reconstructed that later proved already complete,
+    /// summed over peers.
+    pub fn false_recovery_count(&self) -> u64 {
+        self.sessions.values().map(|s| s.false_recovery_count()).sum()
+    }
+
+    /// Drive the Gilbert-Elliott injector's bad state on every live session.
+    pub fn set_ge_burst(&mut self, on: bool) {
+        for s in self.sessions.values_mut() {
+            s.set_ge_burst(on);
+        }
+    }
+
+    /// Set the injected data-loss percentage on every live session.
+    pub fn set_debug_loss(&mut self, pct: u32) {
+        self.cfg.debug_drop_pct = pct.min(100);
+        for s in self.sessions.values_mut() {
+            s.set_debug_loss(pct);
+        }
+    }
+
+    /// Mean burst length of the newest peer's fitted loss model.
+    pub fn mean_burst_len(&self) -> f32 {
+        self.newest().map(|s| s.mean_burst_len()).unwrap_or(0.0)
+    }
+
+    /// One-way-delay skew of the newest peer's path.
+    pub fn owd_skew(&self) -> f64 {
+        self.newest().map(|s| s.owd_skew()).unwrap_or(0.0)
+    }
+
+    /// Debiased one-way-delay trend of the newest peer's path.
+    pub fn owd_trend_debiased(&self) -> f64 {
+        self.newest().map(|s| s.owd_trend_debiased()).unwrap_or(0.0)
+    }
+
+    /// The newest peer's current ACK cadence.
+    pub fn ack_interval(&self) -> Duration {
+        self.newest().map(|s| s.ack_interval()).unwrap_or(ACK_INTERVAL)
+    }
+
+    /// Reverse-path (feedback) loss fraction toward the newest peer.
+    pub fn feedback_loss_est(&self) -> f32 {
+        self.newest().map(|s| s.feedback_loss_est()).unwrap_or(0.0)
+    }
+
+    /// The newest peer's reported `(link_class, link_quality)`.
+    pub fn peer_link(&self) -> (u8, u8) {
+        self.newest().map(|s| s.peer_link()).unwrap_or((0, 0))
+    }
+
+    /// AccECN `(ce_count, ect_count)` observed from the newest peer.
+    pub fn accecn_counts(&self) -> (u64, u64) {
+        self.newest().map(|s| s.accecn_counts()).unwrap_or((0, 0))
+    }
+
+    /// Arrival-rate forecast for the newest peer, bits per second.
+    pub fn forecast_bps(&self) -> u64 {
+        self.newest().map(|s| s.forecast_bps()).unwrap_or(0)
+    }
+
+    /// LEO handover cadence detected on the newest peer's path.
+    pub fn leo_cadence(&self) -> Option<(f64, f64, f64)> {
+        self.newest().and_then(|s| s.leo_cadence())
+    }
+
+    /// WBest `(available, capacity)` estimate for the newest peer, bits/s.
+    pub fn wbest_bps(&self) -> (u64, u64) {
+        self.newest().map(|s| s.wbest_bps()).unwrap_or((0, 0))
+    }
+
+    /// The block blocking in-order delivery on the newest peer:
+    /// `(block_id, received_shards, k, decoded)`.
+    pub fn head_status(&self) -> Option<(u32, u32, usize, bool)> {
+        self.newest().and_then(|s| s.head_status())
+    }
+
+    /// Whether a window was admitted since the last call. Edge-triggered.
+    pub fn take_session_changed(&mut self) -> bool {
+        std::mem::replace(&mut self.session_changed, false)
+    }
+
+    /// `(admitted, challenges that went unanswered)`. The second rising
+    /// without the first is what a forged epoch looks like from here.
+    pub fn session_adoption_counts(&self) -> (u64, u64) {
+        (self.session_admissions, self.session_admission_failures)
     }
 }
 
@@ -3949,11 +4305,10 @@ mod tests {
     /// distinguishable; ordering is asserted WITHIN a sender, since nothing
     /// orders one against the other.
     #[test]
-    #[ignore = "subetha-8: block-RS is single-session; this is the reproduction, not a regression"]
     fn two_concurrent_rs_senders_both_deliver() {
         const PER: u64 = 200;
         const SENDERS: u64 = 2;
-        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap();
+        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap().with_multi_peer();
         let addr = recv.local_addr().unwrap();
 
         // Both senders bind first and then start together. Without the barrier
@@ -4039,14 +4394,14 @@ mod tests {
             first.pump_feedback().ok();
         }
         assert_eq!(seen, N, "first session did not deliver");
-        let epoch_a = recv.dec.session_epoch();
+        let epoch_a = recv.session_epoch();
         assert!(epoch_a.is_some(), "no session epoch learned");
 
         drop(first);
         let mut second = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
         assert_ne!(
             second.enc.epoch(),
-            recv.dec.session_epoch().unwrap(),
+            recv.session_epoch().unwrap(),
             "the replacement drew the same epoch as its predecessor"
         );
         for i in 0..N {

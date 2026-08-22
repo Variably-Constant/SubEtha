@@ -50,6 +50,20 @@ pub const DATA_HEADER: usize = 13;
 /// Offset of the session epoch within the data header.
 const EPOCH_OFFSET: usize = 9;
 
+/// The session epoch a data datagram carries, or `None` if `buf` is not a data
+/// datagram.
+pub fn datagram_epoch(buf: &[u8]) -> Option<u32> {
+    if !is_data(buf) || buf.len() < DATA_HEADER {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        buf[EPOCH_OFFSET],
+        buf[EPOCH_OFFSET + 1],
+        buf[EPOCH_OFFSET + 2],
+        buf[EPOCH_OFFSET + 3],
+    ]))
+}
+
 /// `flags` bit: this shard is a parity shard (index `>= k`).
 const FLAG_PARITY: u8 = 0b0000_0001;
 
