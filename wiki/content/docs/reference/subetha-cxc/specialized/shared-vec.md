@@ -50,6 +50,14 @@ create. Indexable `get(i)` is lock-free.
   `is_writable` / `flush` / `flush_async`. `VecError` is
   `Full` / `OutOfBounds` / `LayoutMismatch` / `PayloadTooLarge`
   / `ReadOnly` / `IoError`.
+- **`create` obtains, `reset` truncates**: `create(path, capacity)`
+  initializes an empty vec only when the path does not yet exist,
+  and otherwise attaches with live elements and `len` intact -
+  racing creators all reach the same vec. A region built with a
+  different capacity is a `LayoutMismatch`. `reset(path, capacity)`
+  truncates and reinitializes, for a caller that owns the path; on
+  Windows it succeeds only once every process has unmapped the
+  region. The in-place `clear()` empties without truncating.
 - **Cross-process backed by MMF.**
 
 ---

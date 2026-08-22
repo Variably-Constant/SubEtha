@@ -157,6 +157,11 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Shar
 }
 
 impl<T: Copy + 'static> SharedVec<T> {
+    /// Obtain the vec at `path`, initializing an empty one if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves live elements and `len` in place; a region built with a
+    /// different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, capacity: usize,
     ) -> Result<Self, VecError> {
@@ -164,41 +169,55 @@ impl<T: Copy + 'static> SharedVec<T> {
             return Err(VecError::PayloadTooLarge);
         }
         assert!(capacity >= 1);
-        let total = vec_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut VecHeader;
-        unsafe {
-            std::ptr::write(hdr, VecHeader {
-                magic: VEC_MAGIC,
-                slot_payload_size: VEC_PAYLOAD_BYTES as u32,
-                capacity: capacity as u64,
-                len: AtomicU64::new(0),
-                _pad: [0; 40],
-            });
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            vec_file_size(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const VecHeader)).magic == VEC_MAGIC },
+        )?;
+        let this = Self {
+            _file: file, mmap: Mapping::Writable(mmap), capacity, _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(capacity)?;
+        Ok(this)
+    }
+
+    /// Truncate the vec at `path` and initialize an empty one,
+    /// discarding every element live peers share. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, capacity: usize,
+    ) -> Result<Self, VecError> {
+        if size_of::<T>() > VEC_PAYLOAD_BYTES {
+            return Err(VecError::PayloadTooLarge);
         }
-        for i in 0..capacity {
-            let slot_ptr = unsafe {
-                mmap.as_mut_ptr()
-                    .add(size_of::<VecHeader>())
-                    .add(i * size_of::<VecSlot>())
-            } as *mut VecSlot;
-            unsafe {
-                std::ptr::write(slot_ptr, VecSlot {
-                    version: AtomicU32::new(0),
-                    _pad: [0; 4],
-                    payload: [0u8; VEC_PAYLOAD_BYTES],
-                });
-            }
-        }
+        assert!(capacity >= 1);
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), vec_file_size(capacity), |ptr| unsafe {
+            Self::init_region(ptr, capacity)
+        })?;
         Ok(Self {
             _file: file, mmap: Mapping::Writable(mmap), capacity, _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Lay out an empty vec: sizes first, magic last, because attachers
+    /// spin on it. The zeroed region is already the empty slot array
+    /// (version 0) and `len` 0.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `vec_file_size(capacity)` writable
+    /// zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut VecHeader;
+        unsafe {
+            (*hdr).slot_payload_size = VEC_PAYLOAD_BYTES as u32;
+            (*hdr).capacity = capacity as u64;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, VEC_MAGIC);
+        }
     }
 
     pub fn open(
@@ -487,6 +506,33 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+
+    /// A second create attaches with live elements in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_elements() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let v = SharedVec::<u64>::create(&p, 16).unwrap();
+        v.push_back(777).unwrap();
+
+        let v2 = SharedVec::<u64>::create(&p, 16).unwrap();
+        assert_eq!(v2.len(), 1, "attach emptied a live vec");
+        assert_eq!(v2.get(0), Some(777));
+        assert!(matches!(
+            SharedVec::<u64>::create(&p, 8),
+            Err(VecError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(v);
+        drop(v2);
+        let fresh = SharedVec::<u64>::reset(&p, 16).unwrap();
+        assert_eq!(fresh.len(), 0, "reset kept an element");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
+    }
 
     #[test]
     fn for_each_visits_every_live_slot_in_order() {
