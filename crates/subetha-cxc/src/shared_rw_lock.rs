@@ -22,6 +22,11 @@ use memmap2::{MmapMut, MmapOptions};
 
 pub const RWLOCK_MAGIC: u64 = 0x4150_5257_4C4F_434B;
 
+/// How long a caller that lost the `create_new` election waits for the winner
+/// to publish the magic before giving up. Bounded so a creator that dies
+/// mid-initialisation surfaces as an error rather than an unbounded spin.
+const CREATE_RACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const WRITER_BIT: u64 = 1u64 << 63;
 const WAITING_SHIFT: u64 = 32;
 const WAITING_MASK: u64 = 0x7FFF_FFFF << WAITING_SHIFT;
@@ -85,6 +90,63 @@ impl SharedRWLock {
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Open the lock at `path`, creating it if it does not exist, without a
+    /// window in which two callers can both create it.
+    ///
+    /// [`create`](Self::create) truncates and zeroes the header, so a second
+    /// caller running it against a live lock clears a writer flag another
+    /// holder owns and mutual exclusion is silently lost. An exists-then-create
+    /// check does not close that: the check and the create are separate steps.
+    /// Here exactly one caller wins an exclusive `create_new` and initialises;
+    /// the rest open and wait for the magic to appear.
+    ///
+    /// Use this for any lock a peer may reach first. [`create`](Self::create)
+    /// stays the right call only when the caller knows it owns the path.
+    pub fn create_or_open(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
+        let total = size_of::<RWLockHeader>();
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path.as_ref())
+        {
+            Ok(file) => {
+                file.set_len(total as u64)?;
+                let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+                let hdr = mmap.as_mut_ptr() as *mut RWLockHeader;
+                unsafe {
+                    std::ptr::write_bytes(hdr as *mut u8, 0, total);
+                    // Published last: a peer that opened the file early spins
+                    // on this, so it must not be visible before the zeroing.
+                    (*hdr).magic = RWLOCK_MAGIC;
+                }
+                Ok(Self {
+                    _file: file,
+                    mmap,
+                    header_sidecar: subetha_core::HandshakeHeader::new(),
+                    ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The winner may not have written the magic yet, and on
+                // Windows the file can be observed at zero length first.
+                let deadline = std::time::Instant::now() + CREATE_RACE_TIMEOUT;
+                loop {
+                    match Self::open(path.as_ref()) {
+                        Ok(l) => return Ok(l),
+                        Err(RWLockError::LayoutMismatch) | Err(RWLockError::IoError(_))
+                            if std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::yield_now();
+                        }
+                        Err(other) => return Err(other),
+                    }
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
@@ -319,6 +381,49 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-rwlock-{name}-{pid}.bin"));
         p
+    }
+
+    /// Racing callers on one path must all reach the same lock, and a caller
+    /// arriving while another holds the write lock must not clear it.
+    ///
+    /// `create` truncates and zeroes the header, so a second caller running it
+    /// against a live lock drops a held writer flag and mutual exclusion is
+    /// gone with no error anywhere. `create_or_open` elects one creator.
+    #[test]
+    fn create_or_open_racing_callers_do_not_clear_a_held_writer() {
+        let p = tmp("race");
+        std::fs::remove_file(&p).ok();
+
+        let holder = SharedRWLock::create_or_open(&p).unwrap();
+        let guard = holder.try_write_lock().expect("uncontended write lock");
+        assert!(holder.has_writer());
+
+        // Eight peers arrive on the same path while the write lock is held.
+        let path = Arc::new(p.clone());
+        let cleared = Arc::new(AtomicU32::new(0));
+        let mut hs = Vec::new();
+        for _ in 0..8 {
+            let path = Arc::clone(&path);
+            let cleared = Arc::clone(&cleared);
+            hs.push(thread::spawn(move || {
+                let l = SharedRWLock::create_or_open(&*path).expect("open existing");
+                if !l.has_writer() {
+                    cleared.fetch_add(1, O::Relaxed);
+                }
+            }));
+        }
+        for h in hs {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            cleared.load(O::Relaxed),
+            0,
+            "a concurrent create_or_open zeroed a writer flag another holder owned",
+        );
+        assert!(holder.has_writer(), "the holder lost its own write lock");
+        drop(guard);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
