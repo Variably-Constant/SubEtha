@@ -246,6 +246,11 @@ impl SharedStringArena {
     pub fn open(
         path: impl AsRef<Path>, expected_capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
+        // A capacity a StringRef offset cannot address is not a layout
+        // this crate ever creates, and interning into it would truncate.
+        if expected_capacity_bytes > u32::MAX as usize {
+            return Err(ArenaError::LayoutMismatch);
+        }
         let total = arena_file_size(expected_capacity_bytes);
         let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
@@ -344,6 +349,18 @@ impl SharedStringArena {
         }
         let offset = self.header().used_bytes.fetch_add(len, Ordering::AcqRel);
         if offset.saturating_add(len) > self.capacity_bytes as u64 {
+            self.header().used_bytes.fetch_sub(len, Ordering::AcqRel);
+            self.ring_sidecar
+                .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 1);
+            return Err(ArenaError::Full);
+        }
+        // A StringRef carries the offset as a u32, so an offset past that
+        // is refused here rather than truncated: a truncated offset lands
+        // inside the used region and resolves to another string's bytes,
+        // which every downstream bounds check would accept. `create` and
+        // `reset` refuse such a capacity, so this covers an arena opened
+        // at a capacity they never sanctioned.
+        if offset.saturating_add(len) > u32::MAX as u64 {
             self.header().used_bytes.fetch_sub(len, Ordering::AcqRel);
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 1);
@@ -686,6 +703,26 @@ mod tests {
         let r2 = a2.intern("more-after-reopen").unwrap();
         assert_eq!(a2.get(r2).unwrap(), "more-after-reopen");
         std::fs::remove_file(&p).ok();
+    }
+
+    /// A StringRef addresses its bytes with a u32 offset, so a capacity
+    /// past that is refused at construction rather than silently
+    /// truncating every ref past the 4 GiB mark into another string's
+    /// bytes. No file is touched: the check precedes the mapping.
+    #[test]
+    #[should_panic(expected = "capacity_bytes must fit in u32")]
+    fn create_refuses_a_capacity_a_ref_cannot_address() {
+        SharedStringArena::create(tmp("too-big"), u32::MAX as usize + 1).ok();
+    }
+
+    /// The same layout refused on the open path, where no assertion
+    /// guards construction.
+    #[test]
+    fn open_refuses_a_capacity_a_ref_cannot_address() {
+        assert!(matches!(
+            SharedStringArena::open(tmp("open-too-big"), u32::MAX as usize + 1),
+            Err(ArenaError::LayoutMismatch),
+        ));
     }
 
     #[test]
