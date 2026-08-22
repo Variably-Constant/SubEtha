@@ -1372,14 +1372,10 @@ impl UnifiedSensReceiver {
     /// each tagged with the identity of the peer that sent it: the RLC
     /// connection id, or the block-RS session epoch widened to `u64`.
     ///
-    /// **The multi-peer contract stops at delivery.** RLC decodes each peer in
-    /// its own window, so a node receiving from several peers at once gets
-    /// every stream, in order within a peer. The code-switch machinery above it
-    /// is still one stream: the delivery frontier, the switch boundary and the
-    /// TLS packet number are per endpoint, not per peer. A mesh node should
-    /// therefore pin [`CodePolicy::ForceRlc`] and leave TLS off, or drive
-    /// [`SensOMaticRlcReceiver`] directly. Block-RS is single-session, so its
-    /// tag is one value until that side is keyed by epoch.
+    /// Both codes decode a window per peer. The code-switch layer above them
+    /// does not: the delivery frontier, the switch boundary and the TLS packet
+    /// number are per endpoint. A mesh node pins a code and leaves TLS off, or
+    /// drives [`SensOMaticRlcReceiver`] / [`ReliableUdpReceiver`] directly.
     pub fn poll_from(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>> {
         self.poll_tagged()
     }
@@ -1428,17 +1424,14 @@ impl UnifiedSensReceiver {
                 // drop any whose global index is below the delivery frontier
                 // (before opening, so the packet number always matches the seal).
                 //
-                // One tag for the whole batch: block-RS carries a session epoch
-                // rather than a per-peer id, and its receiver is still
-                // single-session, so every item this call belongs to that epoch.
-                let epoch = self.rs.session_epoch().unwrap_or(0) as u64;
-                let raw = self.rs.poll()?;
+                // The tag is the sending peer's session epoch, widened.
+                let raw = self.rs.poll_from()?;
                 let mut d = Vec::with_capacity(raw.len());
-                for payload in raw {
+                for (epoch, payload) in raw {
                     if self.rs_next_global >= self.delivered_total {
                         let item = self.open_payload(payload, self.rs_next_global)?;
                         self.delivered_total += 1;
-                        d.push((epoch, item));
+                        d.push((u64::from(epoch), item));
                     }
                     self.rs_next_global += 1;
                 }

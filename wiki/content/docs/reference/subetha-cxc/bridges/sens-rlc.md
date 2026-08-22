@@ -84,8 +84,12 @@ anyone able to guess the 4-tuple could make a receiver allocate a
 decode window with a single packet. What the answer proves is
 return-routability - the responder echoes the challenge without
 inspecting the id - which is what an off-path attacker cannot supply.
-Both directions are bounded regardless: 256 live windows and 64
-candidates under challenge at once.
+
+There is no ceiling on windows unless one is declared.
+`with_session_ceiling(max)` bounds the live windows and the candidates
+under challenge, and `session_refusals()` counts every peer turned away
+by it, so a refused peer is never indistinguishable from one that never
+sent.
 
 A newly admitted window anchors its delivery frontier at the bottom
 rather than at the first id it happens to see. The datagrams the peer
@@ -99,6 +103,7 @@ leaves them as a gap ARQ recovers.
 | `session_adoption_counts()` | `(admitted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
 | `session_admissions_for(cid)` | the address that id answered from, or `None` if it holds no window |
 | `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
+| `session_refusals()` | peers turned away by a declared ceiling, or by TLS already holding its one handshake |
 
 `take_session_changed()`, `session_adoption_counts()` and
 `poll_from()` are also on `UnifiedSensReceiver`, whose

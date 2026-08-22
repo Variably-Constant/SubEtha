@@ -120,17 +120,31 @@ discarded by the kernel before the transport sees it.
 |---|---|
 | `take_session_changed()` | whether a replacement session was adopted since the last call; edge-triggered, one report per adoption |
 | `session_adoption_counts()` | `(adopted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
-| `session_epoch()` | the epoch currently being decoded - this peer's block-RS identity, the counterpart to the RLC connection id |
+| `session_epoch()` | the epoch of the most recently opened window - a peer's block-RS identity, the counterpart to the RLC connection id |
+| `live_sessions()` | the epochs holding a window, in first-seen order |
+| `session_refusals()` | peers turned away by a declared ceiling |
 
-**One session at a time.** The receiver decodes a single epoch, so this
-is a point-to-point code: a restarted peer replaces the session it
-replaced. Two peers sending CONCURRENTLY is a different shape, and the
-epoch gate sits ahead of the block-id checks, so the peer the receiver
-did not lock onto is dropped whole rather than degraded. The
-[RLC code](../sens-rlc/#one-window-per-peer) keeps a window per peer and
-is the one to use for a mesh; under `CodePolicy::Auto` a link that
-sustains loss past the crossover switches to this code and back to one
-peer.
+## One window per peer
+
+The receiver keeps a decode window per session epoch: its own delivery
+frontier, NAK history and feedback cadence. `poll_from()` returns
+`(epoch, item)`; `poll()` is the same drain with the tag dropped.
+Ordering holds within an epoch and not across them.
+
+The first epoch seen opens a window directly. Every epoch after it is
+challenged, and a window opens when the nonce returns from the address
+it was sent to. `with_session_ceiling(max)` bounds the windows and the
+candidates under challenge; without it there is no limit, and a peer
+refused by a ceiling is counted rather than dropped silently.
+
+**Declare the shape.** `with_multi_peer()` is required to serve more
+than one peer. Without it the socket connects to its first peer and
+reads through GRO, `recvmmsg` or `WSARecvMsg`, which is where the
+throughput below comes from; a connected socket accepts one address, so
+the kernel discards the others before the transport sees them. With it
+the socket stays unconnected and each datagram is read singly with its
+source captured, below the point-to-point figures. The receiver cannot
+infer this: it never sees the peer it has already connected away from.
 
 ## Adaptive control
 

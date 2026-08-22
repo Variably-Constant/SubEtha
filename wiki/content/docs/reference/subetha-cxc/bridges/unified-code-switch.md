@@ -127,18 +127,18 @@ block-RS session epoch widened to `u64` - so a node receiving from
 several peers can tell whose item it is holding. `poll()` is the same
 drain with the tag dropped, and is unchanged.
 
-**The multi-peer contract stops at delivery, and that boundary is
-deliberate.** RLC decodes each peer in
-[its own window](../sens-rlc/#one-window-per-peer), so every stream
-arrives. The code-switch machinery layered above it is still one
-stream: the delivery frontier, the switch boundary and the TLS packet
-number are per endpoint, not per peer, because a code switch is
-negotiated for a connection and the unified endpoint carries one.
+Both codes decode a window per peer: RLC by
+[connection id](../sens-rlc/#one-window-per-peer), block-RS by
+[session epoch](../reliable-udp-bridge/#one-window-per-peer). The
+code-switch layer above them does not. The delivery frontier, the switch
+boundary and the TLS packet number are per endpoint, since a switch is
+negotiated for one connection.
 
-So a mesh node should pin `CodePolicy::ForceRlc` and leave TLS off, or
-drive [`SensOMaticRlcReceiver`](../sens-rlc/) directly. Block-RS is
-single-session, so under `Auto` a link that sustains loss past the
-crossover switches to a code that carries one peer.
+A mesh node therefore pins a code with `CodePolicy::ForceRlc` or
+`ForceRs`, leaves TLS off, or drives
+[`SensOMaticRlcReceiver`](../sens-rlc/) /
+[`ReliableUdpReceiver`](../reliable-udp-bridge/) directly. The block-RS
+receiver also needs `with_multi_peer()` to serve more than one peer.
 
 A code switch is not a session change. The connection id belongs to the
 process, so RLC <-> RS handover leaves it untouched and no window reset
