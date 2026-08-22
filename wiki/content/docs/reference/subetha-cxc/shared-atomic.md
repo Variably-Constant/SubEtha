@@ -17,8 +17,9 @@ identically to two threads in one process.
 ## `SharedAtomicU32`
 
 ```rust,no_run
-pub fn create(path: impl AsRef<Path>, init: u32) -> Result<Self, SharedAtomicError>;
+pub fn create(path: impl AsRef<Path>, init: u32) -> Result<Self, SharedAtomicError>;  // attaches if the path exists; init then unused
 pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError>;
+pub fn reset(path: impl AsRef<Path>, init: u32) -> Result<Self, SharedAtomicError>;   // truncates and re-seeds
 
 pub fn load(&self, ord: Ordering) -> u32;
 pub fn store(&self, v: u32, ord: Ordering);
@@ -30,6 +31,12 @@ pub fn compare_exchange(
     success: Ordering, failure: Ordering,
 ) -> Result<u32, u32>;
 ```
+
+`create` initializes to `init` only when the path does not yet
+exist, and otherwise attaches with the live value in place - racing
+creators all reach the same atomic. A region built for a different
+width is a `LayoutMismatch`. `reset` truncates and re-seeds; on
+Windows it succeeds only once every process has unmapped the region.
 
 The API mirrors `std::sync::atomic::AtomicU32` directly, including the
 explicit `Ordering` argument on every operation. The cross-process

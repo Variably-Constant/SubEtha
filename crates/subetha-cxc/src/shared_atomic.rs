@@ -64,35 +64,52 @@ macro_rules! shared_atomic_impl {
         }
 
         impl $name {
+            /// Obtain the atomic at `path`, initializing it to `init` if
+            /// the path does not yet exist and attaching to it if it
+            /// does. Attaching leaves the live value in place; `init` is
+            /// then unused. A region built for a different width is a
+            /// `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
             pub fn create(path: impl AsRef<Path>, init: $native) -> Result<Self, SharedAtomicError> {
-                let file = OpenOptions::new()
-                    .read(true).write(true).create(true).truncate(true)
-                    .open(path.as_ref())?;
-                file.set_len(ATOMIC_FILE_SIZE as u64)?;
-                let mut mmap = unsafe { MmapOptions::new().len(ATOMIC_FILE_SIZE).map_mut(&file)? };
-                let hdr = mmap.as_mut_ptr() as *mut AtomicHeader;
-                unsafe {
-                    std::ptr::write(hdr, AtomicHeader {
-                        magic: ATOMIC_MAGIC,
-                        width: $width,
-                        payload_u64: AtomicU64::new(0),
-                    });
-                }
-                let s = Self {
-                    _file: file, mmap,
-                    header_sidecar: subetha_core::HandshakeHeader::new(),
-                    ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-                };
-                s.atomic().store(init, Ordering::Release);
-                Ok(s)
+                let (file, mmap) = crate::mmf_attach::create_or_attach(
+                    path.as_ref(),
+                    ATOMIC_FILE_SIZE,
+                    |ptr| unsafe { Self::init_region(ptr, init) },
+                    |ptr| unsafe { (*(ptr as *const AtomicHeader)).magic == ATOMIC_MAGIC },
+                )?;
+                Self::from_region(file, mmap)
             }
 
-            pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError> {
-                let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
-                if file.metadata()?.len() < ATOMIC_FILE_SIZE as u64 {
-                    return Err(SharedAtomicError::LayoutMismatch);
+            /// Truncate the atomic at `path` and initialize it to
+            /// `init`, discarding the value a live peer holds. For a
+            /// caller that knows it owns the path.
+            pub fn reset(path: impl AsRef<Path>, init: $native) -> Result<Self, SharedAtomicError> {
+                let (file, mmap) = crate::mmf_attach::reset(
+                    path.as_ref(),
+                    ATOMIC_FILE_SIZE,
+                    |ptr| unsafe { Self::init_region(ptr, init) },
+                )?;
+                Self::from_region(file, mmap)
+            }
+
+            /// Lay out a fresh atomic: width and value first, magic
+            /// last, because attachers spin on it.
+            ///
+            /// # Safety
+            /// `ptr` addresses at least `ATOMIC_FILE_SIZE` writable
+            /// zeroed bytes.
+            unsafe fn init_region(ptr: *mut u8, init: $native) {
+                let hdr = ptr as *mut AtomicHeader;
+                unsafe {
+                    (*hdr).width = $width;
+                    let payload = (&raw mut (*hdr).payload_u64) as *mut $atomic;
+                    std::ptr::write(payload, <$atomic>::new(init));
+                    std::ptr::write_volatile(&raw mut (*hdr).magic, ATOMIC_MAGIC);
                 }
-                let mmap = unsafe { MmapOptions::new().len(ATOMIC_FILE_SIZE).map_mut(&file)? };
+            }
+
+            /// Wrap an initialized region, refusing one built for a
+            /// different width.
+            fn from_region(file: File, mmap: MmapMut) -> Result<Self, SharedAtomicError> {
                 let hdr = unsafe { &*(mmap.as_ptr() as *const AtomicHeader) };
                 if hdr.magic != ATOMIC_MAGIC || hdr.width != $width {
                     return Err(SharedAtomicError::LayoutMismatch);
@@ -102,6 +119,15 @@ macro_rules! shared_atomic_impl {
                     header_sidecar: subetha_core::HandshakeHeader::new(),
                     ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
                 })
+            }
+
+            pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError> {
+                let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+                if file.metadata()?.len() < ATOMIC_FILE_SIZE as u64 {
+                    return Err(SharedAtomicError::LayoutMismatch);
+                }
+                let mmap = unsafe { MmapOptions::new().len(ATOMIC_FILE_SIZE).map_mut(&file)? };
+                Self::from_region(file, mmap)
             }
 
             #[inline]
@@ -332,6 +358,42 @@ mod tests {
         let a = SharedAtomicU32::create(&p, 0).unwrap();
         for _ in 0..100 { a.fetch_add(1, Ordering::AcqRel); }
         assert_eq!(a.load(Ordering::Acquire), 100);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the live value in place, ignoring
+    /// its init argument; reset is what re-seeds.
+    #[test]
+    fn second_create_attaches_and_keeps_the_value() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let a = SharedAtomicU64::create(&p, 42).unwrap();
+        a.store(777, Ordering::Release);
+
+        let b = SharedAtomicU64::create(&p, 0).unwrap();
+        assert_eq!(b.load(Ordering::Acquire), 777, "attach clobbered the value");
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(a);
+        drop(b);
+        let fresh = SharedAtomicU64::reset(&p, 5).unwrap();
+        assert_eq!(fresh.load(Ordering::Acquire), 5, "reset did not re-seed");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Attaching with a different width is refused.
+    #[test]
+    fn create_refuses_a_mismatched_width() {
+        let p = tmp("mismatch");
+        std::fs::remove_file(&p).ok();
+        let a = SharedAtomicU64::create(&p, 1).unwrap();
+        assert!(matches!(
+            SharedAtomicU32::create(&p, 1),
+            Err(SharedAtomicError::LayoutMismatch),
+        ));
+        drop(a);
         std::fs::remove_file(&p).ok();
     }
 
