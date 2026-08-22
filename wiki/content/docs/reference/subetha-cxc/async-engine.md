@@ -80,6 +80,15 @@ flowchart LR
 | `sender_cross(ring, xwaker)` | `-> ReactiveSender` | Cross-process producer half over a shared MMF ring + named waker. |
 | `receiver_cross(ring, xwaker)` | `-> ReactiveReceiver` | Cross-process consumer half; spawns the reactor thread that turns a shared-memory wake into a local `Waker` fire. |
 
+The reactor fires on a ring-head advance, and additionally fires any
+parked future whose ring is non-empty: a future only parks against an
+empty ring (its poll re-checks after registering), so that state is
+always a fire the reactor has not delivered yet - including items
+published before the reactor thread's first head read. A wake lost to
+the register/visibility race heals within 50 ms (the bounded wait).
+`SUBETHA_WAKE_TRACE=1` prints the reactor's per-second counter ledger
+on stderr.
+
 `ReactiveSender::try_send(payload: &[u8]) -> Result<(), RingError>`
 pushes and signals (the signal is sent only on a successful push);
 `published() -> u64` is the producer's published count.

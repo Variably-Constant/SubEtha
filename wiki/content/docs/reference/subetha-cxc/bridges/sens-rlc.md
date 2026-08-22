@@ -76,7 +76,11 @@ carrying an unfamiliar id arms a `PATH_CHALLENGE` with that id and a
 fresh nonce, and the window opens only when the nonce returns from the
 address it was sent to. The provoking datagram is not delivered
 meanwhile, and an unanswered challenge is retired after
-`CHALLENGE_TIMEOUT`.
+`CHALLENGE_TIMEOUT`. A pending challenge is resent at most once per
+`ADMISSION_RESEND_INTERVAL` (50 ms), and the unified sender's reader
+thread echoes challenges at wire latency, so admission completes in
+one round trip regardless of how often the sender services its
+socket.
 
 Admission is gated on the answer rather than on the id alone because
 the two are indistinguishable from a datagram: without the challenge,
@@ -105,10 +109,17 @@ leaves them as a gap ARQ recovers.
 | `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
 | `session_refusals()` | peers turned away by a declared ceiling, or by TLS already holding its one handshake |
 | `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap |
+| `session_control(cid)` | one window's `(naks_sent, acks_sent, sends_skipped, peer_validated)`; `sends_skipped` counts control frames dropped for a missing peer address or an exhausted anti-amplification budget |
+| `path_validations()` / `path_validation_failures()` | address validations completed and challenges that timed out, summed over every session |
 
 A session's control-plane send failure stays with that session: every
 window is serviced each poll, and a tick's delivered items reach the
 caller whether or not some peer's feedback send failed.
+
+An ACK leaves immediately whenever the delivery frontier advanced; an
+unmoved frontier re-acks at most once per 10 ms. The cumulative
+frontier plus the SACK bitmap carries the full receive state, so each
+ACK supersedes every prior one.
 
 `take_session_changed()`, `session_adoption_counts()` and
 `poll_from()` are also on `UnifiedSensReceiver`, whose

@@ -116,9 +116,26 @@ sessions rather than an idle RLC decoder's.
 
 Per-peer reads are forwarded too: `live_rlc_sessions()` and
 `live_rs_sessions()` list the ids holding a decode window on each code,
-`session_refusals()` counts peers turned away, and
+`session_refusals()` counts peers turned away,
 `rlc_session_frontier(cid)` reports one RLC window's
-`(delivered_through, highest_seen)`.
+`(delivered_through, highest_seen)`, `rlc_session_control(cid)` its
+`(naks_sent, acks_sent, sends_skipped, peer_validated)`,
+`rlc_session_peer(cid)` the address its control sends target, and
+`rlc_path_validations()` / `rlc_path_validation_failures()` sum the
+validation outcomes.
+
+The sender carries a telemetry ladder over its own pipeline:
+`raw_sent_recv()` (forward datagrams sent vs the receiver's fed-back
+count), `rlc_tx_probe()` (`last_sid`, wire datagrams, acked frontier,
+outstanding), `route_probe()` (active code, RS pending blocks, items
+accepted, send_item entries), `rlc_ctrl_probe()` (NAK / ACK /
+FEEDBACK frames the pump processed), `rlc_pump_types()` (challenge
+echoes and default-arm drops), `demux_alive()` / `demux_probe()` /
+`queue_seam_probe()` (reader-thread liveness, loop counters and the
+push/pop seam), and `local_addr()`. Two env-gated stderr traces
+exist: `SUBETHA_SEND_TRACE=1` prints each `send_item` entry for the
+first 32 calls per sender, and `SUBETHA_WAKE_TRACE=1` prints the
+reactor and net-bridge wake ledgers once per second.
 
 Both codes survive a peer restart, by different means. RLC routes by the
 connection id it already carries; block-RS carries a
