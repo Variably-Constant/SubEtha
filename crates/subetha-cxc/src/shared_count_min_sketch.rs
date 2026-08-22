@@ -120,24 +120,48 @@ impl SharedCountMinSketch {
         (d.max(1), w.max(1))
     }
 
+    /// Obtain the sketch at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves live counts in place; a region built with a
+    /// different `(d, w)` is a `LayoutMismatch`. The in-place
+    /// [`reset`](Self::reset) zeroes a live sketch.
     pub fn create(
         path: impl AsRef<Path>, d: u32, w: u32,
     ) -> Result<Self, CMSError> {
         if d == 0 || w == 0 {
             return Err(CMSError::InvalidConfig);
         }
-        let total = cms_file_size(d, w);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut CMSHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            cms_file_size(d, w),
+            |ptr| unsafe { Self::init_region(ptr, d, w) },
+            |ptr| unsafe { (*(ptr as *const CMSHeader)).magic == CMS_MAGIC },
+        )?;
+        Self::from_region(file, mmap, d, w)
+    }
+
+    /// Lay out an empty sketch: config first, magic last, because
+    /// attachers spin on it. The zeroed region is already the zero
+    /// counter matrix.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `cms_file_size(d, w)` writable zeroed
+    /// bytes.
+    unsafe fn init_region(ptr: *mut u8, d: u32, w: u32) {
+        let hdr = ptr as *mut CMSHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<CMSHeader>());
-            (*hdr).magic = CMS_MAGIC;
             (*hdr).d = d;
             (*hdr).w = w;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, CMS_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// config.
+    fn from_region(file: File, mmap: MmapMut, d: u32, w: u32) -> Result<Self, CMSError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const CMSHeader) };
+        if hdr.magic != CMS_MAGIC || hdr.d != d || hdr.w != w {
+            return Err(CMSError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, d, w,
@@ -155,15 +179,7 @@ impl SharedCountMinSketch {
             return Err(CMSError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const CMSHeader) };
-        if hdr.magic != CMS_MAGIC || hdr.d != expected_d || hdr.w != expected_w {
-            return Err(CMSError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, d: expected_d, w: expected_w,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_d, expected_w)
     }
 
     #[inline]
@@ -296,6 +312,30 @@ mod tests {
         assert_eq!(cms.w(), 256);
         assert_eq!(cms.total_inserts(), 0);
         assert_eq!(cms.estimate_count(b"anything"), 0);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with live counts in place; the
+    /// in-place reset is what zeroes them.
+    #[test]
+    fn second_create_attaches_and_keeps_counts() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let cms = SharedCountMinSketch::create(&p, 4, 256).unwrap();
+        cms.insert(b"key");
+        cms.insert(b"key");
+
+        let cms2 = SharedCountMinSketch::create(&p, 4, 256).unwrap();
+        assert_eq!(cms2.estimate_count(b"key"), 2, "attach zeroed live counts");
+        assert!(matches!(
+            SharedCountMinSketch::create(&p, 2, 256),
+            Err(CMSError::LayoutMismatch),
+        ));
+
+        cms2.reset();
+        assert_eq!(cms.estimate_count(b"key"), 0, "reset did not zero for every handle");
+        drop(cms);
+        drop(cms2);
         std::fs::remove_file(&p).ok();
     }
 

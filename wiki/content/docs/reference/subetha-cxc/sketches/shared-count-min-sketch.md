@@ -46,6 +46,11 @@ collisions overcount, never undercount.
   [`SharedBloomFilter`](shared-bloom-filter/).
 - **Pure fetch_add writes**: no underflow, no spin loops, no
   CAS retries.
+- **`create` obtains**: it initializes an empty sketch only when the
+  path does not yet exist, and otherwise attaches with live counts in
+  place - racing creators all reach the same sketch. A region built
+  with a different `(d, w)` is a `LayoutMismatch`. The in-place
+  `reset()` zeroes the counter matrix.
 - **Cross-process backed by MMF.**
 
 ---
