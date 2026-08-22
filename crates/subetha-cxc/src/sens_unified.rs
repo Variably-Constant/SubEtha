@@ -1368,10 +1368,32 @@ impl UnifiedSensReceiver {
         Ok(payload)
     }
 
+    /// Drive the active decoder and return the items it delivered this call,
+    /// each tagged with the identity of the peer that sent it: the RLC
+    /// connection id, or the block-RS session epoch widened to `u64`.
+    ///
+    /// **The multi-peer contract stops at delivery.** RLC decodes each peer in
+    /// its own window, so a node receiving from several peers at once gets
+    /// every stream, in order within a peer. The code-switch machinery above it
+    /// is still one stream: the delivery frontier, the switch boundary and the
+    /// TLS packet number are per endpoint, not per peer. A mesh node should
+    /// therefore pin [`CodePolicy::ForceRlc`] and leave TLS off, or drive
+    /// [`SensOMaticRlcReceiver`] directly. Block-RS is single-session, so its
+    /// tag is one value until that side is keyed by epoch.
+    pub fn poll_from(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>> {
+        self.poll_tagged()
+    }
+
     /// Drive the active decoder and return the items it delivered this call.
     /// Honors a pending CODE_SWITCH once the active decoder has delivered every
     /// item up to the announced boundary.
     pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
+        Ok(self.poll_tagged()?.into_iter().map(|(_, item)| item).collect())
+    }
+
+    /// The one drain both public forms share, carrying each item's peer tag
+    /// from the decoder that delivered it rather than reconstructing it after.
+    fn poll_tagged(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>> {
         // One-port TLS: the handshake completes asynchronously on a thread (the
         // QUIC endpoint owns the socket), so until the keys are published, withhold
         // delivery. The decoders keep buffering inbound frames; the peer only sends
@@ -1388,12 +1410,14 @@ impl UnifiedSensReceiver {
         let out = match self.active {
             SensCode::Rlc => {
                 // Open each payload with its global index as the packet number.
-                let raw = self.rlc.poll()?;
+                // The tag rides from the decoder, so an item is attributed to the
+                // peer that actually sent it rather than to whoever spoke last.
+                let raw = self.rlc.poll_from()?;
                 let mut d = Vec::with_capacity(raw.len());
-                for payload in raw {
+                for (cid, payload) in raw {
                     let item = self.open_payload(payload, self.delivered_total)?;
                     self.delivered_total += 1;
-                    d.push(item);
+                    d.push((cid, item));
                 }
                 d
             }
@@ -1403,13 +1427,18 @@ impl UnifiedSensReceiver {
                 // handover the leading items overlap what RLC already delivered, so
                 // drop any whose global index is below the delivery frontier
                 // (before opening, so the packet number always matches the seal).
+                //
+                // One tag for the whole batch: block-RS carries a session epoch
+                // rather than a per-peer id, and its receiver is still
+                // single-session, so every item this call belongs to that epoch.
+                let epoch = self.rs.session_epoch().unwrap_or(0) as u64;
                 let raw = self.rs.poll()?;
                 let mut d = Vec::with_capacity(raw.len());
                 for payload in raw {
                     if self.rs_next_global >= self.delivered_total {
                         let item = self.open_payload(payload, self.rs_next_global)?;
                         self.delivered_total += 1;
-                        d.push(item);
+                        d.push((epoch, item));
                     }
                     self.rs_next_global += 1;
                 }

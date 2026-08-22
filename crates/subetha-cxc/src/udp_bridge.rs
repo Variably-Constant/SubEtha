@@ -2601,6 +2601,13 @@ impl ReliableUdpReceiver {
     /// cost of dropping a gap that has not recovered in time.
     /// Whether a replacement session was adopted since this was last
     /// called, clearing the flag. Edge-triggered: one report per adoption.
+    /// The session epoch this receiver is currently decoding, or `None` before
+    /// the first data datagram. The block-RS identity of the peer, and the
+    /// counterpart to the RLC connection id.
+    pub fn session_epoch(&self) -> Option<u32> {
+        self.dec.session_epoch()
+    }
+
     pub fn take_session_changed(&mut self) -> bool {
         std::mem::replace(&mut self.session_changed, false)
     }
