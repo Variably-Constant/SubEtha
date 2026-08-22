@@ -573,6 +573,9 @@ pub struct UnifiedSensSender {
     /// Cumulative items handed to the application across both codes (the switch
     /// boundary the receiver keys on).
     items_total: u64,
+    /// Cumulative entries into `send_item`, counted before any other
+    /// statement in the method.
+    send_item_calls: u64,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -726,6 +729,7 @@ impl UnifiedSensSender {
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
+            send_item_calls: 0,
             last_sample: Instant::now(),
             started: Instant::now(),
             sent_counter,
@@ -811,11 +815,13 @@ impl UnifiedSensSender {
     }
 
     /// Routing probe: `(active code, RS unacked blocks, items accepted
-    /// by send_item)`. `items_total` advancing while the RLC probe
-    /// stays virgin and the code reads `Rs` places the items on the RS
-    /// leg; `items_total` frozen means they never entered this sender.
-    pub fn route_probe(&self) -> (SensCode, usize, u64) {
-        (self.active, self.rs.pending_len(), self.items_total)
+    /// by send_item, send_item entries)`. `send_item_calls` counts
+    /// every entry into `send_item` before any other statement, so
+    /// `send_item_calls > items_total` measures Ok-returning exits
+    /// above the accept point, and `send_item_calls` frozen means the
+    /// method was never invoked on this instance.
+    pub fn route_probe(&self) -> (SensCode, usize, u64, u64) {
+        (self.active, self.rs.pending_len(), self.items_total, self.send_item_calls)
     }
 
     /// Send one item over the active code, then periodically sample the fed-back
@@ -823,6 +829,7 @@ impl UnifiedSensSender {
     /// in the replay ring so a switch can resend the un-acked tail over the new
     /// code rather than draining the old one.
     pub fn send_item(&mut self, item: &[u8]) -> io::Result<()> {
+        self.send_item_calls += 1;
         // Seal to the wire payload once (the packet number is this item's global
         // index); both codes carry it and the replay ring stores it, so a resend
         // reuses the same packet number and the switch is crypto-transparent. Seal
