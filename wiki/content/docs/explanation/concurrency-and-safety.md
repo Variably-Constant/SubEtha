@@ -112,8 +112,8 @@ For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 `SharedAtomic*` trio, `SharedFenceClock`, `SharedHandleTable`,
 `SharedRateLimiter`, `SharedTimePointTile`, `SharedHistogram`,
 `SharedBitVec`, `SharedBloomFilter`, `SharedBlockedBloomFilter`,
-`SharedCountMinSketch`, the `AdaptiveRing` peer directory - and for
-`SharedHashMap` - `create` obtains the instance:
+`SharedCountMinSketch`, `SharedHyperLogLog`, the `AdaptiveRing` peer
+directory - and for `SharedHashMap` - `create` obtains the instance:
 it initializes the file only when the path does not yet exist, and
 otherwise attaches with live state intact. Racing creators on one path
 all reach the same instance, with exactly one initializing it. Each of

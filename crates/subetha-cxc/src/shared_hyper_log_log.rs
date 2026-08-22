@@ -123,27 +123,50 @@ impl subetha_sidecar::AdaptiveInstance for SharedHyperLogLog {
 }
 
 impl SharedHyperLogLog {
+    /// Obtain the estimator at `path`, initializing an empty one if
+    /// the path does not yet exist and attaching to it if it does.
+    /// Attaching leaves live registers in place; a region built with a
+    /// different precision is a `LayoutMismatch`. The in-place
+    /// [`reset`](Self::reset) zeroes a live estimator.
     pub fn create(
         path: impl AsRef<Path>, precision: u8,
     ) -> Result<Self, HLLError> {
         if !(MIN_PRECISION..=MAX_PRECISION).contains(&precision) {
             return Err(HLLError::InvalidPrecision);
         }
-        let m = 1u32 << precision;
-        let total = hll_file_size(precision);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut HLLHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            hll_file_size(precision),
+            |ptr| unsafe { Self::init_region(ptr, precision) },
+            |ptr| unsafe { (*(ptr as *const HLLHeader)).magic == HLL_MAGIC },
+        )?;
+        Self::from_region(file, mmap, precision)
+    }
+
+    /// Lay out an empty estimator: precision and register count first,
+    /// magic last, because attachers spin on it. The zeroed region is
+    /// already the all-zero register array.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `hll_file_size(precision)` writable
+    /// zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, precision: u8) {
+        let hdr = ptr as *mut HLLHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<HLLHeader>());
-            (*hdr).magic = HLL_MAGIC;
             (*hdr).precision = precision as u32;
-            (*hdr).m = m;
+            (*hdr).m = 1u32 << precision;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, HLL_MAGIC);
         }
-        // Registers are zero from set_len + map_mut.
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// precision.
+    fn from_region(file: File, mmap: MmapMut, precision: u8) -> Result<Self, HLLError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const HLLHeader) };
+        if hdr.magic != HLL_MAGIC || hdr.precision != precision as u32 {
+            return Err(HLLError::LayoutMismatch);
+        }
+        let m = hdr.m;
         Ok(Self {
             _file: file, mmap, precision, m,
             header_sidecar: subetha_core::HandshakeHeader::new(),
@@ -160,16 +183,7 @@ impl SharedHyperLogLog {
             return Err(HLLError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const HLLHeader) };
-        if hdr.magic != HLL_MAGIC || hdr.precision != expected_precision as u32 {
-            return Err(HLLError::LayoutMismatch);
-        }
-        let m = hdr.m;
-        Ok(Self {
-            _file: file, mmap, precision: expected_precision, m,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_precision)
     }
 
     #[inline]
@@ -258,6 +272,29 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-hll-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second create attaches with live registers in place; the
+    /// in-place reset is what zeroes them.
+    #[test]
+    fn second_create_attaches_and_keeps_registers() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let h = SharedHyperLogLog::create(&p, 12).unwrap();
+        h.insert(b"one");
+
+        let h2 = SharedHyperLogLog::create(&p, 12).unwrap();
+        assert_eq!(h2.estimate(), 1, "attach zeroed live registers");
+        assert!(matches!(
+            SharedHyperLogLog::create(&p, 10),
+            Err(HLLError::LayoutMismatch),
+        ));
+
+        h2.reset();
+        assert_eq!(h.estimate(), 0, "reset did not zero for every handle");
+        drop(h);
+        drop(h2);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

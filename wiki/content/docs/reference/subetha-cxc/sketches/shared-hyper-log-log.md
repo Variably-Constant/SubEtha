@@ -44,6 +44,11 @@ error ~= `1.04 / sqrt(2^p)`.
   through this type. The cross-process pattern is instead a SINGLE
   shared HLL that every process opens and inserts into (the
   registers ARE the shared union).
+- **`create` obtains**: it initializes an empty estimator only when
+  the path does not yet exist, and otherwise attaches with live
+  registers in place - racing creators all reach the same estimator.
+  A region built with a different precision is a `LayoutMismatch`.
+  The in-place `reset()` zeroes every register.
 - **Cross-process backed by MMF.**
 
 ---
