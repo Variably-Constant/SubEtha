@@ -208,9 +208,11 @@ impl SharedBlockedBloomFilter {
 
     /// `i`-th within-block bit position in `[0, BLOCK_BITS)`. `h2` is
     /// already fmix64-avalanched, so a distinct 9-bit slice per `i` gives
-    /// decorrelated positions for free - seven 9-bit slices fit in 63 bits.
-    /// (The original FPR bug was reusing the *same* top slice for every
-    /// `i`.) Beyond seven hashes it re-avalanches for more positions.
+    /// decorrelated positions for free - seven 9-bit slices fit in 63
+    /// bits. Each `i` must take its OWN slice: a shared slice correlates
+    /// every position of an item and inflates the achieved FPR far above
+    /// the configured target. Past seven, `h2` is re-avalanched per `i`
+    /// rather than sliced again.
     #[inline]
     fn bit_in_block(h2: u64, i: u32) -> usize {
         let src = if i < 7 {

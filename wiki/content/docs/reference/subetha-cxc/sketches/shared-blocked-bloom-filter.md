@@ -20,7 +20,13 @@ separate cache lines per query. The block for an item is chosen by
 Lemire fastrange over a first hash; the within-block bit positions
 come from distinct 9-bit slices of a second, avalanche-mixed hash, so
 the in-block bits stay decorrelated and the achieved false-positive
-rate tracks the standard formula.
+rate tracks the standard formula. Seven such slices fit in the 63 bits
+available, so a config asking for more than seven hashes re-avalanches
+the second hash per probe instead of slicing it again. `suggest_config`
+crosses that line once the target FPR drops below about 0.007, since it
+picks `round(-log2(p))` hashes: 7 at FPR 0.01, 10 at 0.001. Positions
+stay decorrelated either way; the eighth probe onward simply costs a
+mix.
 
 > **The "single-cache-line membership filter" primitive.** Same
 > false-negative-free guarantee and target FPR as a standard Bloom
@@ -30,11 +36,11 @@ rate tracks the standard formula.
 > (L3-resident) `contains` ties the standard filter because the
 > CPU overlaps the standard filter's independent probes. It pays off
 > at the design point, a filter that exceeds L3: at 16M items
-> (~19 MB) hit-heavy `contains` is **107.88 ns vs 201.84 ns for the
-> standard filter (1.87x faster)**, because each of the standard
+> (~19 MB) hit-heavy `contains` is **95.11 ns vs 161.40 ns for the
+> standard filter (1.70x faster)**, because each of the standard
 > filter's scattered probes misses to RAM while the blocked filter
-> misses at most once. Insert is 61 ns vs 57 ns (1.07x slower, the
-> block-select arithmetic).
+> misses at most once. Insert is 62.69 ns vs 55.76 ns (1.12x slower,
+> the block-select arithmetic).
 
 **Constraints (read first):**
 
@@ -60,18 +66,21 @@ rate tracks the standard formula.
 
 Bench harness:
 `crates/subetha-cxc/benches/shared_blocked_bloom_filter.rs`.
-Captured 2026-06-20 on Windows 11 / Zen+ R7 2700 (16 MB L3),
-Criterion with `--sample-size=12 --warm-up-time=1
---measurement-time=2`.
+Captured on Windows 11 / Zen+ R7 2700 (16 MB L3), Criterion with
+`--sample-size=12 --warm-up-time=1 --measurement-time=2`.
 
 Contender: the standard `SharedBloomFilter` at the identical
 suggested config (same FPR target).
 
 | Op | `SharedBlockedBloomFilter` | `SharedBloomFilter` (standard) | Relative |
 |---|---:|---:|---|
-| insert (small filter) | 61.07 ns | 57.49 ns | 1.07x slower |
-| contains, 16M items (>L3), hit-heavy | 107.88 ns | 201.84 ns | **1.87x faster** |
+| insert (small filter) | 62.69 ns | 55.76 ns | 1.12x slower |
+| contains, 16M items (>L3), hit-heavy | 95.11 ns | 161.40 ns | **1.70x faster** |
 | bit budget (n=4M, FPR 0.01) | 5.51 MB | 4.79 MB | 1.15x the bits |
+
+The two timing rows move a little between runs; the bit-budget row does
+not, because it is computed rather than measured - 5 511 409 against
+4 792 530 bytes, printed by the bench itself.
 
 ### Reading the trade-offs
 
@@ -85,10 +94,10 @@ suggested config (same FPR target).
    (~19 MB, beyond the 16 MB L3) with hit-heavy queries, the standard
    filter pays `n_hashes` RAM misses per query (even overlapped, more
    than memory-level parallelism fully hides) while the blocked
-   filter pays one. That is the 1.87x gap.
+   filter pays one. That is the 1.70x gap.
 3. **Insert costs a touch more.** Choosing the block (fastrange) and
    slicing the in-block bits is marginally more arithmetic than the
-   standard filter's per-probe positions, so insert is ~1.07x slower.
+   standard filter's per-probe positions, so insert is ~1.12x slower.
 4. **The bit margin is small.** 1.15x the bits buys the one-line
    access pattern at the same target FPR.
 

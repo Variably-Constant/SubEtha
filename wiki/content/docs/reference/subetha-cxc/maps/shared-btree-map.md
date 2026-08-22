@@ -20,12 +20,11 @@ single-cache-line nodes. Reads are lock-free against a quiescent
 tree via a global seqlock; a single writer serialises `insert` /
 `remove`.
 
-> **The "cross-process ordered map" primitive.** At 100 keys
-> get_hit is 20.57 ns vs `Mutex<BTreeMap>` 25.85 ns (**1.26x
-> faster**: lock-free reads beat the mutex's lock/unlock at small
-> N); get_miss 19.45 ns vs 28.00 ns (1.44x faster); iter_ascending
-> (100) 254.96 ns vs 276.08 ns (tied). At 100k keys get_hit is
-> 166.11 ns vs 97.51 ns (1.70x slower: the in-process map wins once
+> **The "cross-process ordered map" primitive.** At 100 keys get_hit
+> is 25.15 ns vs `Mutex<BTreeMap>` 26.01 ns (tied) and get_miss is
+> 22.60 ns vs 30.69 ns (**1.36x faster**); iter_ascending (100) is
+> 254.48 ns vs 287.52 ns (1.13x faster). At 100k keys get_hit is
+> 173.40 ns vs 108.67 ns (1.60x slower: the in-process map wins once
 > the working set is RAM-resident and the seqlock + position-
 > independent addressing cost shows). The architectural lever is
 > **cross-process visibility + lock-free reads** that an in-process
@@ -59,35 +58,39 @@ tree via a global seqlock; a single writer serialises `insert` /
 ## Bench evidence
 
 Bench harness: `crates/subetha-cxc/benches/shared_btree_map.rs`.
-Captured 2026-06-20 on Windows 11 / Zen+ R7 2700, Criterion with
+Captured on Windows 11 / Zen+ R7 2700, Criterion with
 `--sample-size=12 --warm-up-time=1 --measurement-time=2`.
 
 Workload: `K=u32`, `V=u32`.
 
 | Op | `SharedBTreeMap<u32, u32>` (mmf) | `Mutex<BTreeMap<u32, u32>>` | Relative |
 |---|---:|---:|---|
-| get_hit (100 keys) | 20.57 ns | 25.85 ns | **1.26x faster** |
-| get_miss (100 keys) | 19.45 ns | 28.00 ns | **1.44x faster** |
-| iter_ascending (100 keys) | 254.96 ns | 276.08 ns | tied (1.08x faster) |
-| get_hit (100k keys, spread) | 166.11 ns | 97.51 ns | 1.70x slower |
+| get_hit (100 keys) | 25.15 ns | 26.01 ns | tied (1.03x faster) |
+| get_miss (100 keys) | 22.60 ns | 30.69 ns | **1.36x faster** |
+| iter_ascending (100 keys) | 254.48 ns | 287.52 ns | 1.13x faster |
+| get_hit (100k keys, spread) | 173.40 ns | 108.67 ns | 1.60x slower |
 
 ### Reading the trade-offs
 
-1. **Small-N reads win.** At 100 keys the tree is one or two nodes;
-   the lock-free seqlock read is a version load + a binary search in
-   a contiguous key array, with no lock/unlock. `Mutex<BTreeMap>`
-   pays the mutex round-trip on every read, which dominates at this
-   size, so the mmf is 1.26x faster on hits and 1.44x faster on
-   misses.
+1. **Small-N reads are level or better.** At 100 keys the tree is one
+   or two nodes; the lock-free seqlock read is a version load plus a
+   binary search in a contiguous key array, with no lock/unlock, while
+   `Mutex<BTreeMap>` pays the mutex round-trip on every read. That
+   comes out as a tie on hits (1.03x) and a clear 1.36x on misses.
+   Do not read the hit column as a win - the honest claim at this size
+   is that a cross-process map costs nothing against an in-process one,
+   which is the surprising part.
 2. **Large-N reads cross over.** At 100k keys the working set is
    RAM-resident on both sides. `BTreeMap`'s in-process nodes are
    pointer-direct and pay no seqlock retry; the mmf walks
    `~log_16(100k) ~= 5` position-independent nodes and re-validates
-   the seqlock version, landing 1.70x slower. The mmf trades that
+   the seqlock version, landing 1.60x slower. The mmf trades that
    raw-speed gap for cross-process operability.
-3. **Iteration ties.** A full in-order walk is a sequential node
+3. **Iteration is level.** A full in-order walk is a sequential node
    traversal on both sides; the contiguous key arrays keep the mmf
-   level with the in-process iterator.
+   level with the in-process iterator. Note that `iter_ascending`
+   materialises a `Vec<(K, V)>` rather than returning a lazy iterator,
+   so the cost includes building it.
 4. **The architectural lever is what `BTreeMap` cannot do**:
    cross-process visibility, lock-free multi-reader access, and a
    durable ordered map that survives process restart.
