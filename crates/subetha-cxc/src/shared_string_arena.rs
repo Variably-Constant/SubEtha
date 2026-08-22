@@ -180,32 +180,67 @@ impl subetha_sidecar::AdaptiveInstance for SharedStringArena {
 }
 
 impl SharedStringArena {
+    /// Obtain the arena at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves interned strings and `used_bytes` in place, so
+    /// outstanding [`StringRef`]s stay resolvable; a region built with
+    /// a different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
         assert!(capacity_bytes >= 1);
         assert!(capacity_bytes <= u32::MAX as usize,
             "capacity_bytes must fit in u32 for StringRef offset");
-        let total = arena_file_size(capacity_bytes);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut ArenaHeader;
-        unsafe {
-            std::ptr::write(hdr, ArenaHeader {
-                magic: ARENA_MAGIC,
-                capacity_bytes: capacity_bytes as u64,
-                used_bytes: AtomicU64::new(0),
-                _pad: [0; 40],
-            });
-        }
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            arena_file_size(capacity_bytes),
+            |ptr| unsafe { Self::init_region(ptr, capacity_bytes) },
+            |ptr| unsafe { (*(ptr as *const ArenaHeader)).magic == ARENA_MAGIC },
+        )?;
+        let this = Self {
+            _file: file, mmap: Mapping::Writable(mmap), capacity_bytes,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        };
+        this.validate(capacity_bytes)?;
+        Ok(this)
+    }
+
+    /// Truncate the arena at `path` and initialize an empty one,
+    /// invalidating every StringRef live peers hold. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, capacity_bytes: usize,
+    ) -> Result<Self, ArenaError> {
+        assert!(capacity_bytes >= 1);
+        assert!(capacity_bytes <= u32::MAX as usize,
+            "capacity_bytes must fit in u32 for StringRef offset");
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            arena_file_size(capacity_bytes),
+            |ptr| unsafe { Self::init_region(ptr, capacity_bytes) },
+        )?;
         Ok(Self {
             _file: file, mmap: Mapping::Writable(mmap), capacity_bytes,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Lay out an empty arena: capacity first, magic last, because
+    /// attachers spin on it. The zeroed region is already `used_bytes`
+    /// 0 and empty byte space.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `arena_file_size(capacity_bytes)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity_bytes: usize) {
+        let hdr = ptr as *mut ArenaHeader;
+        unsafe {
+            (*hdr).capacity_bytes = capacity_bytes as u64;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, ARENA_MAGIC);
+        }
     }
 
     pub fn open(
@@ -406,6 +441,32 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-arena-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second create attaches with interned strings in place; reset
+    /// is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_strings() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let a = SharedStringArena::create(&p, 4096).unwrap();
+        let r = a.intern("held").unwrap();
+
+        let a2 = SharedStringArena::create(&p, 4096).unwrap();
+        assert_eq!(a2.get(r).unwrap(), "held", "attach lost an interned string");
+        assert!(matches!(
+            SharedStringArena::create(&p, 2048),
+            Err(ArenaError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(a);
+        drop(a2);
+        let fresh = SharedStringArena::reset(&p, 4096).unwrap();
+        assert_eq!(fresh.used_bytes(), 0, "reset kept interned bytes");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

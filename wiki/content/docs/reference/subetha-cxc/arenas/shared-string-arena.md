@@ -40,6 +40,15 @@ Any process resolves the same StringRef to the same bytes.
   producer's arena does not hold. `get` / `get_bytes` are
   identical; `intern` / `intern_bytes` return
   `ArenaError::ReadOnly`. `is_writable()` reports which.
+- **`create` obtains, `reset` truncates**: `create(path, bytes)`
+  initializes an empty arena only when the path does not yet exist,
+  and otherwise attaches with interned strings intact, so
+  outstanding `StringRef`s stay resolvable - racing creators all
+  reach the same arena. A region built with a different capacity is
+  a `LayoutMismatch`. `reset(path, bytes)` truncates and
+  reinitializes, invalidating every outstanding ref; on Windows it
+  succeeds only once every process has unmapped the region. The
+  in-place `clear()` rewinds without truncating.
 - **Cross-process backed by MMF.**
 
 ---
