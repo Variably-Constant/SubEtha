@@ -1339,6 +1339,23 @@ impl UnifiedSensReceiver {
     }
 
     /// `(adopted, challenges_that_went_unanswered)` for replacement
+    /// The RLC connection ids holding a decode window, in first-seen order.
+    /// Empty before any peer is seen.
+    pub fn live_rlc_sessions(&self) -> Vec<u64> {
+        self.rlc.live_sessions()
+    }
+
+    /// The block-RS session epochs holding a decode window, in first-seen
+    /// order.
+    pub fn live_rs_sessions(&self) -> Vec<u32> {
+        self.rs.live_sessions()
+    }
+
+    /// Peers refused a decode window on either code.
+    pub fn session_refusals(&self) -> u64 {
+        self.rlc.session_refusals() + self.rs.session_refusals()
+    }
+
     /// sessions, summed over both codes. A refused forgery raises the
     /// second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {

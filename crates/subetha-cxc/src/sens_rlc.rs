@@ -127,16 +127,29 @@ const LOSS_WINDOW: usize = 1024;
 /// so a cold-start cluster cannot read as catastrophic loss and slam FEC to max.
 const LOSS_WINDOW_MIN_FILL: usize = 256;
 
-/// Derive a per-connection id from the wall clock and the local port - unique
-/// enough to tell one session from another on a receiver. (A production server
-/// facing untrusted peers would draw it from a CSPRNG; a single session does not
-/// need that.)
+/// Derive a per-connection id from the invariant TSC, the wall clock, the pid
+/// and the local port, so two processes starting in the same instant draw
+/// different ids.
+///
+/// The wall clock alone is not enough: its granularity is coarse enough that
+/// 1000 draws in a loop yield 484 distinct values on a Windows host, and two
+/// peers that also share a port then collide. A production server facing
+/// untrusted peers would draw this from a CSPRNG.
 fn derive_conn_id(local_port: u16) -> u64 {
+    let kind = if crate::ordering::has_invariant_tsc() {
+        crate::ordering::StampKind::Tsc
+    } else {
+        crate::ordering::StampKind::Monotonic
+    };
+    let tsc = crate::ordering::stamp_now(kind);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    let mut x = nanos ^ ((local_port as u64) << 48);
+    let mut x = tsc
+        ^ nanos.rotate_left(32)
+        ^ ((std::process::id() as u64) << 16)
+        ^ ((local_port as u64) << 48);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
@@ -3121,6 +3134,16 @@ mod tests {
     /// Each sender tags its items with its own index in the high byte so the
     /// two streams stay distinguishable after interleaving; ordering is asserted
     /// WITHIN a stream, since nothing orders one sender against another.
+    /// Connection ids drawn back to back must differ. Derived from the wall
+    /// clock alone they did not: 1000 draws yielded 484 distinct values on a
+    /// Windows host, so two peers sharing a port collided.
+    #[test]
+    fn connection_ids_drawn_in_a_tight_loop_are_distinct() {
+        let ids: std::collections::BTreeSet<u64> =
+            (0..1000).map(|_| derive_conn_id(40_000)).collect();
+        assert_eq!(ids.len(), 1000, "only {} distinct ids in 1000 draws", ids.len());
+    }
+
     /// Three peers sending SPARSELY - one small item every 300ms, the shape a
     /// heartbeat has - with one going silent partway. The surviving two must
     /// keep delivering.
