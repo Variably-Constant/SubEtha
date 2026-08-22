@@ -110,7 +110,15 @@ over an endpoint whose codes share one socket.
 `take_session_changed()` and `session_adoption_counts()` are surfaced
 here with the same meaning they have on the standalone receiver: one
 report per adoption, and `(adopted, unanswered)` so a refused forgery is
-visible as the second rising without the first.
+visible as the second rising without the first. Both cover either code,
+so an endpoint pinned with `CodePolicy::ForceRs` reports its own
+sessions rather than an idle RLC decoder's.
+
+Both codes survive a peer restart, by different means. RLC routes by the
+connection id it already carries; block-RS carries a
+[session epoch](../reliable-udp-bridge/#surviving-a-peer-restart) in
+every data datagram and announces it on the heartbeat. Either way the
+adoption is gated on a challenge.
 
 A code switch is not a session change. The connection id belongs to the
 process, so RLC <-> RS handover leaves it untouched and no window reset

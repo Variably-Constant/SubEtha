@@ -42,7 +42,8 @@ through coding rather than a stream abstraction.
 
 Items are grouped into blocks of `k` source shards shipped with `r`
 parity shards, computed by a systematic Cauchy Reed-Solomon code
-([`fec`](../../../)). Up to `r` lost shards per block are reconstructed by
+([`fec`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/fec.rs)).
+Up to `r` lost shards per block are reconstructed by
 the receiver with **no retransmit**. When a block loses more than `r`
 shards - the rare burst beyond the parity budget - the receiver NAKs the
 missing shard indices and the sender retransmits exactly those (ARQ).
@@ -83,6 +84,42 @@ Two structural layers compose on top of the per-block code:
   entire block (every shard) is erased - a loss ARQ alone cannot recover
   if the retransmits are lost too. Enable it with
   `ReliableUdpSender::enable_tower(d, r_outer)`.
+
+## Surviving a peer restart
+
+Every data datagram carries a 4-byte session epoch, and the decoder gates
+on it before the block-id checks: a restarted peer's ids begin at the
+bottom again, which those checks would otherwise read as blocks already
+delivered. The epoch is drawn from the invariant-TSC read mixed with the
+wall clock and the pid, so it cannot repeat across a restart in either
+direction - the TSC separates two senders started in the same instant,
+the wall clock separates two started at the same point after different
+boots.
+
+The epoch gates delivery but does not announce the restart. A peer whose
+first burst was discarded has no data in flight to carry it, and nothing
+resends that burst until the receiver asks - which it cannot do for a
+session it has never seen. The heartbeat carries the epoch for that
+reason, and feedback carries the session it describes, so a restarted
+sender ignores an ack frontier belonging to the session it replaced
+rather than pruning every block it still holds.
+
+Adopting is gated on a challenge, not on the epoch alone: an unfamiliar
+epoch arms a `SessionChallenge` carrying a nonce, and the session is
+adopted only when that nonce returns from the same address. What the
+answer proves is return-routability, which an off-path attacker cannot
+supply, so a forged epoch cannot reset a receiver's window.
+
+The receiver also releases its socket's peer association after two
+seconds of silence. A connected UDP socket accepts datagrams from its
+peer alone - the property that buys the batched and GRO receive paths -
+so without that release a peer returning on a fresh ephemeral port is
+discarded by the kernel before the transport sees it.
+
+| Call | Answers |
+|---|---|
+| `take_session_changed()` | whether a replacement session was adopted since the last call; edge-triggered, one report per adoption |
+| `session_adoption_counts()` | `(adopted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
 
 ## Adaptive control
 
