@@ -71,22 +71,54 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Shar
 }
 
 impl<T: Copy + 'static> SharedOnceCell<T> {
+    /// Obtain the cell at `path`, initializing an empty one if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves an initialized value in place; a region built for a
+    /// different payload type is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedOnceError> {
         Self::check_layout()?;
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(ONCE_FILE_SIZE as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(ONCE_FILE_SIZE).map_mut(&file)? };
-        let ptr = mmap.as_mut_ptr() as *mut OnceHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            ONCE_FILE_SIZE,
+            |ptr| unsafe { Self::init_region(ptr) },
+            |ptr| unsafe { (*(ptr as *const OnceHeader)).magic == ONCE_MAGIC },
+        )?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Truncate the cell at `path` and initialize an empty one,
+    /// discarding whatever value a live peer holds. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>) -> Result<Self, SharedOnceError> {
+        Self::check_layout()?;
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), ONCE_FILE_SIZE, |ptr| unsafe {
+            Self::init_region(ptr)
+        })?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Lay out an empty cell: the zeroed region is already
+    /// `STATE_EMPTY` with a zero payload, so only the size and then the
+    /// magic are written, magic last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least [`ONCE_FILE_SIZE`] writable zeroed
+    /// bytes.
+    unsafe fn init_region(ptr: *mut u8) {
+        let hdr = ptr as *mut OnceHeader;
         unsafe {
-            std::ptr::write(ptr, OnceHeader {
-                magic: ONCE_MAGIC,
-                size: size_of::<T>() as u32,
-                state: AtomicU8::new(STATE_EMPTY),
-                _pad_to_payload: [0; 7],
-                payload: [0; ONCE_PAYLOAD_BYTES],
-            });
+            (*hdr).size = size_of::<T>() as u32;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, ONCE_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built for a different
+    /// payload type.
+    fn from_region(file: File, mmap: MmapMut) -> Result<Self, SharedOnceError> {
+        let header = unsafe { &*(mmap.as_ptr() as *const OnceHeader) };
+        if header.magic != ONCE_MAGIC || header.size as usize != size_of::<T>() {
+            return Err(SharedOnceError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, _phantom: PhantomData,
@@ -102,15 +134,7 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
             return Err(SharedOnceError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(ONCE_FILE_SIZE).map_mut(&file)? };
-        let header = unsafe { &*(mmap.as_ptr() as *const OnceHeader) };
-        if header.magic != ONCE_MAGIC || header.size as usize != size_of::<T>() {
-            return Err(SharedOnceError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap)
     }
 
     fn check_layout() -> Result<(), SharedOnceError> {
@@ -246,6 +270,45 @@ mod tests {
         assert!(c.set(42));
         assert!(!c.set(99));
         assert_eq!(c.get(), Some(42));
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the initialized value in place -
+    /// truncation here would break the once guarantee; reset is what
+    /// strips it.
+    #[test]
+    fn second_create_attaches_and_keeps_the_value() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let c: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
+        assert!(c.set(42));
+
+        let c2: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
+        assert_eq!(c2.get(), Some(42), "attach lost the initialized value");
+        assert!(!c2.set(99), "attach reopened a spent cell");
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(c);
+        drop(c2);
+        let fresh: SharedOnceCell<u64> = SharedOnceCell::reset(&p).unwrap();
+        assert_eq!(fresh.get(), None, "reset left a value behind");
+        assert!(fresh.set(7));
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Attaching with a different payload type is refused.
+    #[test]
+    fn create_refuses_a_mismatched_region() {
+        let p = tmp("mismatch");
+        std::fs::remove_file(&p).ok();
+        let c: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
+        assert!(matches!(
+            SharedOnceCell::<u32>::create(&p),
+            Err(SharedOnceError::LayoutMismatch),
+        ));
+        drop(c);
         std::fs::remove_file(&p).ok();
     }
 

@@ -40,6 +40,15 @@ INITIALIZED is published.
   once across all processes opening the same file.
 - **`open` rejects mismatched payload size**: same LayoutMismatch
   rejection as SharedCell.
+- **`create` obtains, `reset` truncates**: `create(path)` initializes
+  an empty cell only when the path does not yet exist, and otherwise
+  attaches with an initialized value intact - racing creators all
+  reach the same cell, with exactly one initializing the region, so
+  the once guarantee holds across them. A region built for a
+  different payload type is a `LayoutMismatch`. `reset(path)`
+  truncates and reinitializes, for a caller that owns the path; on
+  Windows it succeeds only once every process has unmapped the
+  region.
 - **Cross-process backed by MMF.**
 
 ---
@@ -234,9 +243,10 @@ ensures it runs once across all of them.
 - **56-byte payload limit**: larger values use SHARED_CELL (52
   bytes) or SHARED_VEC. The payload is exclusive of header magic
   + size + state.
-- **No reset**: once INITIALIZED, the cell stays INITIALIZED for
-  its lifetime. To re-initialize, recreate the file (delete + new
-  create).
+- **A handle never re-initializes**: once INITIALIZED, the cell
+  stays INITIALIZED for the region's lifetime; `create` attaches to
+  it. `reset(path)` is the re-initialization path, and on Windows it
+  requires every process to have unmapped the region first.
 - **`set` returns false on lost race; no payload returned**:
   callers needing the winning value call `get` after `set`.
 - **Spin in `get_or_init` is unbounded**: if the initializing
@@ -261,8 +271,8 @@ ensures it runs once across all of them.
   no recovery in the shipped primitive. Wrap the init closure in
   a timeout or external watchdog.
 
-- **Treating the file as immutable.** It is not; deleting the file
-  resets the state machine via re-create.
+- **Treating the file as immutable.** It is not; `reset` (or
+  deleting the file) resets the state machine.
 
 ---
 
