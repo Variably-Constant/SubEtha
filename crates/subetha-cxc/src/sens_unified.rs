@@ -373,6 +373,7 @@ fn spawn_demux(
     stop: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut buf = vec![0u8; 2048];
         let mut last_from: Option<SocketAddr> = None;
         let mut last_fb = Instant::now();
@@ -425,6 +426,15 @@ fn spawn_demux(
                 let frame = encode_unified_fb(c.load(Ordering::Relaxed));
                 sock.send_to(&frame, dst).ok();
             }
+        }
+        }));
+        if let Err(p) = r {
+            let msg = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            eprintln!("subetha: demux reader panicked: {msg}");
         }
     })
 }
@@ -834,6 +844,13 @@ impl UnifiedSensSender {
     /// sender's datagrams leave from and its demux reads.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.real.local_addr()
+    }
+
+    /// Whether the demux reader thread is still running. `false` means
+    /// no inbound frame reaches either code's queue or the feedback
+    /// counter again; a panic report is on stderr.
+    pub fn demux_alive(&self) -> bool {
+        self.demux.as_ref().is_some_and(|h| !h.is_finished())
     }
 
     /// Send one item over the active code, then periodically sample the fed-back
