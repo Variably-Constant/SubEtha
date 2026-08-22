@@ -246,7 +246,16 @@ fn read_iface_mtu(iface: Option<&str>) -> Option<u16> {
         let _iface = iface; // Windows reads the MTU via GetIfTable2, not by name.
         windows_watch::read_iface_mtu_win()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    {
+        unix_watch::read_iface_mtu_bsd(iface)
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "freebsd",
+        target_os = "macos"
+    )))]
     {
         let _iface = iface; // No MTU source on this platform.
         None
@@ -288,6 +297,111 @@ mod unix_watch {
         let name = iface.map(str::to_owned).or_else(detect_iface)?;
         let p = format!("/sys/class/net/{name}/mtu");
         std::fs::read_to_string(p).ok()?.trim().parse().ok()
+    }
+
+    /// The first non-loopback interface that is up and running (BSD). The
+    /// egress MTU is read from this interface unless the caller named one.
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    fn detect_iface_bsd() -> Option<String> {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        // SAFETY: `ifap` is a valid out-parameter; the list it returns is
+        // freed below on every path.
+        if unsafe { libc::getifaddrs(&mut ifap) } != 0 {
+            return None;
+        }
+        let mut found = None;
+        let mut cur = ifap;
+        while !cur.is_null() {
+            // SAFETY: the kernel builds this list null-terminated, and `cur`
+            // is non-null here.
+            let ifa = unsafe { &*cur };
+            let flags = ifa.ifa_flags as libc::c_int;
+            if !ifa.ifa_name.is_null()
+                && flags & libc::IFF_LOOPBACK == 0
+                && flags & libc::IFF_UP != 0
+                && flags & libc::IFF_RUNNING != 0
+            {
+                // SAFETY: `ifa_name` is a NUL-terminated C string owned by
+                // the list, read before the list is freed.
+                let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) };
+                found = name.to_str().ok().map(str::to_owned);
+                if found.is_some() {
+                    break;
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        // SAFETY: `ifap` came from a successful getifaddrs and is freed once.
+        unsafe { libc::freeifaddrs(ifap) };
+        found
+    }
+
+    /// `struct ifreq` as far as `SIOCGIFMTU` needs it: the interface name,
+    /// then the `ifr_ifru` union whose first word carries the MTU. The
+    /// union is a `sockaddr`'s 16 bytes.
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    #[repr(C)]
+    struct IfReqMtu {
+        ifr_name: [libc::c_char; libc::IF_NAMESIZE],
+        ifru_mtu: libc::c_int,
+        _ifru_rest: [u8; 12],
+    }
+
+    /// The kernel sizes the request code from `struct ifreq`, so a layout
+    /// that is not 32 bytes would encode a different ioctl.
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    const _: () = assert!(size_of::<IfReqMtu>() == 32);
+
+    /// `SIOCGIFMTU`, encoded here because the libc crate does not export it
+    /// for the BSDs. `_IOWR('i', 51, struct ifreq)` packs the read/write
+    /// direction bits, the parameter size, the group letter and the command
+    /// number; on FreeBSD 15.0 that is 0xc0206933.
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    const SIOCGIFMTU: libc::c_ulong = {
+        const IOC_INOUT: libc::c_ulong = 0xC000_0000;
+        const IOCPARM_MASK: libc::c_ulong = 0x1fff;
+        IOC_INOUT
+            | (((size_of::<IfReqMtu>() as libc::c_ulong) & IOCPARM_MASK) << 16)
+            | ((b'i' as libc::c_ulong) << 8)
+            | 51
+    };
+
+    /// Read the egress MTU with the `SIOCGIFMTU` ioctl (FreeBSD / macOS),
+    /// auto-detecting the interface when none is named. `None` when no
+    /// interface qualifies or the ioctl fails.
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    pub fn read_iface_mtu_bsd(iface: Option<&str>) -> Option<u16> {
+        let name = iface.map(str::to_owned).or_else(detect_iface_bsd)?;
+        let bytes = name.as_bytes();
+        // The name must fit with room for the NUL the kernel expects.
+        if bytes.is_empty() || bytes.len() >= libc::IF_NAMESIZE {
+            return None;
+        }
+        let mut req = IfReqMtu {
+            ifr_name: [0; libc::IF_NAMESIZE],
+            ifru_mtu: 0,
+            _ifru_rest: [0; 12],
+        };
+        for (slot, b) in req.ifr_name.iter_mut().zip(bytes) {
+            *slot = *b as libc::c_char;
+        }
+        // SAFETY: a datagram socket is just the handle the ioctl needs; it
+        // is closed below whatever the ioctl returns.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: `fd` is a valid socket and `req` is a live ifreq for the
+        // duration of the call.
+        let rc = unsafe {
+            libc::ioctl(fd, SIOCGIFMTU, &raw mut req as *mut libc::c_void)
+        };
+        // SAFETY: `fd` was opened above and is not referenced again.
+        unsafe { libc::close(fd) };
+        if rc != 0 {
+            return None;
+        }
+        u16::try_from(req.ifru_mtu).ok().filter(|m| *m > 0)
     }
 
     /// The watcher handle: its `Drop` signals the thread to stop and joins it,

@@ -18,8 +18,8 @@
 //!
 //! Returns `Err` when the kernel cannot satisfy the mapping, so callers
 //! fall back to a standard anon mmap. Mirrors the Linux
-//! [`HugepageRegion`](crate::hugepages::HugepageRegion) and Windows
-//! [`LargePageRegion`](crate::large_pages::LargePageRegion).
+//! `HugepageRegion` and Windows `LargePageRegion`, each compiled only
+//! on its own platform.
 
 #![cfg(any(target_os = "freebsd", target_os = "macos"))]
 
