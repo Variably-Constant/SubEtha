@@ -71,14 +71,9 @@ pub enum FrameType {
     SessionChallenge = 0x0F,
     /// Sender -> receiver: the challenge echoed back.
     SessionResponse = 0x10,
-    /// Sender -> receiver: the epoch of the session this endpoint is
-    /// sending under, carried on the heartbeat.
-    ///
-    /// The data header carries the same value, but a restarted peer whose
-    /// first burst was discarded has no data in flight to carry it - and
-    /// nothing resends that burst until the receiver asks, which it cannot
-    /// do for a session it has never seen. The beat is what keeps
-    /// arriving, so it is what announces a new session.
+    /// The epoch of the session this endpoint is sending under, and on
+    /// feedback the session it describes. Rides the heartbeat, so it
+    /// reaches a peer whose data is being discarded.
     SessionAnnounce = 0x11,
 }
 
@@ -109,15 +104,12 @@ impl FrameType {
     }
 }
 
-/// A session-epoch challenge, and the answer echoing it. Both carry the
-/// same pair: the epoch under challenge and a nonce the challenger picked.
-/// Answering requires having received the challenge, so a peer that cannot
-/// receive at the address it claims cannot produce one.
+/// A session-epoch challenge and the answer echoing it: the epoch under
+/// challenge, and a nonce only a peer that received the challenge holds.
 ///
-/// `nonce` MUST fit 62 bits. The varint codec clamps anything wider to the
-/// 62-bit maximum, so a full-width random value would be sent clamped
-/// while the challenger kept the unclamped one and no answer would ever
-/// compare equal. [`NONCE_MASK`] is what generators apply.
+/// `nonce` MUST fit 62 bits, masked with [`NONCE_MASK`]. The varint codec
+/// clamps wider values, and a clamped echo never compares equal to the
+/// unclamped original.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SessionFrame {
     pub epoch: u32,

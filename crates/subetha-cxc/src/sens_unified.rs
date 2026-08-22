@@ -1329,20 +1329,25 @@ impl UnifiedSensReceiver {
         self.switches
     }
 
-    /// The bound local address.
-    /// Whether the RLC decoder adopted a replacement session since this was
+    /// Whether either decoder adopted a replacement session since this was
     /// last called, clearing the flag. Edge-triggered: one report per
     /// adoption.
     pub fn take_session_changed(&mut self) -> bool {
-        self.rlc.take_session_changed()
+        let rlc = self.rlc.take_session_changed();
+        let rs = self.rs.take_session_changed();
+        rlc || rs
     }
 
     /// `(adopted, challenges_that_went_unanswered)` for replacement
-    /// sessions. A rejected forgery raises the second without the first.
+    /// sessions, summed over both codes. A refused forgery raises the
+    /// second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
-        self.rlc.session_adoption_counts()
+        let (ra, rf) = self.rlc.session_adoption_counts();
+        let (sa, sf) = self.rs.session_adoption_counts();
+        (ra + sa, rf + sf)
     }
 
+    /// The bound local address.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.real.local_addr()
     }

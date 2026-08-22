@@ -162,22 +162,16 @@ impl PendingBlock {
     }
 }
 
-/// A session epoch that does not repeat across a restart of this sender.
+/// A non-zero session epoch, distinct across restarts of this sender.
 ///
-/// Two sources, because neither alone is enough. The invariant-TSC read
-/// (the same userspace `rdtsc` the ordering stamps use, via
-/// [`crate::ordering::stamp_now`]) separates two encoders built in the
-/// same instant - a wall clock cannot, its granularity being tens of
-/// milliseconds on some hosts, so back-to-back encoders would draw one
-/// epoch and read as a single continuing session. The wall clock in turn
-/// separates two encoders built at the same point after different boots,
-/// which the TSC cannot, since it restarts near zero at boot.
+/// Mixes the invariant-TSC read with the wall clock and the pid. The TSC
+/// separates encoders built in the same instant, which a wall clock at
+/// tens of milliseconds of granularity cannot; the wall clock separates
+/// encoders built at the same point after different boots, which the TSC
+/// cannot, restarting near zero.
 fn derive_epoch() -> u32 {
-    // The ladder is chosen here rather than taken from
-    // `default_stamp_kind`, whose SharedCounter arm reads as 0 through
-    // `stamp_now` - that arm means "the ring's own atom orders this",
-    // which is not a clock and would leave this epoch on the wall clock
-    // alone. Monotonic nanoseconds is the right fallback for a value.
+    // Not `default_stamp_kind`: its SharedCounter arm reads as 0 through
+    // `stamp_now`, being a ring ordering atom rather than a clock.
     let kind = if crate::ordering::has_invariant_tsc() {
         crate::ordering::StampKind::Tsc
     } else {
@@ -240,9 +234,8 @@ impl Encoder {
     /// Create an encoder. `k` data shards per block, initial `r` parity
     /// shards (clamped to `r_min..=r_max`), `max_item` largest item
     /// byte length.
-    /// This encoder's session epoch. Stamped into every data datagram and
-    /// announced on the heartbeat, since a restarted peer whose burst was
-    /// discarded has no data in flight to carry it.
+    /// This encoder's session epoch, as stamped into every data datagram
+    /// and announced on the heartbeat.
     pub fn epoch(&self) -> u32 {
         self.epoch
     }
@@ -852,10 +845,8 @@ impl Decoder {
         self.session_epoch
     }
 
-    /// Record an epoch learned from somewhere other than a data datagram -
-    /// the heartbeat announce, which is the only path that keeps arriving
-    /// from a peer whose data is being discarded. Recording is not
-    /// adopting; the caller still challenges it.
+    /// Record an epoch learned off the data path, from the heartbeat
+    /// announce. Recording is not adopting: the caller still challenges it.
     pub fn note_unknown_epoch(&mut self, epoch: u32) {
         if self.session_epoch != Some(epoch) {
             self.unknown_epoch = Some(epoch);

@@ -33,6 +33,42 @@ fn config() -> UnifiedConfig {
     cfg
 }
 
+/// How long the parent polls after a forgery, so the challenge it
+/// provokes has time to go unanswered and be retired.
+const FORGERY_SETTLE: Duration = Duration::from_millis(1500);
+
+/// Wire layout of a block-RS DATA datagram, restated because the forgery
+/// case builds one from outside the crate. Drift here makes the forged
+/// datagram implausible, which is why the case also asserts a challenge
+/// was issued rather than only that nothing was adopted.
+const PKT_DATA: u8 = 1;
+const RS_DATA_HEADER: usize = 13;
+const RS_EPOCH_OFFSET: usize = 9;
+
+/// Send datagrams under an epoch no peer here holds, from a socket that
+/// is dropped without answering anything.
+///
+/// Covers an UNANSWERED challenge yielding no adoption, not source-address
+/// spoofing: the datagrams carry this process's real source address, since
+/// forging that needs a raw socket.
+fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let target = format!("127.0.0.1:{port}");
+    let mut pkt = vec![0u8; RS_DATA_HEADER + SYMBOL_LEN];
+    pkt[0] = PKT_DATA;
+    pkt[5] = 0; // shard index
+    pkt[6] = 4; // k
+    pkt[7] = 2; // r
+    pkt[RS_EPOCH_OFFSET..RS_EPOCH_OFFSET + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    for block in 0..4u32 {
+        pkt[1..5].copy_from_slice(&block.to_le_bytes());
+        sock.send_to(&pkt, &target)?;
+        sleep(Duration::from_millis(5));
+    }
+    println!("   parent: sent 4 forged datagrams under an unknown epoch");
+    Ok(())
+}
+
 fn payload(session: u8, i: usize) -> Vec<u8> {
     let mut v = vec![session; 16];
     v[1..9].copy_from_slice(&(i as u64).to_le_bytes());
@@ -63,6 +99,35 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         format!("session A delivered {got_a}/{ITEMS_PER_SESSION} over Rs"),
     )?;
     println!("   parent: session A delivered {got_a} items over {:?}", rx.active_code());
+
+    // A forged epoch, before the genuine restart: a datagram announcing a
+    // session no peer here holds, from a socket that answers nothing. This
+    // is the reset an off-path attacker would want.
+    let (adopted_before, failed_before) = rx.session_adoption_counts();
+    forge_unknown_session(port)?;
+    let deadline = Instant::now() + FORGERY_SETTLE;
+    while Instant::now() < deadline {
+        rx.poll().ok();
+        sleep(Duration::from_millis(10));
+    }
+    let (adopted_after, failed_after) = rx.session_adoption_counts();
+    require(
+        adopted_after == adopted_before,
+        format!(
+            "a forged epoch was ADOPTED ({adopted_before} -> {adopted_after}); an \
+             unauthenticated peer can reset this receiver's window"
+        ),
+    )?;
+    require(
+        failed_after > failed_before,
+        format!(
+            "the forgery was not challenged ({failed_before} -> {failed_after} \
+             unanswered); the receiver is not exercising the path check"
+        ),
+    )?;
+    println!(
+        "   parent: forged epoch refused - adoptions {adopted_after}, unanswered {failed_after}"
+    );
 
     first.kill()?;
     first.wait()?;

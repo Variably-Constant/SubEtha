@@ -1092,12 +1092,10 @@ impl ReliableUdpSender {
                             .observe_reverse(crate::path_sensor::hop_count_from_ttl(t));
                     }
                     if let Some(cp) = decode_control(&buf[..n]) {
-                        // Feedback describing a session this endpoint is not
-                        // sending under says nothing about its blocks. The
-                        // ack frontier in particular would prune everything
-                        // it still holds. A peer that has not learned this
-                        // session yet announces nothing, and that is not a
-                        // mismatch - only a different epoch is.
+                        // Feedback for another session says nothing about
+                        // this one's blocks, and its ack frontier would
+                        // prune every block still held. Announcing nothing
+                        // is not a mismatch; only a different epoch is.
                         if cp.session_announce.is_some_and(|e| e != self.enc.epoch()) {
                             continue;
                         }
@@ -1111,10 +1109,9 @@ impl ReliableUdpSender {
                         // measures. The in-flight is negligible at scale, so the
                         // ratio converges to the loss fraction.
                         self.ctrl_recv = self.ctrl_recv.wrapping_add(1);
-                        // A receiver that does not recognise this session
-                        // challenges it. Echo the pair verbatim: answering
-                        // is the proof, and only a peer receiving at the
-                        // claimed address can produce one.
+                        // Echo the challenge verbatim. Answering it is the
+                        // proof, and only a peer receiving at the claimed
+                        // address can answer.
                         if let Some(sc) = cp.session_challenge {
                             let mut ans = ControlPacket::new();
                             ans.session_response = Some(sc);
@@ -1350,10 +1347,9 @@ impl ReliableUdpSender {
     fn maybe_send_heartbeat(&mut self) -> io::Result<()> {
         if self.last_hb.elapsed() >= HEARTBEAT_INTERVAL {
             let mut cp = ControlPacket::new();
-            // Which session this endpoint is sending under. The beat is the
-            // only thing that keeps arriving from a peer whose data was
-            // discarded while the receiver was still bound to its dead
-            // predecessor, so it is what tells the receiver to look again.
+            // Which session this endpoint is sending under. The beat
+            // reaches a receiver still bound to a dead predecessor, which
+            // the data does not.
             cp.session_announce = Some(self.enc.epoch());
             // The clock beat: drives the receiver's OWD-trend slope and jitter.
             cp.timing = Some(TimingFrame {
@@ -2944,10 +2940,9 @@ impl ReliableUdpReceiver {
         loop {
             match self.sock.recv_from(&mut buf) {
                 Ok((n, src)) => {
-                    // Keep the source. On a shared socket this is the only
-                    // place it is observed, and anything addressed back to
-                    // the peer - feedback, and the challenge that adopts a
-                    // replacement session - has nowhere to go without it.
+                    // Keep the source: on a shared socket this is the only
+                    // place it is observed, and feedback and the session
+                    // challenge are both addressed back to it.
                     self.peer = Some(src);
                     self.process_datagram(&buf[..n], out);
                     idle = false;
