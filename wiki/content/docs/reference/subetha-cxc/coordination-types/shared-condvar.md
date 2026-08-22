@@ -57,6 +57,9 @@ impl SharedCondvar {
     pub fn create_with_capacity(base: impl AsRef<Path>, max_waiters: usize) -> Result<Self, CondvarError>;
     pub fn open(base: impl AsRef<Path>) -> Result<Self, CondvarError>;
     pub fn open_with_capacity(base: impl AsRef<Path>, expected_max_waiters: usize) -> Result<Self, CondvarError>;
+    // create initializes the files only when they do not yet exist and
+    // otherwise attaches, leaving parked waiters and the generation counter
+    // in place - racing creators all reach one condvar.
 
     pub fn wait<F: FnMut() -> bool>(&self, predicate: F) -> Result<(), CondvarError>;
     pub fn wait_timeout<F: FnMut() -> bool>(

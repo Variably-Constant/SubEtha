@@ -3770,9 +3770,9 @@ impl ReliableUdpReceiver {
         self.send_admission_challenges()?;
 
         let ids = self.order.clone();
-        // A session's service errors are send-side and stay with the session:
-        // propagating one here would skip every session after it in first-seen
-        // order and discard the items already collected this tick.
+        // A session's service error is a send toward its own peer and stays
+        // with that session. Every session is serviced each tick, and `tagged`
+        // keeps this tick's items.
         for epoch in ids {
             if let Some(mut s) = self.sessions.remove(&epoch) {
                 s.local_pmtu = pmtu;
@@ -3977,8 +3977,8 @@ impl ReliableUdpReceiver {
     /// Send one feedback round to every live peer without waiting for a
     /// datagram.
     pub fn nudge_feedback(&mut self) -> io::Result<()> {
-        // Same rule as the service loop: one peer's failed feedback send does
-        // not gate the rest.
+        // A session's send error stays with that session; every session gets
+        // its feedback round.
         let ids = self.order.clone();
         for epoch in ids {
             if let Some(mut s) = self.sessions.remove(&epoch) {

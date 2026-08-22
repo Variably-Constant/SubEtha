@@ -19,6 +19,7 @@ period expires, otherwise the lease becomes available again.
 ```rust,no_run
 // OwnerLease<T: Copy + 'static> - T is the lease payload.
 pub fn create(path: impl AsRef<Path>, initial: T) -> Result<Self, LeaseError>;
+pub fn reset(path: impl AsRef<Path>, initial: T) -> Result<Self, LeaseError>;
 pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaseError>;
 
 pub fn try_acquire(&self, my_pid: u32, grace_epochs: u64) -> bool;
@@ -30,6 +31,13 @@ pub fn current_owner(&self) -> Option<u32>;        // owner pid, or None
 pub fn am_i_owner(&self, my_pid: u32) -> bool;
 pub fn tick_epoch(&self) -> u64;
 ```
+
+`create` obtains the lease: it initializes with `initial` only when the
+path does not yet exist, and otherwise attaches with the current owner,
+term and payload intact (`initial` is then unused). Racing callers on
+one path all reach the same lease, with exactly one initializing.
+`reset` truncates - it strips whatever a live holder owns and is for a
+caller that owns the path.
 
 `PAYLOAD_BYTES = 48` caps the payload type `T`. `NO_OWNER` (pid 0) is
 the sentinel for "unowned". The grace period is measured in epochs,

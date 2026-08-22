@@ -95,10 +95,12 @@ fn validate(block_size: usize, block_count: usize) -> Result<(), RingError> {
     Ok(())
 }
 
+/// Lay out a fresh region. The magic is published last with `Release`, because
+/// attachers on every backing spin on it and must observe the cursors first.
 unsafe fn init_region(ptr: *mut u8, block_size: usize, block_count: usize) {
     unsafe {
         std::ptr::write(ptr as *mut FrameRegionHeader, FrameRegionHeader {
-            magic: AtomicU64::new(FRAME_REGION_MAGIC),
+            magic: AtomicU64::new(0),
             block_size: block_size as u64,
             block_count: block_count as u64,
             _pad_meta: [0; 64 - 24],
@@ -107,6 +109,9 @@ unsafe fn init_region(ptr: *mut u8, block_size: usize, block_count: usize) {
             free_head: AtomicU64::new(pack(0, NIL)),
             _pad_free: [0; 64 - 8],
         });
+        (*(ptr as *const FrameRegionHeader))
+            .magic
+            .store(FRAME_REGION_MAGIC, std::sync::atomic::Ordering::Release);
     }
 }
 

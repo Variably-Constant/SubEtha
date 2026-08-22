@@ -745,11 +745,8 @@ impl AutoIpc {
         self
     }
 
-    /// Ring slot capacity, clamped to `>= 2` and rounded up to the
-    /// next power of two. Every terminal's backing store requires a
-    /// pow2 capacity, and they disagree on how they say so: the ring
-    /// asserts, the deque returns `InvalidCapacity`, the KHL deque
-    /// rounds. Rounding here is what makes the hint declarative.
+    /// Ring slot capacity, clamped to `>= 2` and rounded up to the next power
+    /// of two. Every terminal's backing store requires a pow2 capacity.
     pub fn capacity(mut self, n: usize) -> Self {
         self.capacity = n.max(2).next_power_of_two();
         self

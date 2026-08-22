@@ -290,10 +290,9 @@ impl CrossProcessWaker {
 
     /// File-backed waker, cross-process visible via the OS page cache.
     /// Initialises the region only when `path` does not yet exist; otherwise
-    /// attaches, so racing callers cannot clear parked waiters a live peer
-    /// owns. Attaching to a region built with a different capacity is a
-    /// `LayoutMismatch`. Use [`reset`](Self::reset) to deliberately
-    /// reinitialise.
+    /// attaches, leaving parked waiters in place. A region built with a
+    /// different capacity is a `LayoutMismatch`. [`reset`](Self::reset)
+    /// reinitialises.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, WakerError> {
         assert!(capacity >= 1, "capacity must be >= 1");
         let total = waker_region_size(capacity);

@@ -194,6 +194,10 @@ The story the numbers tell:
 
 ### Basic watchdog loop
 
+`HeartbeatTable::create` initializes the table only when the path does
+not yet exist and otherwise attaches with live registrations intact;
+`HeartbeatTable::reset` is the truncating form.
+
 ```rust
 use std::sync::Arc;
 use std::time::Duration;

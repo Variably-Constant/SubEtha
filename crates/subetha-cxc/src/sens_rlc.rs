@@ -2811,11 +2811,9 @@ impl SensOMaticRlcReceiver {
         self.send_admission_challenges()?;
         // Service every live session in first-seen order, so delivery across
         // peers is deterministic rather than hash-ordered.
-        // A session's service errors are send-side: its control plane talks to
-        // its own peer, and a dead peer makes those sends fail. That failure
-        // stays with the session - propagating it here would skip every
-        // session after it in first-seen order and discard the items already
-        // decoded into `out` this tick.
+        // A session's service error is a send toward its own peer and stays
+        // with that session. Every session is serviced each tick, and `out`
+        // keeps this tick's items.
         let ids = self.order.clone();
         for cid in ids {
             if let Some(mut s) = self.sessions.remove(&cid) {

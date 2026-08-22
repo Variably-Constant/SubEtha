@@ -42,6 +42,9 @@ use subetha_cxc::{BlockingRWLock, BlockingRWLockError};
 impl BlockingRWLock {
     pub fn create(base: impl AsRef<Path>) -> Result<Self, BlockingRWLockError>;
     pub fn open(base: impl AsRef<Path>) -> Result<Self, BlockingRWLockError>;
+    // create initializes the three files only when they do not yet exist and
+    // otherwise attaches, leaving a held lock and parked waiters in place -
+    // racing creators all reach one lock.
 
     pub fn try_read_lock(&self) -> Result<BlockingReadGuard<'_>, BlockingRWLockError>;
     pub fn try_write_lock(&self) -> Result<BlockingWriteGuard<'_>, BlockingRWLockError>;

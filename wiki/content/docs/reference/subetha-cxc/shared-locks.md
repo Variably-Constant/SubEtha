@@ -16,7 +16,9 @@ MMF; the lock's word lives at a known offset in the file.
 
 ```rust,no_run
 pub fn create(path: impl AsRef<Path>) -> Result<Self, RWLockError>;
+pub fn create_or_open(path: impl AsRef<Path>) -> Result<Self, RWLockError>;
 pub fn open(path: impl AsRef<Path>) -> Result<Self, RWLockError>;
+pub fn reset(path: impl AsRef<Path>) -> Result<Self, RWLockError>;
 
 pub fn read_lock(&self) -> ReadGuard<'_>;       // blocking
 pub fn write_lock(&self) -> WriteGuard<'_>;     // blocking
@@ -25,6 +27,13 @@ pub fn try_write_lock(&self) -> Result<WriteGuard<'_>, RWLockError>;
 pub fn reader_count(&self) -> u32;
 pub fn has_writer(&self) -> bool;
 ```
+
+`create` obtains the lock: it initializes the file only when the path
+does not yet exist, and otherwise attaches, leaving a held writer flag
+in place. Exactly one of any set of racing callers initializes; the
+rest attach to what that one built (`create_or_open` is the same call
+by its older name). `reset` is the truncating form - it discards
+whatever a live holder owns and is for a caller that owns the path.
 
 The guards are RAII; drop releases the lock. The blocking
 `read_lock` / `write_lock` spin with periodic yields and return the

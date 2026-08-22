@@ -114,6 +114,12 @@ is visible as the second rising without the first. Both cover either
 code, so an endpoint pinned with `CodePolicy::ForceRs` reports its own
 sessions rather than an idle RLC decoder's.
 
+Per-peer reads are forwarded too: `live_rlc_sessions()` and
+`live_rs_sessions()` list the ids holding a decode window on each code,
+`session_refusals()` counts peers turned away, and
+`rlc_session_frontier(cid)` reports one RLC window's
+`(delivered_through, highest_seen)`.
+
 Both codes survive a peer restart, by different means. RLC routes by the
 connection id it already carries; block-RS carries a
 [session epoch](../reliable-udp-bridge/#surviving-a-peer-restart) in

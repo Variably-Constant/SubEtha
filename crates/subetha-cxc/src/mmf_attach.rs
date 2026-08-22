@@ -1,12 +1,8 @@
 //! Race-free construction for the file-backed MMF primitives.
 //!
-//! A `create` that opens with `truncate(true)` and zeroes its header resets
-//! whatever a live peer is using: a held lock flag, a ring's cursors, a
-//! directory's claims. An exists-then-create check does not prevent it, since
-//! the check and the create are separate steps.
-//!
-//! [`create_or_attach`] elects one creator through an exclusive `create_new`.
-//! The winner initialises; everyone else attaches to what the winner built.
+//! [`create_or_attach`] elects one creator through an exclusive `create_new`;
+//! the winner initializes over a zeroed mapping and everyone else attaches to
+//! what the winner built. [`reset`] truncates and reinitializes.
 
 use std::fs::{File, OpenOptions};
 use std::io;

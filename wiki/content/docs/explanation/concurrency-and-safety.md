@@ -104,6 +104,22 @@ traffic. The composed MPMC path (`SharedRingMpmc`) is exercised at 4
 producers x 2 consumers, 40,000 items (`PER_PRODUCER = 10_000`), zero lost
 and zero duplicated.
 
+## Obtaining a primitive from several processes
+
+For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
+`OwnerLease`, `HeartbeatTable`, `SharedCondvar`, `CrossProcessWaker`,
+and the `AdaptiveRing` peer directory - `create` obtains the instance:
+it initializes the file only when the path does not yet exist, and
+otherwise attaches with live state intact. Racing creators on one path
+all reach the same instance, with exactly one initializing it. Each of
+these types carries a `reset` that truncates and reinitializes, for a
+caller that owns the path; on Windows a reset succeeds only once every
+process has unmapped the region.
+
+The data-plane primitives (rings, maps, sketches) still truncate on
+`create` and pair with `open` - conversion is tracked and ongoing, so
+check the type's own page before racing two creators on one of those.
+
 ## What you must not do
 
 - **Do not put two producers on a single-producer ring.** On the typed SPSC

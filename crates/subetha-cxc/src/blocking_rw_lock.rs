@@ -79,9 +79,9 @@ unsafe impl Send for WakeupAtom {}
 unsafe impl Sync for WakeupAtom {}
 
 impl WakeupAtom {
-    /// Obtain the wakeup region at `path`, initialising it only when the path
+    /// Obtain the wakeup region at `path`, initializing it only when the path
     /// does not yet exist. Attaching leaves a live generation counter in
-    /// place, so a racing creator cannot strand parked waiters.
+    /// place.
     fn create_file(path: &Path) -> Result<Self, BlockingRWLockError> {
         let (file, mut mmap) = crate::mmf_attach::create_or_attach(
             path,

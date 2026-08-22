@@ -104,6 +104,11 @@ leaves them as a gap ARQ recovers.
 | `session_admissions_for(cid)` | the address that id answered from, or `None` if it holds no window |
 | `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
 | `session_refusals()` | peers turned away by a declared ceiling, or by TLS already holding its one handshake |
+| `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap |
+
+A session's control-plane send failure stays with that session: every
+window is serviced each poll, and a tick's delivered items reach the
+caller whether or not some peer's feedback send failed.
 
 `take_session_changed()`, `session_adoption_counts()` and
 `poll_from()` are also on `UnifiedSensReceiver`, whose
