@@ -830,6 +830,18 @@ impl UnifiedSensSender {
     /// code rather than draining the old one.
     pub fn send_item(&mut self, item: &[u8]) -> io::Result<()> {
         self.send_item_calls += 1;
+        // Env-gated entry trace (`SUBETHA_SEND_TRACE=1`): the compiled
+        // artifact reports its own execution on stderr, capped per
+        // instance so a hot sender cannot flood a log.
+        if self.send_item_calls <= 32 {
+            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *TRACE.get_or_init(|| std::env::var_os("SUBETHA_SEND_TRACE").is_some_and(|v| v == "1")) {
+                eprintln!(
+                    "subetha: send_item enter self={:p} len={} calls={}",
+                    self, item.len(), self.send_item_calls,
+                );
+            }
+        }
         // Seal to the wire payload once (the packet number is this item's global
         // index); both codes carry it and the replay ring stores it, so a resend
         // reuses the same packet number and the switch is crypto-transparent. Seal
