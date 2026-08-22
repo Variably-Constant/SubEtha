@@ -1115,7 +1115,6 @@ impl ReliableUdpSender {
                         // challenges it. Echo the pair verbatim: answering
                         // is the proof, and only a peer receiving at the
                         // claimed address can produce one.
-                        eprintln!("[dbg] tx ctrl n={n} challenge={}", cp.session_challenge.is_some());
                         if let Some(sc) = cp.session_challenge {
                             let mut ans = ControlPacket::new();
                             ans.session_response = Some(sc);
@@ -1200,10 +1199,6 @@ impl ReliableUdpSender {
                         }
                         let fb = feedback_from_control(&cp);
                         let rtx = self.enc.on_feedback(&fb);
-                        eprintln!(
-                            "[dbg] tx nak_block={} mask={:#x} pending={} rtx={}",
-                            fb.nak_block, fb.nak_mask, self.enc.pending_len(), rtx.len()
-                        );
                         self.send_batch(&rtx)?;
                         // Proactive recovery: now that this ACK has freed every
                         // block the receiver actually got, ENQUEUE whatever is
@@ -1256,12 +1251,6 @@ impl ReliableUdpSender {
                         }
                         self.apply_fusion(&fb);
                     }
-                }
-                Err(ref e) if e.kind() != io::ErrorKind::WouldBlock
-                    && e.kind() != io::ErrorKind::TimedOut =>
-                {
-                    eprintln!("[dbg] tx recv err {:?}", e.kind());
-                    break;
                 }
                 Err(e)
                     if e.kind() == io::ErrorKind::WouldBlock
@@ -2634,9 +2623,7 @@ impl ReliableUdpReceiver {
         if !self.connected || self.last_data_at.elapsed() <= PEER_SILENCE_TIMEOUT {
             return;
         }
-        let ok = self.sock.connect(UNSPECIFIED_PEER).is_ok();
-        eprintln!("[dbg] release_silent_peer -> unconnect ok={ok}");
-        if ok {
+        if self.sock.connect(UNSPECIFIED_PEER).is_ok() {
             self.connected = false;
             #[cfg(target_os = "linux")]
             {
@@ -2655,7 +2642,6 @@ impl ReliableUdpReceiver {
         {
             self.pending_session = None;
             self.session_adoption_failures += 1;
-            eprintln!("[dbg] challenge EXPIRED");
         }
         if let Some(epoch) = self.dec.take_unknown_epoch() {
             let already = matches!(self.pending_session, Some((_, e, _, _)) if e == epoch);
@@ -2669,19 +2655,13 @@ impl ReliableUdpReceiver {
                 // echo would come back a different number than was stored.
                 let nonce = (x ^ (x >> 31)) & crate::control_frame::NONCE_MASK;
                 self.pending_session = Some((addr, epoch, nonce, Instant::now()));
-                eprintln!("[dbg] challenge ARMED epoch={epoch} addr={addr}");
             }
         }
         if let Some((addr, epoch, nonce, _)) = self.pending_session {
             let mut cp = ControlPacket::new();
             cp.session_challenge = Some(crate::control_frame::SessionFrame { epoch, nonce });
             let wire = encode_control(&cp);
-            let r = self.sock.send_to(&wire, addr);
-            eprintln!(
-                "[dbg] rx challenge -> {addr} connected={} peer={:?} res={:?}",
-                self.connected, self.peer, r.as_ref().map(|n| *n)
-            );
-            r?;
+            self.sock.send_to(&wire, addr)?;
         }
         Ok(())
     }
@@ -2980,7 +2960,6 @@ impl ReliableUdpReceiver {
     fn process_datagram(&mut self, buf: &[u8], out: &mut Vec<Vec<u8>>) {
         self.recv_count += 1;
         self.last_data_at = Instant::now();
-        eprintln!("[dbg] rx datagram control={} len={}", is_control(buf), buf.len());
         // Peak-hold this end's active path-event shift: a route / carrier / MTU
         // event spikes the observer's shift, which decays within seconds, so
         // sampling on each arrival captures the transient for the telemetry.
@@ -3647,10 +3626,6 @@ impl ReliableUdpReceiver {
             // clears itself as soon as the stream resumes.
             let catching_up = self.dec.next_needed() > self.dec.highest_seen();
             let gaps = self.dec.missing_blocks(self.nak_batch, timed_out || catching_up);
-            if self.session_adoptions > 0 {
-                eprintln!("[dbg] nd={} hi={} catchup={catching_up} gaps={gaps:?}",
-                    self.dec.next_needed(), self.dec.highest_seen());
-            }
             for (block, mask) in gaps {
                 if mask == 0 {
                     continue;
@@ -3659,9 +3634,6 @@ impl ReliableUdpReceiver {
                     .nak_history
                     .get(&block)
                     .is_none_or(|t| now.duration_since(*t) >= NAK_COOLDOWN);
-                if self.session_adoptions > 0 {
-                    eprintln!("[dbg] rx nak block={block} fresh={fresh} peer={peer}");
-                }
                 if fresh {
                     let mut nfb = base;
                     nfb.nak_block = block;
@@ -3811,19 +3783,11 @@ impl ReliableUdpReceiver {
             // ConnectionReset and every later send fails the same way.
             // Swallowing that loses the feedback silently, so fall back to
             // an addressed send, which is unaffected.
-            let r = self.sock.send(bytes);
-            if self.session_adoptions > 0 {
-                eprintln!("[dbg] fb send connected -> {:?}", r.as_ref().err().map(|e| e.kind()));
-            }
-            if r.is_ok() {
+            if self.sock.send(bytes).is_ok() {
                 return;
             }
         }
-        let r2 = self.sock.send_to(bytes, peer);
-        if self.session_adoptions > 0 {
-            eprintln!("[dbg] fb send_to {peer} -> {:?}", r2.as_ref().err().map(|e| e.kind()));
-        }
-        r2.ok();
+        self.sock.send_to(bytes, peer).ok();
     }
 
     /// Send any delayed feedback whose release time has arrived. A no-op
@@ -3970,7 +3934,6 @@ mod tests {
         let addr = recv.local_addr().unwrap();
 
         let mut first = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
-        let first_addr = first.local_addr().unwrap();
         for i in 0..N {
             first.send_item(&i.to_le_bytes()).unwrap();
         }
@@ -3988,7 +3951,6 @@ mod tests {
 
         drop(first);
         let mut second = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
-        eprintln!("[dbg] sender1 was {:?}, sender2 is {:?}", first_addr, second.local_addr());
         assert_ne!(
             second.enc.epoch(),
             recv.dec.session_epoch().unwrap(),
