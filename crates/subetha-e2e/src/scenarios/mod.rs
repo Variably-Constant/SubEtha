@@ -14,6 +14,7 @@ pub mod receiver_restart;
 pub mod ring_boundary;
 pub mod scheduler;
 pub mod session_restart;
+pub mod session_restart_rs;
 
 /// One end-to-end claim, in its parent and child halves.
 pub struct Scenario {
@@ -51,6 +52,12 @@ pub static ALL: &[Scenario] = &[
         about: "a KILLED peer's replacement session is delivered, not discarded",
         parent: session_restart::parent,
         child: session_restart::child,
+    },
+    Scenario {
+        name: "session-restart-rs",
+        about: "the same restart pinned to block-RS, the code with no session id of its own",
+        parent: session_restart_rs::parent,
+        child: session_restart_rs::child,
     },
     Scenario {
         name: "receiver-restart",
