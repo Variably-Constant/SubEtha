@@ -38,6 +38,11 @@ underflow.
   caller's configured capacity.
 - **`try_acquire(n)` is single CAS, no spin lock**: on race,
   retry up to a bounded count.
+- **`create` obtains**: it initializes a full bucket only when the
+  path does not yet exist, and otherwise attaches with the live token
+  count in place - racing creators all reach the same limiter. A
+  region built with a different capacity or refill rate is a
+  `LayoutMismatch`. The in-place `reset()` refills to capacity.
 - **Cross-process backed by MMF.**
 
 ---

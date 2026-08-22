@@ -116,31 +116,61 @@ impl subetha_sidecar::AdaptiveInstance for SharedRateLimiter {
 }
 
 impl SharedRateLimiter {
-    /// Create a rate limiter. Starts with `capacity` tokens (full
-    /// bucket). `refill_rate_per_sec` controls the steady-state
-    /// rate; both fields must be > 0.
+    /// Obtain the limiter at `path`, initializing a full bucket if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves the live token count in place; a region built
+    /// with a different capacity or refill rate is a `LayoutMismatch`.
+    /// `refill_rate_per_sec` controls the steady-state rate; both
+    /// fields must be > 0. [`reset`](Self::reset) refills a live
+    /// bucket in place.
     pub fn create(
         path: impl AsRef<Path>, capacity: u32, refill_rate_per_sec: u32,
     ) -> Result<Self, RateLimiterError> {
         if capacity == 0 || refill_rate_per_sec == 0 {
             return Err(RateLimiterError::InvalidConfig);
         }
-        let total = size_of::<RateLimiterHeader>();
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut RateLimiterHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            size_of::<RateLimiterHeader>(),
+            |ptr| unsafe { Self::init_region(ptr, capacity, refill_rate_per_sec) },
+            |ptr| unsafe { (*(ptr as *const RateLimiterHeader)).magic == RATE_LIMITER_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity, refill_rate_per_sec)
+    }
+
+    /// Lay out a full bucket: config fields and the packed state first,
+    /// magic last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `size_of::<RateLimiterHeader>()`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: u32, refill_rate_per_sec: u32) {
+        let hdr = ptr as *mut RateLimiterHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, total);
-            (*hdr).magic = RATE_LIMITER_MAGIC;
             (*hdr).capacity = capacity;
             (*hdr).refill_rate_per_sec = refill_rate_per_sec;
-            (*hdr).state.store(
-                pack_state(capacity, now_us_low()),
-                Ordering::Release,
+            std::ptr::write(
+                &raw mut (*hdr).state,
+                AtomicU64::new(pack_state(capacity, now_us_low())),
             );
+            std::ptr::write_volatile(&raw mut (*hdr).magic, RATE_LIMITER_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity or refill rate.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity: u32,
+        refill_rate_per_sec: u32,
+    ) -> Result<Self, RateLimiterError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const RateLimiterHeader) };
+        if hdr.magic != RATE_LIMITER_MAGIC
+            || hdr.capacity != capacity
+            || hdr.refill_rate_per_sec != refill_rate_per_sec
+        {
+            return Err(RateLimiterError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap,
@@ -158,18 +188,7 @@ impl SharedRateLimiter {
             return Err(RateLimiterError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const RateLimiterHeader) };
-        if hdr.magic != RATE_LIMITER_MAGIC
-            || hdr.capacity != capacity
-            || hdr.refill_rate_per_sec != refill_rate_per_sec
-        {
-            return Err(RateLimiterError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, capacity, refill_rate_per_sec)
     }
 
     fn header(&self) -> &RateLimiterHeader {
@@ -340,6 +359,29 @@ mod tests {
         assert_eq!(r.capacity(), 100);
         assert_eq!(r.refill_rate_per_sec(), 10);
         assert_eq!(r.available(), 100);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the live token count in place;
+    /// the in-place reset is what refills.
+    #[test]
+    fn second_create_attaches_and_keeps_the_bucket() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let r = SharedRateLimiter::create(&p, 100, 1).unwrap();
+        r.try_acquire(40).unwrap();
+
+        let r2 = SharedRateLimiter::create(&p, 100, 1).unwrap();
+        assert_eq!(r2.available(), 60, "attach refilled a live bucket");
+        assert!(matches!(
+            SharedRateLimiter::create(&p, 50, 1),
+            Err(RateLimiterError::LayoutMismatch),
+        ));
+
+        r2.reset();
+        assert_eq!(r.available(), 100, "reset did not refill for every handle");
+        drop(r);
+        drop(r2);
         std::fs::remove_file(&p).ok();
     }
 
