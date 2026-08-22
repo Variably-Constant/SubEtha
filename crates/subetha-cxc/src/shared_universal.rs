@@ -209,26 +209,57 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
         p
     }
 
-    /// Create a new container. Starts in Vec strategy at
-    /// (generation=0, version=0).
+    /// Obtain the container at `base`: initializes a fresh one in Vec
+    /// strategy at (generation=0, version=0) if the state file does
+    /// not yet exist, and otherwise attaches to the live state and
+    /// obtains whichever backing it names. A container built with a
+    /// different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(base: impl AsRef<Path>, capacity: usize) -> Result<Self, UniversalError> {
         let base = base.as_ref().to_path_buf();
         assert!(capacity >= 1);
         let state_p = Self::state_path(&base);
-        let state_file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(&state_p)?;
-        state_file.set_len(size_of::<UniversalHeader>() as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(size_of::<UniversalHeader>()).map_mut(&state_file)? };
-        let hdr = mmap.as_mut_ptr() as *mut UniversalHeader;
-        unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<UniversalHeader>());
-            (*hdr).magic = UNIVERSAL_MAGIC;
-            (*hdr).capacity = capacity as u32;
-            (*hdr).state.store(pack(0, 0, Strategy::Vec as u8), Ordering::Release);
+        let (state_file, mmap) = crate::mmf_attach::create_or_attach(
+            &state_p,
+            size_of::<UniversalHeader>(),
+            |ptr| unsafe { Self::init_state(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const UniversalHeader)).magic == UNIVERSAL_MAGIC },
+        )?;
+        let hdr = unsafe { &*(mmap.as_ptr() as *const UniversalHeader) };
+        if hdr.magic != UNIVERSAL_MAGIC || hdr.capacity != capacity as u32 {
+            return Err(UniversalError::LayoutMismatch);
         }
+        let (version, generation, strategy_byte) = unpack(hdr.state.load(Ordering::Acquire));
+        let strategy = Strategy::from_u8(strategy_byte).ok_or(UniversalError::InvalidStrategy)?;
+        let backing = Self::obtain_backing(&base, generation, version, strategy, capacity)?;
+        Ok(Self {
+            base, capacity,
+            _state_file: state_file,
+            state_mmap: mmap,
+            backing: RwLock::new((version, generation, backing)),
+            _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Truncate the state at `base` and initialize a fresh container
+    /// in Vec strategy at (generation=0, version=0), resetting the
+    /// (0, 0) Vec backing with it. Backing files from later
+    /// (generation, version) pairs stay on disk but are unreachable
+    /// once the state names (0, 0). For a caller that knows it owns
+    /// the base path.
+    pub fn reset(base: impl AsRef<Path>, capacity: usize) -> Result<Self, UniversalError> {
+        let base = base.as_ref().to_path_buf();
+        assert!(capacity >= 1);
+        let state_p = Self::state_path(&base);
+        let (state_file, mmap) = crate::mmf_attach::reset(
+            &state_p,
+            size_of::<UniversalHeader>(),
+            |ptr| unsafe { Self::init_state(ptr, capacity) },
+        )?;
         let backing_p = Self::backing_path(&base, 0, 0, Strategy::Vec);
-        let vec: SharedVec<T> = SharedVec::create(&backing_p, capacity)
+        let vec: SharedVec<T> = SharedVec::reset(&backing_p, capacity)
             .map_err(|_| UniversalError::VecError)?;
         Ok(Self {
             base, capacity,
@@ -239,6 +270,41 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Lay out a fresh state header: capacity first, magic last,
+    /// because attachers spin on it. The zeroed state word is already
+    /// (version=0, generation=0, Strategy::Vec).
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `size_of::<UniversalHeader>()`
+    /// writable zeroed bytes.
+    unsafe fn init_state(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut UniversalHeader;
+        unsafe {
+            (*hdr).capacity = capacity as u32;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, UNIVERSAL_MAGIC);
+        }
+    }
+
+    /// Obtain the backing at `(generation, version, strategy)`:
+    /// creates an empty one if its file does not yet exist and
+    /// attaches to it if it does.
+    fn obtain_backing(
+        base: &Path, generation: u16, version: u32, strategy: Strategy, capacity: usize,
+    ) -> Result<Backing<T>, UniversalError> {
+        let p = Self::backing_path(base, generation, version, strategy);
+        match strategy {
+            Strategy::Vec => {
+                let v: SharedVec<T> = SharedVec::create(&p, capacity)
+                    .map_err(|_| UniversalError::VecError)?;
+                Ok(Backing::Vec(v))
+            }
+            Strategy::Map => {
+                let m: SharedHashMap<T, ()> = SharedHashMap::create(&p, capacity)?;
+                Ok(Backing::Map(m))
+            }
+        }
     }
 
     /// Open an existing container. Reads the active (generation,
@@ -641,6 +707,37 @@ mod tests {
         assert_eq!(migrated, Some(Strategy::Map));
         assert_eq!(u.strategy(), Strategy::Map);
         drop(u);
+        cleanup(&base);
+    }
+
+    /// A second create attaches to the live state - including a
+    /// post-migration Map backing - with contents in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_contents() {
+        let base = tmp_base("attach");
+        cleanup(&base);
+        let u: SharedUniversal<u64> = SharedUniversal::create(&base, 64).unwrap();
+        for k in 0..10u64 { u.insert(k).unwrap(); }
+        u.migrate_to(Strategy::Map).unwrap();
+
+        let u2: SharedUniversal<u64> = SharedUniversal::create(&base, 64).unwrap();
+        assert_eq!(u2.strategy(), Strategy::Map, "attach ignored the live strategy");
+        assert_eq!(u2.len().unwrap(), 10, "attach lost contents");
+        for k in 0..10u64 { assert!(u2.contains(&k).unwrap()); }
+        assert!(matches!(
+            SharedUniversal::<u64>::create(&base, 32),
+            Err(UniversalError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle
+        // goes before the reset.
+        drop(u);
+        drop(u2);
+        let fresh: SharedUniversal<u64> = SharedUniversal::reset(&base, 64).unwrap();
+        assert_eq!(fresh.strategy(), Strategy::Vec, "reset kept the migrated strategy");
+        assert_eq!(fresh.len().unwrap(), 0, "reset kept contents");
+        drop(fresh);
         cleanup(&base);
     }
 

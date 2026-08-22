@@ -116,7 +116,7 @@ For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 `SharedReservoirSampler`, `SharedBroadcastRing` (file-backed),
 `SharedTreiberStack`, `SharedVec`, `SharedStringArena`,
 `SharedTopologyMap`, `SharedBTreeMap`, `SharedRegion`, `FrameRing`
-(file-backed), the
+(file-backed), `SharedUniversal`, the
 `AdaptiveRing` peer directory - and for `SharedHashMap` - `create`
 obtains the instance:
 it initializes the file only when the path does not yet exist, and

@@ -35,6 +35,16 @@ re-open the new backing atomically.
 - **`T: Copy + Eq + 'static`** is the struct bound; `insert`,
   `contains`, `migrate_to`, and `maybe_migrate_by_policy`
   additionally require `T: Hash` (the Map backing keys on it).
+- **`create` obtains the container**: it initializes a fresh one
+  in Vec strategy at (generation=0, version=0) only when the
+  state file does not yet exist, and otherwise attaches to the
+  live state and obtains whichever backing it names - including
+  a post-migration Map backing. A different capacity is a
+  `LayoutMismatch`. `reset` truncates the state back to
+  (0, 0, Vec) and resets the (0, 0) Vec backing; later
+  (generation, version) backing files stay on disk but are
+  unreachable. On Windows a reset succeeds only once every
+  mapping handle is gone.
 - **Two backings**: `SharedVec<T>` (Vec) and
   `SharedHashMap<T, ()>` (Map). Vec is O(N) contains / O(1)
   push; Map is O(1)-average contains / O(1) insert.
