@@ -2261,7 +2261,7 @@ struct RsSession {
 }
 
 /// Receiver side of the block-RS code. Owns the socket and the drain, and
-/// routes each datagram to the [`RsSession`] holding its session epoch.
+/// routes each datagram to the `RsSession` holding its session epoch.
 ///
 /// Point-to-point by default: the socket connects to its one peer and reads
 /// through the GRO / `recvmmsg` / `WSARecvMsg` fast paths.

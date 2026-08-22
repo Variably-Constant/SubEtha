@@ -1913,7 +1913,7 @@ struct RlcSession {
 /// Receiver side of the RLC transport.
 ///
 /// Owns the socket and the drain; every frame is routed by its connection id
-/// to the [`RlcSession`] that owns it, so a node receiving from several peers
+/// to the `RlcSession` that owns it, so a node receiving from several peers
 /// at once decodes each stream in its own window instead of one session
 /// evicting another.
 pub struct SensOMaticRlcReceiver {
@@ -2982,7 +2982,7 @@ impl SensOMaticRlcReceiver {
     }
 
     /// Re-base every live session's delivery to start at `base` for a
-    /// cross-code resync (see [`RlcSession::skip_to`]).
+    /// cross-code resync (each session's own `skip_to`).
     pub fn skip_to(&mut self, base: u32) {
         for s in self.sessions.values_mut() {
             s.skip_to(base);

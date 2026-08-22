@@ -210,7 +210,8 @@ impl FrameRegion {
 
     /// Create-or-open a file-backed frame region: the file-locale peer
     /// of [`create_or_open_shm`](Self::create_or_open_shm), for rings
-    /// backed by [`AdaptiveRing::create`] / `open`.
+    /// backed by [`AdaptiveRing::create`](crate::adaptive_ring::AdaptiveRing::create)
+    /// / `open`.
     pub fn create_or_open_file(
         path: impl AsRef<Path>, block_size: usize, block_count: usize,
     ) -> Result<Self, RingError> {
