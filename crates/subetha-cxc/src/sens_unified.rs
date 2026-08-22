@@ -824,6 +824,12 @@ impl UnifiedSensSender {
         (self.active, self.rs.pending_len(), self.items_total, self.send_item_calls)
     }
 
+    /// The RLC sender's control-plane arrivals: `(naks_seen, acks_seen,
+    /// feedback_recv)`, counted as the pump processes each frame.
+    pub fn rlc_ctrl_probe(&self) -> (u64, u64, u64) {
+        self.rlc.ctrl_probe()
+    }
+
     /// Send one item over the active code, then periodically sample the fed-back
     /// loss and switch codes if the controller calls for it. The item is recorded
     /// in the replay ring so a switch can resend the un-acked tail over the new
@@ -1397,6 +1403,12 @@ impl UnifiedSensReceiver {
     /// highest_seen)`, or `None` for an id with no window.
     pub fn rlc_session_frontier(&self, cid: u64) -> Option<(u32, u32)> {
         self.rlc.session_frontier(cid)
+    }
+
+    /// One RLC session's control-plane sends: `(naks_sent,
+    /// acks_sent)`, or `None` for an id with no window.
+    pub fn rlc_session_control(&self, cid: u64) -> Option<(u64, u64)> {
+        self.rlc.session_control(cid)
     }
 
     /// sessions, summed over both codes. A refused forgery raises the

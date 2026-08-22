@@ -432,6 +432,10 @@ pub struct SensOMaticRlcSender {
     /// Cumulative DATA and REPAIR datagrams handed to the socket layer
     /// without error.
     wire_datagrams: u64,
+    /// Cumulative NAK frames processed by the pump.
+    naks_seen: u64,
+    /// Cumulative ACK frames processed by the pump.
+    acks_seen: u64,
     /// Max source symbols in flight (sent but not yet delivered) before the
     /// sender paces, so a burst cannot overrun the receiver or the kernel
     /// socket buffer and manufacture loss. Used as the static cap, and as the
@@ -627,6 +631,8 @@ impl SensOMaticRlcSender {
             acked_through: 0,
             last_sid: u32::MAX,
             wire_datagrams: 0,
+            naks_seen: 0,
+            acks_seen: 0,
             // The flow window caps OUTSTANDING (sent-but-not-yet-received)
             // symbols, which is what paces the sender so a burst cannot overrun
             // the kernel receive buffer and manufacture loss. Crucially this
@@ -1344,6 +1350,15 @@ impl SensOMaticRlcSender {
         (self.last_sid, self.wire_datagrams, self.acked_through, self.sent.len())
     }
 
+    /// Control-plane arrivals processed by the pump: `(naks_seen,
+    /// acks_seen, feedback_recv)`. All three frozen while the peer's
+    /// session reports control sends means the frames die between the
+    /// peer's socket and this pump; NAKs seen with `wire_datagrams`
+    /// frozen means the retransmit path is not firing.
+    pub fn ctrl_probe(&self) -> (u64, u64, u64) {
+        (self.naks_seen, self.acks_seen, self.feedback_recv)
+    }
+
     /// Retransmit `sid` only if it has not been (re)sent within ~1.2 RTT - the
     /// retransmit-suppression guard that stops the same still-missing symbol from
     /// being resent on every ~1ms NAK round before its previous copy can be
@@ -1450,6 +1465,7 @@ impl SensOMaticRlcSender {
         let n = m.len();
         match m[0] {
             PKT_RLC_NAK => {
+                self.naks_seen += 1;
                 let mut off = 1;
                 while off + 4 <= n {
                     let sid = u32::from_le_bytes([m[off], m[off + 1], m[off + 2], m[off + 3]]);
@@ -1466,6 +1482,7 @@ impl SensOMaticRlcSender {
                 }
             }
             PKT_RLC_ACK if n >= 5 => {
+                self.acks_seen += 1;
                 // Cumulative in-order received frontier, then an optional
                 // 64-bit SACK bitmap of received ids above it.
                 let through = u32::from_le_bytes([m[1], m[2], m[3], m[4]]);
@@ -1708,6 +1725,8 @@ struct RlcSession {
     /// NAKs sent (the ARQ floor).
     rlc_recovered: u64,
     naks_sent: u64,
+    /// Cumulative ACK frames this session sent toward its peer.
+    acks_sent: u64,
     /// Diagnostic loss injection: drop this percent of incoming DATA datagrams
     /// (seeded) to exercise RLC recovery on a lossless link.
     drop_pct: u32,
@@ -1920,6 +1939,7 @@ impl RlcSession {
             last_nak: Instant::now(),
             rlc_recovered: 0,
             naks_sent: 0,
+            acks_sent: 0,
             drop_pct: 0,
             drop_rng: 0,
             ge_loss_p: 0,
@@ -2513,6 +2533,7 @@ impl RlcSession {
             pkt.extend_from_slice(&self.delivered_through.to_le_bytes());
             pkt.extend_from_slice(&sack.to_le_bytes());
             self.wire_send_to_peer(&pkt)?;
+            self.acks_sent += 1;
         }
         Ok(())
     }
@@ -3056,6 +3077,14 @@ impl SensOMaticRlcReceiver {
     /// behind a gap; the two equal and unmoving is a window with nothing to do.
     pub fn session_frontier(&self, cid: u64) -> Option<(u32, u32)> {
         self.sessions.get(&cid).map(|s| (s.delivered_through, s.highest_seen))
+    }
+
+    /// One session's control-plane sends: `(naks_sent, acks_sent)`.
+    /// Both frozen on a gap-blocked window means the service never
+    /// emits them; both climbing while the peer's pump counters stay
+    /// zero means the frames die in transit.
+    pub fn session_control(&self, cid: u64) -> Option<(u64, u64)> {
+        self.sessions.get(&cid).map(|s| (s.naks_sent, s.acks_sent))
     }
 
     /// The address a given connection id is currently bound to.
