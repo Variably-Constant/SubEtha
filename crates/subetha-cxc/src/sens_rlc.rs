@@ -1359,6 +1359,13 @@ impl SensOMaticRlcSender {
         (self.naks_seen, self.acks_seen, self.feedback_recv)
     }
 
+    /// The pump's socket-side queue probe: `(pop_attempts, pop_yields,
+    /// queue_ptr, queue_len)` when the socket is a demux backend, else
+    /// `None`.
+    pub fn sock_probe(&self) -> Option<(u64, u64, u64, u64)> {
+        self.sock.demux_probe()
+    }
+
     /// Retransmit `sid` only if it has not been (re)sent within ~1.2 RTT - the
     /// retransmit-suppression guard that stops the same still-missing symbol from
     /// being resent on every ~1ms NAK round before its previous copy can be

@@ -90,12 +90,17 @@ struct DemuxDgram {
     /// Optional shared counter of datagrams sent through this socket, the
     /// unified endpoint's raw-channel-loss numerator (sent vs received).
     sent: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Queue pops attempted and pops that yielded a datagram.
+    pop_attempts: std::sync::atomic::AtomicU64,
+    pop_yields: std::sync::atomic::AtomicU64,
 }
 
 impl DemuxDgram {
     fn recv_with_kts(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
+        self.pop_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.queue.lock().unwrap().pop_front() {
             Some((data, from, kts)) => {
+                self.pop_yields.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
                 Ok((n, from, kts))
@@ -243,7 +248,25 @@ impl DgramSock {
                 queue,
                 peer: std::sync::Mutex::new(None),
                 sent,
+                pop_attempts: std::sync::atomic::AtomicU64::new(0),
+                pop_yields: std::sync::atomic::AtomicU64::new(0),
             }),
+        }
+    }
+
+    /// Demux-backend queue probe: `(pop_attempts, pop_yields,
+    /// queue_ptr, queue_len)`, or `None` for a non-demux backend.
+    /// `queue_ptr` is the shared queue's `Arc` address, comparable
+    /// against the pushing reader's record of the same.
+    pub fn demux_probe(&self) -> Option<(u64, u64, u64, u64)> {
+        match &self.inner {
+            Inner::Demux(d) => Some((
+                d.pop_attempts.load(std::sync::atomic::Ordering::Relaxed),
+                d.pop_yields.load(std::sync::atomic::Ordering::Relaxed),
+                std::sync::Arc::as_ptr(&d.queue) as usize as u64,
+                d.queue.lock().unwrap().len() as u64,
+            )),
+            _ => None,
         }
     }
 

@@ -371,10 +371,13 @@ fn spawn_demux(
     loss_pct: u32,
     seed: u64,
     stop: Arc<AtomicBool>,
-    stats: Option<Arc<[AtomicU64; 4]>>,
+    stats: Option<Arc<[AtomicU64; 5]>>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(s) = &stats {
+            s[4].store(Arc::as_ptr(&rlc_q) as usize as u64, Ordering::Relaxed);
+        }
         let mut buf = vec![0u8; 2048];
         let mut last_from: Option<SocketAddr> = None;
         let mut last_fb = Instant::now();
@@ -603,8 +606,9 @@ pub struct UnifiedSensSender {
     /// statement in the method.
     send_item_calls: u64,
     /// Demux reader loop counters: `[iterations, recv_ok, would_block,
-    /// rlc_frames_routed]`, written by the reader thread.
-    demux_stats: Arc<[AtomicU64; 4]>,
+    /// rlc_frames_routed, rlc_queue_ptr]`, written by the reader
+    /// thread; the last slot holds the pushed-to queue's `Arc` address.
+    demux_stats: Arc<[AtomicU64; 5]>,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -738,7 +742,7 @@ impl UnifiedSensSender {
         rs.set_sock(rs_sock);
 
         let stop = Arc::new(AtomicBool::new(false));
-        let demux_stats: Arc<[AtomicU64; 4]> = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
+        let demux_stats: Arc<[AtomicU64; 5]> = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -886,6 +890,20 @@ impl UnifiedSensSender {
             self.demux_stats[1].load(Ordering::Relaxed),
             self.demux_stats[2].load(Ordering::Relaxed),
             self.demux_stats[3].load(Ordering::Relaxed),
+        )
+    }
+
+    /// The push/pop seam across the RLC queue: `(push_side_queue_ptr,
+    /// pop_side)` where `pop_side` is the pump socket's
+    /// `(pop_attempts, pop_yields, queue_ptr, queue_len)`. The two
+    /// pointers differing is a construction fork - the reader pushes a
+    /// queue the pump never reads. `pop_attempts` frozen means the pump
+    /// never polls its socket; `queue_len` growing means frames pile
+    /// unread on one shared queue.
+    pub fn queue_seam_probe(&self) -> (u64, Option<(u64, u64, u64, u64)>) {
+        (
+            self.demux_stats[4].load(Ordering::Relaxed),
+            self.rlc.sock_probe(),
         )
     }
 
