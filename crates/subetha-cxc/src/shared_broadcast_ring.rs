@@ -177,6 +177,22 @@ unsafe fn init_broadcast_layout_raw(ptr: *mut u8, capacity: usize) {
     }
 }
 
+/// Layout init for the elected creator in the attach flow: capacity
+/// first, magic last via a volatile store, because attachers spin on
+/// the magic. The zeroed region is already the empty slot array
+/// (version 0), so the slots are not touched.
+///
+/// # Safety
+/// `ptr` addresses at least `broadcast_file_size(capacity)` writable
+/// zeroed bytes.
+unsafe fn init_broadcast_attach_raw(ptr: *mut u8, capacity: usize) {
+    let hdr_ptr = ptr as *mut BroadcastHeader;
+    unsafe {
+        (*hdr_ptr).capacity = capacity as u32;
+        std::ptr::write_volatile(&raw mut (*hdr_ptr).magic, BROADCAST_MAGIC);
+    }
+}
+
 impl subetha_sidecar::AdaptiveInstance for SharedBroadcastRing {
     fn header(&self) -> &subetha_core::HandshakeHeader { &self.header_sidecar }
     fn ring(&self) -> &subetha_core::ObservationRing { &self.ring_sidecar }
@@ -186,19 +202,46 @@ impl subetha_sidecar::AdaptiveInstance for SharedBroadcastRing {
 }
 
 impl SharedBroadcastRing {
-    /// File-backed broadcast ring; cross-process visibility via
-    /// the OS page cache.
+    /// File-backed broadcast ring; cross-process visibility via the OS
+    /// page cache. Obtains the ring at `path`: it initializes an empty
+    /// one only when the path does not yet exist, and otherwise
+    /// attaches with published slots and versions intact. A region
+    /// built with a different capacity is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, BroadcastError> {
         assert!(capacity >= 2);
         assert!(capacity <= u32::MAX as usize);
         let total = broadcast_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_broadcast_attach_raw(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const BroadcastHeader)).magic == BROADCAST_MAGIC },
+        )?;
         let raw_ptr = mmap.as_mut_ptr();
-        unsafe { init_broadcast_layout_raw(raw_ptr, capacity); }
+        let hdr = unsafe { &*(raw_ptr as *const BroadcastHeader) };
+        if hdr.capacity != capacity as u32 {
+            return Err(BroadcastError::LayoutMismatch);
+        }
+        Ok(Self {
+            _backing: BroadcastBacking::File(file, mmap),
+            raw_ptr, capacity,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Truncate the ring at `path` and initialize an empty one,
+    /// discarding every published slot live peers share. For a caller
+    /// that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, BroadcastError> {
+        assert!(capacity >= 2);
+        assert!(capacity <= u32::MAX as usize);
+        let total = broadcast_file_size(capacity);
+        let (file, mut mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            init_broadcast_attach_raw(ptr, capacity)
+        })?;
+        let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
             _backing: BroadcastBacking::File(file, mmap),
             raw_ptr, capacity,
@@ -546,6 +589,32 @@ mod tests {
         assert_eq!(r.capacity(), 8);
         assert_eq!(r.producer_position(), 0);
         assert_eq!(r.active_consumer_count(), 0);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with published slots in place; reset
+    /// is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_slots() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let r = SharedBroadcastRing::create(&p, 8).unwrap();
+        r.try_push(&payload_of(42)).unwrap();
+
+        let r2 = SharedBroadcastRing::create(&p, 8).unwrap();
+        assert_eq!(r2.producer_position(), 1, "attach rewound the producer");
+        assert!(matches!(
+            SharedBroadcastRing::create(&p, 4),
+            Err(BroadcastError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(r);
+        drop(r2);
+        let fresh = SharedBroadcastRing::reset(&p, 8).unwrap();
+        assert_eq!(fresh.producer_position(), 0, "reset kept a published slot");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 

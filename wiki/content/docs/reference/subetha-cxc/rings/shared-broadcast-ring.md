@@ -50,6 +50,15 @@ commit; consumers spin on the version to read.
   consumers see only post-registration messages, not history.
 - **`unregister` removes from min calc**: producer no longer
   waits for that consumer's cursor.
+- **File-backed `create` obtains, `reset` truncates**:
+  `create(path, capacity)` initializes an empty ring only when the
+  path does not yet exist, and otherwise attaches with published
+  slots and cursors intact - racing creators all reach the same
+  ring. A region built with a different capacity is a
+  `LayoutMismatch`. `reset(path, capacity)` truncates and
+  reinitializes, for a caller that owns the path; on Windows it
+  succeeds only once every process has unmapped the region.
+  `create_anon` and the shm backing are unchanged.
 - **Cross-process backed by MMF.**
 
 ---
