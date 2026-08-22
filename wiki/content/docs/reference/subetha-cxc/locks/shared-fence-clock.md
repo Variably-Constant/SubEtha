@@ -48,6 +48,14 @@ what distributed snapshot isolation needs.
 - **`publish_global_fence`** writes the current max into the
   header field for cheap reads.
 - **Capacity fixed at create**: cross-handle opens verify it.
+- **`create` obtains, `reset` truncates**: `create(path, capacity)`
+  initializes an empty table only when the path does not yet exist,
+  and otherwise attaches with the registered slots and global fence
+  intact - racing creators all reach the same clock. A region built
+  with a different capacity is a `LayoutMismatch`.
+  `reset(path, capacity)` truncates and reinitializes, for a caller
+  that owns the path; on Windows it succeeds only once every process
+  has unmapped the region.
 - **Cross-process backed by MMF.**
 
 ---

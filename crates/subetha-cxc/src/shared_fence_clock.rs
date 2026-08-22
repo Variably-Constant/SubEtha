@@ -150,45 +150,65 @@ impl subetha_sidecar::AdaptiveInstance for SharedFenceClock {
 
 
 impl SharedFenceClock {
+    /// Obtain the clock table at `path`, initializing an empty one if
+    /// the path does not yet exist and attaching to it if it does.
+    /// Attaching leaves the registered slots and the global fence in
+    /// place; a region built with a different capacity is a
+    /// `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, FenceClockError> {
         assert!(capacity >= 1);
         // Start the background clock updater so `now_us` (a cached read) is
         // populated before the first tick.
         crate::cached_clock::start();
         let total = fence_clock_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut HlcHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const HlcHeader)).magic == FENCE_CLOCK_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the clock table at `path` and initialize an empty one,
+    /// unregistering every slot a live peer holds. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, FenceClockError> {
+        assert!(capacity >= 1);
+        crate::cached_clock::start();
+        let total = fence_clock_file_size(capacity);
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            Self::init_region(ptr, capacity)
+        })?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty clock table: the zeroed region is already the
+    /// empty slot array (`EMPTY_PID` and zero timestamps) and a zero
+    /// global fence, so only the capacity and then the magic are
+    /// written, magic last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `fence_clock_file_size(capacity)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut HlcHeader;
         unsafe {
-            std::ptr::write(hdr, HlcHeader {
-                magic: FENCE_CLOCK_MAGIC,
-                capacity: capacity as u64,
-                global_fence_physical: AtomicU64::new(0),
-                global_fence_logical: AtomicU64::new(0),
-                last_fence_epoch: AtomicU64::new(0),
-                cached_us: AtomicU64::new(0),
-                _pad: [0; 8],
-            });
+            (*hdr).capacity = capacity as u64;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, FENCE_CLOCK_MAGIC);
         }
-        for i in 0..capacity {
-            let slot_ptr = unsafe {
-                mmap.as_mut_ptr()
-                    .add(std::mem::size_of::<HlcHeader>())
-                    .add(i * std::mem::size_of::<HlcSlot>())
-            } as *mut HlcSlot;
-            unsafe {
-                std::ptr::write(slot_ptr, HlcSlot {
-                    pid: AtomicU32::new(EMPTY_PID),
-                    _pad1: [0; 4],
-                    physical_us: AtomicU64::new(0),
-                    logical: AtomicU64::new(0),
-                    last_updated_us: AtomicU64::new(0),
-                    _pad2: [0; 32],
-                });
-            }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity: usize,
+    ) -> Result<Self, FenceClockError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const HlcHeader) };
+        if hdr.magic != FENCE_CLOCK_MAGIC || hdr.capacity != capacity as u64 {
+            return Err(FenceClockError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, capacity,
@@ -205,15 +225,7 @@ impl SharedFenceClock {
             return Err(FenceClockError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const HlcHeader) };
-        if hdr.magic != FENCE_CLOCK_MAGIC || hdr.capacity != expected_capacity as u64 {
-            return Err(FenceClockError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     #[inline]
@@ -445,6 +457,36 @@ mod tests {
         assert_eq!(c.capacity(), 4);
         assert_eq!(c.compute_global_fence(), Hlc { physical_us: 0, logical: 0 });
         for i in 0..4 { assert!(c.slot_snapshot(i).is_none()); }
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the registered slots in place;
+    /// reset is what unregisters them.
+    #[test]
+    fn second_create_attaches_and_keeps_registrations() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let c = SharedFenceClock::create(&p, 4).unwrap();
+        let s0 = c.register(1001).unwrap();
+
+        let c2 = SharedFenceClock::create(&p, 4).unwrap();
+        assert_eq!(
+            c2.slot_snapshot(s0).map(|s| s.pid),
+            Some(1001),
+            "attach dropped a registered slot",
+        );
+        assert!(matches!(
+            SharedFenceClock::create(&p, 2),
+            Err(FenceClockError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(c);
+        drop(c2);
+        let fresh = SharedFenceClock::reset(&p, 4).unwrap();
+        assert!(fresh.slot_snapshot(s0).is_none(), "reset left a slot registered");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 
