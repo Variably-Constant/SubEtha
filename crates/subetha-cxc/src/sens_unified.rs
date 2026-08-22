@@ -1504,6 +1504,18 @@ impl UnifiedSensReceiver {
         self.rlc.session_admissions_for(cid)
     }
 
+    /// Successful path validations, summed over every RLC session.
+    pub fn rlc_path_validations(&self) -> u64 {
+        self.rlc.path_validations()
+    }
+
+    /// Path-validation timeouts, summed over every RLC session. A
+    /// count climbing without bound is a session re-challenging an
+    /// address that never answers inside the window.
+    pub fn rlc_path_validation_failures(&self) -> u64 {
+        self.rlc.path_validation_failures()
+    }
+
     /// sessions, summed over both codes. A refused forgery raises the
     /// second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
