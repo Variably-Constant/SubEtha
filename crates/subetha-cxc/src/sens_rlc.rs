@@ -83,15 +83,6 @@ const AMPLIFICATION_FACTOR: u64 = 3;
 /// answers; a genuine migration answers within a round trip).
 const CHALLENGE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Decode windows one receiver will carry at once. A mesh node talks to its
-/// replica set, not to the internet, so this is far above any real fan-in and
-/// exists to bound what a peer that keeps minting connection ids can allocate.
-const MAX_LIVE_SESSIONS: usize = 256;
-
-/// Connection ids under admission challenge at once. Smaller than the live cap:
-/// a candidate holds a slot for at most [`CHALLENGE_TIMEOUT`], so this bounds
-/// what an off-path attacker spraying ids can hold open.
-const MAX_PENDING_ADMISSIONS: usize = 64;
 /// TLS handshake flight (cleartext, before keys exist) + its ack, and the AEAD
 /// envelope `[17][pn u64-le][sealed inner datagram + tag]` for the data phase.
 #[cfg(feature = "tls")]
@@ -1831,6 +1822,11 @@ pub struct SensOMaticRlcReceiver {
     /// `cid -> (addr, nonce, sent_at)`. Bounded, so a forged-id spray cannot
     /// grow this either.
     pending_admissions: HashMap<u64, (SocketAddr, u64, Instant)>,
+    /// Ceiling on live windows and on candidates under challenge. `None` is
+    /// unbounded; set by [`with_session_ceiling`](Self::with_session_ceiling).
+    /// A peer turned away by it is counted in `session_refusals`.
+    session_ceiling: Option<usize>,
+    session_refusals: u64,
     challenge_seq: u64,
     session_changed: bool,
     session_admissions: u64,
@@ -2596,6 +2592,8 @@ impl SensOMaticRlcReceiver {
             sessions: HashMap::new(),
             order: Vec::new(),
             pending_admissions: HashMap::new(),
+            session_ceiling: None,
+            session_refusals: 0,
             challenge_seq: 0,
             session_changed: false,
             session_admissions: 0,
@@ -2679,16 +2677,19 @@ impl SensOMaticRlcReceiver {
         self
     }
 
-    /// Open a session for `cid`. `None` when this receiver will not admit the
-    /// id: a TLS receiver holds one handshake, so it serves the one peer those
-    /// keys belong to, and a receiver caps how many peers it will carry.
+    /// Open a session for `cid`, or `None` if the id is refused: a TLS receiver
+    /// holds one handshake and serves the peer those keys belong to, and a
+    /// declared ceiling bounds how many peers are carried. Each refusal is
+    /// counted in `session_refusals`.
     fn open_session(&mut self, cid: u64) -> Option<&mut RlcSession> {
         if !self.sessions.contains_key(&cid) {
-            if self.sessions.len() >= MAX_LIVE_SESSIONS {
+            if self.session_ceiling.is_some_and(|max| self.sessions.len() >= max) {
+                self.session_refusals += 1;
                 return None;
             }
             #[cfg(feature = "tls")]
             if self.tls_armed && self.crypto.is_none() {
+                self.session_refusals += 1;
                 return None;
             }
             let mut s = RlcSession::new(
@@ -2851,6 +2852,22 @@ impl SensOMaticRlcReceiver {
         self.order.clone()
     }
 
+    /// Bound the live windows and the candidates under challenge at `max`.
+    /// Unbounded unless set. A peer turned away by the ceiling is counted in
+    /// [`session_refusals`](Self::session_refusals) rather than dropped
+    /// silently.
+    pub fn with_session_ceiling(mut self, max: usize) -> Self {
+        self.session_ceiling = Some(max.max(1));
+        self
+    }
+
+    /// Peers refused a decode window, by a declared ceiling or by TLS already
+    /// holding its one handshake. Non-zero means a peer that reached this
+    /// receiver was not served.
+    pub fn session_refusals(&self) -> u64 {
+        self.session_refusals
+    }
+
     /// Whether a session was admitted since the last call. Edge-triggered:
     /// reading it clears it.
     pub fn take_session_changed(&mut self) -> bool {
@@ -2885,9 +2902,11 @@ impl SensOMaticRlcReceiver {
 
     /// Arm a challenge for a connection id asking to be admitted. An id already
     /// under challenge from the same address keeps its nonce, so it is not
-    /// rolled faster than an answer can return.
+    /// rolled faster than an answer can return. A declared ceiling bounds the
+    /// candidates held at once; refusals are counted in `session_refusals`.
     fn begin_admission(&mut self, cid: u64, addr: SocketAddr) {
-        if self.pending_admissions.len() >= MAX_PENDING_ADMISSIONS {
+        if self.session_ceiling.is_some_and(|max| self.pending_admissions.len() >= max) {
+            self.session_refusals += 1;
             return;
         }
         if let Some((a, _, _)) = self.pending_admissions.get(&cid)

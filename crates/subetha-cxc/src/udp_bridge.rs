@@ -2273,9 +2273,12 @@ pub struct ReliableUdpReceiver {
     /// first-seen order; sessions are serviced in that order.
     sessions: HashMap<u32, RsSession>,
     order: Vec<u32>,
-    /// Epochs under admission challenge, `epoch -> (addr, nonce, sent_at)`,
-    /// capped at [`MAX_PENDING_RS_ADMISSIONS`].
+    /// Epochs under admission challenge, `epoch -> (addr, nonce, sent_at)`.
     pending_admissions: HashMap<u32, (SocketAddr, u64, Instant)>,
+    /// Ceiling on live windows and on candidates under challenge. `None` is
+    /// unbounded; set by [`with_session_ceiling`](Self::with_session_ceiling).
+    session_ceiling: Option<usize>,
+    session_refusals: u64,
     /// Monotonic nonce source, mixed so the emitted value is not a guessable
     /// counter.
     session_nonce_seq: u64,
@@ -2299,13 +2302,6 @@ pub struct ReliableUdpReceiver {
     /// stamped onto each session as it opens.
     cfg: RsSessionConfig,
 }
-
-/// Decode windows one block-RS receiver carries at once.
-const MAX_LIVE_RS_SESSIONS: usize = 256;
-
-/// Session epochs under admission challenge at once. Each holds its slot for at
-/// most [`SESSION_CHALLENGE_TIMEOUT`].
-const MAX_PENDING_RS_ADMISSIONS: usize = 64;
 
 /// Receiver settings captured before any peer exists, copied into each session
 /// as it opens.
@@ -3649,6 +3645,8 @@ impl ReliableUdpReceiver {
             sessions: HashMap::new(),
             order: Vec::new(),
             pending_admissions: HashMap::new(),
+            session_ceiling: None,
+            session_refusals: 0,
             session_nonce_seq: 0,
             session_changed: false,
             session_admissions: 0,
@@ -3680,7 +3678,8 @@ impl ReliableUdpReceiver {
     /// another peer.
     fn open_session(&mut self, epoch: u32) -> Option<&mut RsSession> {
         if !self.sessions.contains_key(&epoch) {
-            if self.sessions.len() >= MAX_LIVE_RS_SESSIONS {
+            if self.session_ceiling.is_some_and(|max| self.sessions.len() >= max) {
+                self.session_refusals += 1;
                 return None;
             }
             // Past the first session the socket must accept every address.
@@ -3862,7 +3861,8 @@ impl ReliableUdpReceiver {
 
     /// Arm a challenge for an epoch asking to be admitted.
     fn begin_admission(&mut self, epoch: u32, addr: SocketAddr) {
-        if self.pending_admissions.len() >= MAX_PENDING_RS_ADMISSIONS {
+        if self.session_ceiling.is_some_and(|max| self.pending_admissions.len() >= max) {
+            self.session_refusals += 1;
             return;
         }
         if let Some((a, _, _)) = self.pending_admissions.get(&epoch)
@@ -4087,6 +4087,21 @@ impl ReliableUdpReceiver {
     /// The session epochs with a live decode window, in first-seen order.
     pub fn live_sessions(&self) -> Vec<u32> {
         self.order.clone()
+    }
+
+    /// Bound the live windows and the candidates under challenge at `max`.
+    /// Unbounded unless set. A peer turned away by the ceiling is counted in
+    /// [`session_refusals`](Self::session_refusals) rather than dropped
+    /// silently.
+    pub fn with_session_ceiling(mut self, max: usize) -> Self {
+        self.session_ceiling = Some(max.max(1));
+        self
+    }
+
+    /// Peers refused a decode window by a declared ceiling. Non-zero means a
+    /// peer that reached this receiver was not served.
+    pub fn session_refusals(&self) -> u64 {
+        self.session_refusals
     }
 
     /// The most recently opened session, which the per-peer telemetry below
