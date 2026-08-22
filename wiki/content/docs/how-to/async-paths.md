@@ -42,13 +42,13 @@ async_overhead -p subetha-cxc`.
 
 | Convention | Round-trip | vs sync |
 |---|---|---|
-| `send` / `recv` | ~28 ns | 1.0x |
-| `send_blocking` / `recv_blocking` | ~55 ns | ~2x |
-| `send_async` / `recv_async` (on `block_on`) | ~359 ns | ~13x |
+| `send` / `recv` | ~18 ns | 1.0x |
+| `send_blocking` / `recv_blocking` | ~51 ns | ~2.8x |
+| `send_async` / `recv_async` (on `block_on`) | ~377 ns | ~21x |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="/images/async_overhead-dark.png">
-  <img alt="Per-op round-trip latency on Zen+: sync ~28 ns, blocking ~55 ns, async ~359 ns" src="/images/async_overhead-light.png">
+  <img alt="Per-op round-trip latency on Zen+: sync ~18 ns, blocking ~51 ns, async ~377 ns" src="/images/async_overhead-light.png">
 </picture>
 
 The async path is an order of magnitude heavier per op. If you are
@@ -84,15 +84,15 @@ flowchart TB
 
 | Driver | N = 1,000 | N = 10,000 | N = 100,000 | OS threads |
 |---|---|---|---|---|
-| Fixed pool (async tasks) | 5.97 M items/s | 6.87 M items/s | 6.71 M items/s | 20 (constant) |
-| Thread per consumer | 0.80 M items/s | 0.89 M items/s | (needs 100,004 threads) | N + 4 |
+| Fixed pool (async tasks) | 4.50 M items/s | 4.93 M items/s | 4.57 M items/s | 20 (constant) |
+| Thread per consumer | 0.86 M items/s | 0.67 M items/s | (needs 100,004 threads) | N + 4 |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="/images/async_scaling-dark.png">
   <img alt="Fan-out throughput: fixed pool holds 6-7 M items/s on 20 threads from N=1k to N=100k; thread-per-consumer stays below 1 M items/s and needs one thread per consumer" src="/images/async_scaling-light.png">
 </picture>
 
-The fixed pool holds 6-7 M items/s on a constant 20 OS threads from a
+The fixed pool holds 4.5-5 M items/s on a constant 20 OS threads from a
 thousand consumers to a hundred thousand. That 20 is
 `available_parallelism` workers (16 on the Zen+ 8-core / 16-thread part)
 plus the bench's 4 producer threads, so it tracks the machine rather
@@ -101,6 +101,10 @@ than being a tuned constant. The thread-per-consumer design sits below
 N = 10,000, and 100,004 at N = 100,000, which is the point at which it
 stops being practical; the bench does not run that last cell for the
 same reason. Same ring, same `recv()` future; only the driver differs.
+
+Both tables are one captured sweep. Repeat runs on this machine move
+the absolutes by 20-40% in either direction - the gap between the two
+drivers is the durable result, not the digits.
 
 ## Rule of thumb
 

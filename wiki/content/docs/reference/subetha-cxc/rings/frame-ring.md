@@ -53,9 +53,14 @@ shape (SPSC / MPSC / MPMC / Vyukov), with a producer override, see the
   level (unlike the typed `SharedRingSpsc` pair).
 - **`slot_size >= 16`** (the descriptor header is 8 bytes; the offset
   form needs 8 more). Inline budget is `slot_size - 8`.
-- **`capacity` and `region_bytes` are powers of two.** A region
-  payload is capped at `region_bytes / 2` so a skip-pad on an empty
-  region can never report a false `Full`.
+- **`capacity` and `region_bytes` are powers of two**, each at least 2.
+  A region payload is capped at `region_bytes / 2` so a skip-pad on an
+  empty region can never report a false `Full`.
+- **The geometry is validated, not asserted.** Every constructor runs
+  the checks above and returns `Err(RingError::LayoutMismatch)` on a
+  bad one. This is the exception in the ring family - `SharedRing` and
+  `SpscRingCore` assert on a non-pow2 capacity - so `FrameRing` is the
+  one you can hand a number straight from configuration.
 - **In-process anonymous** (`create_anon`), **file-backed**
   (`create` / `open`), or **named shared memory**
   (`create_from_shm` / `open_from_shm`) - same byte layout, same
@@ -69,10 +74,15 @@ shape (SPSC / MPSC / MPMC / Vyukov), with a producer override, see the
 | `send_as(payload, LayoutHint::ForceInline)` | Inline; `Err(PayloadTooLarge)` if over budget. |
 | `send_as(payload, LayoutHint::ForceOffset)` | Always the region. |
 | `recv_into(&mut Vec<u8>)` | Clears and fills the buffer; reads the region and frees nothing (the region tail follows FIFO). Returns the `FrameClass`. |
-| `recv()` | Same as `recv_into` into a fresh `Vec`. |
+| `recv()` | Same as `recv_into` into a fresh `Vec`, and returns that `Vec` - the class is read to recover the bytes but not handed back. Use `recv_into` when you want it. |
 
 The consumer never overrides the layout: it reads the class the
 producer wrote, because it cannot know the layout otherwise.
+
+`capacity()`, `slot_size()`, `region_bytes()` and `inline_budget()`
+report the constructed geometry. `inline_budget()` is the one worth
+reading at runtime: it is what `send` compares against to choose a
+layout, so it is the threshold a caller sizes its records around.
 
 ## Worked example
 
@@ -105,17 +115,34 @@ region (the always-arena baseline); `raw.spsc` is the fixed 64-byte
 
 | Payload | frame.auto | class | frame.offset | raw.spsc | auto vs offset |
 |--------:|-----------:|:------|-------------:|---------:|---------------:|
-| 16 B | 16.9 ns | inline | 27.0 ns | 14.4 ns | 1.60x |
-| 32 B | 18.8 ns | inline | 31.8 ns | 8.9 ns | 1.69x |
-| 56 B | 29.7 ns | inline | 33.7 ns | 13.5 ns | 1.13x |
-| 64 B | 35.8 ns | offset | 37.0 ns | - | 1.03x |
-| 1024 B | 152.9 ns | offset | 121.1 ns | - | ~1.0x |
+| 8 B | 9.3 ns | inline | 14.1 ns | 9.2 ns | 1.52x |
+| 16 B | 9.0 ns | inline | 14.6 ns | 9.7 ns | 1.62x |
+| 32 B | 9.0 ns | inline | 16.2 ns | 6.4 ns | 1.79x |
+| 48 B | 15.9 ns | inline | 19.8 ns | 8.6 ns | 1.25x |
+| 56 B | 15.7 ns | inline | 20.4 ns | 8.6 ns | 1.30x |
+| 64 B | 20.8 ns | offset | 21.2 ns | 6.8 ns | 1.02x |
+| 128 B | 23.0 ns | offset | 23.0 ns | - | 1.00x |
+| 256 B | 32.9 ns | offset | 32.4 ns | - | 0.98x |
+| 512 B | 52.8 ns | offset | 48.1 ns | - | 0.91x |
+| 1024 B | 71.8 ns | offset | 70.7 ns | - | 0.98x |
+| 4096 B | 224.4 ns | offset | 206.4 ns | - | 0.92x |
 
-The inline fast path beats the always-region path 1.13-1.69x for
-records up to the 56-byte inline budget; at 64 bytes and above both
-take the region path and tie (the spread there is run-to-run noise on
-the identical path). The frame header costs a few ns over the rawest
-fixed slot in exchange for carrying any size.
+Read the shape, not the absolute numbers: consecutive runs on the same
+machine move these by a factor approaching two, and the table is one
+captured sweep.
+
+The inline fast path beats the always-region path 1.25-1.79x for records
+up to the 56-byte inline budget - that band is the whole point of the
+class tag. At 64 bytes and above both paths are the region path, and
+they tie within a few percent; `frame.auto` trails very slightly at 512
+B and 4096 B, which is a measurement artifact of running first rather
+than an extra cost, since past the budget `Auto` and `ForceOffset`
+execute the same code after one length comparison.
+
+`raw.spsc` stops at 64 B because that is the fixed slot's whole payload,
+and it is the fastest column everywhere it appears: the frame header
+costs a few ns over the rawest fixed slot, which is what buys carrying
+any size at all.
 
 ## Known limitations
 
