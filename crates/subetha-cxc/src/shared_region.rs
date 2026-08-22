@@ -172,31 +172,75 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Shar
 }
 
 impl<T: Copy + 'static> SharedRegion<T> {
+    /// Obtain the region at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves allocated slots and the free list in place, so
+    /// outstanding [`OffsetPtr`]s stay resolvable; a region built with
+    /// a different capacity or payload type is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, capacity: usize,
     ) -> Result<Self, RegionError> {
         assert!(capacity >= 1);
         assert!(capacity < NIL_INDEX as usize, "capacity must be < u32::MAX");
-        let slot_size = size_of::<T>();
-        let total = region_file_size(capacity, slot_size);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            region_file_size(capacity, size_of::<T>()),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const RegionHeader)).magic == REGION_MAGIC },
+        )?;
         crate::mmf_warm::warm_mmap(&mut mmap);
-        let hdr = mmap.as_mut_ptr() as *mut RegionHeader;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the region at `path` and initialize an empty one,
+    /// invalidating every OffsetPtr live peers hold. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, capacity: usize,
+    ) -> Result<Self, RegionError> {
+        assert!(capacity >= 1);
+        assert!(capacity < NIL_INDEX as usize, "capacity must be < u32::MAX");
+        let (file, mut mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            region_file_size(capacity, size_of::<T>()),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+        )?;
+        crate::mmf_warm::warm_mmap(&mut mmap);
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty region: config, the zero bump cursor and the
+    /// NIL free head first, magic last, because attachers spin on it.
+    /// The zeroed next[] array is the not-on-a-free-chain state.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `region_file_size(capacity,
+    /// size_of::<T>())` writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut RegionHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<RegionHeader>());
-            (*hdr).magic = REGION_MAGIC;
             (*hdr).capacity = capacity as u32;
-            (*hdr).slot_size = slot_size as u32;
-            (*hdr).bump_next.store(0, Ordering::Release);
-            (*hdr).free_head.store(pack(0, NIL_INDEX), Ordering::Release);
+            (*hdr).slot_size = size_of::<T>() as u32;
+            std::ptr::write(&raw mut (*hdr).free_head, AtomicU64::new(pack(0, NIL_INDEX)));
+            std::ptr::write_volatile(&raw mut (*hdr).magic, REGION_MAGIC);
         }
-        // next[] array zero-init (zeros mean "this slot is not in a free
-        // chain"; only meaningful when slot is on the free list, which
-        // it isn't at construction).
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity or payload type.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity: usize,
+    ) -> Result<Self, RegionError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const RegionHeader) };
+        if hdr.magic != REGION_MAGIC
+            || hdr.capacity != capacity as u32
+            || hdr.slot_size != size_of::<T>() as u32
+        {
+            return Err(RegionError::LayoutMismatch);
+        }
         let next_offset = size_of::<RegionHeader>();
         let slots_offset = next_offset + capacity * size_of::<AtomicU32>();
         Ok(Self {
@@ -210,30 +254,14 @@ impl<T: Copy + 'static> SharedRegion<T> {
     pub fn open(
         path: impl AsRef<Path>, expected_capacity: usize,
     ) -> Result<Self, RegionError> {
-        let slot_size = size_of::<T>();
-        let total = region_file_size(expected_capacity, slot_size);
+        let total = region_file_size(expected_capacity, size_of::<T>());
         let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(RegionError::LayoutMismatch);
         }
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         crate::mmf_warm::warm_mmap(&mut mmap);
-        let hdr = unsafe { &*(mmap.as_ptr() as *const RegionHeader) };
-        if hdr.magic != REGION_MAGIC
-            || hdr.capacity != expected_capacity as u32
-            || hdr.slot_size != slot_size as u32
-        {
-            return Err(RegionError::LayoutMismatch);
-        }
-        let next_offset = size_of::<RegionHeader>();
-        let slots_offset = next_offset + expected_capacity * size_of::<AtomicU32>();
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity,
-            next_offset, slots_offset,
-            _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     #[inline]
@@ -422,6 +450,32 @@ mod tests {
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());
         assert_eq!(r.free_count(), 0);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with allocated slots in place; reset
+    /// is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_allocations() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let r: SharedRegion<u64> = SharedRegion::create(&p, 16).unwrap();
+        let ptr = r.allocate(777).unwrap();
+
+        let r2: SharedRegion<u64> = SharedRegion::create(&p, 16).unwrap();
+        assert_eq!(r2.get(ptr), Ok(777), "attach lost an allocation");
+        assert!(matches!(
+            SharedRegion::<u64>::create(&p, 8),
+            Err(RegionError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(r);
+        drop(r2);
+        let fresh: SharedRegion<u64> = SharedRegion::reset(&p, 16).unwrap();
+        assert!(fresh.is_empty(), "reset kept an allocation");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 

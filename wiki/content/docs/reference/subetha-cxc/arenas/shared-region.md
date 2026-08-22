@@ -38,6 +38,15 @@ index) that resolves to a `T` slot across processes.
 - **Generation parity**: slot reuse bumps a per-slot generation;
   callers can detect stale pointers.
 - **Capacity fixed at create**.
+- **`create` obtains, `reset` truncates**: `create(path, capacity)`
+  initializes an empty region only when the path does not yet exist,
+  and otherwise attaches with allocated slots and the free list
+  intact, so outstanding `OffsetPtr`s stay resolvable - racing
+  creators all reach the same region. A region built with a
+  different capacity or payload type is a `LayoutMismatch`.
+  `reset(path, capacity)` truncates and reinitializes, invalidating
+  every outstanding pointer; on Windows it succeeds only once every
+  process has unmapped the region.
 - **Cross-process backed by MMF.**
 
 ---
