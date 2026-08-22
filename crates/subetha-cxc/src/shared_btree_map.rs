@@ -118,26 +118,61 @@ impl<K: Copy + Ord + Default + Send + Sync + 'static, V: Copy + Default + Send +
 }
 
 impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTreeMap<K, V> {
+    /// Obtain the map at `path`, initializing an empty one if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves the live tree in place; a region built with a different
+    /// capacity is a `LayoutMismatch`. [`reset`](Self::reset)
+    /// reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, BTreeError> {
         if capacity < 1 {
             return Err(BTreeError::InvalidConfig);
         }
-        let total = btree_file_size::<K, V>(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut BTreeHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            btree_file_size::<K, V>(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const BTreeHeader)).magic == BTREE_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the map at `path` and initialize an empty one,
+    /// discarding the tree live peers share. For a caller that knows it
+    /// owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, BTreeError> {
+        if capacity < 1 {
+            return Err(BTreeError::InvalidConfig);
+        }
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            btree_file_size::<K, V>(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty tree: capacity and the NIL root and free head
+    /// first, magic last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `btree_file_size::<K, V>(capacity)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut BTreeHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<BTreeHeader>());
-            (*hdr).magic = BTREE_MAGIC;
-            (*hdr).root = AtomicU32::new(NIL);
-            (*hdr).node_count = AtomicU32::new(0);
             (*hdr).capacity = capacity as u64;
-            (*hdr).len = AtomicU64::new(0);
-            (*hdr).free_head = AtomicU32::new(NIL);
-            (*hdr).version = AtomicU64::new(0);
+            std::ptr::write(&raw mut (*hdr).root, AtomicU32::new(NIL));
+            std::ptr::write(&raw mut (*hdr).free_head, AtomicU32::new(NIL));
+            std::ptr::write_volatile(&raw mut (*hdr).magic, BTREE_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity.
+    fn from_region(file: File, mut mmap: MmapMut, capacity: usize) -> Result<Self, BTreeError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const BTreeHeader) };
+        if hdr.magic != BTREE_MAGIC || hdr.capacity != capacity as u64 {
+            return Err(BTreeError::LayoutMismatch);
         }
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
@@ -154,18 +189,8 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
         if file.metadata()?.len() < total as u64 {
             return Err(BTreeError::LayoutMismatch);
         }
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const BTreeHeader) };
-        if hdr.magic != BTREE_MAGIC || hdr.capacity != expected_capacity as u64 {
-            return Err(BTreeError::LayoutMismatch);
-        }
-        let raw_ptr = mmap.as_mut_ptr();
-        Ok(Self {
-            _file: file, mmap, raw_ptr, capacity: expected_capacity,
-            _phantom: std::marker::PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     #[inline]
@@ -757,6 +782,33 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("btree_{name}_{}.bin", std::process::id()));
         p
+    }
+
+    /// A second create attaches with the live tree in place; reset is
+    /// what strips it.
+    #[test]
+    fn second_create_attaches_and_keeps_the_tree() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let m: SharedBTreeMap<u64, u64> = SharedBTreeMap::create(&p, 64).unwrap();
+        m.insert(7, 777).unwrap();
+
+        let m2: SharedBTreeMap<u64, u64> = SharedBTreeMap::create(&p, 64).unwrap();
+        assert_eq!(m2.get(&7), Some(777), "attach lost a live entry");
+        assert!(matches!(
+            SharedBTreeMap::<u64, u64>::create(&p, 32),
+            Err(BTreeError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(m);
+        drop(m2);
+        let fresh: SharedBTreeMap<u64, u64> = SharedBTreeMap::reset(&p, 64).unwrap();
+        assert_eq!(fresh.get(&7), None, "reset kept an entry");
+        assert_eq!(fresh.len(), 0);
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
