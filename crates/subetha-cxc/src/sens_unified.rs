@@ -830,6 +830,12 @@ impl UnifiedSensSender {
         self.rlc.ctrl_probe()
     }
 
+    /// The local address of the shared real socket - the port this
+    /// sender's datagrams leave from and its demux reads.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.real.local_addr()
+    }
+
     /// Send one item over the active code, then periodically sample the fed-back
     /// loss and switch codes if the controller calls for it. The item is recorded
     /// in the replay ring so a switch can resend the un-acked tail over the new
@@ -1410,6 +1416,12 @@ impl UnifiedSensReceiver {
     /// window.
     pub fn rlc_session_control(&self, cid: u64) -> Option<(u64, u64, u64, bool)> {
         self.rlc.session_control(cid)
+    }
+
+    /// The address one RLC session's control sends target, or `None`
+    /// for an id with no window or no recorded peer.
+    pub fn rlc_session_peer(&self, cid: u64) -> Option<SocketAddr> {
+        self.rlc.session_admissions_for(cid)
     }
 
     /// sessions, summed over both codes. A refused forgery raises the
