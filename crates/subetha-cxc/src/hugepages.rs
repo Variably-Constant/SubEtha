@@ -109,8 +109,9 @@ impl crate::spsc_ring::RegionOwner for HugepageRegion {
 /// anonymous [`HugepageRegion`] above is in-process / fork-shared only.
 ///
 /// The file's mmap is automatically hugepage-backed because it lives on a
-/// `hugetlbfs` filesystem (mount one with `mount -t hugetlbfs nodev
-/// <dir>`); the length must be a multiple of the mount's hugepage size.
+/// `hugetlbfs` filesystem (mount one with
+/// `mount -t hugetlbfs nodev <dir>`); the length must be a multiple of
+/// the mount's hugepage size.
 pub struct SharedHugepageRegion {
     _file: std::fs::File,
     ptr: *mut u8,

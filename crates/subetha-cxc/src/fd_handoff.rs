@@ -14,8 +14,8 @@
 //!   process. The sender injects the handle into the receiver's handle
 //!   table (via `OpenProcess(PROCESS_DUP_HANDLE)`) and sends the
 //!   resulting target-valid handle VALUE over any byte stream; the
-//!   receiver uses it directly. Pair: [`send_handle`] / [`recv_handle`]
-//!   (+ [`create_anon_mapping`] / [`map_handle`] for an anonymous,
+//!   receiver uses it directly. Pair: `send_handle` / `recv_handle`
+//!   (+ `create_anon_mapping` / `map_handle` for an anonymous,
 //!   nameless shared region - the analogue of a Unix memfd).
 //!
 //! For the substrate this enables a sender process to hand the
