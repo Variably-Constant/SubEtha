@@ -115,7 +115,7 @@ mod linux {
             // sendmsg carrying a UDP_SEGMENT cmsg = payload; the kernel slices.
             // The super-buffer must fit a single IP datagram (<= 65535 B), so
             // cap segments at floor(65535/payload) as well as UDP's 64-seg max.
-            let max_segs = (65535 / payload).min(MAX_SEGS).max(1);
+            let max_segs = (65535 / payload).clamp(1, MAX_SEGS);
             let mut big = vec![0u8; payload * max_segs];
             let mut seq = 0u64;
             while seq < n {

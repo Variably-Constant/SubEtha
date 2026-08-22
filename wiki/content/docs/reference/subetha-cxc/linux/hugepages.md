@@ -33,6 +33,21 @@ vs 4096 4KB pages.
 
 Drop runs `munmap` on the region.
 
+`HugepageRegion` is anonymous: in-process and fork-shared only. The
+cross-process counterpart is a file on a `hugetlbfs` mount, which
+unrelated processes map by path.
+
+| Call | Behavior |
+|---|---|
+| `SharedHugepageRegion::create(path, pages, size)` | Obtain the region: initialize the file only when the path does not yet exist, otherwise attach with its contents in place. Racing creators elect one initializer; the rest wait on the exact byte size, which is the ready signal because a hugetlbfs region carries no header. A different page count is refused. |
+| `SharedHugepageRegion::reset(path, pages, size)` | Truncate and reinitialize, for a caller that owns the path. |
+| `SharedHugepageRegion::open(path, pages, size)` | Map an existing region. The exact byte size is checked, same as attach. |
+| `region.as_mut_slice()` / `as_slice()` / `len()` | As above. |
+
+The elected creator owns the path and unlinks it on drop; an attacher
+or an `open` does not, so a peer's drop never removes the region out
+from under the creator.
+
 ## Falling back gracefully
 
 `allocate` returns `Err(io::Error)` when the kernel does not have
