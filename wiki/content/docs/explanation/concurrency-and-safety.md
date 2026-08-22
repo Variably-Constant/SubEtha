@@ -119,7 +119,7 @@ For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 (file-backed), `SharedUniversal`, `SpscRingCore` (file-backed, and
 the file-backed constructors built on it), `DirectFileRing`,
 `PubSubRing` (file-backed), `SharedVersionedChain`,
-`SharedHugepageRegion`, the
+`SharedHugepageRegion`, `FrameRegion` (file-backed), the
 `AdaptiveRing` peer directory - and for `SharedHashMap` - `create`
 obtains the instance:
 it initializes the file only when the path does not yet exist, and
@@ -131,9 +131,11 @@ once every process has unmapped the region. `SharedRateLimiter` and
 `SharedHistogram` instead carry an in-place `reset()` that reseeds
 the live instance.
 
-The remaining data-plane primitives still truncate on `create` and
-pair with `open` - conversion is tracked and ongoing, so check the
-type's own page before racing two creators on one of those.
+Every file-backed primitive outside the owner-exclusive set below now
+obtains this way; none is left truncating on `create`. The anonymous
+and named-shared-memory constructors (`create_anon`, `create_from_shm`)
+are unchanged: they build a fresh region by definition, and
+`create_or_open_shm` is the attaching peer of the shm pair.
 
 The owner-exclusive primitives - the `SharedDeque` family,
 `SharedRing` and the `ordering` types - keep truncate-on-create by

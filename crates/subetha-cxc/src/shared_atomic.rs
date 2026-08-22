@@ -252,27 +252,59 @@ impl subetha_sidecar::AdaptiveInstance for SharedAtomicBool {
 }
 
 impl SharedAtomicBool {
+    /// Obtain the flag at `path`, initializing it to `init` if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves the live value in place, so a racing peer never resets a
+    /// flag another process already set.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, init: bool) -> Result<Self, SharedAtomicError> {
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(ATOMIC_FILE_SIZE as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(ATOMIC_FILE_SIZE).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut AtomicHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            ATOMIC_FILE_SIZE,
+            |ptr| unsafe { Self::init_region(ptr, init) },
+            |ptr| unsafe { (*(ptr as *const AtomicHeader)).magic == ATOMIC_MAGIC },
+        )?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Truncate the flag at `path` and initialize it to `init`,
+    /// discarding the value live peers share. For a caller that knows
+    /// it owns the path.
+    pub fn reset(path: impl AsRef<Path>, init: bool) -> Result<Self, SharedAtomicError> {
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            ATOMIC_FILE_SIZE,
+            |ptr| unsafe { Self::init_region(ptr, init) },
+        )?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Lay out the flag: width and payload first, magic last, because
+    /// attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `ATOMIC_FILE_SIZE` writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, init: bool) {
+        let hdr = ptr as *mut AtomicHeader;
         unsafe {
-            std::ptr::write(hdr, AtomicHeader {
-                magic: ATOMIC_MAGIC,
-                width: 1,
-                payload_u64: AtomicU64::new(0),
-            });
+            (*hdr).width = 1;
+            std::ptr::write(&raw mut (*hdr).payload_u64, AtomicU64::new(u64::from(init)));
+            std::ptr::write_volatile(&raw mut (*hdr).magic, ATOMIC_MAGIC);
         }
-        let s = Self {
+    }
+
+    /// Wrap an initialized region, refusing one laid out for a
+    /// different width.
+    fn from_region(file: File, mmap: MmapMut) -> Result<Self, SharedAtomicError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const AtomicHeader) };
+        if hdr.magic != ATOMIC_MAGIC || hdr.width != 1 {
+            return Err(SharedAtomicError::LayoutMismatch);
+        }
+        Ok(Self {
             _file: file, mmap,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        };
-        s.atomic().store(init, Ordering::Release);
-        Ok(s)
+        })
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError> {
@@ -394,6 +426,33 @@ mod tests {
             Err(SharedAtomicError::LayoutMismatch),
         ));
         drop(a);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches to the live flag rather than resetting
+    /// it to its init value; reset is what discards it. The other widths
+    /// obtain the same way, so the bool must not be the odd one out.
+    #[test]
+    fn bool_second_create_attaches_and_keeps_the_value() {
+        let p = tmp("bool-attach");
+        std::fs::remove_file(&p).ok();
+
+        let first = SharedAtomicBool::create(&p, false).unwrap();
+        first.store(true, Ordering::Release);
+
+        let second = SharedAtomicBool::create(&p, false).unwrap();
+        assert!(
+            second.load(Ordering::Acquire),
+            "attach reset a flag another handle had already set",
+        );
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(first);
+        drop(second);
+        let fresh = SharedAtomicBool::reset(&p, false).unwrap();
+        assert!(!fresh.load(Ordering::Acquire), "reset kept the old value");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 

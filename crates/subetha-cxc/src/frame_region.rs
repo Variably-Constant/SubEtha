@@ -126,8 +126,22 @@ impl FrameRegion {
         Ok(Self::from_parts(RegionBacking::Anon(mmap), raw_ptr, block_size, block_count))
     }
 
-    /// File-backed region; cross-process via the page cache.
+    /// File-backed region; cross-process via the page cache. Obtains the
+    /// region at `path`: initializes it only when the path does not yet
+    /// exist, and otherwise attaches with allocated blocks and the free
+    /// list in place, so a late joiner never wipes a region a producer
+    /// already filled. A region built with a different geometry is a
+    /// `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
     pub fn create(
+        path: impl AsRef<Path>, block_size: usize, block_count: usize,
+    ) -> Result<Self, RingError> {
+        Self::create_or_open_file(path, block_size, block_count)
+    }
+
+    /// Truncate the region at `path` and initialize an empty one,
+    /// invalidating every offset live peers hold. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
         path: impl AsRef<Path>, block_size: usize, block_count: usize,
     ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
@@ -460,5 +474,40 @@ mod tests {
     fn rejects_bad_params() {
         assert!(matches!(FrameRegion::create_anon(7, 8), Err(RingError::LayoutMismatch)));
         assert!(matches!(FrameRegion::create_anon(64, 0), Err(RingError::LayoutMismatch)));
+    }
+
+    /// A second create attaches with allocated blocks in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_blocks() {
+        let p = std::env::temp_dir().join(format!(
+            "subetha-frame-region-attach-{}.bin", std::process::id(),
+        ));
+        std::fs::remove_file(&p).ok();
+        let (bs, bc) = (64usize, 8usize);
+
+        let r = FrameRegion::create(&p, bs, bc).unwrap();
+        let first = r.alloc().expect("alloc");
+
+        let r2 = FrameRegion::create(&p, bs, bc).unwrap();
+        assert_ne!(
+            r2.alloc().expect("second alloc"),
+            first,
+            "attach handed back a block the first handle already holds",
+        );
+        assert!(matches!(
+            FrameRegion::create(&p, bs, bc * 2),
+            Err(RingError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(r);
+        drop(r2);
+        let fresh = FrameRegion::reset(&p, bs, bc).unwrap();
+        assert_eq!(fresh.alloc().expect("alloc after reset"), first,
+                   "reset kept an allocation");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 }
