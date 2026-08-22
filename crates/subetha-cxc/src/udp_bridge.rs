@@ -1092,6 +1092,17 @@ impl ReliableUdpSender {
                             .observe_reverse(crate::path_sensor::hop_count_from_ttl(t));
                     }
                     if let Some(cp) = decode_control(&buf[..n]) {
+                        // Feedback describing a session this endpoint is not
+                        // sending under says nothing about its blocks. The
+                        // ack frontier in particular would prune everything
+                        // it still holds. A peer that has not learned this
+                        // session yet announces nothing, and that is not a
+                        // mismatch - only a different epoch is.
+                        if cp.session_announce.is_some_and(|e| e != self.enc.epoch()) {
+                            continue;
+                        }
+                    }
+                    if let Some(cp) = decode_control(&buf[..n]) {
                         // A feedback control packet from the receiver: count it,
                         // and read its LossAcct to learn how many feedback
                         // packets the receiver sent (peer_seq). The reverse-path
@@ -1189,6 +1200,10 @@ impl ReliableUdpSender {
                         }
                         let fb = feedback_from_control(&cp);
                         let rtx = self.enc.on_feedback(&fb);
+                        eprintln!(
+                            "[dbg] tx nak_block={} mask={:#x} pending={} rtx={}",
+                            fb.nak_block, fb.nak_mask, self.enc.pending_len(), rtx.len()
+                        );
                         self.send_batch(&rtx)?;
                         // Proactive recovery: now that this ACK has freed every
                         // block the receiver actually got, ENQUEUE whatever is
@@ -3013,6 +3028,12 @@ impl ReliableUdpReceiver {
                     && sr.nonce == nonce
                 {
                     self.dec.adopt_epoch(epoch);
+                    // The receiver's own per-block state is keyed to the
+                    // dead session's ids too. Left in place, its NAK
+                    // rate-limiter suppresses requests for the new
+                    // session's blocks 0..n as though they had just been
+                    // asked for, and recovery walks one block and stops.
+                    self.nak_history.clear();
                     self.peer = Some(addr);
                     self.connected = self.sock.connect(addr).is_ok();
                     self.pending_session = None;
@@ -3615,7 +3636,22 @@ impl ReliableUdpReceiver {
             // gaps flow in a single round-trip and the delivery frontier
             // advances in bulk, instead of recovering one gap per
             // round-trip while the wire stalls behind it.
-            for (block, mask) in self.dec.missing_blocks(self.nak_batch, timed_out) {
+            // After adopting a replacement session the frontier restarts at
+            // the bottom while nothing above it has been seen, so the gap
+            // scan finds nothing and the tail drive is the only thing that
+            // asks for the next block. That drive is normally gated on a
+            // read timeout, which a peer beating steadily never produces -
+            // so the receiver would wait for a request it never makes while
+            // the sender waits to be asked. Drive it whenever the frontier
+            // is ahead of everything seen, which is exactly that state and
+            // clears itself as soon as the stream resumes.
+            let catching_up = self.dec.next_needed() > self.dec.highest_seen();
+            let gaps = self.dec.missing_blocks(self.nak_batch, timed_out || catching_up);
+            if self.session_adoptions > 0 {
+                eprintln!("[dbg] nd={} hi={} catchup={catching_up} gaps={gaps:?}",
+                    self.dec.next_needed(), self.dec.highest_seen());
+            }
+            for (block, mask) in gaps {
                 if mask == 0 {
                     continue;
                 }
@@ -3623,6 +3659,9 @@ impl ReliableUdpReceiver {
                     .nak_history
                     .get(&block)
                     .is_none_or(|t| now.duration_since(*t) >= NAK_COOLDOWN);
+                if self.session_adoptions > 0 {
+                    eprintln!("[dbg] rx nak block={block} fresh={fresh} peer={peer}");
+                }
                 if fresh {
                     let mut nfb = base;
                     nfb.nak_block = block;
@@ -3663,6 +3702,12 @@ impl ReliableUdpReceiver {
     /// congestion before they reach the loss estimate.
     fn control_bytes(&self, fb: &Feedback) -> Vec<u8> {
         let mut cp = ControlPacket::new();
+        // Which session this feedback describes. A sender that has just
+        // restarted must not apply an ack frontier belonging to the
+        // session it replaced: that frontier is far ahead of its own
+        // block ids, so it would prune every block it still holds as
+        // delivered and be left with nothing to resend.
+        cp.session_announce = self.dec.session_epoch();
         cp.ack = Some(AckFrame {
             ack_through: fb.ack_through,
         });
@@ -3761,10 +3806,24 @@ impl ReliableUdpReceiver {
     /// connected, `send_to()` only while still unconnected (Windows / other).
     fn send_feedback_bytes(&self, bytes: &[u8], peer: SocketAddr) {
         if self.connected {
-            self.sock.send(bytes).ok();
-        } else {
-            self.sock.send_to(bytes, peer).ok();
+            // A connected send carries the socket's latched error: after a
+            // peer dies, the ICMP unreachable it provoked surfaces here as
+            // ConnectionReset and every later send fails the same way.
+            // Swallowing that loses the feedback silently, so fall back to
+            // an addressed send, which is unaffected.
+            let r = self.sock.send(bytes);
+            if self.session_adoptions > 0 {
+                eprintln!("[dbg] fb send connected -> {:?}", r.as_ref().err().map(|e| e.kind()));
+            }
+            if r.is_ok() {
+                return;
+            }
         }
+        let r2 = self.sock.send_to(bytes, peer);
+        if self.session_adoptions > 0 {
+            eprintln!("[dbg] fb send_to {peer} -> {:?}", r2.as_ref().err().map(|e| e.kind()));
+        }
+        r2.ok();
     }
 
     /// Send any delayed feedback whose release time has arrived. A no-op
@@ -3911,6 +3970,7 @@ mod tests {
         let addr = recv.local_addr().unwrap();
 
         let mut first = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+        let first_addr = first.local_addr().unwrap();
         for i in 0..N {
             first.send_item(&i.to_le_bytes()).unwrap();
         }
@@ -3928,6 +3988,7 @@ mod tests {
 
         drop(first);
         let mut second = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+        eprintln!("[dbg] sender1 was {:?}, sender2 is {:?}", first_addr, second.local_addr());
         assert_ne!(
             second.enc.epoch(),
             recv.dec.session_epoch().unwrap(),

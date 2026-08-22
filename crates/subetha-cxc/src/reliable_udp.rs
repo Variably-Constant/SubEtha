@@ -887,6 +887,12 @@ impl Decoder {
         self.seg_d.clear();
     }
 
+    /// Highest block id seen on the wire. Below `next_needed` it means the
+    /// frontier is waiting on a block that has never arrived at all.
+    pub fn highest_seen(&self) -> u32 {
+        self.highest_seen
+    }
+
     /// Block id the receiver next needs (everything below is delivered).
     pub fn next_needed(&self) -> u32 {
         self.next_deliver.load(Ordering::Relaxed)
