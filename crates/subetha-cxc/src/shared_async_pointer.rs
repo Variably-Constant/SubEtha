@@ -138,7 +138,14 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
             return v;
         }
         let computed = f();
-        self.cell.set(computed);
+        if !self.cell.set(computed) {
+            // `set` reports false both when the cell is already published and
+            // when another caller holds it mid-init, where the value is not yet
+            // readable. Wait for the winner to publish before reading.
+            while !self.cell.is_initialized() {
+                std::hint::spin_loop();
+            }
+        }
         let v = self.cell.get().expect("INITIALIZED after set or read-back");
         self.ring_sidecar.push_op(
             crate::sidecar_ops::async_pointer::OP_GET_OR_FETCH,
