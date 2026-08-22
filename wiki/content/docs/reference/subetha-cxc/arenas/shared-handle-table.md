@@ -43,6 +43,14 @@ process boundary.
 - **Capacity fixed at create**: no auto-grow. Insert returns
   `HandleTableError::Full` past capacity.
 - **`open` requires expected_capacity match** (source: `expected_capacity` arg).
+- **`create` obtains, `reset` truncates**: `create(path, capacity)`
+  initializes an empty table only when the path does not yet exist,
+  and otherwise attaches with live handles and the free list intact -
+  racing creators all reach the same table. A region built with a
+  different capacity or payload type is a `LayoutMismatch`.
+  `reset(path, capacity)` truncates and reinitializes, invalidating
+  every outstanding handle; on Windows it succeeds only once every
+  process has unmapped the region.
 - **Cross-process backed by MMF.**
 
 ---
