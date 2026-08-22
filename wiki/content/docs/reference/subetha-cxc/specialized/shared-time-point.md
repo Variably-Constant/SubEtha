@@ -66,6 +66,13 @@ feature-stripped builds.
   `&TileHeader`; `flush` / `flush_async` persist.
 - **`TileError`**: `LayoutMismatch` / `PayloadTooLarge` / `Full`
   / `IoError`.
+- **`create` obtains, `reset` truncates**: `create(path)` initializes
+  an empty tile only when the path does not yet exist, and otherwise
+  attaches with occupied slots and versions intact - racing creators
+  all reach the same tile. A region built for a different payload
+  type is a `LayoutMismatch`. `reset(path)` truncates and
+  reinitializes, for a caller that owns the path; on Windows it
+  succeeds only once every process has unmapped the region.
 - **Cross-process backed by MMF.**
 
 ---

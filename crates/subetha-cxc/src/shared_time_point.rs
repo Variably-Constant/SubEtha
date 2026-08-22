@@ -90,35 +90,59 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Shar
 }
 
 impl<T: Copy + 'static> SharedTimePointTile<T> {
+    /// Obtain the tile at `path`, initializing an empty one if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves occupied slots and their versions in place; a region
+    /// built for a different payload type is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, TileError> {
         Self::check_layout()?;
-        let total = tile_file_size();
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut TileHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            tile_file_size(),
+            |ptr| unsafe { Self::init_region(ptr) },
+            |ptr| unsafe { (*(ptr as *const TileHeader)).magic == TIME_POINT_MAGIC },
+        )?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Truncate the tile at `path` and initialize an empty one,
+    /// discarding every slot a live peer holds. For a caller that knows
+    /// it owns the path.
+    pub fn reset(path: impl AsRef<Path>) -> Result<Self, TileError> {
+        Self::check_layout()?;
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), tile_file_size(), |ptr| unsafe {
+            Self::init_region(ptr)
+        })?;
+        Self::from_region(file, mmap)
+    }
+
+    /// Lay out an empty tile: the zeroed region is already the empty
+    /// slot array (version 0, zero payloads) and occupied 0, so only
+    /// the capacity, payload size and then the magic are written, magic
+    /// last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least [`tile_file_size()`] writable zeroed
+    /// bytes.
+    unsafe fn init_region(ptr: *mut u8) {
+        let hdr = ptr as *mut TileHeader;
         unsafe {
-            std::ptr::write(hdr, TileHeader {
-                magic: TIME_POINT_MAGIC,
-                capacity: TILE_CAP as u32,
-                payload_size: size_of::<T>() as u32,
-                occupied: AtomicU32::new(0),
-                _pad: [0; 44],
-            });
+            (*hdr).capacity = TILE_CAP as u32;
+            (*hdr).payload_size = size_of::<T>() as u32;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, TIME_POINT_MAGIC);
         }
-        let slots_base = unsafe { mmap.as_mut_ptr().add(size_of::<TileHeader>()) };
-        for i in 0..TILE_CAP {
-            let slot_ptr = unsafe {
-                slots_base.add(i * size_of::<VersionedSlot>()) as *mut VersionedSlot
-            };
-            unsafe {
-                std::ptr::write(slot_ptr, VersionedSlot {
-                    version: AtomicU64::new(0),
-                    payload: [0; SLOT_PAYLOAD],
-                });
-            }
+    }
+
+    /// Wrap an initialized region, refusing one built for a different
+    /// payload type.
+    fn from_region(file: File, mmap: MmapMut) -> Result<Self, TileError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const TileHeader) };
+        if hdr.magic != TIME_POINT_MAGIC
+            || hdr.capacity != TILE_CAP as u32
+            || hdr.payload_size as usize != size_of::<T>()
+        {
+            return Err(TileError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, _phantom: PhantomData,
@@ -134,18 +158,7 @@ impl<T: Copy + 'static> SharedTimePointTile<T> {
             return Err(TileError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(tile_file_size()).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const TileHeader) };
-        if hdr.magic != TIME_POINT_MAGIC
-            || hdr.capacity != TILE_CAP as u32
-            || hdr.payload_size as usize != size_of::<T>()
-        {
-            return Err(TileError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap)
     }
 
     fn check_layout() -> Result<(), TileError> {
@@ -426,6 +439,32 @@ mod tests {
         let t: SharedTimePointTile<u64> = SharedTimePointTile::create(&p).unwrap();
         assert_eq!(t.visible_mask(u64::MAX), 0);
         assert!(t.is_empty());
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with occupied slots in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_slots() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let t: SharedTimePointTile<u64> = SharedTimePointTile::create(&p).unwrap();
+        t.insert(10, 777).unwrap();
+
+        let t2: SharedTimePointTile<u64> = SharedTimePointTile::create(&p).unwrap();
+        assert_eq!(t2.visible_count(u64::MAX), 1, "attach dropped an occupied slot");
+        assert!(matches!(
+            SharedTimePointTile::<u32>::create(&p),
+            Err(TileError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(t);
+        drop(t2);
+        let fresh: SharedTimePointTile<u64> = SharedTimePointTile::reset(&p).unwrap();
+        assert!(fresh.is_empty(), "reset left a slot occupied");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 
