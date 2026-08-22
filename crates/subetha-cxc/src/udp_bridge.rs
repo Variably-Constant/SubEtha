@@ -3947,6 +3947,13 @@ impl ReliableUdpReceiver {
     /// socket the unified endpoint shares across both codes). Live sessions
     /// pick it up, since they hold the same handle.
     pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
+        // A demux socket is shared with the other code and fed by a reader that
+        // takes every source address, so there is no peer association to keep
+        // and the receiver must route by epoch. The connected fast paths do not
+        // apply to it either way.
+        if sock.backend() == crate::dgram::DgramBackend::Demux {
+            self.multi_peer = true;
+        }
         let sock = std::sync::Arc::new(sock);
         self.sock = std::sync::Arc::clone(&sock);
         for s in self.sessions.values_mut() {

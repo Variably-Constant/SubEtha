@@ -1587,6 +1587,92 @@ mod tests {
     /// The tag assertion is the point. Delivery alone passes even when every
     /// item is labelled with whoever spoke last, which is the misattribution a
     /// mesh node cannot detect from its own side.
+    /// The same two-peer shape pinned to block-RS. The unified endpoint hands
+    /// its RS half a demux socket, which is shared and fed by a reader that
+    /// takes every source address, so that receiver has to route by session
+    /// epoch rather than serve one peer.
+    #[test]
+    fn unified_two_peers_on_block_rs_both_deliver() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRs,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let per_peer: u64 = 60;
+        let peers: u64 = 2;
+        let total = per_peer * peers;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<u64> = Vec::with_capacity(total as usize);
+            let start = Instant::now();
+            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
+                let items = recv.poll().unwrap_or_default();
+                let empty = items.is_empty();
+                for it in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push(u64::from_le_bytes(s));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send(got).ok();
+        });
+
+        let gate = Arc::new(std::sync::Barrier::new(peers as usize));
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            let gate = Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let mut buf = vec![0u8; 8];
+                gate.wait();
+                let start = Instant::now();
+                for i in 0..per_peer {
+                    if start.elapsed() > Duration::from_secs(15) {
+                        break;
+                    }
+                    buf[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                }
+                send.finish().ok();
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+
+        let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        rh.join().ok();
+        for p in 0..peers {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|v| (*v >> 56) == p)
+                .map(|v| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..per_peer).collect::<Vec<_>>(),
+                "block-RS peer {p} must deliver every item alongside the other peer",
+            );
+        }
+    }
+
     #[test]
     fn unified_two_peers_deliver_and_are_attributed_separately() {
         use std::sync::mpsc;
