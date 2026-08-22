@@ -1405,9 +1405,10 @@ impl UnifiedSensReceiver {
         self.rlc.session_frontier(cid)
     }
 
-    /// One RLC session's control-plane sends: `(naks_sent,
-    /// acks_sent)`, or `None` for an id with no window.
-    pub fn rlc_session_control(&self, cid: u64) -> Option<(u64, u64)> {
+    /// One RLC session's control plane: `(naks_sent, acks_sent,
+    /// sends_skipped, peer_validated)`, or `None` for an id with no
+    /// window.
+    pub fn rlc_session_control(&self, cid: u64) -> Option<(u64, u64, u64, bool)> {
         self.rlc.session_control(cid)
     }
 

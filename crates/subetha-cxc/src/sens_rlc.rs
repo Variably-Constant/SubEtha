@@ -1727,6 +1727,9 @@ struct RlcSession {
     naks_sent: u64,
     /// Cumulative ACK frames this session sent toward its peer.
     acks_sent: u64,
+    /// Control sends silently dropped: no peer address, or the
+    /// anti-amplification budget was exhausted while unvalidated.
+    sends_skipped: u64,
     /// Diagnostic loss injection: drop this percent of incoming DATA datagrams
     /// (seeded) to exercise RLC recovery on a lossless link.
     drop_pct: u32,
@@ -1940,6 +1943,7 @@ impl RlcSession {
             rlc_recovered: 0,
             naks_sent: 0,
             acks_sent: 0,
+            sends_skipped: 0,
             drop_pct: 0,
             drop_rng: 0,
             ge_loss_p: 0,
@@ -2015,10 +2019,14 @@ impl RlcSession {
     /// receiver flood a victim. A dropped send is silently skipped - validation
     /// completes within a round trip and the cap lifts.
     fn wire_send_to_peer(&mut self, inner: &[u8]) -> io::Result<()> {
-        let Some(peer) = self.peer else { return Ok(()) };
+        let Some(peer) = self.peer else {
+            self.sends_skipped += 1;
+            return Ok(());
+        };
         if !self.peer_validated {
             let budget = self.unval_recv_bytes.saturating_mul(AMPLIFICATION_FACTOR);
             if self.unval_sent_bytes.saturating_add(inner.len() as u64) > budget {
+                self.sends_skipped += 1;
                 return Ok(());
             }
             self.unval_sent_bytes = self.unval_sent_bytes.saturating_add(inner.len() as u64);
@@ -3079,12 +3087,15 @@ impl SensOMaticRlcReceiver {
         self.sessions.get(&cid).map(|s| (s.delivered_through, s.highest_seen))
     }
 
-    /// One session's control-plane sends: `(naks_sent, acks_sent)`.
-    /// Both frozen on a gap-blocked window means the service never
-    /// emits them; both climbing while the peer's pump counters stay
-    /// zero means the frames die in transit.
-    pub fn session_control(&self, cid: u64) -> Option<(u64, u64)> {
-        self.sessions.get(&cid).map(|s| (s.naks_sent, s.acks_sent))
+    /// One session's control plane: `(naks_sent, acks_sent,
+    /// sends_skipped, peer_validated)`. `sends_skipped` counts control
+    /// frames dropped for a missing peer address or an exhausted
+    /// anti-amplification budget - those still return Ok to the
+    /// service, so `acks_sent` alone cannot tell a send from a skip.
+    pub fn session_control(&self, cid: u64) -> Option<(u64, u64, u64, bool)> {
+        self.sessions
+            .get(&cid)
+            .map(|s| (s.naks_sent, s.acks_sent, s.sends_skipped, s.peer_validated))
     }
 
     /// The address a given connection id is currently bound to.
