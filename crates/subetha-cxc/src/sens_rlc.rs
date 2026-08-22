@@ -1642,11 +1642,15 @@ impl SensOMaticRlcSender {
     }
 }
 
-/// Receiver side of the RLC transport.
-pub struct SensOMaticRlcReceiver {
-    /// Shared with every per-session decode window: `DgramSock::send_to` and
-    /// `recv_from` take `&self`, so a session drives the wire toward its own
-    /// peer without owning the socket. One socket, N sessions.
+/// One peer's decode window: the state a single connection id owns, and the
+/// only place RLC decoding is implemented. A receiver holds one of these per
+/// live sender, so two peers never share a delivery frontier, a loss estimate,
+/// or a path-validation challenge.
+///
+/// The socket is shared rather than owned: `DgramSock::send_to` and `recv_from`
+/// take `&self`, so a session drives the wire toward its own peer while the
+/// receiver owns the drain. One socket, N sessions.
+struct RlcSession {
     sock: std::sync::Arc<crate::dgram::DgramSock>,
     dec: RlcDecoder,
     symbol_len: usize,
@@ -1690,12 +1694,9 @@ pub struct SensOMaticRlcReceiver {
     /// the controller consumes): source ids that were lost, over ids delivered.
     total_lost: u64,
     total_delivered: u64,
-    /// First kernel RX timestamp (nanoseconds, `SO_TIMESTAMPNS`) seen, so the
-    /// per-packet arrival the congestion detector reads is a small offset from
-    /// it. `None` until the first stamped datagram (or always, where the kernel
-    /// timestamp is unavailable and the drain-loop clock is used instead).
-    kts_base_ns: Option<i128>,
     /// Monotonic start, for the relative one-way trip time the Spike arm reads.
+    /// Copied from the receiver so every session stamps arrivals on the one
+    /// clock the drain measures them with.
     start: Instant,
     /// Arrival time (microseconds since `start`) of the previous DATA, stamped in
     /// the receive drain loop BEFORE any decode, for inter-arrival spacing and
@@ -1762,10 +1763,12 @@ pub struct SensOMaticRlcReceiver {
     gap_since: BTreeMap<u32, f64>,
     /// FEEDBACK frames sent (telemetry).
     feedback_sent: u64,
-    /// The connection id this receiver is bound to (learned from the first DATA),
-    /// and how many times the session migrated to a new peer address - the count
+    /// The connection id this session decodes. The receiver keys its session
+    /// map by the same value, so a frame reaches exactly the window that owns
+    /// its id.
+    cid: u64,
+    /// How many times this session migrated to a new peer address - the count
     /// is the proof the connection survived a 4-tuple change.
-    session_cid: Option<u64>,
     migrations: u64,
     /// Whether the delivery frontier has been anchored to an observed source
     /// id. False until the first DATA of a session arrives.
@@ -1804,23 +1807,57 @@ pub struct SensOMaticRlcReceiver {
     /// Successful path validations and validation timeouts (reverts). Telemetry.
     path_validations: u64,
     path_validation_failures: u64,
+}
+
+/// Receiver side of the RLC transport.
+///
+/// Owns the socket and the drain; every frame is routed by its connection id
+/// to the [`RlcSession`] that owns it, so a node receiving from several peers
+/// at once decodes each stream in its own window instead of one session
+/// evicting another.
+pub struct SensOMaticRlcReceiver {
+    sock: std::sync::Arc<crate::dgram::DgramSock>,
+    symbol_len: usize,
+    /// Monotonic start, shared with every session so arrival stamps taken in
+    /// the drain and deadlines evaluated inside a session share one clock.
+    start: Instant,
+    /// Live decode windows by connection id, and the ids in first-seen order so
+    /// delivery across peers is deterministic rather than hash-ordered.
+    sessions: HashMap<u64, RlcSession>,
+    order: Vec<u64>,
+    /// First kernel RX timestamp (nanoseconds, `SO_TIMESTAMPNS`) seen, so the
+    /// per-packet arrival the congestion detectors read is a small offset from
+    /// it. `None` until the first stamped datagram (or always, where the kernel
+    /// timestamp is unavailable and the drain-loop clock is used instead).
+    kts_base_ns: Option<i128>,
+    /// Diagnostic loss injection, held here and stamped onto each session as it
+    /// is created: `with_debug_loss` / `with_gilbert_loss` are builder calls
+    /// that run before any peer has been seen.
+    drop_pct: u32,
+    drop_seed: u64,
+    ge_loss_p: u32,
+    ge_loss_r: u32,
+    pair_debug: bool,
     /// Optional TLS state (server side): when present, every data datagram is
     /// AEAD-sealed / opened with the 1-RTT keys.
+    ///
+    /// One handshake per receiver, so a TLS receiver serves ONE peer. Several
+    /// concurrent senders each run their own handshake and cannot share this
+    /// state; see [`poll_from`](Self::poll_from) for the multi-peer contract.
     #[cfg(feature = "tls")]
     crypto: Option<crate::rlc_crypto::CryptoState>,
 }
 
-impl SensOMaticRlcReceiver {
-    /// Bind a receiver over `symbol_len`-byte symbols.
-    pub fn bind<A: ToSocketAddrs>(local: A, symbol_len: usize) -> io::Result<Self> {
-        let sock = UdpSocket::bind(local)?;
-        sock.set_nonblocking(true)?;
-        set_buffers(&sock);
-        // Auto-detect the datagram backend (io_uring where available, plain
-        // UDP otherwise); kernel RX timestamps are enabled by the wrapper.
-        let sock = crate::dgram::DgramSock::wrap(sock);
-        Ok(Self {
-            sock: std::sync::Arc::new(sock),
+impl RlcSession {
+    /// A fresh decode window for `cid`, sharing the receiver's socket and clock.
+    fn new(
+        cid: u64,
+        sock: std::sync::Arc<crate::dgram::DgramSock>,
+        symbol_len: usize,
+        start: Instant,
+    ) -> Self {
+        Self {
+            sock,
             // Horizon is sized to the CODING window (the adaptive RLC window
             // caps at 64), not the flow window: a sliding-window repair can only
             // span its own window, so a gap older than ~one window has no repair
@@ -1848,13 +1885,12 @@ impl SensOMaticRlcReceiver {
             total_delivered: 0,
             loss_window: VecDeque::with_capacity(LOSS_WINDOW),
             loss_window_lost: 0,
-            kts_base_ns: None,
             last_data_sid: None,
             pair_ring: Vec::with_capacity(PAIR_RING_CAP),
             pair_ring_pos: 0,
-            pair_debug: std::env::var("SUBETHA_PAIR_DEBUG").is_ok(),
+            pair_debug: false,
             pair_gap_log: Vec::new(),
-            start: Instant::now(),
+            start,
             last_arrival_us: None,
             last_feedback: Instant::now(),
             burst_model: BurstModel::new(),
@@ -1866,7 +1902,7 @@ impl SensOMaticRlcReceiver {
             nakd: BTreeSet::new(),
             gap_since: BTreeMap::new(),
             feedback_sent: 0,
-            session_cid: None,
+            cid,
             migrations: 0,
             frontier_anchored: false,
             peer_validated: true,
@@ -1881,9 +1917,7 @@ impl SensOMaticRlcReceiver {
             unval_sent_bytes: 0,
             path_validations: 0,
             path_validation_failures: 0,
-            #[cfg(feature = "tls")]
-            crypto: None,
-        })
+        }
     }
 
     /// How many times the session migrated to a new peer address (connection-id
@@ -2081,59 +2115,18 @@ impl SensOMaticRlcReceiver {
         self.loss_pending.retain(|&(sid, ..)| sid >= base);
     }
 
-    /// Read whatever has arrived, recover and deliver in-order items, and NAK a
-    /// stalled gap the coding window did not fill.
-    pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
-        let mut out = Vec::new();
-        // Room for the inner DATA/REPAIR plus the AEAD envelope (type + pn + tag)
-        // when TLS is on.
-        let mut buf = vec![0u8; self.symbol_len + 64];
-        let mut received = 0usize;
-        // Drain pass: pull every available datagram, stamping its arrival time
-        // and storing it, with NO Gaussian solve in the loop - so the arrival
-        // stamp the congestion classifier reads reflects the network, not the
-        // decode backlog. The single recovery pass runs after the drain.
-        loop {
-            match self.sock.recv_with_kts(&mut buf) {
-                Ok((n, from, kts)) if n >= 1 => {
-                    // Prefer the kernel RX timestamp (offset by the first one to
-                    // keep the magnitude small); fall back to the drain-loop
-                    // clock where it is unavailable.
-                    let arrival_us = match kts {
-                        Some(ns) => {
-                            let base = *self.kts_base_ns.get_or_insert(ns);
-                            (ns - base) as f64 / 1000.0
-                        }
-                        None => self.start.elapsed().as_micros() as f64,
-                    };
-                    // Open the AEAD envelope when TLS is on; the FEC sees the
-                    // cleartext inner datagram. A non-sealed frame (a stray
-                    // handshake retransmit) is skipped. The connection-id routing
-                    // (which sets / migrates `self.peer`) runs on the cleartext.
-                    #[cfg(feature = "tls")]
-                    if self.crypto.is_some() {
-                        let inner = self.crypto.as_ref().and_then(|c| secure_unwrap(c, &buf[..n]));
-                        if let Some(inner) = inner
-                            && self.route_and_process(&inner, from, arrival_us)
-                        {
-                            received += 1;
-                        }
-                        continue;
-                    }
-                    if self.route_and_process(&buf[..n], from, arrival_us) {
-                        received += 1;
-                    }
-                }
-                Ok(_) => {}
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => break,
-                // Windows surfaces an ICMP port-unreachable (e.g. a stale ack to
-                // a peer that just migrated off its old socket) as a spurious
-                // ConnectionReset on UDP recv - transient, not fatal.
-                Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => break,
-                Err(e) => return Err(e),
-            }
-        }
+    /// Everything the session does after the receiver's drain has handed it
+    /// this tick's frames: recover, deliver in order, account for loss, and
+    /// service its control plane (challenges, NAK, ACK, feedback). Delivered
+    /// items are appended to `tagged` under this session's connection id.
+    ///
+    /// The drain itself lives on the receiver, because one socket feeds every
+    /// session and the arrival stamp must come from the read, not from here.
+    /// Returns whether anything was delivered, which the receiver folds into
+    /// its idle backoff.
+    fn service(&mut self, tagged: &mut Vec<(u64, Vec<u8>)>) -> io::Result<bool> {
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        let out = &mut out;
         // One recovery pass over the whole drained batch (repairs were stored,
         // not solved, during the drain).
         let recovered = self.dec.recover();
@@ -2145,30 +2138,24 @@ impl SensOMaticRlcReceiver {
         // Reorder grace (microseconds): how long to wait before declaring a gap
         // lost, scaled to the path's recent delay spread (jitter), floored 1ms.
         let grace = (2.0 * self.loss_class.recent_owd_spread_us()).clamp(1000.0, 50_000.0);
-        self.deliver(&mut out, now_us, grace);
+        self.deliver(out, now_us, grace);
         self.flush_loss_accounting(now_us);
         // Path validation (Slice 4): retire a stale challenge (revert a spoofed
         // move) and (re)issue the outstanding one now that the drain has credited
         // the anti-amplification budget.
         self.expire_stale_challenge();
         self.maybe_send_challenge()?;
-        // The same retire-then-reissue, over a candidate session.
-        self.expire_stale_session_challenge();
-        self.maybe_send_session_challenge()?;
         self.maybe_nak()?;
         self.send_ack()?;
         self.maybe_feedback()?;
-        // Idle backoff: the socket is non-blocking, so when nothing arrived and
-        // nothing delivered, yield briefly instead of busy-spinning the caller.
-        if received == 0 && out.is_empty() {
-            std::thread::sleep(Duration::from_micros(100));
-        }
-        Ok(out)
+        let delivered = !out.is_empty();
+        tagged.extend(out.drain(..).map(|item| (self.cid, item)));
+        Ok(delivered)
     }
 
-    /// Route an inner frame by its connection id (setting / migrating `peer`),
-    /// then process it. Returns `false` for a frame whose connection id does not
-    /// match this session (a foreign datagram), so it is not counted as received.
+    /// Handle one inner frame the receiver has routed to this session. Returns
+    /// `false` for a frame this session does not own, so it is not counted as
+    /// received.
     fn route_and_process(&mut self, inner: &[u8], from: SocketAddr, arrival_us: f64) -> bool {
         // A PATH_RESPONSE answers an outstanding challenge: it is routed by id
         // and by the nonce, not delivered as data.
@@ -2177,31 +2164,27 @@ impl SensOMaticRlcReceiver {
             return true;
         }
         match frame_conn_id(inner) {
-            Some(cid) => match self.session_cid {
-                None => {
-                    self.session_cid = Some(cid);
+            Some(cid) if cid == self.cid => match self.peer {
+                // First frame of this session: bind the address without
+                // counting a migration - there was nothing to migrate from.
+                None => self.peer = Some(from),
+                // Same session, new address -> the peer rebound. Migrate
+                // optimistically (keep delivering - the id / AEAD already
+                // authenticate the frame) but mark the address unvalidated
+                // and challenge it before trusting it for our own sends.
+                Some(p) if p != from => {
+                    self.prev_peer = self.peer;
                     self.peer = Some(from);
+                    self.migrations += 1;
+                    self.begin_path_validation(from);
                 }
-                Some(s) if s == cid => {
-                    // Same session, new address -> the peer rebound. Migrate
-                    // optimistically (keep delivering - the id / AEAD already
-                    // authenticate the frame) but mark the address unvalidated
-                    // and challenge it before trusting it for our own sends.
-                    if self.peer != Some(from) {
-                        self.prev_peer = self.peer;
-                        self.peer = Some(from);
-                        self.migrations += 1;
-                        self.begin_path_validation(from);
-                    }
-                }
-                // A connection id other than the established one: a restarted
-                // peer or a forgery. The frame is not delivered and the
-                // session is not adopted until the challenge nonce returns.
-                Some(_) => {
-                    self.begin_session_validation(cid, from);
-                    return false;
-                }
+                Some(_) => {}
             },
+            // The receiver routes by connection id, so a frame carrying a
+            // different one reaching this window is a mis-route rather than a
+            // restart. A restarted peer arrives with a new id and is challenged
+            // by the receiver, which opens a session for it on the answer.
+            Some(_) => return false,
             None => {
                 self.peer = Some(from);
             }
@@ -2287,7 +2270,10 @@ impl SensOMaticRlcReceiver {
         self.ge_dropped_once.clear();
         self.last_data_sid = None;
 
-        self.session_cid = Some(cid);
+        // A session's id is the receiver's map key, so adoption resets THIS
+        // connection's window rather than rebinding it to another id. A peer
+        // that restarts arrives with a new id and gets its own session.
+        debug_assert_eq!(cid, self.cid, "a session adopts only its own connection id");
         // Anchored at zero: a fresh connection id is a fresh sender, whose
         // ids start at the bottom and whose head is still in its window for
         // ARQ.
@@ -2323,7 +2309,7 @@ impl SensOMaticRlcReceiver {
         let entropy = self.start.elapsed().as_nanos() as u64;
         let mut x = entropy
             ^ self.challenge_seq.rotate_left(32)
-            ^ self.session_cid.unwrap_or(0);
+            ^ self.cid;
         x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         x ^ (x >> 31)
@@ -2342,7 +2328,7 @@ impl SensOMaticRlcReceiver {
         }
         let mut pkt = Vec::with_capacity(PATH_FRAME_LEN);
         pkt.push(PKT_RLC_PATH_CHALLENGE);
-        pkt.extend_from_slice(&self.session_cid.unwrap_or(0).to_le_bytes());
+        pkt.extend_from_slice(&self.cid.to_le_bytes());
         pkt.extend_from_slice(&nonce.to_le_bytes());
         self.wire_send_to_peer(&pkt)
     }
@@ -2379,7 +2365,7 @@ impl SensOMaticRlcReceiver {
             self.adopt_session(cid, from);
             return;
         }
-        if self.session_cid != Some(cid) {
+        if self.cid != cid {
             return;
         }
         if let Some((addr, want, _)) = self.pending_challenge
@@ -2740,6 +2726,287 @@ impl SensOMaticRlcReceiver {
         self.feedback_sent += 1;
         self.last_feedback = Instant::now();
         Ok(())
+    }
+}
+
+impl SensOMaticRlcReceiver {
+    /// Bind a receiver over `symbol_len`-byte symbols. No session exists until
+    /// a peer is seen; each connection id that arrives opens its own.
+    pub fn bind<A: ToSocketAddrs>(local: A, symbol_len: usize) -> io::Result<Self> {
+        let sock = UdpSocket::bind(local)?;
+        sock.set_nonblocking(true)?;
+        set_buffers(&sock);
+        // Auto-detect the datagram backend (io_uring where available, plain
+        // UDP otherwise); kernel RX timestamps are enabled by the wrapper.
+        let sock = crate::dgram::DgramSock::wrap(sock);
+        Ok(Self {
+            sock: std::sync::Arc::new(sock),
+            symbol_len,
+            start: Instant::now(),
+            sessions: HashMap::new(),
+            order: Vec::new(),
+            kts_base_ns: None,
+            drop_pct: 0,
+            drop_seed: 0,
+            ge_loss_p: 0,
+            ge_loss_r: 0,
+            pair_debug: std::env::var("SUBETHA_PAIR_DEBUG").is_ok(),
+            #[cfg(feature = "tls")]
+            crypto: None,
+        })
+    }
+
+    /// Swap the datagram socket for one the caller already built (a demux
+    /// socket the unified endpoint shares across both codes). Live sessions
+    /// pick the new socket up, since they hold the same handle.
+    pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
+        let sock = std::sync::Arc::new(sock);
+        self.sock = std::sync::Arc::clone(&sock);
+        for cid in &self.order {
+            if let Some(s) = self.sessions.get_mut(cid) {
+                s.sock = std::sync::Arc::clone(&sock);
+            }
+        }
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.sock.local_addr()
+    }
+
+    /// Which datagram backend the socket resolved to.
+    pub fn dgram_backend(&self) -> crate::dgram::DgramBackend {
+        self.sock.backend()
+    }
+
+    /// Drop `pct` percent of incoming DATA (seeded) to exercise recovery on a
+    /// lossless link. Stamped onto each session as it opens, so every peer sees
+    /// the same injected rate.
+    pub fn with_debug_loss(mut self, pct: u32, seed: u64) -> Self {
+        self.drop_pct = pct.min(100);
+        self.drop_seed = seed | 1;
+        self
+    }
+
+    /// Gilbert-Elliott burst-loss injection, per-10000 transition probabilities.
+    pub fn with_gilbert_loss(mut self, p_per_10k: u32, r_per_10k: u32, seed: u64) -> Self {
+        self.ge_loss_p = p_per_10k;
+        self.ge_loss_r = r_per_10k;
+        self.drop_seed = seed | 1;
+        self
+    }
+
+    /// The session for `cid`, opened on first sight.
+    fn session_mut(&mut self, cid: u64) -> &mut RlcSession {
+        if !self.sessions.contains_key(&cid) {
+            let mut s = RlcSession::new(
+                cid,
+                std::sync::Arc::clone(&self.sock),
+                self.symbol_len,
+                self.start,
+            );
+            s.drop_pct = self.drop_pct;
+            s.drop_rng = self.drop_seed;
+            s.ge_loss_p = self.ge_loss_p;
+            s.ge_loss_r = self.ge_loss_r;
+            s.pair_debug = self.pair_debug;
+            self.sessions.insert(cid, s);
+            self.order.push(cid);
+        }
+        self.sessions.get_mut(&cid).expect("just inserted")
+    }
+
+    /// Read whatever has arrived and deliver in-order items, each tagged with
+    /// the connection id of the peer that sent it.
+    ///
+    /// This is the call a node receiving from SEVERAL peers wants: ordering is
+    /// guaranteed within a connection id, and nothing orders one peer against
+    /// another. [`poll`](Self::poll) is the same drain with the tag dropped.
+    ///
+    /// With TLS armed the receiver serves ONE peer: there is a single
+    /// handshake, so concurrent senders cannot each establish keys.
+    pub fn poll_from(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>> {
+        let mut out: Vec<(u64, Vec<u8>)> = Vec::new();
+        // Room for the inner DATA/REPAIR plus the AEAD envelope (type + pn + tag)
+        // when TLS is on.
+        let mut buf = vec![0u8; self.symbol_len + 64];
+        let mut received = 0usize;
+        // Drain pass: pull every available datagram, stamping its arrival time
+        // and routing it to the session that owns its id, with NO Gaussian solve
+        // in the loop - so the arrival stamp the congestion classifier reads
+        // reflects the network, not the decode backlog.
+        loop {
+            match self.sock.recv_with_kts(&mut buf) {
+                Ok((n, from, kts)) if n >= 1 => {
+                    // Prefer the kernel RX timestamp (offset by the first one to
+                    // keep the magnitude small); fall back to the drain-loop
+                    // clock where it is unavailable.
+                    let arrival_us = match kts {
+                        Some(ns) => {
+                            let base = *self.kts_base_ns.get_or_insert(ns);
+                            (ns - base) as f64 / 1000.0
+                        }
+                        None => self.start.elapsed().as_micros() as f64,
+                    };
+                    // Open the AEAD envelope when TLS is on; the FEC sees the
+                    // cleartext inner datagram. A non-sealed frame (a stray
+                    // handshake retransmit) is skipped. Routing runs on the
+                    // cleartext, since the connection id is inside.
+                    #[cfg(feature = "tls")]
+                    if self.crypto.is_some() {
+                        let inner = self.crypto.as_ref().and_then(|c| secure_unwrap(c, &buf[..n]));
+                        if let Some(inner) = inner
+                            && self.route_datagram(&inner, from, arrival_us)
+                        {
+                            received += 1;
+                        }
+                        continue;
+                    }
+                    let n = n.min(buf.len());
+                    let frame = buf[..n].to_vec();
+                    if self.route_datagram(&frame, from, arrival_us) {
+                        received += 1;
+                    }
+                }
+                Ok(_) => {}
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => break,
+                // Windows surfaces an ICMP port-unreachable (e.g. a stale ack to
+                // a peer that just migrated off its old socket) as a spurious
+                // ConnectionReset on UDP recv - transient, not fatal.
+                Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => break,
+                Err(e) => return Err(e),
+            }
+        }
+        // Service every live session in first-seen order, so delivery across
+        // peers is deterministic rather than hash-ordered.
+        let ids = self.order.clone();
+        for cid in ids {
+            if let Some(mut s) = self.sessions.remove(&cid) {
+                let r = s.service(&mut out);
+                self.sessions.insert(cid, s);
+                r?;
+            }
+        }
+        // Idle backoff: the socket is non-blocking, so when nothing arrived and
+        // nothing delivered, yield briefly instead of busy-spinning the caller.
+        if received == 0 && out.is_empty() {
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        Ok(out)
+    }
+
+    /// Route one cleartext datagram to the session that owns its connection id,
+    /// opening a session for an id not seen before.
+    fn route_datagram(&mut self, inner: &[u8], from: SocketAddr, arrival_us: f64) -> bool {
+        // A PATH_RESPONSE answers an outstanding challenge. It carries the id it
+        // is answering for, so it routes like any other frame.
+        let cid = match frame_conn_id(inner) {
+            Some(cid) => cid,
+            // No id in the frame: it belongs to the session that most recently
+            // spoke, which is the single-peer case.
+            None => match self.order.last() {
+                Some(cid) => *cid,
+                None => return false,
+            },
+        };
+        self.session_mut(cid).route_and_process(inner, from, arrival_us)
+    }
+
+    /// Read whatever has arrived and deliver in-order items. Peer attribution is
+    /// dropped; use [`poll_from`](Self::poll_from) when a node receives from
+    /// several peers and needs to know which sent what.
+    pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
+        Ok(self.poll_from()?.into_iter().map(|(_, item)| item).collect())
+    }
+
+    /// Re-base every live session's delivery to start at `base` for a
+    /// cross-code resync (see [`RlcSession::skip_to`]).
+    pub fn skip_to(&mut self, base: u32) {
+        for s in self.sessions.values_mut() {
+            s.skip_to(base);
+        }
+    }
+
+    /// The connection ids with a live decode window, in first-seen order.
+    pub fn live_sessions(&self) -> Vec<u64> {
+        self.order.clone()
+    }
+
+    /// Whether a replacement session was adopted since the last call, on any
+    /// peer. Edge-triggered: reading it clears it.
+    pub fn take_session_changed(&mut self) -> bool {
+        let mut changed = false;
+        for s in self.sessions.values_mut() {
+            changed |= s.take_session_changed();
+        }
+        changed
+    }
+
+    /// `(adopted, challenges that went unanswered)` summed over every peer. Use
+    /// [`session_adoption_counts_for`](Self::session_adoption_counts_for) to
+    /// attribute either to one connection id.
+    pub fn session_adoption_counts(&self) -> (u64, u64) {
+        self.sessions.values().fold((0, 0), |(a, f), s| {
+            let (sa, sf) = s.session_adoption_counts();
+            (a + sa, f + sf)
+        })
+    }
+
+    /// The same pair for one connection id, or `None` if it has no session.
+    pub fn session_adoption_counts_for(&self, cid: u64) -> Option<(u64, u64)> {
+        self.sessions.get(&cid).map(|s| s.session_adoption_counts())
+    }
+
+    /// Address migrations summed over every peer.
+    pub fn migrations(&self) -> u64 {
+        self.sessions.values().map(|s| s.migrations()).sum()
+    }
+
+    /// Successful path validations, summed over every peer.
+    pub fn path_validations(&self) -> u64 {
+        self.sessions.values().map(|s| s.path_validations()).sum()
+    }
+
+    /// Path-validation timeouts (reverts), summed over every peer.
+    pub fn path_validation_failures(&self) -> u64 {
+        self.sessions.values().map(|s| s.path_validation_failures()).sum()
+    }
+
+    /// The address of the most recently opened session, or `None` before any
+    /// peer is seen. Ambiguous once several peers are live - prefer
+    /// [`peer_of`](Self::peer_of).
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.order.last().and_then(|cid| self.sessions.get(cid)).and_then(|s| s.peer())
+    }
+
+    /// The address a given connection id is currently bound to.
+    pub fn peer_of(&self, cid: u64) -> Option<SocketAddr> {
+        self.sessions.get(&cid).and_then(|s| s.peer())
+    }
+
+    /// Source symbols recovered by RLC without a retransmit, summed over peers.
+    pub fn rlc_recovered(&self) -> u64 {
+        self.sessions.values().map(|s| s.rlc_recovered()).sum()
+    }
+
+    /// NAKs sent (the ARQ floor), summed over peers.
+    pub fn naks_sent(&self) -> u64 {
+        self.sessions.values().map(|s| s.naks_sent()).sum()
+    }
+
+    /// FEEDBACK frames sent, summed over peers.
+    pub fn feedback_sent(&self) -> u64 {
+        self.sessions.values().map(|s| s.feedback_sent()).sum()
+    }
+
+    /// The channel estimate of the most recently opened session. Per-peer by
+    /// nature - a mesh node has one estimate per path, not one for the node.
+    pub fn channel_estimate(&self) -> (f32, f32, f32) {
+        self.order
+            .last()
+            .and_then(|cid| self.sessions.get(cid))
+            .map(|s| s.channel_estimate())
+            .unwrap_or((0.0, 0.0, 0.0))
     }
 }
 
