@@ -58,6 +58,15 @@ mix.
 - **1.15x bit margin**: the blocked layout uses ~1.15x the bits of a
   standard filter at the same target FPR, absorbing per-block
   Poisson load variance.
+- **`create` obtains, `reset` truncates**: `create(path, ...)`
+  initializes an empty filter only when the path does not yet exist,
+  and otherwise attaches with inserted members intact - racing
+  creators all reach the same filter. A region built with a
+  different block count or hash count is a `LayoutMismatch`.
+  `reset(path, ...)` truncates and reinitializes, for a caller that
+  owns the path; on Windows it succeeds only once every process has
+  unmapped the region. The in-place `clear()` empties without
+  truncating.
 - **Cross-process backed by MMF** (a single file).
 
 ---
