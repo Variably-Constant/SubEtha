@@ -110,41 +110,72 @@ fn unpack_head(v: u64) -> (u32, u32) {
 }
 
 impl<T: Copy + 'static> SharedVersionedChain<T> {
+    /// Obtain the chain at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves live nodes, the head and the free list in
+    /// place; a chain built with a different capacity or payload type
+    /// is a `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, ChainError> {
         Self::check_layout()?;
         assert!(capacity >= 1 && capacity < (u32::MAX - 1) as usize);
-        let total = versioned_chain_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut ChainHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            versioned_chain_file_size(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const ChainHeader)).magic == VERSIONED_CHAIN_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the chain at `path` and initialize an empty one,
+    /// discarding every node live peers hold. For a caller that knows
+    /// it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, ChainError> {
+        Self::check_layout()?;
+        assert!(capacity >= 1 && capacity < (u32::MAX - 1) as usize);
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            versioned_chain_file_size(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty chain: config, the NIL chain head, the free
+    /// chain threading every node, then the magic, last, because
+    /// attachers spin on it. The zeroed free-list head is already
+    /// (counter=0, idx=0) and zeroed node versions and payloads are
+    /// the empty state.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `versioned_chain_file_size(capacity)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
         unsafe {
-            std::ptr::write(hdr, ChainHeader {
-                magic: VERSIONED_CHAIN_MAGIC,
-                capacity: capacity as u32,
-                payload_size: size_of::<T>() as u32,
-                head: AtomicU32::new(NIL_NODE),
-                free_list_head: AtomicU64::new(pack_head(0, 0)),
-                live_count: AtomicU64::new(0),
-                _pad: [0; 32],
-            });
-        }
-        let nodes_base = unsafe { mmap.as_mut_ptr().add(size_of::<ChainHeader>()) };
-        for i in 0..capacity {
-            let node_ptr = unsafe {
-                nodes_base.add(i * size_of::<VersionNode>()) as *mut VersionNode
-            };
-            let next_free = if i + 1 < capacity { (i + 1) as u32 } else { NIL_NODE };
-            unsafe {
-                std::ptr::write(node_ptr, VersionNode {
-                    version: AtomicU64::new(0),
-                    next: AtomicU32::new(NIL_NODE),
-                    next_free: AtomicU32::new(next_free),
-                    payload: [0; NODE_PAYLOAD_BYTES],
-                });
+            let hdr = ptr as *mut ChainHeader;
+            (*hdr).capacity = capacity as u32;
+            (*hdr).payload_size = size_of::<T>() as u32;
+            std::ptr::write(&raw mut (*hdr).head, AtomicU32::new(NIL_NODE));
+            let nodes_base = ptr.add(size_of::<ChainHeader>());
+            for i in 0..capacity {
+                let node_ptr = nodes_base.add(i * size_of::<VersionNode>()) as *mut VersionNode;
+                let next_free = if i + 1 < capacity { (i + 1) as u32 } else { NIL_NODE };
+                std::ptr::write(&raw mut (*node_ptr).next, AtomicU32::new(NIL_NODE));
+                std::ptr::write(&raw mut (*node_ptr).next_free, AtomicU32::new(next_free));
             }
+            std::ptr::write_volatile(&raw mut (*hdr).magic, VERSIONED_CHAIN_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized chain, refusing one built with a different
+    /// capacity or payload type.
+    fn from_region(file: File, mmap: MmapMut, capacity: usize) -> Result<Self, ChainError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const ChainHeader) };
+        if hdr.magic != VERSIONED_CHAIN_MAGIC
+            || hdr.capacity != capacity as u32
+            || hdr.payload_size as usize != size_of::<T>()
+        {
+            return Err(ChainError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, capacity, _phantom: PhantomData,
@@ -161,18 +192,7 @@ impl<T: Copy + 'static> SharedVersionedChain<T> {
             return Err(ChainError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const ChainHeader) };
-        if hdr.magic != VERSIONED_CHAIN_MAGIC
-            || hdr.capacity != expected_capacity as u32
-            || hdr.payload_size as usize != size_of::<T>()
-        {
-            return Err(ChainError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     fn check_layout() -> Result<(), ChainError> {
@@ -383,6 +403,42 @@ mod tests {
         assert_eq!(c.read_at(100), Some(30));
         assert_eq!(c.current(), Some((3, 30)));
         assert_eq!(c.len(), 3);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with live nodes in place; reset is
+    /// what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_nodes() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let c: SharedVersionedChain<u64> = SharedVersionedChain::create(&p, 8).unwrap();
+        c.push(1, 10).unwrap();
+        c.push(2, 20).unwrap();
+
+        let c2: SharedVersionedChain<u64> = SharedVersionedChain::create(&p, 8).unwrap();
+        assert_eq!(c2.current(), Some((2, 20)), "attach lost the chain head");
+        assert_eq!(c2.read_at(1), Some(10), "attach lost a chained node");
+        assert_eq!(c2.len(), 2);
+        assert!(matches!(
+            SharedVersionedChain::<u64>::create(&p, 4),
+            Err(ChainError::LayoutMismatch),
+        ));
+        assert!(matches!(
+            SharedVersionedChain::<u32>::create(&p, 8),
+            Err(ChainError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle
+        // goes before the reset.
+        drop(c);
+        drop(c2);
+        let fresh: SharedVersionedChain<u64> = SharedVersionedChain::reset(&p, 8).unwrap();
+        assert_eq!(fresh.current(), None, "reset kept the chain head");
+        assert_eq!(fresh.len(), 0, "reset kept nodes");
+        fresh.push(1, 11).unwrap();
+        assert_eq!(fresh.current(), Some((1, 11)));
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 

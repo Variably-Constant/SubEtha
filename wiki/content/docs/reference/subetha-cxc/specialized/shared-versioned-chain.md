@@ -32,6 +32,12 @@ atomic CAS for head updates.
 - **Native sidecar integration**: the struct carries a `HandshakeHeader` + `ObservationRing` and implements `subetha_sidecar::AdaptiveInstance`. Wrap in `SidecarBox::new` to register with the global sidecar; raw `create()` / `open()` return the unregistered type unchanged.
 
 - **`T: Copy + 'static`, payload up to 48 bytes**.
+- **`create` obtains the chain**: it initializes the file only
+  when the path does not yet exist, and otherwise attaches with
+  live nodes, the head and the free list in place; a chain built
+  with a different capacity or payload type is a
+  `LayoutMismatch`. `reset` truncates and reinitializes, and on
+  Windows succeeds only once every mapping handle is gone.
 - **Bounded capacity at create**: Treiber-stack free list backs
   reuse after GC (when added).
 - **`push(version, value)`**: CAS prepend at head; one slot
