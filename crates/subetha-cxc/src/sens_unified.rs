@@ -1586,6 +1586,102 @@ mod tests {
     // mid-stream and asserts every item is delivered exactly once, in order,
     // across the switch. Exercises the demux sockets, the drain-barrier, the
     // CODE_SWITCH frame, and the receiver's boundary merge end to end.
+    /// Two concurrent senders through the unified endpoint, pinned to RLC (the
+    /// mesh shape, and the code Auto runs at low loss). Every item of both
+    /// streams must arrive, and `poll_from` must attribute each to the peer
+    /// that actually sent it.
+    ///
+    /// The tag assertion is the point. Delivery alone passes even when every
+    /// item is labelled with whoever spoke last, which is the misattribution a
+    /// mesh node cannot detect from its own side.
+    #[test]
+    fn unified_two_peers_deliver_and_are_attributed_separately() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let per_peer: u64 = 150;
+        let peers: u64 = 2;
+        let total = per_peer * peers;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<(u64, u64)> = Vec::with_capacity(total as usize);
+            let start = Instant::now();
+            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
+                let items = recv.poll_from().unwrap_or_default();
+                let empty = items.is_empty();
+                for (tag, it) in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push((tag, u64::from_le_bytes(s)));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send(got).ok();
+        });
+
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+                let mut buf = vec![0u8; 8];
+                let start = Instant::now();
+                for i in 0..per_peer {
+                    if start.elapsed() > Duration::from_secs(15) {
+                        break;
+                    }
+                    buf[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                }
+                send.finish().ok();
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+
+        let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        rh.join().ok();
+
+        for p in 0..peers {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|(_, v)| (v >> 56) == p)
+                .map(|(_, v)| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..per_peer).collect::<Vec<_>>(),
+                "peer {p} must deliver every item in order alongside the other peer",
+            );
+            // Every item a peer sent must carry ONE tag, and the two peers'
+            // tags must differ - otherwise the attribution is a label, not a
+            // routing fact.
+            let tags: std::collections::BTreeSet<u64> =
+                got.iter().filter(|(_, v)| (v >> 56) == p).map(|(t, _)| *t).collect();
+            assert_eq!(tags.len(), 1, "peer {p} items must all carry one tag, got {tags:?}");
+        }
+        let all_tags: std::collections::BTreeSet<u64> = got.iter().map(|(t, _)| *t).collect();
+        assert_eq!(all_tags.len(), 2, "the two peers must be attributed distinctly");
+    }
+
     #[test]
     fn unified_delivers_in_order_across_a_forced_switch() {
         use std::sync::mpsc;
