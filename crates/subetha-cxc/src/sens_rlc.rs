@@ -82,6 +82,16 @@ const AMPLIFICATION_FACTOR: u64 = 3;
 /// address unreachable and reverting to the previous one (a spoofed move never
 /// answers; a genuine migration answers within a round trip).
 const CHALLENGE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Decode windows one receiver will carry at once. A mesh node talks to its
+/// replica set, not to the internet, so this is far above any real fan-in and
+/// exists to bound what a peer that keeps minting connection ids can allocate.
+const MAX_LIVE_SESSIONS: usize = 256;
+
+/// Connection ids under admission challenge at once. Smaller than the live cap:
+/// a candidate holds a slot for at most [`CHALLENGE_TIMEOUT`], so this bounds
+/// what an off-path attacker spraying ids can hold open.
+const MAX_PENDING_ADMISSIONS: usize = 64;
 /// TLS handshake flight (cleartext, before keys exist) + its ack, and the AEAD
 /// envelope `[17][pn u64-le][sealed inner datagram + tag]` for the data phase.
 #[cfg(feature = "tls")]
@@ -1783,19 +1793,6 @@ struct RlcSession {
     peer_validated: bool,
     pending_challenge: Option<(SocketAddr, u64, Instant)>,
     prev_peer: Option<SocketAddr>,
-    /// A candidate replacement session under challenge: `(addr, cid, nonce,
-    /// sent_at)`. Adopted only when that nonce returns, so an adopt requires
-    /// the ability to RECEIVE at the claimed address. The guarantee is
-    /// return-routability, not session ownership: the responder echoes the
-    /// challenge without inspecting the id.
-    pending_session: Option<(SocketAddr, u64, u64, Instant)>,
-    /// Set when a replacement session is adopted; cleared by
-    /// [`take_session_changed`](Self::take_session_changed).
-    session_changed: bool,
-    /// Replacement sessions adopted, and challenges for one that expired
-    /// unanswered. Telemetry.
-    session_adoptions: u64,
-    session_adoption_failures: u64,
     /// Monotonic nonce source for challenges (mixed through splitmix64 so the
     /// emitted nonce is not a guessable counter).
     challenge_seq: u64,
@@ -1807,6 +1804,11 @@ struct RlcSession {
     /// Successful path validations and validation timeouts (reverts). Telemetry.
     path_validations: u64,
     path_validation_failures: u64,
+    /// The 1-RTT keys for this peer, handed over by the receiver when the
+    /// session opens. There is one handshake per receiver, so exactly one
+    /// session can hold it and a TLS receiver therefore serves one peer.
+    #[cfg(feature = "tls")]
+    crypto: Option<crate::rlc_crypto::CryptoState>,
 }
 
 /// Receiver side of the RLC transport.
@@ -1825,6 +1827,14 @@ pub struct SensOMaticRlcReceiver {
     /// delivery across peers is deterministic rather than hash-ordered.
     sessions: HashMap<u64, RlcSession>,
     order: Vec<u64>,
+    /// Connection ids that have asked for a window and are under challenge:
+    /// `cid -> (addr, nonce, sent_at)`. Bounded, so a forged-id spray cannot
+    /// grow this either.
+    pending_admissions: HashMap<u64, (SocketAddr, u64, Instant)>,
+    challenge_seq: u64,
+    session_changed: bool,
+    session_admissions: u64,
+    session_admission_failures: u64,
     /// First kernel RX timestamp (nanoseconds, `SO_TIMESTAMPNS`) seen, so the
     /// per-packet arrival the congestion detectors read is a small offset from
     /// it. `None` until the first stamped datagram (or always, where the kernel
@@ -1838,14 +1848,17 @@ pub struct SensOMaticRlcReceiver {
     ge_loss_p: u32,
     ge_loss_r: u32,
     pair_debug: bool,
-    /// Optional TLS state (server side): when present, every data datagram is
-    /// AEAD-sealed / opened with the 1-RTT keys.
-    ///
-    /// One handshake per receiver, so a TLS receiver serves ONE peer. Several
-    /// concurrent senders each run their own handshake and cannot share this
-    /// state; see [`poll_from`](Self::poll_from) for the multi-peer contract.
+    /// The 1-RTT keys from the handshake, held until the first session opens
+    /// and then moved into it. `tls_armed` outlives the move, so a second
+    /// connection id can still be refused after the keys are gone.
     #[cfg(feature = "tls")]
     crypto: Option<crate::rlc_crypto::CryptoState>,
+    #[cfg(feature = "tls")]
+    handshake_peer: Option<SocketAddr>,
+    /// Whether TLS was armed at all. A TLS receiver serves one peer, so this
+    /// gates admission of any id beyond the first.
+    #[cfg(feature = "tls")]
+    tls_armed: bool,
 }
 
 impl RlcSession {
@@ -1908,15 +1921,13 @@ impl RlcSession {
             peer_validated: true,
             pending_challenge: None,
             prev_peer: None,
-            pending_session: None,
-            session_changed: false,
-            session_adoptions: 0,
-            session_adoption_failures: 0,
             challenge_seq: 0,
             unval_recv_bytes: 0,
             unval_sent_bytes: 0,
             path_validations: 0,
             path_validation_failures: 0,
+            #[cfg(feature = "tls")]
+            crypto: None,
         }
     }
 
@@ -1943,34 +1954,6 @@ impl RlcSession {
         self.peer
     }
 
-    /// Swap the datagram socket for one the caller already built (a demux
-    /// socket the unified endpoint shares across both codes).
-    pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
-        self.sock = std::sync::Arc::new(sock);
-    }
-
-    /// Arm the optional TLS record layer as the server. Call
-    /// [`handshake`](Self::handshake) before polling for data.
-    #[cfg(feature = "tls")]
-    pub fn with_tls_server(mut self, cfg: std::sync::Arc<rustls::ServerConfig>) -> io::Result<Self> {
-        self.crypto = Some(
-            crate::rlc_crypto::CryptoState::new_server(cfg)
-                .map_err(io::Error::other)?,
-        );
-        Ok(self)
-    }
-
-    /// Run the TLS handshake as the server (no-op when TLS is not armed). Blocks
-    /// until the client connects and the 1-RTT keys are derived; learns the peer.
-    #[cfg(feature = "tls")]
-    pub fn handshake(&mut self) -> io::Result<()> {
-        if let Some(crypto) = self.crypto.as_mut() {
-            let peer = drive_handshake(&self.sock, None, crypto, false)?;
-            self.peer = Some(peer);
-        }
-        Ok(())
-    }
-
     /// Send one inner datagram to the learned peer, AEAD-sealing it when TLS is
     /// on. While the peer address is unvalidated (a migration in flight) the send
     /// is held to the anti-amplification cap: at most `AMPLIFICATION_FACTOR x` the
@@ -1992,37 +1975,6 @@ impl RlcSession {
             return send_with_retry(&self.sock, &wire, peer);
         }
         send_with_retry(&self.sock, inner, peer)
-    }
-
-    /// The bound local address.
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.sock.local_addr()
-    }
-
-    /// The datagram backend this receiver's wire I/O resolved to (io_uring
-    /// where available, else plain UDP).
-    pub fn dgram_backend(&self) -> crate::dgram::DgramBackend {
-        self.sock.backend()
-    }
-
-    /// Inject diagnostic DATA loss: drop `pct` percent of incoming data
-    /// datagrams (seeded, reproducible) to exercise RLC recovery on loopback.
-    pub fn with_debug_loss(mut self, pct: u32, seed: u64) -> Self {
-        self.drop_pct = pct.min(100);
-        self.drop_rng = seed | 1;
-        self
-    }
-
-    /// Inject Gilbert-Elliott BURST loss: a two-state chain with per-10000
-    /// transition probabilities `p` (Good->Bad) and `r` (Bad->Good), dropping
-    /// every DATA datagram in the Bad state. Mean burst `10000 / r`, steady loss
-    /// `p / (p + r)`. The same channel the block-RS receiver injects, so an
-    /// adaptive-RLC-vs-static-block-RS A/B runs over an identical loss process.
-    pub fn with_gilbert_loss(mut self, p_per_10k: u32, r_per_10k: u32, seed: u64) -> Self {
-        self.ge_loss_p = p_per_10k;
-        self.ge_loss_r = r_per_10k.max(1);
-        self.drop_rng = seed | 1;
-        self
     }
 
     /// Source symbols recovered by RLC without a retransmit (telemetry).
@@ -2218,88 +2170,6 @@ impl RlcSession {
     /// established session's keys. Carries no amplification accounting - a
     /// [`PATH_FRAME_LEN`]-byte frame emitted only in response to a full data
     /// datagram.
-    fn wire_send_to(&mut self, inner: &[u8], addr: SocketAddr) -> io::Result<()> {
-        send_with_retry(&self.sock, inner, addr)
-    }
-
-    /// Arm a challenge for a candidate replacement session. A challenge
-    /// already outstanding for the same `(addr, cid)` is left alone, so the
-    /// nonce is not rolled faster than an answer can return.
-    fn begin_session_validation(&mut self, cid: u64, addr: SocketAddr) {
-        if let Some((a, c, _, _)) = self.pending_session
-            && a == addr
-            && c == cid
-        {
-            return;
-        }
-        let nonce = self.next_challenge_nonce();
-        self.pending_session = Some((addr, cid, nonce, Instant::now()));
-    }
-
-    /// Send the outstanding replacement-session challenge, carrying the
-    /// CANDIDATE id rather than the established one. The responder echoes the
-    /// frame verbatim, so that id identifies which candidate an answer
-    /// belongs to.
-    fn maybe_send_session_challenge(&mut self) -> io::Result<()> {
-        let Some((addr, cid, nonce, _)) = self.pending_session else {
-            return Ok(());
-        };
-        let mut pkt = Vec::with_capacity(PATH_FRAME_LEN);
-        pkt.push(PKT_RLC_PATH_CHALLENGE);
-        pkt.extend_from_slice(&cid.to_le_bytes());
-        pkt.extend_from_slice(&nonce.to_le_bytes());
-        self.wire_send_to(&pkt, addr)
-    }
-
-    /// Adopt a challenged session: drop the decode state keyed to the old
-    /// session's source-id space.
-    ///
-    /// Path sensors are kept. Loss rate, burst model and capacity describe
-    /// the link, which a peer restarting does not change.
-    fn adopt_session(&mut self, cid: u64, addr: SocketAddr) {
-        self.dec = RlcDecoder::new(self.symbol_len).with_horizon(128);
-        self.delivered_through = 0;
-        self.last_fb_delivered = 0;
-        self.highest_seen = 0;
-        self.fec_recovered.clear();
-        self.data_arrived.clear();
-        self.loss_pending.clear();
-        self.nakd.clear();
-        self.gap_since.clear();
-        self.ge_decided.clear();
-        self.ge_dropped_once.clear();
-        self.last_data_sid = None;
-
-        // A session's id is the receiver's map key, so adoption resets THIS
-        // connection's window rather than rebinding it to another id. A peer
-        // that restarts arrives with a new id and gets its own session.
-        debug_assert_eq!(cid, self.cid, "a session adopts only its own connection id");
-        // Anchored at zero: a fresh connection id is a fresh sender, whose
-        // ids start at the bottom and whose head is still in its window for
-        // ARQ.
-        self.frontier_anchored = true;
-        self.peer = Some(addr);
-        self.prev_peer = None;
-        self.peer_validated = true;
-        self.pending_challenge = None;
-        self.pending_session = None;
-        self.session_changed = true;
-        self.session_adoptions += 1;
-    }
-
-    /// Whether a replacement session has been adopted since this was last
-    /// called, clearing the flag. Edge-triggered: one report per adoption.
-    pub fn take_session_changed(&mut self) -> bool {
-        std::mem::replace(&mut self.session_changed, false)
-    }
-
-    /// Replacement sessions adopted, and challenges for one that went
-    /// unanswered. The second counter rising without the first is what a
-    /// spoofed reset attempt looks like from here.
-    pub fn session_adoption_counts(&self) -> (u64, u64) {
-        (self.session_adoptions, self.session_adoption_failures)
-    }
-
     /// An unguessable challenge nonce. Seeded from the high-resolution monotonic
     /// clock (never on the wire) mixed through splitmix64, so an off-path
     /// attacker that can read the cleartext connection id still cannot predict
@@ -2333,19 +2203,6 @@ impl RlcSession {
         self.wire_send_to_peer(&pkt)
     }
 
-    /// Retire a replacement-session challenge unanswered within
-    /// [`CHALLENGE_TIMEOUT`], leaving the established session untouched. The
-    /// candidate is dropped rather than remembered, so a peer that really did
-    /// restart is challenged again on its next datagram.
-    fn expire_stale_session_challenge(&mut self) {
-        if let Some((_, _, _, sent)) = self.pending_session
-            && sent.elapsed() > CHALLENGE_TIMEOUT
-        {
-            self.pending_session = None;
-            self.session_adoption_failures += 1;
-        }
-    }
-
     /// Validate an incoming PATH_RESPONSE: it must carry this session's id, come
     /// from the address under challenge, and echo the exact nonce. On a match the
     /// address is confirmed reachable and the anti-amplification cap is lifted.
@@ -2355,16 +2212,9 @@ impl RlcSession {
         }
         let cid = u64::from_le_bytes(inner[1..9].try_into().unwrap());
         let nonce = u64::from_le_bytes(inner[9..17].try_into().unwrap());
-        // A replacement-session answer carries the candidate id, which never
-        // matches `session_cid`, so it is checked before the established arm.
-        if let Some((addr, want_cid, want_nonce, _)) = self.pending_session
-            && addr == from
-            && want_cid == cid
-            && want_nonce == nonce
-        {
-            self.adopt_session(cid, from);
-            return;
-        }
+        // An answer for a candidate session carries an id this window does not
+        // own; the receiver intercepts those before routing, so anything
+        // reaching here must match.
         if self.cid != cid {
             return;
         }
@@ -2745,6 +2595,11 @@ impl SensOMaticRlcReceiver {
             start: Instant::now(),
             sessions: HashMap::new(),
             order: Vec::new(),
+            pending_admissions: HashMap::new(),
+            challenge_seq: 0,
+            session_changed: false,
+            session_admissions: 0,
+            session_admission_failures: 0,
             kts_base_ns: None,
             drop_pct: 0,
             drop_seed: 0,
@@ -2753,6 +2608,10 @@ impl SensOMaticRlcReceiver {
             pair_debug: std::env::var("SUBETHA_PAIR_DEBUG").is_ok(),
             #[cfg(feature = "tls")]
             crypto: None,
+            #[cfg(feature = "tls")]
+            handshake_peer: None,
+            #[cfg(feature = "tls")]
+            tls_armed: false,
         })
     }
 
@@ -2778,6 +2637,31 @@ impl SensOMaticRlcReceiver {
         self.sock.backend()
     }
 
+    /// Arm the optional TLS record layer as the server. Call
+    /// [`handshake`](Self::handshake) before polling for data.
+    ///
+    /// A TLS receiver serves ONE peer: there is a single handshake, so exactly
+    /// one session can hold the resulting keys. A second connection id arriving
+    /// on a TLS receiver is refused rather than admitted unsealed.
+    #[cfg(feature = "tls")]
+    pub fn with_tls_server(mut self, cfg: std::sync::Arc<rustls::ServerConfig>) -> io::Result<Self> {
+        self.crypto =
+            Some(crate::rlc_crypto::CryptoState::new_server(cfg).map_err(io::Error::other)?);
+        self.tls_armed = true;
+        Ok(self)
+    }
+
+    /// Run the TLS handshake as the server (no-op when TLS is not armed). Blocks
+    /// until the client connects and the 1-RTT keys are derived; learns the peer.
+    #[cfg(feature = "tls")]
+    pub fn handshake(&mut self) -> io::Result<()> {
+        if let Some(crypto) = self.crypto.as_mut() {
+            let peer = drive_handshake(&self.sock, None, crypto, false)?;
+            self.handshake_peer = Some(peer);
+        }
+        Ok(())
+    }
+
     /// Drop `pct` percent of incoming DATA (seeded) to exercise recovery on a
     /// lossless link. Stamped onto each session as it opens, so every peer sees
     /// the same injected rate.
@@ -2795,9 +2679,18 @@ impl SensOMaticRlcReceiver {
         self
     }
 
-    /// The session for `cid`, opened on first sight.
-    fn session_mut(&mut self, cid: u64) -> &mut RlcSession {
+    /// Open a session for `cid`. `None` when this receiver will not admit the
+    /// id: a TLS receiver holds one handshake, so it serves the one peer those
+    /// keys belong to, and a receiver caps how many peers it will carry.
+    fn open_session(&mut self, cid: u64) -> Option<&mut RlcSession> {
         if !self.sessions.contains_key(&cid) {
+            if self.sessions.len() >= MAX_LIVE_SESSIONS {
+                return None;
+            }
+            #[cfg(feature = "tls")]
+            if self.tls_armed && self.crypto.is_none() {
+                return None;
+            }
             let mut s = RlcSession::new(
                 cid,
                 std::sync::Arc::clone(&self.sock),
@@ -2809,10 +2702,15 @@ impl SensOMaticRlcReceiver {
             s.ge_loss_p = self.ge_loss_p;
             s.ge_loss_r = self.ge_loss_r;
             s.pair_debug = self.pair_debug;
+            #[cfg(feature = "tls")]
+            {
+                s.crypto = self.crypto.take();
+                s.peer = self.handshake_peer;
+            }
             self.sessions.insert(cid, s);
             self.order.push(cid);
         }
-        self.sessions.get_mut(&cid).expect("just inserted")
+        self.sessions.get_mut(&cid)
     }
 
     /// Read whatever has arrived and deliver in-order items, each tagged with
@@ -2877,6 +2775,11 @@ impl SensOMaticRlcReceiver {
                 Err(e) => return Err(e),
             }
         }
+        // Retire admission challenges that went unanswered, then (re)send the
+        // ones still outstanding - after the drain, so an answer that arrived
+        // this tick is not challenged again.
+        self.expire_stale_admissions();
+        self.send_admission_challenges()?;
         // Service every live session in first-seen order, so delivery across
         // peers is deterministic rather than hash-ordered.
         let ids = self.order.clone();
@@ -2895,11 +2798,20 @@ impl SensOMaticRlcReceiver {
         Ok(out)
     }
 
-    /// Route one cleartext datagram to the session that owns its connection id,
-    /// opening a session for an id not seen before.
+    /// Route one cleartext datagram to the session that owns its connection id.
+    ///
+    /// The FIRST id a receiver sees is admitted outright: there is no
+    /// established session for a forgery to disturb, and this is the ordinary
+    /// point-to-point case. Every id after that is challenged before a decode
+    /// window is opened for it, so an off-path attacker cannot make a receiver
+    /// allocate state by spraying connection ids it cannot receive answers for.
     fn route_datagram(&mut self, inner: &[u8], from: SocketAddr, arrival_us: f64) -> bool {
-        // A PATH_RESPONSE answers an outstanding challenge. It carries the id it
-        // is answering for, so it routes like any other frame.
+        // An answer to an outstanding admission challenge opens a window. It is
+        // checked before the id is resolved: the candidate has no session yet,
+        // so resolving first would route the answer to an unrelated window.
+        if self.try_admit(inner, from) {
+            return true;
+        }
         let cid = match frame_conn_id(inner) {
             Some(cid) => cid,
             // No id in the frame: it belongs to the session that most recently
@@ -2909,7 +2821,14 @@ impl SensOMaticRlcReceiver {
                 None => return false,
             },
         };
-        self.session_mut(cid).route_and_process(inner, from, arrival_us)
+        if !self.sessions.contains_key(&cid) && !self.sessions.is_empty() {
+            self.begin_admission(cid, from);
+            return false;
+        }
+        match self.open_session(cid) {
+            Some(s) => s.route_and_process(inner, from, arrival_us),
+            None => false,
+        }
     }
 
     /// Read whatever has arrived and deliver in-order items. Peer attribution is
@@ -2932,29 +2851,112 @@ impl SensOMaticRlcReceiver {
         self.order.clone()
     }
 
-    /// Whether a replacement session was adopted since the last call, on any
-    /// peer. Edge-triggered: reading it clears it.
+    /// Whether a session was admitted since the last call. Edge-triggered:
+    /// reading it clears it.
     pub fn take_session_changed(&mut self) -> bool {
-        let mut changed = false;
-        for s in self.sessions.values_mut() {
-            changed |= s.take_session_changed();
-        }
-        changed
+        std::mem::replace(&mut self.session_changed, false)
     }
 
-    /// `(adopted, challenges that went unanswered)` summed over every peer. Use
-    /// [`session_adoption_counts_for`](Self::session_adoption_counts_for) to
-    /// attribute either to one connection id.
+    /// `(sessions admitted, challenges that went unanswered)`. The second
+    /// rising without the first is what a forged connection id looks like from
+    /// here. Use [`session_admissions_for`](Self::session_admissions_for) to
+    /// attribute an admission to one connection id.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
-        self.sessions.values().fold((0, 0), |(a, f), s| {
-            let (sa, sf) = s.session_adoption_counts();
-            (a + sa, f + sf)
-        })
+        (self.session_admissions, self.session_admission_failures)
     }
 
-    /// The same pair for one connection id, or `None` if it has no session.
-    pub fn session_adoption_counts_for(&self, cid: u64) -> Option<(u64, u64)> {
-        self.sessions.get(&cid).map(|s| s.session_adoption_counts())
+    /// Whether `cid` holds an admitted session, and the address it answered
+    /// its challenge from. `None` for an id never admitted.
+    pub fn session_admissions_for(&self, cid: u64) -> Option<SocketAddr> {
+        self.sessions.get(&cid).and_then(|s| s.peer())
+    }
+
+    /// An unguessable admission-challenge nonce, mixed through splitmix64 so an
+    /// off-path attacker that can read the cleartext connection id still cannot
+    /// predict the value it would have to echo.
+    fn next_admission_nonce(&mut self, cid: u64) -> u64 {
+        self.challenge_seq = self.challenge_seq.wrapping_add(1);
+        let entropy = self.start.elapsed().as_nanos() as u64;
+        let mut x = entropy ^ self.challenge_seq.rotate_left(32) ^ cid;
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    }
+
+    /// Arm a challenge for a connection id asking to be admitted. An id already
+    /// under challenge from the same address keeps its nonce, so it is not
+    /// rolled faster than an answer can return.
+    fn begin_admission(&mut self, cid: u64, addr: SocketAddr) {
+        if self.pending_admissions.len() >= MAX_PENDING_ADMISSIONS {
+            return;
+        }
+        if let Some((a, _, _)) = self.pending_admissions.get(&cid)
+            && *a == addr
+        {
+            return;
+        }
+        let nonce = self.next_admission_nonce(cid);
+        self.pending_admissions.insert(cid, (addr, nonce, Instant::now()));
+    }
+
+    /// (Re)send every outstanding admission challenge, carrying the candidate
+    /// id. The responder echoes the frame verbatim, so the id identifies which
+    /// candidate an answer belongs to.
+    fn send_admission_challenges(&mut self) -> io::Result<()> {
+        let pending: Vec<(u64, SocketAddr, u64)> = self
+            .pending_admissions
+            .iter()
+            .map(|(cid, (addr, nonce, _))| (*cid, *addr, *nonce))
+            .collect();
+        for (cid, addr, nonce) in pending {
+            let mut pkt = Vec::with_capacity(PATH_FRAME_LEN);
+            pkt.push(PKT_RLC_PATH_CHALLENGE);
+            pkt.extend_from_slice(&cid.to_le_bytes());
+            pkt.extend_from_slice(&nonce.to_le_bytes());
+            send_with_retry(&self.sock, &pkt, addr)?;
+        }
+        Ok(())
+    }
+
+    /// Drop admission challenges that went unanswered past [`CHALLENGE_TIMEOUT`]
+    /// and count them. A genuine peer answers within a round trip; a forged id
+    /// never answers, so this is the counter that rises under a forgery.
+    fn expire_stale_admissions(&mut self) {
+        let before = self.pending_admissions.len();
+        self.pending_admissions
+            .retain(|_, (_, _, sent)| sent.elapsed() < CHALLENGE_TIMEOUT);
+        self.session_admission_failures += (before - self.pending_admissions.len()) as u64;
+    }
+
+    /// Admit a candidate whose challenge nonce came back from the address it
+    /// was sent to. Return-routability is what this proves, which an off-path
+    /// attacker cannot supply.
+    fn try_admit(&mut self, inner: &[u8], from: SocketAddr) -> bool {
+        if inner.len() < PATH_FRAME_LEN || inner.first() != Some(&PKT_RLC_PATH_RESPONSE) {
+            return false;
+        }
+        let cid = u64::from_le_bytes(inner[1..9].try_into().unwrap());
+        let nonce = u64::from_le_bytes(inner[9..17].try_into().unwrap());
+        let Some((addr, want, _)) = self.pending_admissions.get(&cid).copied() else {
+            return false;
+        };
+        if addr != from || want != nonce {
+            return false;
+        }
+        self.pending_admissions.remove(&cid);
+        if let Some(s) = self.open_session(cid) {
+            s.peer = Some(from);
+            // Anchor at zero rather than at the first id this window happens to
+            // see. A newly admitted connection id is a fresh sender whose ids
+            // start at the bottom, and the datagrams it sent while the
+            // challenge was in flight were dropped - anchoring here would
+            // silently skip them instead of leaving a gap ARQ recovers.
+            s.frontier_anchored = true;
+            self.session_admissions += 1;
+            self.session_changed = true;
+            return true;
+        }
+        false
     }
 
     /// Address migrations summed over every peer.
