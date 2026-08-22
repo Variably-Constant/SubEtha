@@ -810,6 +810,14 @@ impl UnifiedSensSender {
         self.rlc.tx_probe()
     }
 
+    /// Routing probe: `(active code, RS unacked blocks, items accepted
+    /// by send_item)`. `items_total` advancing while the RLC probe
+    /// stays virgin and the code reads `Rs` places the items on the RS
+    /// leg; `items_total` frozen means they never entered this sender.
+    pub fn route_probe(&self) -> (SensCode, usize, u64) {
+        (self.active, self.rs.pending_len(), self.items_total)
+    }
+
     /// Send one item over the active code, then periodically sample the fed-back
     /// loss and switch codes if the controller calls for it. The item is recorded
     /// in the replay ring so a switch can resend the un-acked tail over the new

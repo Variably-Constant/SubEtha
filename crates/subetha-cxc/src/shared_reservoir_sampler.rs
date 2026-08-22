@@ -119,6 +119,12 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Shar
 }
 
 impl<T: Copy + 'static> SharedReservoirSampler<T> {
+    /// Obtain the sampler at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves the live sample set and `total_seen` in place;
+    /// a region built with a different capacity or payload type is a
+    /// `LayoutMismatch`. The in-place [`reset`](Self::reset) restarts
+    /// a live sampler.
     pub fn create(
         path: impl AsRef<Path>, capacity: usize,
     ) -> Result<Self, ReservoirError> {
@@ -126,20 +132,45 @@ impl<T: Copy + 'static> SharedReservoirSampler<T> {
             return Err(ReservoirError::PayloadTooLarge);
         }
         assert!(capacity >= 1);
-        let total = reservoir_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut ReservoirHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            reservoir_file_size(capacity),
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const ReservoirHeader)).magic == RESERVOIR_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty sampler: config first, magic last, because
+    /// attachers spin on it. The zeroed region is already the empty
+    /// slot array and `total_seen` 0.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `reservoir_file_size(capacity)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut ReservoirHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<ReservoirHeader>());
-            (*hdr).magic = RESERVOIR_MAGIC;
             (*hdr).capacity = capacity as u32;
             (*hdr).slot_size = size_of::<T>() as u32;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, RESERVOIR_MAGIC);
         }
-        // Slots zero-initialised from set_len + map_mut.
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity or payload type.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity: usize,
+    ) -> Result<Self, ReservoirError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const ReservoirHeader) };
+        if hdr.magic != RESERVOIR_MAGIC
+            || hdr.capacity != capacity as u32
+            || hdr.slot_size != size_of::<T>() as u32
+        {
+            return Err(ReservoirError::LayoutMismatch);
+        }
         Ok(Self {
             _file: file, mmap, capacity, _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
@@ -159,18 +190,7 @@ impl<T: Copy + 'static> SharedReservoirSampler<T> {
             return Err(ReservoirError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const ReservoirHeader) };
-        if hdr.magic != RESERVOIR_MAGIC
-            || hdr.capacity != expected_capacity as u32
-            || hdr.slot_size != size_of::<T>() as u32
-        {
-            return Err(ReservoirError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     #[inline]
@@ -326,6 +346,30 @@ mod tests {
         let snap = r.snapshot();
         assert_eq!(snap, vec![0, 1, 2, 3, 4]);
         assert_eq!(r.total_seen(), 5);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the live sample set in place; the
+    /// in-place reset is what restarts sampling.
+    #[test]
+    fn second_create_attaches_and_keeps_samples() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let r: SharedReservoirSampler<u32> = SharedReservoirSampler::create(&p, 5).unwrap();
+        for i in 0..3u32 { r.record(i); }
+
+        let r2: SharedReservoirSampler<u32> = SharedReservoirSampler::create(&p, 5).unwrap();
+        assert_eq!(r2.total_seen(), 3, "attach restarted a live sampler");
+        assert_eq!(r2.snapshot().len(), 3);
+        assert!(matches!(
+            SharedReservoirSampler::<u32>::create(&p, 4),
+            Err(ReservoirError::LayoutMismatch),
+        ));
+
+        r2.reset();
+        assert_eq!(r.total_seen(), 0, "reset did not restart for every handle");
+        drop(r);
+        drop(r2);
         std::fs::remove_file(&p).ok();
     }
 
