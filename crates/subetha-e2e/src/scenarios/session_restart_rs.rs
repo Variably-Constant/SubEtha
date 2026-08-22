@@ -140,11 +140,65 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
 
     let code = rx.active_code();
     println!("   parent: session B delivered {got_b}/{ITEMS_PER_SESSION}, code {code:?}");
+    // Where the window actually stopped, so a shortfall names the block it
+    // is waiting on instead of only the count that did not arrive.
+    let live = rx.live_rs_sessions();
+    let frontiers: Vec<String> = live
+        .iter()
+        .map(|e| match rx.rs_session_frontier(*e) {
+            // `peer` is the address this window aims its ACKs and NAKs at.
+            // A completed window pointing at the RESTARTED sender is the
+            // rebinding that would free that sender's pending blocks.
+            Some((next, high, recv, peer)) => format!(
+                "epoch {e}: next_needed {next}, highest_seen {high}, \
+                 datagrams_in {recv}, peer {peer:?}"
+            ),
+            None => format!("epoch {e}: no window"),
+        })
+        .collect();
+    let pending = rx.rs_pending_admissions();
+    println!(
+        "   parent: rs windows [{}], pending admissions {pending:?}, adoptions {:?}",
+        frontiers.join("; "),
+        rx.session_adoption_counts(),
+    );
+    // Whether the datagrams reached this process at all. recv_ok climbing
+    // while the window never saw the blocks puts the loss inside the
+    // routing or the queue; recv_ok flat puts it below us, in the socket.
+    println!(
+        "   parent: demux probe {:?}, errors {:?}, stale_for {:?}, alive {}",
+        rx.demux_probe(),
+        rx.demux_errors(),
+        rx.demux_stale_for(),
+        rx.demux_alive(),
+    );
+    // Two windows may never aim at the same peer: each session's acks and
+    // naks belong to the sender that owns it, and a completed window
+    // pointing at a live sender acks blocks that sender still has to
+    // deliver, freeing them from its retransmit buffer for good. This is
+    // an invariant, so it catches the fault even on a run whose delivery
+    // happens to survive it.
+    let mut seen: Vec<(u32, std::net::SocketAddr)> = Vec::new();
+    for e in &live {
+        if let Some((_, _, _, Some(addr))) = rx.rs_session_frontier(*e) {
+            if let Some((other, _)) = seen.iter().find(|(_, a)| *a == addr) {
+                return Err(format!(
+                    "windows {other} and {e} both aim at {addr} - one sender's \
+                     control plane is pointed at another's peer; windows [{}]",
+                    frontiers.join("; "),
+                )
+                .into());
+            }
+            seen.push((*e, addr));
+        }
+    }
+
     require(
         got_b == ITEMS_PER_SESSION,
         format!(
             "restarted peer delivered {got_b}/{ITEMS_PER_SESSION} over Rs - the receiver \
-             is discarding the new session (code {code:?})"
+             is discarding the new session (code {code:?}); windows [{}], pending {pending:?}",
+            frontiers.join("; "),
         ),
     )?;
     Ok(())
@@ -208,8 +262,19 @@ fn sender(args: &[String]) -> Result<(), BoxErr> {
     }
     println!("   sender {tag}: {ITEMS_PER_SESSION} items sent, code {:?}", tx.active_code());
 
+    // Whether the tail ever left this process, reported while the drain
+    // runs: `sent` is forward datagrams put on the wire and `fed_back` is
+    // what the receiver said it got. A shortfall the receiver blames on a
+    // block it never saw is a different defect depending on whether the
+    // sender transmitted it at all.
+    for round in 0..40 {
+        let (sent, fed_back) = tx.raw_sent_recv();
+        println!("   sender {tag}: round {round}, datagrams sent {sent}, fed back {fed_back}");
+        tx.finish_within(Duration::from_millis(500)).ok();
+        sleep(Duration::from_millis(10));
+    }
     loop {
-        tx.finish().ok();
+        tx.finish_within(Duration::from_millis(500)).ok();
         sleep(Duration::from_millis(10));
     }
 }

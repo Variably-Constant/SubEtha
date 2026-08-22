@@ -219,6 +219,12 @@ pub struct Encoder {
     /// Constant for the encoder's life; a restarted peer draws a new one.
     epoch: u32,
     next_block: u32,
+    /// NAKs naming a block no longer held, so the peer is waiting on data
+    /// this encoder can never send.
+    unservable_naks: u64,
+    /// The block id of the last unservable NAK, so a repeat for the same
+    /// block reports once rather than on every feedback frame.
+    last_unservable_nak: Option<u32>,
     /// Highest `ack_through` reported by the receiver; below this every
     /// block is delivered.
     acked_through: u32,
@@ -278,6 +284,8 @@ impl Encoder {
             shard_len: max_item + ITEM_LEN_PREFIX,
             epoch: derive_epoch(),
             next_block: 0,
+            unservable_naks: 0,
+            last_unservable_nak: None,
             acked_through: 0,
             flow_window: 256,
             staged: Vec::with_capacity(k),
@@ -576,14 +584,45 @@ impl Encoder {
         }
         // ARQ: retransmit the requested missing shards.
         let mut out = Vec::new();
-        if fb.nak_block != NAK_NONE
-            && let Some(pb) = self.pending.get(&fb.nak_block)
-        {
-            let n = pb.shards.len();
-            for idx in 0..n {
-                if fb.nak_mask & (1 << idx) != 0 {
-                    out.push(pb.datagram_flagged(fb.nak_block, idx, FLAG_RETRANSMIT, self.epoch));
+        if fb.nak_block != NAK_NONE {
+            match self.pending.get(&fb.nak_block) {
+                Some(pb) => {
+                    let n = pb.shards.len();
+                    for idx in 0..n {
+                        if fb.nak_mask & (1 << idx) != 0 {
+                            out.push(pb.datagram_flagged(
+                                fb.nak_block,
+                                idx,
+                                FLAG_RETRANSMIT,
+                                self.epoch,
+                            ));
+                        }
+                    }
                 }
+                // Nothing held for this block. A block at or above
+                // `next_block` was never produced - the receiver's tail
+                // drive probing one past the end of a delivered stream,
+                // which is ordinary and says nothing. A block BELOW it
+                // existed and is gone, so the peer waits on data that can
+                // never arrive: counted, and reported once per block
+                // because a silent miss there reads as a healthy
+                // retransmit stream while the receiver stalls forever.
+                None if fb.nak_block < self.next_block => {
+                    self.unservable_naks += 1;
+                    if self.last_unservable_nak != Some(fb.nak_block) {
+                        self.last_unservable_nak = Some(fb.nak_block);
+                        eprintln!(
+                            "subetha: NAK for block {} cannot be served - it was sent \
+                             and is no longer held (acked through {}, {} pending, \
+                             next block {})",
+                            fb.nak_block,
+                            self.acked_through,
+                            self.pending.len(),
+                            self.next_block,
+                        );
+                    }
+                }
+                None => {}
             }
         }
         out
@@ -592,6 +631,13 @@ impl Encoder {
     /// Number of unacked blocks held for ARQ.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// NAKs naming a block this encoder no longer holds. Non-zero means a
+    /// peer is waiting on data that can never be retransmitted, which is a
+    /// stalled stream rather than a slow one.
+    pub fn unservable_naks(&self) -> u64 {
+        self.unservable_naks
     }
 
     /// The oldest unacked block id - the one the receiver's in-order frontier

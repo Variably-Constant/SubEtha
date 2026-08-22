@@ -1597,6 +1597,21 @@ impl UnifiedSensReceiver {
         Some(Duration::from_nanos(now.saturating_sub(last)))
     }
 
+    /// This receiver's demux reader counters, `(iterations, recv_ok,
+    /// would_block, rlc_frames_routed)`, or `None` when an external demux
+    /// feeds it. `recv_ok` climbing while `routed` stalls is a datagram
+    /// the routing arms refuse; both frozen with iterations climbing is a
+    /// socket nothing reaches. The sender reports the same shape.
+    pub fn demux_probe(&self) -> Option<(u64, u64, u64, u64)> {
+        let s = self.demux_stats.as_ref()?;
+        Some((
+            s[0].load(Ordering::Relaxed),
+            s[1].load(Ordering::Relaxed),
+            s[2].load(Ordering::Relaxed),
+            s[3].load(Ordering::Relaxed),
+        ))
+    }
+
     /// Socket errors this receiver's demux reader met that were neither
     /// `WouldBlock` nor a read timeout, or `None` when an external demux
     /// feeds it. Entering and leaving the erroring state also report on
@@ -1628,6 +1643,21 @@ impl UnifiedSensReceiver {
 
     /// The block-RS session epochs holding a decode window, in first-seen
     /// order.
+    /// One block-RS window's `(next_needed, highest_seen)` block ids, the
+    /// peer of [`rlc_session_frontier`](Self::rlc_session_frontier).
+    /// `highest_seen` ahead of `next_needed` is a window stalled on a block
+    /// behind its frontier.
+    pub fn rs_session_frontier(&self, epoch: u32) -> Option<(u32, u32, u64, Option<SocketAddr>)> {
+        self.rs.session_frontier(epoch)
+    }
+
+    /// Epochs under an admission challenge, with the address challenged.
+    /// A restarted peer sits here until its nonce returns, and every
+    /// datagram it sends meanwhile is refused.
+    pub fn rs_pending_admissions(&self) -> Vec<(u32, SocketAddr)> {
+        self.rs.pending_admissions()
+    }
+
     pub fn live_rs_sessions(&self) -> Vec<u32> {
         self.rs.live_sessions()
     }

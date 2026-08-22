@@ -3833,6 +3833,11 @@ impl ReliableUdpReceiver {
         if self.try_admit(buf, src) {
             return;
         }
+        // Whether the datagram NAMED its session. A control packet does not,
+        // so its owner is inferred - and an inference must not be allowed to
+        // move a window's peer address, or one sender's control plane ends up
+        // aimed at another.
+        let named_its_session = datagram_epoch(buf).is_some();
         let epoch = match datagram_epoch(buf) {
             Some(e) => e,
             // No epoch in the datagram (a control packet): it belongs to the
@@ -3856,7 +3861,11 @@ impl ReliableUdpReceiver {
         let mut items = Vec::new();
         if let Some(s) = self.open_session(epoch) {
             s.local_pmtu = pmtu;
-            if s.peer != Some(src) {
+            // Only a datagram that named this session may move where the
+            // session sends its acks and naks. An inferred owner rebinding
+            // the peer is how a completed window came to ack a DIFFERENT
+            // sender, freeing blocks that sender still had to deliver.
+            if named_its_session && s.peer != Some(src) {
                 s.peer = Some(src);
             }
             s.process_datagram(buf, &mut items);
@@ -4101,6 +4110,23 @@ impl ReliableUdpReceiver {
     /// The session epochs with a live decode window, in first-seen order.
     pub fn live_sessions(&self) -> Vec<u32> {
         self.order.clone()
+    }
+
+    /// One window's `(next_needed, highest_seen)` block ids, or `None` when
+    /// no window holds that epoch. `highest_seen` above `next_needed` is a
+    /// window waiting on a block behind the frontier, which is what a
+    /// stalled delivery looks like from outside; the RLC side reports the
+    /// same shape through `session_frontier`.
+    pub fn session_frontier(&self, epoch: u32) -> Option<(u32, u32, u64, Option<SocketAddr>)> {
+        let s = self.sessions.get(&epoch)?;
+        Some((s.dec.next_needed(), s.dec.highest_seen(), s.recv_count(), s.peer))
+    }
+
+    /// Epochs currently under an admission challenge, with the address each
+    /// was challenged at. A restarted peer sits here until its nonce comes
+    /// back, and every datagram it sends meanwhile is refused.
+    pub fn pending_admissions(&self) -> Vec<(u32, SocketAddr)> {
+        self.pending_admissions.iter().map(|(e, (a, _, _))| (*e, *a)).collect()
     }
 
     /// Bound the live windows and the candidates under challenge at `max`.
