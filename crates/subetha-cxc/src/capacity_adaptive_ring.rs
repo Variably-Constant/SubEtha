@@ -145,13 +145,11 @@ pub struct RingConfig {
 pub enum CapacityMorphError {
     /// Target capacity is not a power of two, or is less than 2.
     InvalidCapacity,
-    /// Reserved for backward compatibility with the prior
-    /// drain-into-new design. The current implementation never
-    /// returns this variant because shrinks always succeed:
-    /// in-flight items physically remain in the old AdaptiveRing
-    /// as part of the stale list and the consumer drains them via
-    /// `try_recv`'s stale-walk. Callers that previously matched
-    /// on this variant should continue to compile.
+    /// Never returned. Shrinks always succeed: in-flight items stay
+    /// physically in the old AdaptiveRing as part of the stale list
+    /// and the consumer drains them through `try_recv`'s stale-walk,
+    /// so there is nothing for a shrink to refuse. The variant is
+    /// part of the public enum and kept so matches stay exhaustive.
     CannotShrinkInFlight { in_flight: usize, new_capacity: usize },
     /// Underlying ring allocation, push, or pop failed during the
     /// morph. The active backing is unchanged.

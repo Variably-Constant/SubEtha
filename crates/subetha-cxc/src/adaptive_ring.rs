@@ -98,11 +98,13 @@ impl RingShape {
 /// `max_consumers` are SIZING HINTS - the per-producer backings
 /// pre-allocated up front. Registration past them GROWS the ring
 /// on demand (new backings, published through the shared peer
-/// directory) and never fails unless the caller declared a
-/// [`with_contract`](AdaptiveRing::with_contract) ceiling - the
-/// explicit pin is the only source of `TooMany*` errors. Growth
-/// happens on the registration slow path; steady-state ops pay one
-/// relaxed epoch load.
+/// directory). Registration refuses in two cases, both reported as
+/// `TooMany*`: a ceiling the caller pinned with
+/// [`with_contract`](AdaptiveRing::with_contract), and the peer
+/// directory's own slot ceiling (`PRODUCER_SLOT_CEILING` 4096 /
+/// `CONSUMER_SLOT_CEILING` 256 CONCURRENT peers, slots recycled on
+/// unregister). Growth happens on the registration slow path;
+/// steady-state ops pay one relaxed epoch load.
 /// Sentinel for "no stale shape pending" in `stale_shape_tag`.
 const STALE_NONE: u8 = u8::MAX;
 
@@ -1578,11 +1580,12 @@ impl AdaptiveRing {
     /// a SHARED region named off the backing prefix (`<prefix>.frames.bin`
     /// / `<prefix>_frames`) that every process attached to the ring maps.
     ///
-    /// This is the fix for the cross-process offset-frame gap: previously
-    /// EVERY backing used a private anon region, so a payload above the
-    /// inline budget spilled to a region the peer process could not see,
-    /// and offset frames never crossed the boundary on the file or shm
-    /// locales. The region is created lazily on the first offset frame -
+    /// The region's locale must match the ring's: a payload above the
+    /// inline budget spills there, so a private anon region under a file-
+    /// or shm-backed ring would put the bytes somewhere the peer process
+    /// cannot map, and no offset frame would cross the boundary.
+    ///
+    /// The region is created lazily on the first offset frame -
     /// the producer create-or-opens it before pushing the descriptor, so
     /// a consumer that create-or-opens it on receipt always finds the
     /// already-initialised region (the descriptor it popped proves the
@@ -3726,10 +3729,9 @@ mod tests {
         // The frame payload region must live on the ring's own locale, not
         // a private anon mmap: a large (offset-class) frame sent through a
         // creator handle must be recoverable byte-exact through an opener
-        // handle to the SAME file set. Regression for the cross-process
-        // offset-frame gap - previously build_frame_region always used
-        // create_anon, so offset payloads never crossed a boundary on the
-        // file or shm locales (only inline frames did).
+        // handle to the SAME file set. A private region would keep inline
+        // frames working and silently drop offset ones, so this is the
+        // case that distinguishes them.
         let mut prefix = std::env::temp_dir();
         prefix.push(format!(
             "subetha_offset_frame_{}_{}",

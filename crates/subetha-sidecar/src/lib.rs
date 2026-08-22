@@ -293,11 +293,11 @@ pub struct Sidecar {
     max_instances: AtomicUsize,
 }
 
-/// Default hard cap on registered instances. Calibrated for the
-/// "bench mistakenly creates SidecarBox per b.iter()" case that
-/// previously crashed the host at ~94k registrations; the cap fires
-/// long before that. Production workloads almost always sit in the
-/// 10..1000 range.
+/// Default hard cap on registered instances. Sized to fail fast on
+/// the "bench creates a SidecarBox per `b.iter()`" mistake, which
+/// exhausts the host near 94k registrations: this cap refuses an
+/// order of magnitude before that, while leaving room above the
+/// 10..1000 range production workloads sit in.
 pub const DEFAULT_MAX_INSTANCES: usize = 10_000;
 
 /// Number of bits in InstanceId reserved for the node index (upper).

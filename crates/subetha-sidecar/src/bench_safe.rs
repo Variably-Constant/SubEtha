@@ -15,12 +15,13 @@
 //! c.bench_function("naive", |b| b.iter(|| build_adaptive_hashmap(N).get(&42)));
 //! ```
 //!
-//! The `WRONG` pattern previously crashed the host while shipping the
-//! `hashmap_trie_cascade` bench: each iter created ~100 SidecarBox
-//! instances, criterion ran ~930 iters, the sidecar accumulated ~94k
-//! registrations and exhausted threads / file descriptors / memory.
+//! The `WRONG` pattern exhausts the host. At ~100 SidecarBox instances
+//! per iter and criterion's ~930 iters, the sidecar reaches ~94k live
+//! registrations and runs out of threads, file descriptors and memory.
+//! Nothing in the bench looks wrong while it happens; the cost is
+//! entirely in the registrations the rebuild leaves behind.
 //!
-//! # Defenses now in place
+//! # Defenses
 //!
 //! 1. The substrate cap ([`crate::Sidecar::set_max_instances`]) panics with
 //!    a diagnostic naming the cap value and the likely cause well

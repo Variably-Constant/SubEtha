@@ -36,10 +36,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use subetha_pointers::umbra_pointer::UmbraPointer;
 
-/// Derive a 4-byte prefix from the leading bytes of `value`. Inlined
-/// here because the bench needs it for both the baseline (A) and the
-/// UmbraPointer (B) setups; the helper was previously in a deleted
-/// `umbra_ptr` module that lived in subetha-cxc before consolidation.
+/// Derive a 4-byte prefix from the leading bytes of `value`. Local to
+/// the bench because both arms need it - the baseline (A) and the
+/// UmbraPointer (B) setups - and neither crate exports it.
 fn prefix_from_leading_bytes<T>(value: &T) -> u32 {
     let n = core::mem::size_of::<T>().min(4);
     let mut buf = [0u8; 4];
