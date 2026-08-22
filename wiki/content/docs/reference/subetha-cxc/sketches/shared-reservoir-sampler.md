@@ -37,6 +37,12 @@ on keep, replace a uniformly-chosen existing slot.
   - the SeqLock is unconditional so any `T <= 56` bytes is
   tear-free.
 - **`total_seen` is monotonic AtomicU64**: bounded by 2^64.
+- **`create` obtains**: it initializes an empty sampler only when the
+  path does not yet exist, and otherwise attaches with the live
+  sample set and `total_seen` in place - racing creators all reach
+  the same sampler. A region built with a different capacity or
+  payload type is a `LayoutMismatch`. The in-place `reset()` restarts
+  sampling.
 - **Cross-process backed by MMF.**
 
 ---
