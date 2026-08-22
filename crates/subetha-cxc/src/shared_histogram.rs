@@ -111,9 +111,25 @@ impl subetha_sidecar::AdaptiveInstance for SharedHistogram {
 }
 
 impl SharedHistogram {
+    /// Obtain the histogram at `path`, initializing empty buckets if
+    /// the path does not yet exist and attaching to it if it does.
+    /// Attaching leaves live counts in place; a region built with
+    /// different boundaries is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) zeroes a live histogram in place.
     pub fn create(
         path: impl AsRef<Path>, boundaries: &[u64],
     ) -> Result<Self, HistogramError> {
+        Self::check_boundaries(boundaries)?;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            histogram_file_size(boundaries.len()),
+            |ptr| unsafe { Self::init_region(ptr, boundaries) },
+            |ptr| unsafe { (*(ptr as *const HistogramHeader)).magic == HISTOGRAM_MAGIC },
+        )?;
+        Self::from_region(file, mmap, boundaries)
+    }
+
+    fn check_boundaries(boundaries: &[u64]) -> Result<(), HistogramError> {
         if boundaries.is_empty() {
             return Err(HistogramError::EmptyBoundaries);
         }
@@ -122,27 +138,49 @@ impl SharedHistogram {
                 return Err(HistogramError::NonMonotonicBoundaries);
             }
         }
-        let n_boundaries = boundaries.len();
-        let total = histogram_file_size(n_boundaries);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut HistogramHeader;
+        Ok(())
+    }
+
+    /// Lay out empty buckets: boundary count and the boundary array
+    /// first, magic last, because attachers spin on it. The zeroed
+    /// region is already the zero counters and zero total.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `histogram_file_size(boundaries.len())`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, boundaries: &[u64]) {
+        let hdr = ptr as *mut HistogramHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<HistogramHeader>());
-            (*hdr).magic = HISTOGRAM_MAGIC;
-            (*hdr).n_boundaries = n_boundaries as u32;
+            (*hdr).n_boundaries = boundaries.len() as u32;
+            let dst = ptr.add(size_of::<HistogramHeader>()) as *mut u64;
+            std::ptr::copy_nonoverlapping(boundaries.as_ptr(), dst, boundaries.len());
+            std::ptr::write_volatile(&raw mut (*hdr).magic, HISTOGRAM_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with different
+    /// boundaries.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        boundaries: &[u64],
+    ) -> Result<Self, HistogramError> {
+        let n_boundaries = boundaries.len();
+        let hdr = unsafe { &*(mmap.as_ptr() as *const HistogramHeader) };
+        if hdr.magic != HISTOGRAM_MAGIC || hdr.n_boundaries != n_boundaries as u32 {
+            return Err(HistogramError::LayoutMismatch);
         }
         let boundaries_offset = size_of::<HistogramHeader>();
         let counters_offset = boundaries_offset + std::mem::size_of_val(boundaries);
-        // Write boundaries.
-        unsafe {
-            let dst = mmap.as_mut_ptr().add(boundaries_offset) as *mut u64;
-            std::ptr::copy_nonoverlapping(boundaries.as_ptr(), dst, n_boundaries);
+        let stored = unsafe {
+            std::slice::from_raw_parts(
+                mmap.as_ptr().add(boundaries_offset) as *const u64,
+                n_boundaries,
+            )
+        };
+        if stored != boundaries {
+            return Err(HistogramError::LayoutMismatch);
         }
-        // Counters are already zero from set_len + map_mut.
         Ok(Self {
             _file: file, mmap, n_boundaries,
             boundaries_offset, counters_offset,
@@ -162,28 +200,7 @@ impl SharedHistogram {
             return Err(HistogramError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const HistogramHeader) };
-        if hdr.magic != HISTOGRAM_MAGIC || hdr.n_boundaries != n_boundaries as u32 {
-            return Err(HistogramError::LayoutMismatch);
-        }
-        let boundaries_offset = size_of::<HistogramHeader>();
-        let counters_offset = boundaries_offset + std::mem::size_of_val(expected_boundaries);
-        // Verify stored boundaries match expected.
-        let stored = unsafe {
-            std::slice::from_raw_parts(
-                mmap.as_ptr().add(boundaries_offset) as *const u64,
-                n_boundaries,
-            )
-        };
-        if stored != expected_boundaries {
-            return Err(HistogramError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, n_boundaries,
-            boundaries_offset, counters_offset,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_boundaries)
     }
 
     fn header(&self) -> &HistogramHeader {
@@ -331,6 +348,30 @@ mod tests {
         for i in 0..h.n_buckets() {
             assert_eq!(h.count(i).unwrap(), 0);
         }
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with live counts in place; the
+    /// in-place reset is what zeroes them.
+    #[test]
+    fn second_create_attaches_and_keeps_counts() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let h = SharedHistogram::create(&p, &[10, 100]).unwrap();
+        h.record(50);
+        h.record(5);
+
+        let h2 = SharedHistogram::create(&p, &[10, 100]).unwrap();
+        assert_eq!(h2.total_count(), 2, "attach zeroed live counts");
+        assert!(matches!(
+            SharedHistogram::create(&p, &[10, 999]),
+            Err(HistogramError::LayoutMismatch),
+        ));
+
+        h2.reset();
+        assert_eq!(h.total_count(), 0, "reset did not zero for every handle");
+        drop(h);
+        drop(h2);
         std::fs::remove_file(&p).ok();
     }
 

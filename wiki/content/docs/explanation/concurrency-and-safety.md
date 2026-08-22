@@ -110,15 +110,17 @@ For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 `OwnerLease`, `HeartbeatTable`, `SharedCondvar`, `CrossProcessWaker`,
 `SharedLeaderElection`, `SharedOnceCell`, `SharedCell`, the
 `SharedAtomic*` trio, `SharedFenceClock`, `SharedHandleTable`,
-`SharedRateLimiter`, `SharedTimePointTile`, the `AdaptiveRing` peer
-directory - and for `SharedHashMap` - `create` obtains the instance:
+`SharedRateLimiter`, `SharedTimePointTile`, `SharedHistogram`, the
+`AdaptiveRing` peer directory - and for `SharedHashMap` - `create`
+obtains the instance:
 it initializes the file only when the path does not yet exist, and
 otherwise attaches with live state intact. Racing creators on one path
 all reach the same instance, with exactly one initializing it. Each of
 these types carries a `reset`; most truncate and reinitialize, for a
 caller that owns the path, and on Windows such a reset succeeds only
-once every process has unmapped the region. `SharedRateLimiter`'s
-`reset()` instead refills the live bucket in place.
+once every process has unmapped the region. `SharedRateLimiter` and
+`SharedHistogram` instead carry an in-place `reset()` that reseeds
+the live instance.
 
 The remaining data-plane primitives (rings, the other maps, sketches)
 still truncate on `create` and pair with `open` - conversion is

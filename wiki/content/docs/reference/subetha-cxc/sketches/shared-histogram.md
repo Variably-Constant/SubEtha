@@ -38,6 +38,11 @@ on top).
 - **`fetch_add(1, AcqRel)`** per record; lock-free, no spin.
 - **`percentile(p)`** walks buckets accumulating counts +
   linear interpolation. Granularity = bucket width.
+- **`create` obtains**: it initializes empty buckets only when the
+  path does not yet exist, and otherwise attaches with live counts in
+  place - racing creators all reach the same histogram. A region
+  built with different boundaries is a `LayoutMismatch`. The in-place
+  `reset()` zeroes every counter.
 - **Cross-process backed by MMF.**
 
 ---
