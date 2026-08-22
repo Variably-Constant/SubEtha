@@ -59,9 +59,6 @@ pub const SLOT_PAYLOAD_BYTES: usize = 48;
 /// Sentinel for "no slot" in the free list.
 pub const NIL_SLOT: u32 = u32::MAX;
 
-/// Generation 0 is reserved for `Handle::NULL`.
-const GEN_VACANT_BIT: u32 = 0;
-
 #[repr(C, align(64))]
 pub struct HandleHeader {
     pub magic: u64,
@@ -155,40 +152,78 @@ fn unpack_head(v: u64) -> (u32, u32) {
 }
 
 impl<T: Copy + 'static> SharedHandleTable<T> {
+    /// Obtain the table at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves live handles and the free list in place; a
+    /// region built with a different capacity or payload type is a
+    /// `LayoutMismatch`. [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, HandleTableError> {
         Self::check_layout()?;
         assert!(capacity >= 1 && capacity <= (u32::MAX - 1) as usize);
         let total = handle_table_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut HandleHeader;
-        // Initial free list: link all slots in order [0 -> 1 -> 2 -> ... -> NIL].
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const HandleHeader)).magic == HANDLE_TABLE_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the table at `path` and initialize an empty one,
+    /// invalidating every handle a live peer holds. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, HandleTableError> {
+        Self::check_layout()?;
+        assert!(capacity >= 1 && capacity <= (u32::MAX - 1) as usize);
+        let total = handle_table_file_size(capacity);
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            Self::init_region(ptr, capacity)
+        })?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty table over a zeroed region: header fields and
+    /// the free list linking all slots in order [0 -> 1 -> ... -> NIL],
+    /// then the magic, last, because attachers spin on it. The zeroed
+    /// slots are already vacant at generation 0, the generation
+    /// `Handle::NULL` reserves.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `handle_table_file_size(capacity)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut HandleHeader;
         unsafe {
-            std::ptr::write(hdr, HandleHeader {
-                magic: HANDLE_TABLE_MAGIC,
-                capacity: capacity as u32,
-                slot_size: size_of::<T>() as u32,
-                free_list_head: AtomicU64::new(pack_head(0, 0)),
-                live_count: AtomicU64::new(0),
-                _pad: [0; 32],
-            });
-        }
-        let slots_base = unsafe { mmap.as_mut_ptr().add(slot_offset()) };
-        for i in 0..capacity {
-            let slot_ptr = unsafe { slots_base.add(i * size_of::<SharedSlot>()) as *mut SharedSlot };
-            let next = if i + 1 < capacity { (i + 1) as u32 } else { NIL_SLOT };
-            unsafe {
-                std::ptr::write(slot_ptr, SharedSlot {
-                    generation: AtomicU32::new(GEN_VACANT_BIT),
-                    occupied: AtomicU32::new(0),
-                    next_free: AtomicU32::new(next),
-                    _pad: 0,
-                    payload: [0; SLOT_PAYLOAD_BYTES],
-                });
+            (*hdr).capacity = capacity as u32;
+            (*hdr).slot_size = size_of::<T>() as u32;
+            std::ptr::write(
+                &raw mut (*hdr).free_list_head,
+                AtomicU64::new(pack_head(0, 0)),
+            );
+            let slots_base = ptr.add(slot_offset());
+            for i in 0..capacity {
+                let slot_ptr = slots_base.add(i * size_of::<SharedSlot>()) as *mut SharedSlot;
+                let next = if i + 1 < capacity { (i + 1) as u32 } else { NIL_SLOT };
+                std::ptr::write(&raw mut (*slot_ptr).next_free, AtomicU32::new(next));
             }
+            std::ptr::write_volatile(&raw mut (*hdr).magic, HANDLE_TABLE_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// capacity or payload type.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        capacity: usize,
+    ) -> Result<Self, HandleTableError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const HandleHeader) };
+        if hdr.magic != HANDLE_TABLE_MAGIC
+            || hdr.capacity != capacity as u32
+            || hdr.slot_size as usize != size_of::<T>()
+        {
+            return Err(HandleTableError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, capacity, _phantom: PhantomData,
@@ -205,18 +240,7 @@ impl<T: Copy + 'static> SharedHandleTable<T> {
             return Err(HandleTableError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const HandleHeader) };
-        if hdr.magic != HANDLE_TABLE_MAGIC
-            || hdr.capacity != expected_capacity as u32
-            || hdr.slot_size as usize != size_of::<T>()
-        {
-            return Err(HandleTableError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     fn check_layout() -> Result<(), HandleTableError> {
@@ -428,6 +452,33 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-handle-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second create attaches with live handles in place; reset is
+    /// what invalidates them.
+    #[test]
+    fn second_create_attaches_and_keeps_handles() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let t: SharedHandleTable<u64> = SharedHandleTable::create(&p, 16).unwrap();
+        let h = t.insert(777).unwrap();
+
+        let t2: SharedHandleTable<u64> = SharedHandleTable::create(&p, 16).unwrap();
+        assert_eq!(t2.get(h), Some(777), "attach lost a live handle");
+        assert!(matches!(
+            SharedHandleTable::<u64>::create(&p, 8),
+            Err(HandleTableError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(t);
+        drop(t2);
+        let fresh: SharedHandleTable<u64> = SharedHandleTable::reset(&p, 16).unwrap();
+        assert_eq!(fresh.get(h), None, "reset left a handle live");
+        assert_eq!(fresh.len(), 0);
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
