@@ -101,8 +101,14 @@ pub struct VecHeader {
     pub magic: u32,
     pub slot_payload_size: u32,
     pub capacity: u64,
+    /// Slots a reader may read: every index below this holds a fully
+    /// written payload. A pusher advances it only after its own slot is
+    /// written and every earlier reservation has committed.
     pub len: AtomicU64,
-    _pad: [u8; 40],
+    /// Slots handed out to pushers, committed or still being written.
+    /// Ahead of `len` exactly while a push is in flight.
+    pub reserved: AtomicU64,
+    _pad: [u8; 32],
 }
 
 #[repr(C, align(64))]
@@ -277,6 +283,23 @@ impl<T: Copy + 'static> SharedVec<T> {
         if hdr.magic != VEC_MAGIC || hdr.capacity != expected_capacity as u64 {
             return Err(VecError::LayoutMismatch);
         }
+        // A region written before `reserved` existed carries zero there
+        // while holding elements, and the allocator must never sit below
+        // the published length or a pusher would hand out a live slot and
+        // then wait to publish an index already behind it. Raising it is
+        // safe on a healthy region too, where the two are equal at rest.
+        if self.mmap.is_writable() {
+            let len = hdr.len.load(Ordering::Acquire);
+            let mut cur = hdr.reserved.load(Ordering::Acquire);
+            while cur < len {
+                match hdr.reserved.compare_exchange_weak(
+                    cur, len, Ordering::AcqRel, Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(seen) => cur = seen,
+                }
+            }
+        }
         Ok(())
     }
 
@@ -365,14 +388,31 @@ impl<T: Copy + 'static> SharedVec<T> {
         if !self.mmap.is_writable() {
             return Err(VecError::ReadOnly);
         }
-        let idx = self.header().len.fetch_add(1, Ordering::AcqRel) as usize;
+        let idx = self.header().reserved.fetch_add(1, Ordering::AcqRel) as usize;
         if idx >= self.capacity {
-            self.header().len.fetch_sub(1, Ordering::AcqRel);
+            self.header().reserved.fetch_sub(1, Ordering::AcqRel);
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::ordered::OP_INSERT, 1); // full
             return Err(VecError::Full);
         }
         self.write_slot(idx, v);
+        // Publish only once this slot is written AND every earlier
+        // reservation has published, so `len` never covers a slot a
+        // reader would find half-written. Concurrent pushers spin here
+        // for as long as a predecessor's write takes.
+        while self
+            .header()
+            .len
+            .compare_exchange_weak(
+                idx as u64,
+                idx as u64 + 1,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
         self.ring_sidecar
             .push_op(crate::sidecar_ops::ordered::OP_INSERT, 0);
         Ok(idx)
@@ -390,11 +430,22 @@ impl<T: Copy + 'static> SharedVec<T> {
                     .push_op(crate::sidecar_ops::ordered::OP_POP, 2); // empty
                 return None;
             }
+            // Claim from the allocator, and only while it agrees with the
+            // published length: a reservation in flight owns the slot
+            // above `len`, and taking that slot would leave the pusher
+            // waiting to publish an index that no longer exists.
+            if self.header().reserved.load(Ordering::Acquire) != cur {
+                std::hint::spin_loop();
+                continue;
+            }
             let new = cur - 1;
-            if self.header().len.compare_exchange(
+            if self.header().reserved.compare_exchange(
                 cur, new, Ordering::AcqRel, Ordering::Acquire,
             ).is_ok() {
                 let v = self.read_slot(new as usize);
+                // Unpublish after the read, so a reader never sees a
+                // length covering a slot this pop is still reading.
+                self.header().len.store(new, Ordering::Release);
                 self.ring_sidecar
                     .push_op(crate::sidecar_ops::ordered::OP_POP, 0);
                 return Some(v);
@@ -438,7 +489,10 @@ impl<T: Copy + 'static> SharedVec<T> {
         if !self.mmap.is_writable() {
             return;
         }
+        // Length first, so no reader is left addressing a slot the
+        // allocator has already handed back out.
         self.header().len.store(0, Ordering::Release);
+        self.header().reserved.store(0, Ordering::Release);
         self.ring_sidecar
             .push_op(crate::sidecar_ops::ordered::OP_REMOVE, 0);
     }
@@ -800,6 +854,66 @@ mod tests {
         assert_eq!(v2.len(), 4);
         for i in 0..4 {
             assert_eq!(v2.get(i), Some((i as u32) * 100));
+        }
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// `len` covers only committed slots. Many pushers race readers
+    /// that read every visible slot on every pass, so a length
+    /// published ahead of its payload shows up as a zero where the
+    /// sentinel belongs. The window between reserving an index and
+    /// writing it is only a few instructions wide, so both sides are
+    /// hammered.
+    #[test]
+    fn length_never_covers_a_slot_still_being_written() {
+        let p = tmp("commit-order");
+        std::fs::remove_file(&p).ok();
+        let v: Arc<SharedVec<u32>> = Arc::new(SharedVec::create(&p, 4096).unwrap());
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Every pusher writes the same sentinel. A slot the length covers
+        // before its payload landed still reads as the zeroed region, so
+        // any zero a reader sees is the race.
+        const WRITTEN: u32 = 0xABCD_EF01;
+
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let v = v.clone();
+                let stop = stop.clone();
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        let n = v.len();
+                        for i in 0..n {
+                            assert_eq!(
+                                v.get(i),
+                                Some(WRITTEN),
+                                "slot {i} was visible before it was written",
+                            );
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let v = v.clone();
+                thread::spawn(move || {
+                    while let Ok(idx) = v.push_back(WRITTEN) {
+                        if idx >= 4000 {
+                            break;
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for w in writers {
+            w.join().unwrap();
+        }
+        stop.store(true, Ordering::Release);
+        for r in readers {
+            r.join().unwrap();
         }
         std::fs::remove_file(&p).ok();
     }
