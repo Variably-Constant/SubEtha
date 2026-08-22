@@ -907,6 +907,14 @@ impl UnifiedSensSender {
         )
     }
 
+    /// Frame types the RLC pump handled outside the counted control
+    /// arms: `(challenges_echoed, default_arm_drops,
+    /// last_dropped_byte)`. Pops that appear in neither ctrl_probe nor
+    /// here were sealed frames skipped under TLS.
+    pub fn rlc_pump_types(&self) -> (u64, u64, u8) {
+        self.rlc.pump_types()
+    }
+
     /// Send one item over the active code, then periodically sample the fed-back
     /// loss and switch codes if the controller calls for it. The item is recorded
     /// in the replay ring so a switch can resend the un-acked tail over the new

@@ -436,6 +436,12 @@ pub struct SensOMaticRlcSender {
     naks_seen: u64,
     /// Cumulative ACK frames processed by the pump.
     acks_seen: u64,
+    /// Cumulative PATH_CHALLENGE frames the pump echoed.
+    challenges_seen: u64,
+    /// Frames the pump's default arm dropped, and the last such type
+    /// byte.
+    other_seen: u64,
+    last_other_byte: u8,
     /// Max source symbols in flight (sent but not yet delivered) before the
     /// sender paces, so a burst cannot overrun the receiver or the kernel
     /// socket buffer and manufacture loss. Used as the static cap, and as the
@@ -633,6 +639,9 @@ impl SensOMaticRlcSender {
             wire_datagrams: 0,
             naks_seen: 0,
             acks_seen: 0,
+            challenges_seen: 0,
+            other_seen: 0,
+            last_other_byte: 0,
             // The flow window caps OUTSTANDING (sent-but-not-yet-received)
             // symbols, which is what paces the sender so a burst cannot overrun
             // the kernel receive buffer and manufacture loss. Crucially this
@@ -1366,6 +1375,12 @@ impl SensOMaticRlcSender {
         self.sock.demux_probe()
     }
 
+    /// Frame types the pump handled outside the counted control arms:
+    /// `(challenges_echoed, default_arm_drops, last_dropped_byte)`.
+    pub fn pump_types(&self) -> (u64, u64, u8) {
+        (self.challenges_seen, self.other_seen, self.last_other_byte)
+    }
+
     /// Retransmit `sid` only if it has not been (re)sent within ~1.2 RTT - the
     /// retransmit-suppression guard that stops the same still-missing symbol from
     /// being resent on every ~1ms NAK round before its previous copy can be
@@ -1560,6 +1575,7 @@ impl SensOMaticRlcSender {
                 }
             }
             PKT_RLC_PATH_CHALLENGE if n >= PATH_FRAME_LEN => {
+                self.challenges_seen += 1;
                 // The receiver is validating this (just-migrated) address. Echo
                 // the connection id + nonce verbatim so it can confirm we hold
                 // the session here and lift its anti-amplification cap.
@@ -1569,7 +1585,10 @@ impl SensOMaticRlcSender {
                 // Path-validation control: unpaced.
                 self.wire_send(&resp)?;
             }
-            _ => {}
+            _ => {
+                self.other_seen += 1;
+                self.last_other_byte = m[0];
+            }
         }
         Ok(())
     }
