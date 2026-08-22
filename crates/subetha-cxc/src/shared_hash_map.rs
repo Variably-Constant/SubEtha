@@ -210,40 +210,66 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         Ok(())
     }
 
+    /// Obtain the map at `path`, initializing an empty one if the path does
+    /// not yet exist and attaching to it if it does. Attaching leaves live
+    /// entries in place; a region built with a different capacity or
+    /// payload type is a `LayoutMismatch`. [`reset`](Self::reset)
+    /// reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, MapError> {
         Self::check_layout()?;
         assert!(capacity >= 2);
         let total = map_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr_ptr = mmap.as_mut_ptr() as *mut MapHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const MapHeader)).magic == MAP_MAGIC },
+        )?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Truncate the map at `path` and initialize a fresh empty one,
+    /// discarding whatever entries a live peer holds. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, MapError> {
+        Self::check_layout()?;
+        assert!(capacity >= 2);
+        let total = map_file_size(capacity);
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            Self::init_region(ptr, capacity)
+        })?;
+        Self::from_region(file, mmap, capacity)
+    }
+
+    /// Lay out an empty map: header fields first, magic last, because
+    /// attachers spin on the magic and must not observe it before the
+    /// layout fields are in place. The zeroed region is already the valid
+    /// slot array (`SLOT_EMPTY`, version 0, hash 0) and the valid `count`
+    /// and `tombstones` of 0.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `map_file_size(capacity)` writable zeroed
+    /// bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr = ptr as *mut MapHeader;
         unsafe {
-            std::ptr::write_bytes(hdr_ptr as *mut u8, 0, size_of::<MapHeader>());
-            (*hdr_ptr).magic = MAP_MAGIC;
-            (*hdr_ptr).capacity = capacity as u32;
-            (*hdr_ptr).key_size = size_of::<K>() as u32;
-            (*hdr_ptr).value_size = size_of::<V>() as u32;
-            // count and tombstones are AtomicU64; write_bytes zeroed
-            // the storage, which is the valid representation of 0.
+            (*hdr).capacity = capacity as u32;
+            (*hdr).key_size = size_of::<K>() as u32;
+            (*hdr).value_size = size_of::<V>() as u32;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, MAP_MAGIC);
         }
-        for i in 0..capacity {
-            let slot_ptr = unsafe {
-                mmap.as_mut_ptr()
-                    .add(size_of::<MapHeader>())
-                    .add(i * size_of::<MapSlot>())
-            } as *mut MapSlot;
-            unsafe {
-                std::ptr::write(slot_ptr, MapSlot {
-                    state: AtomicU8::new(SLOT_EMPTY),
-                    _pad1: [0; 3],
-                    version: AtomicU32::new(0),
-                    hash: AtomicU64::new(0),
-                    payload: [0u8; MAP_PAYLOAD_BYTES],
-                });
-            }
+    }
+
+    /// Wrap an initialized region, refusing one whose layout does not
+    /// match this type at this capacity.
+    fn from_region(file: File, mmap: MmapMut, capacity: usize) -> Result<Self, MapError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const MapHeader) };
+        if hdr.magic != MAP_MAGIC
+            || hdr.capacity != capacity as u32
+            || hdr.key_size != size_of::<K>() as u32
+            || hdr.value_size != size_of::<V>() as u32
+        {
+            return Err(MapError::LayoutMismatch);
         }
         Ok(Self {
             _file: file, mmap, capacity,
@@ -263,22 +289,7 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             return Err(MapError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const MapHeader) };
-        if hdr.magic != MAP_MAGIC
-            || hdr.capacity != expected_capacity as u32
-            || hdr.key_size != size_of::<K>() as u32
-            || hdr.value_size != size_of::<V>() as u32
-        {
-            return Err(MapError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, capacity: expected_capacity,
-            cap_mask: expected_capacity.wrapping_sub(1),
-            cap_is_pow2: expected_capacity.is_power_of_two(),
-            _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_capacity)
     }
 
     /// Reduce an index into `[0, capacity)`. Uses `& cap_mask` when
@@ -760,6 +771,48 @@ mod tests {
         assert_eq!(m.get(&2), Some(200));
         assert_eq!(m.get(&3), Some(300));
         assert_eq!(m.get(&999), None);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches to the live map with its entries intact;
+    /// reset is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_entries() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let m: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 32).unwrap();
+        m.insert(7, 777).unwrap();
+
+        let m2: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 32).unwrap();
+        assert_eq!(m2.get(&7), Some(777), "attach lost a live entry");
+        assert_eq!(m2.len(), 1);
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(m);
+        drop(m2);
+        let fresh: SharedHashMap<u32, u64> = SharedHashMap::reset(&p, 32).unwrap();
+        assert_eq!(fresh.len(), 0);
+        assert_eq!(fresh.get(&7), None, "reset left an entry behind");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Attaching with a different capacity or key type is refused.
+    #[test]
+    fn create_refuses_a_mismatched_region() {
+        let p = tmp("mismatch");
+        std::fs::remove_file(&p).ok();
+        let m: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 32).unwrap();
+        assert!(matches!(
+            SharedHashMap::<u32, u64>::create(&p, 16),
+            Err(MapError::LayoutMismatch),
+        ));
+        assert!(matches!(
+            SharedHashMap::<u64, u64>::create(&p, 32),
+            Err(MapError::LayoutMismatch),
+        ));
+        drop(m);
         std::fs::remove_file(&p).ok();
     }
 

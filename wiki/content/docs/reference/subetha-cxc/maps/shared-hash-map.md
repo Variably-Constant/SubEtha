@@ -39,6 +39,7 @@ makes keys irreproducible).
 - **State per slot**: EMPTY / OCCUPIED / TOMBSTONE.
 - **Capacity fixed at create**: no auto-grow.
 - **Cross-process backed by MMF.**
+- **`create` obtains, `reset` truncates**: `create(path, capacity)` initializes an empty map only when the path does not yet exist, and otherwise attaches with live entries intact - racing creators all reach the same map, with exactly one initializing it. A region built with a different capacity or K/V layout is a `LayoutMismatch`. `reset(path, capacity)` truncates and reinitializes, for a caller that owns the path; on Windows it succeeds only once every process has unmapped the region.
 - **Native sidecar integration**: the struct carries a `HandshakeHeader` + `ObservationRing` and implements `subetha_sidecar::AdaptiveInstance`. Wrap in `SidecarBox::new` to register with the global sidecar; raw `create()` / `open()` return the unregistered type unchanged.
 
 ---
