@@ -178,29 +178,40 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     // deliver, freeing them from its retransmit buffer for good. This is
     // an invariant, so it catches the fault even on a run whose delivery
     // happens to survive it.
+    // Recorded rather than returned, so a run reports BOTH the delivery
+    // result and this property. Returning here would abort before the
+    // delivery check and make the shortfall unobservable whenever the
+    // rebinding fires, which is exactly how one comparison of the two
+    // was misread.
+    let mut shared_peer: Option<String> = None;
     let mut seen: Vec<(u32, std::net::SocketAddr)> = Vec::new();
     for e in &live {
         if let Some((_, _, _, Some(addr))) = rx.rs_session_frontier(*e) {
             if let Some((other, _)) = seen.iter().find(|(_, a)| *a == addr) {
-                return Err(format!(
+                shared_peer = Some(format!(
                     "windows {other} and {e} both aim at {addr} - one sender's \
-                     control plane is pointed at another's peer; windows [{}]",
-                    frontiers.join("; "),
-                )
-                .into());
+                     control plane is pointed at another's peer"
+                ));
             }
             seen.push((*e, addr));
         }
     }
 
-    require(
-        got_b == ITEMS_PER_SESSION,
-        format!(
+    if got_b != ITEMS_PER_SESSION {
+        return Err(format!(
             "restarted peer delivered {got_b}/{ITEMS_PER_SESSION} over Rs - the receiver \
-             is discarding the new session (code {code:?}); windows [{}], pending {pending:?}",
+             is discarding the new session (code {code:?}); windows [{}], pending {pending:?}{}",
             frontiers.join("; "),
-        ),
-    )?;
+            match &shared_peer {
+                Some(s) => format!("; ALSO {s}"),
+                None => String::new(),
+            },
+        )
+        .into());
+    }
+    if let Some(s) = shared_peer {
+        return Err(format!("{s}; windows [{}]", frontiers.join("; ")).into());
+    }
     Ok(())
 }
 
