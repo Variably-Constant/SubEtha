@@ -68,7 +68,7 @@ subetha-cxc`.
 flowchart TB
   subgraph FP["Fixed pool - async tasks"]
     T["N suspended tasks"]
-    POOL["TaskPool<br/>~20 worker threads"]
+    POOL["TaskPool<br/>available_parallelism workers"]
     T -. woken by a push .-> POOL
   end
   subgraph TPC["One thread per consumer"]
@@ -93,11 +93,14 @@ flowchart TB
 </picture>
 
 The fixed pool holds 6-7 M items/s on a constant 20 OS threads from a
-thousand consumers to a hundred thousand. The thread-per-consumer
-design sits below 1 M items/s and needs one OS thread per consumer -
-10,004 threads at N = 10,000, and 100,004 at N = 100,000, which is the
-point at which it stops being practical. Same ring, same `recv()`
-future; only the driver differs.
+thousand consumers to a hundred thousand. That 20 is
+`available_parallelism` workers (16 on the Zen+ 8-core / 16-thread part)
+plus the bench's 4 producer threads, so it tracks the machine rather
+than being a tuned constant. The thread-per-consumer design sits below
+1 M items/s and needs one OS thread per consumer - 10,004 threads at
+N = 10,000, and 100,004 at N = 100,000, which is the point at which it
+stops being practical; the bench does not run that last cell for the
+same reason. Same ring, same `recv()` future; only the driver differs.
 
 ## Rule of thumb
 

@@ -83,10 +83,11 @@ flowchart LR
 `ReactiveSender::try_send(payload: &[u8]) -> Result<(), RingError>`
 pushes and signals (the signal is sent only on a successful push);
 `published() -> u64` is the producer's published count.
-`ReactiveReceiver::recv() -> ReactiveRecv` is the awaitable future;
-`try_recv(out: &mut [u8]) -> Result<usize, RingError>` drains without
-awaiting. The `ReactiveRecv` future owns `Arc` clones, so it is
-`Send + 'static`.
+`ReactiveReceiver::recv() -> ReactiveRecv` is the awaitable future,
+resolving to `[u8; SPSC_PAYLOAD_BYTES]`; `try_recv(out: &mut [u8]) ->
+Result<usize, RingError>` drains without awaiting. The `ReactiveRecv`
+future owns `Arc` clones, so it is `Send + 'static` and can be spawned
+onto any executor rather than awaited in place.
 
 This bridge is what `Channel` / `AdaptiveIpc` use internally: the first
 `recv_async()` / `send_async()` call spins up the reactor so a wake
@@ -101,6 +102,13 @@ marshalling or shape dispatch in the way.
 ```rust
 pub fn create_anon_pair(capacity) -> Result<(WakerProducer, WakerConsumer), RingError>;
 ```
+
+`capacity` is a precondition, not an argument to be validated: it must
+be a power of two and at least 2, and the underlying `SpscRingCore`
+asserts rather than returning `Err`. The `Result` covers the mapping,
+not the capacity. Round before you call if the number comes from
+configuration - [`AutoIpc::capacity`](high-level-api.md#the-autoipc-builder)
+does that for you on the high-level path.
 
 - `WakerProducer::try_push(payload: &[u8]) -> Result<(), RingError>` -
   push and fire the consumer's registered `Waker`.
