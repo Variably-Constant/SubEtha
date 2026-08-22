@@ -551,7 +551,7 @@ pub struct SensOMaticRlcSender {
     static_params: bool,
     /// Diagnostic: when `SUBETHA_FEC_DEBUG` is set, log each coding-parameter
     /// decision the sensing controller makes (loss/burst/cong in -> window/step/
-    /// density/coding_on out) so the under-loss behaviour can be read directly.
+    /// density/coding_on out) so the under-loss behavior can be read directly.
     fec_debug: bool,
     /// Times the live coding parameters actually changed (telemetry).
     adapt_count: u64,
@@ -2811,12 +2811,17 @@ impl SensOMaticRlcReceiver {
         self.send_admission_challenges()?;
         // Service every live session in first-seen order, so delivery across
         // peers is deterministic rather than hash-ordered.
+        // A session's service errors are send-side: its control plane talks to
+        // its own peer, and a dead peer makes those sends fail. That failure
+        // stays with the session - propagating it here would skip every
+        // session after it in first-seen order and discard the items already
+        // decoded into `out` this tick.
         let ids = self.order.clone();
         for cid in ids {
             if let Some(mut s) = self.sessions.remove(&cid) {
                 let r = s.service(&mut out);
                 self.sessions.insert(cid, s);
-                r?;
+                r.ok();
             }
         }
         // Idle backoff: the socket is non-blocking, so when nothing arrived and
@@ -3149,6 +3154,96 @@ mod tests {
     /// Each sender tags its items with its own index in the high byte so the
     /// two streams stay distinguishable after interleaving; ordering is asserted
     /// WITHIN a stream, since nothing orders one sender against another.
+    /// A peer that dies with unrecovered gaps leaves the receiver sending
+    /// NAKs and feedback to a closed port. On Windows each of those provokes
+    /// an ICMP that surfaces as ConnectionReset on the receiver's next
+    /// receive; the drain must read past it, or every peer whose datagrams
+    /// queue behind the reset goes dark while a peer ahead of it keeps
+    /// flowing.
+    #[test]
+    fn survivors_deliver_while_the_receiver_naks_a_dead_peer() {
+        let item_len = 32usize;
+        let symbol_len = 64usize;
+        let rounds: u64 = 12;
+        let peers: u64 = 3;
+
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let rx = std::thread::spawn(move || {
+            // Injected loss guarantees peer 2 dies with gaps outstanding, so
+            // the receiver keeps re-requesting from a port that answers with
+            // ICMP only.
+            let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len)
+                .unwrap()
+                .with_debug_loss(20, 9);
+            addr_tx.send(recv.local_addr().unwrap()).unwrap();
+            let mut got: Vec<(u64, u64)> = Vec::new();
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(12) && stop_rx.try_recv().is_err() {
+                for item in recv.poll().unwrap_or_default() {
+                    let tagged = u64::from_le_bytes(item[..8].try_into().unwrap());
+                    got.push((tagged >> 56, tagged & 0x00FF_FFFF_FFFF_FFFF));
+                }
+            }
+            got
+        });
+
+        let recv_addr = addr_rx.recv().unwrap();
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            handles.push(std::thread::spawn(move || {
+                let mut send =
+                    SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len)
+                        .unwrap();
+                // Stagger the first item so the receiver's first-seen order is
+                // peer 0, then the dying peer 1, then peer 2. A survivor has to
+                // sit BEHIND the dead session in service order for its fate to
+                // depend on how the receiver treats the dead one.
+                std::thread::sleep(Duration::from_millis(150 * p));
+                if p == 1 {
+                    // Burst and die: no drain, socket closed on drop, gaps left
+                    // for the receiver to chase.
+                    for i in 0..rounds {
+                        let mut item = vec![0u8; item_len];
+                        item[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                        send.send_item(&item).ok();
+                    }
+                    return;
+                }
+                for i in 0..rounds {
+                    let mut item = vec![0u8; item_len];
+                    item[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&item).is_err() {
+                        break;
+                    }
+                    send.pump_once().ok();
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                let hold = Instant::now();
+                while hold.elapsed() < Duration::from_secs(3) {
+                    send.pump_once().ok();
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().ok();
+        }
+        stop_tx.send(()).ok();
+        let got = rx.join().unwrap();
+
+        for p in [0u64, 2] {
+            let mine: Vec<u64> = got.iter().filter(|(t, _)| *t == p).map(|(_, i)| *i).collect();
+            assert_eq!(
+                mine,
+                (0..rounds).collect::<Vec<_>>(),
+                "surviving peer {p} went dark while the receiver chased the dead peer; \
+                 got {} of {rounds}",
+                mine.len(),
+            );
+        }
+    }
+
     /// Connection ids drawn back to back must differ. Derived from the wall
     /// clock alone they did not: 1000 draws yielded 484 distinct values on a
     /// Windows host, so two peers sharing a port collided.
