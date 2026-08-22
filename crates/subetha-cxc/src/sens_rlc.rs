@@ -1644,7 +1644,10 @@ impl SensOMaticRlcSender {
 
 /// Receiver side of the RLC transport.
 pub struct SensOMaticRlcReceiver {
-    sock: crate::dgram::DgramSock,
+    /// Shared with every per-session decode window: `DgramSock::send_to` and
+    /// `recv_from` take `&self`, so a session drives the wire toward its own
+    /// peer without owning the socket. One socket, N sessions.
+    sock: std::sync::Arc<crate::dgram::DgramSock>,
     dec: RlcDecoder,
     symbol_len: usize,
     /// Next source id to deliver (everything below is delivered, in order).
@@ -1817,7 +1820,7 @@ impl SensOMaticRlcReceiver {
         // UDP otherwise); kernel RX timestamps are enabled by the wrapper.
         let sock = crate::dgram::DgramSock::wrap(sock);
         Ok(Self {
-            sock,
+            sock: std::sync::Arc::new(sock),
             // Horizon is sized to the CODING window (the adaptive RLC window
             // caps at 64), not the flow window: a sliding-window repair can only
             // span its own window, so a gap older than ~one window has no repair
@@ -1909,7 +1912,7 @@ impl SensOMaticRlcReceiver {
     /// Swap the datagram socket for one the caller already built (a demux
     /// socket the unified endpoint shares across both codes).
     pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
-        self.sock = sock;
+        self.sock = std::sync::Arc::new(sock);
     }
 
     /// Arm the optional TLS record layer as the server. Call
@@ -2820,6 +2823,90 @@ mod tests {
         let expected: Vec<u64> = (0..n).collect();
         assert_eq!(got, expected, "RLC transport must deliver every item in order");
         RoundTrip { recovered, naks, adapt_count, feedback_recv }
+    }
+
+    /// Two independent senders, each with its own connection id, delivering to
+    /// ONE receiver at the same time - the replication-mesh shape, where a node
+    /// receives from several peers concurrently rather than from one peer that
+    /// restarted. Every item of both streams must arrive.
+    ///
+    /// Each sender tags its items with its own index in the high byte so the
+    /// two streams stay distinguishable after interleaving; ordering is asserted
+    /// WITHIN a stream, since nothing orders one sender against another.
+    #[test]
+    fn two_concurrent_senders_both_deliver() {
+        let item_len = 32usize;
+        let symbol_len = 64usize;
+        let per_sender: u64 = 200;
+        let senders = 2u64;
+        let total = per_sender * senders;
+
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let rx = std::thread::spawn(move || {
+            let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+            addr_tx.send(recv.local_addr().unwrap()).unwrap();
+            let mut got: Vec<(u64, u64)> = Vec::new();
+            let start = Instant::now();
+            while (got.len() as u64) < total {
+                if start.elapsed() > Duration::from_secs(20) {
+                    break;
+                }
+                for item in recv.poll().unwrap() {
+                    let tagged = u64::from_le_bytes(item[..8].try_into().unwrap());
+                    got.push((tagged >> 56, tagged & 0x00FF_FFFF_FFFF_FFFF));
+                }
+            }
+            got
+        });
+
+        let recv_addr = addr_rx.recv().unwrap();
+        let mut handles = Vec::new();
+        for s in 0..senders {
+            handles.push(std::thread::spawn(move || {
+                let mut send =
+                    SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len)
+                        .unwrap();
+                // Bounded by wall clock, not just by item count: a sender whose
+                // symbols are never acked stalls in send_item's flow-control
+                // wait (60s per item), so an unbounded loop would hang the suite
+                // instead of reporting how far this sender got.
+                let start = Instant::now();
+                let mut pushed = 0u64;
+                for i in 0..per_sender {
+                    if start.elapsed() > Duration::from_secs(10) {
+                        break;
+                    }
+                    let mut item = vec![0u8; item_len];
+                    item[..8].copy_from_slice(&((s << 56) | i).to_le_bytes());
+                    if send.send_item(&item).is_err() {
+                        break;
+                    }
+                    pushed += 1;
+                }
+                send.drain_until_acked(pushed as u32, Duration::from_secs(5)).ok();
+                (send.conn_id(), pushed)
+            }));
+        }
+        let sent: Vec<(u64, u64)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_ne!(sent[0].0, sent[1].0, "independent senders must carry distinct connection ids");
+        for (s, (cid, pushed)) in sent.iter().enumerate() {
+            assert_eq!(
+                *pushed, per_sender,
+                "sender {s} (cid {cid}) wedged after {pushed}/{per_sender} items - its symbols \
+                 are not being acked, so send_item is stuck on the flow window",
+            );
+        }
+
+        let got = rx.join().unwrap();
+        for s in 0..senders {
+            let mine: Vec<u64> = got.iter().filter(|(tag, _)| *tag == s).map(|(_, i)| *i).collect();
+            assert_eq!(
+                mine,
+                (0..per_sender).collect::<Vec<_>>(),
+                "sender {s} (cid {}) must deliver every item in order alongside the other sender",
+                sent[s as usize].0,
+            );
+        }
     }
 
     #[test]
