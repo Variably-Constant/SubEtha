@@ -64,8 +64,9 @@ a heartbeat-driven grace period (same pattern as `OwnerLease`,
 specialised for the leader-vs-followers shape).
 
 ```rust,no_run
-pub fn create(path: impl AsRef<Path>) -> Result<Self, LeaderError>;
+pub fn create(path: impl AsRef<Path>) -> Result<Self, LeaderError>;  // attaches if the path exists
 pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaderError>;
+pub fn reset(path: impl AsRef<Path>) -> Result<Self, LeaderError>;   // truncates; deposes any leader
 
 pub fn try_claim_leadership(&self, my_pid: u32, grace_epochs: u64) -> bool;
 pub fn beat_as_leader(&self, my_pid: u32) -> bool;   // renew leadership
@@ -83,6 +84,12 @@ failover.
 
 `DEFAULT_GRACE_EPOCHS` (= 3) is the default expiration window
 in heartbeat epochs.
+
+`create` initializes a leaderless region only when the path does
+not yet exist, and otherwise attaches with the sitting leader,
+term and epoch intact - racing creators all reach the same
+election. `reset` truncates and reinitializes; on Windows it
+succeeds only once every process has unmapped the region.
 
 Canonical doc:
 [SHARED_LEADER_ELECTION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LEADER_ELECTION.md).

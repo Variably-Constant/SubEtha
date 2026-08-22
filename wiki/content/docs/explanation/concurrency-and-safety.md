@@ -108,8 +108,8 @@ and zero duplicated.
 
 For the coordination primitives - `SharedRWLock`, `BlockingRWLock`,
 `OwnerLease`, `HeartbeatTable`, `SharedCondvar`, `CrossProcessWaker`,
-the `AdaptiveRing` peer directory - and for `SharedHashMap` -
-`create` obtains the instance:
+`SharedLeaderElection`, the `AdaptiveRing` peer directory - and for
+`SharedHashMap` - `create` obtains the instance:
 it initializes the file only when the path does not yet exist, and
 otherwise attaches with live state intact. Racing creators on one path
 all reach the same instance, with exactly one initializing it. Each of

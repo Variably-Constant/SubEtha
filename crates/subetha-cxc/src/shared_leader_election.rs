@@ -87,28 +87,51 @@ impl subetha_sidecar::AdaptiveInstance for SharedLeaderElection {
 }
 
 impl SharedLeaderElection {
+    /// Obtain the election region at `path`, initializing it with no
+    /// leader if the path does not yet exist and attaching to it if it
+    /// does. Attaching leaves the current leader, term and epoch in
+    /// place. [`reset`](Self::reset) reinitializes.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, LeaderError> {
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(LEADER_FILE_SIZE as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(LEADER_FILE_SIZE).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut LeaderHeader;
-        unsafe {
-            std::ptr::write(hdr, LeaderHeader {
-                magic: LEADER_MAGIC,
-                current_leader_pid: AtomicU32::new(NO_LEADER),
-                election_term: AtomicU32::new(0),
-                leader_heartbeat: AtomicU64::new(0),
-                global_epoch: AtomicU64::new(0),
-                _pad: [0; 32],
-            });
-        }
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            LEADER_FILE_SIZE,
+            |ptr| unsafe { Self::init_region(ptr) },
+            |ptr| unsafe { (*(ptr as *const LeaderHeader)).magic == LEADER_MAGIC },
+        )?;
         Ok(Self {
             _file: file, mmap,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Truncate the region at `path` and initialize a leaderless one,
+    /// deposing whatever leader a live peer holds. For a caller that
+    /// knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>) -> Result<Self, LeaderError> {
+        let (file, mmap) =
+            crate::mmf_attach::reset(path.as_ref(), LEADER_FILE_SIZE, |ptr| unsafe {
+                Self::init_region(ptr)
+            })?;
+        Ok(Self {
+            _file: file, mmap,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Lay out a leaderless region: the zeroed region is already
+    /// `NO_LEADER`, term 0, heartbeat 0 and epoch 0, so only the magic
+    /// is written, last, because attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least [`LEADER_FILE_SIZE`] writable zeroed
+    /// bytes.
+    unsafe fn init_region(ptr: *mut u8) {
+        let hdr = ptr as *mut LeaderHeader;
+        unsafe {
+            std::ptr::write_volatile(&raw mut (*hdr).magic, LEADER_MAGIC);
+        }
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaderError> {
@@ -271,6 +294,28 @@ mod tests {
         assert_eq!(e.current_leader(), Some(42));
         assert!(e.am_i_leader(42));
         assert!(!e.am_i_leader(99));
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A second create attaches with the sitting leader in place;
+    /// reset is what deposes.
+    #[test]
+    fn second_create_attaches_and_keeps_the_leader() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let e = SharedLeaderElection::create(&p).unwrap();
+        assert!(e.try_claim_leadership(42, 3));
+
+        let e2 = SharedLeaderElection::create(&p).unwrap();
+        assert_eq!(e2.current_leader(), Some(42), "attach deposed the leader");
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(e);
+        drop(e2);
+        let fresh = SharedLeaderElection::reset(&p).unwrap();
+        assert_eq!(fresh.current_leader(), None, "reset left a leader seated");
+        drop(fresh);
         std::fs::remove_file(&p).ok();
     }
 
