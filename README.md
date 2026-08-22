@@ -18,7 +18,7 @@
   <a href="LICENSE-MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <a href="rust-toolchain.toml"><img alt="Rust: stable" src="https://img.shields.io/badge/Rust-stable-brightgreen?logo=rust"></a>
   <img alt="Platforms: Win/Linux/macOS x86_64+ARM64" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20x86__64%20%7C%20ARM64-blue">
-  <img alt="Tests: 1321 passing" src="https://img.shields.io/badge/tests-1321%20passing-brightgreen">
+  <img alt="Tests: 1329 passing" src="https://img.shields.io/badge/tests-1329%20passing-brightgreen">
   <img alt="Cross-process: 37 ns one-way" src="https://img.shields.io/badge/cross--process-37%20ns%20one--way-orange">
 </p>
 
