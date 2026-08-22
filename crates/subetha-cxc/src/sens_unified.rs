@@ -800,6 +800,16 @@ impl UnifiedSensSender {
         )
     }
 
+    /// The RLC sender's transmit-side probe: `(last_sid,
+    /// wire_datagrams, acked_through, outstanding)`. Splits a stall
+    /// between "items never packed" (`last_sid` frozen), "packed but
+    /// never handed to the socket" (`wire_datagrams` frozen), and
+    /// "handed to the socket but never acknowledged" (`outstanding`
+    /// growing with `acked_through` frozen).
+    pub fn rlc_tx_probe(&self) -> (u32, u64, u32, usize) {
+        self.rlc.tx_probe()
+    }
+
     /// Send one item over the active code, then periodically sample the fed-back
     /// loss and switch codes if the controller calls for it. The item is recorded
     /// in the replay ring so a switch can resend the un-acked tail over the new

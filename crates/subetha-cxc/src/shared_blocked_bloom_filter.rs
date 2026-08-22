@@ -123,6 +123,11 @@ impl SharedBlockedBloomFilter {
         (n_bits.max(BLOCK_BITS), n_hashes.max(1))
     }
 
+    /// Obtain the filter at `path`, initializing an empty one if the
+    /// path does not yet exist and attaching to it if it does.
+    /// Attaching leaves inserted members in place; a region built with
+    /// a different block count or hash count is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         path: impl AsRef<Path>, n_bits: usize, n_hashes: u32,
     ) -> Result<Self, BlockedBloomError> {
@@ -130,18 +135,63 @@ impl SharedBlockedBloomFilter {
             return Err(BlockedBloomError::InvalidConfig);
         }
         let n_blocks = n_bits.div_ceil(BLOCK_BITS).max(1);
-        let total = blocked_bloom_file_size(n_blocks);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut BlockedBloomHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            blocked_bloom_file_size(n_blocks),
+            |ptr| unsafe { Self::init_region(ptr, n_blocks, n_hashes) },
+            |ptr| unsafe { (*(ptr as *const BlockedBloomHeader)).magic == BLOCKED_BLOOM_MAGIC },
+        )?;
+        Self::from_region(file, mmap, n_blocks, n_hashes)
+    }
+
+    /// Truncate the filter at `path` and initialize an empty one,
+    /// discarding every member live peers share. For a caller that
+    /// knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>, n_bits: usize, n_hashes: u32,
+    ) -> Result<Self, BlockedBloomError> {
+        if n_bits == 0 || n_hashes == 0 {
+            return Err(BlockedBloomError::InvalidConfig);
+        }
+        let n_blocks = n_bits.div_ceil(BLOCK_BITS).max(1);
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            blocked_bloom_file_size(n_blocks),
+            |ptr| unsafe { Self::init_region(ptr, n_blocks, n_hashes) },
+        )?;
+        Self::from_region(file, mmap, n_blocks, n_hashes)
+    }
+
+    /// Lay out an empty filter: config first, magic last, because
+    /// attachers spin on it. The zeroed region is already the all-clear
+    /// block array.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `blocked_bloom_file_size(n_blocks)`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, n_blocks: usize, n_hashes: u32) {
+        let hdr = ptr as *mut BlockedBloomHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, total);
-            (*hdr).magic = BLOCKED_BLOOM_MAGIC;
             (*hdr).n_blocks = n_blocks as u64;
             (*hdr).n_hashes = n_hashes;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, BLOCKED_BLOOM_MAGIC);
+        }
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// config.
+    fn from_region(
+        file: File,
+        mut mmap: MmapMut,
+        n_blocks: usize,
+        n_hashes: u32,
+    ) -> Result<Self, BlockedBloomError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const BlockedBloomHeader) };
+        if hdr.magic != BLOCKED_BLOOM_MAGIC
+            || hdr.n_blocks != n_blocks as u64
+            || hdr.n_hashes != n_hashes
+        {
+            return Err(BlockedBloomError::LayoutMismatch);
         }
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
@@ -161,21 +211,8 @@ impl SharedBlockedBloomFilter {
         if file.metadata()?.len() < total as u64 {
             return Err(BlockedBloomError::LayoutMismatch);
         }
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const BlockedBloomHeader) };
-        if hdr.magic != BLOCKED_BLOOM_MAGIC
-            || hdr.n_blocks != n_blocks as u64
-            || hdr.n_hashes != n_hashes
-        {
-            return Err(BlockedBloomError::LayoutMismatch);
-        }
-        let raw_ptr = mmap.as_mut_ptr();
-        Ok(Self {
-            _file: file, mmap, raw_ptr,
-            n_blocks: n_blocks as u64, n_hashes,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        Self::from_region(file, mmap, n_blocks, n_hashes)
     }
 
     #[inline]
@@ -273,6 +310,32 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("blocked_bloom_{name}_{}.bin", std::process::id()));
         p
+    }
+
+    /// A second create attaches with inserted members in place; reset
+    /// is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_members() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let bf = SharedBlockedBloomFilter::create(&p, 4096, 4).unwrap();
+        bf.insert(b"member");
+
+        let bf2 = SharedBlockedBloomFilter::create(&p, 4096, 4).unwrap();
+        assert!(bf2.contains(b"member"), "attach lost a member");
+        assert!(matches!(
+            SharedBlockedBloomFilter::create(&p, 4096, 7),
+            Err(BlockedBloomError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(bf);
+        drop(bf2);
+        let fresh = SharedBlockedBloomFilter::reset(&p, 4096, 4).unwrap();
+        assert!(!fresh.contains(b"member"), "reset kept a member");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

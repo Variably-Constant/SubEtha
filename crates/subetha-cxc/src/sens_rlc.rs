@@ -426,6 +426,12 @@ pub struct SensOMaticRlcSender {
     last_tx: HashMap<u32, Instant>,
     /// Highest contiguous source id the receiver has delivered.
     acked_through: u32,
+    /// The source id of the most recently packed item, `u32::MAX`
+    /// before the first.
+    last_sid: u32,
+    /// Cumulative DATA and REPAIR datagrams handed to the socket layer
+    /// without error.
+    wire_datagrams: u64,
     /// Max source symbols in flight (sent but not yet delivered) before the
     /// sender paces, so a burst cannot overrun the receiver or the kernel
     /// socket buffer and manufacture loss. Used as the static cap, and as the
@@ -619,6 +625,8 @@ impl SensOMaticRlcSender {
             sent: BTreeMap::new(),
             last_tx: HashMap::new(),
             acked_through: 0,
+            last_sid: u32::MAX,
+            wire_datagrams: 0,
             // The flow window caps OUTSTANDING (sent-but-not-yet-received)
             // symbols, which is what paces the sender so a burst cannot overrun
             // the kernel receive buffer and manufacture loss. Crucially this
@@ -1282,6 +1290,7 @@ impl SensOMaticRlcSender {
     fn send_item_now(&mut self, item: &[u8]) -> io::Result<()> {
         let sym = pack_symbol(item, self.symbol_len);
         let (sid, repair) = self.enc.push_source(&sym);
+        self.last_sid = sid;
         self.sent.insert(sid, sym.clone());
         self.sent_window = self.sent_window.saturating_add(1);
         // Feed BBR the per-symbol rate-sample snapshot (consumed when this symbol
@@ -1326,6 +1335,15 @@ impl SensOMaticRlcSender {
         self.bbr.btlbw_bps()
     }
 
+    /// Transmit-side probe: `(last_sid, wire_datagrams, acked_through,
+    /// outstanding)`. `last_sid` is the source id of the most recently
+    /// packed item (`u32::MAX` before the first); `wire_datagrams`
+    /// counts DATA and REPAIR datagrams handed to the socket layer
+    /// without error; `outstanding` is the in-flight window occupancy.
+    pub fn tx_probe(&self) -> (u32, u64, u32, usize) {
+        (self.last_sid, self.wire_datagrams, self.acked_through, self.sent.len())
+    }
+
     /// Retransmit `sid` only if it has not been (re)sent within ~1.2 RTT - the
     /// retransmit-suppression guard that stops the same still-missing symbol from
     /// being resent on every ~1ms NAK round before its previous copy can be
@@ -1354,6 +1372,7 @@ impl SensOMaticRlcSender {
         pkt.extend_from_slice(&send_us.to_le_bytes());
         pkt.extend_from_slice(sym);
         self.enqueue_wire(&pkt)?;
+        self.wire_datagrams += 1;
         Ok(())
     }
 
@@ -1374,6 +1393,7 @@ impl SensOMaticRlcSender {
         // Repairs are paced: they are the bulk flow whose FEC escalation must
         // not overflow the bottleneck queue.
         self.wire_send(&pkt)?;
+        self.wire_datagrams += 1;
         Ok(())
     }
 
