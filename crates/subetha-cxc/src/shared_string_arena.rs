@@ -189,9 +189,7 @@ impl SharedStringArena {
     pub fn create(
         path: impl AsRef<Path>, capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
-        assert!(capacity_bytes >= 1);
-        assert!(capacity_bytes <= u32::MAX as usize,
-            "capacity_bytes must fit in u32 for StringRef offset");
+        Self::check_capacity(capacity_bytes)?;
         let (file, mmap) = crate::mmf_attach::create_or_attach(
             path.as_ref(),
             arena_file_size(capacity_bytes),
@@ -213,9 +211,7 @@ impl SharedStringArena {
     pub fn reset(
         path: impl AsRef<Path>, capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
-        assert!(capacity_bytes >= 1);
-        assert!(capacity_bytes <= u32::MAX as usize,
-            "capacity_bytes must fit in u32 for StringRef offset");
+        Self::check_capacity(capacity_bytes)?;
         let (file, mmap) = crate::mmf_attach::reset(
             path.as_ref(),
             arena_file_size(capacity_bytes),
@@ -226,6 +222,17 @@ impl SharedStringArena {
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// A capacity every constructor must agree on: at least one byte,
+    /// and no larger than a [`StringRef`] offset can address. Reported
+    /// rather than asserted, because a service that panics building its
+    /// arena dies with it.
+    fn check_capacity(capacity_bytes: usize) -> Result<(), ArenaError> {
+        if capacity_bytes < 1 || capacity_bytes > u32::MAX as usize {
+            return Err(ArenaError::LayoutMismatch);
+        }
+        Ok(())
     }
 
     /// Lay out an empty arena: capacity first, magic last, because
@@ -710,9 +717,19 @@ mod tests {
     /// truncating every ref past the 4 GiB mark into another string's
     /// bytes. No file is touched: the check precedes the mapping.
     #[test]
-    #[should_panic(expected = "capacity_bytes must fit in u32")]
     fn create_refuses_a_capacity_a_ref_cannot_address() {
-        SharedStringArena::create(tmp("too-big"), u32::MAX as usize + 1).ok();
+        assert!(matches!(
+            SharedStringArena::create(tmp("too-big"), u32::MAX as usize + 1),
+            Err(ArenaError::LayoutMismatch),
+        ));
+        assert!(matches!(
+            SharedStringArena::reset(tmp("too-big-reset"), u32::MAX as usize + 1),
+            Err(ArenaError::LayoutMismatch),
+        ));
+        assert!(matches!(
+            SharedStringArena::create(tmp("zero-cap"), 0),
+            Err(ArenaError::LayoutMismatch),
+        ));
     }
 
     /// The same layout refused on the open path, where no assertion
