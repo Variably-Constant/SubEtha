@@ -3033,6 +3033,13 @@ impl SensOMaticRlcReceiver {
         self.order.last().and_then(|cid| self.sessions.get(cid)).and_then(|s| s.peer())
     }
 
+    /// One session's delivery position: `(delivered_through, highest_seen)`.
+    /// `highest_seen` ahead of `delivered_through` is a window holding frames
+    /// behind a gap; the two equal and unmoving is a window with nothing to do.
+    pub fn session_frontier(&self, cid: u64) -> Option<(u32, u32)> {
+        self.sessions.get(&cid).map(|s| (s.delivered_through, s.highest_seen))
+    }
+
     /// The address a given connection id is currently bound to.
     pub fn peer_of(&self, cid: u64) -> Option<SocketAddr> {
         self.sessions.get(&cid).and_then(|s| s.peer())

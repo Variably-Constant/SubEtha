@@ -1356,6 +1356,12 @@ impl UnifiedSensReceiver {
         self.rlc.session_refusals() + self.rs.session_refusals()
     }
 
+    /// One RLC session's delivery position: `(delivered_through,
+    /// highest_seen)`, or `None` for an id with no window.
+    pub fn rlc_session_frontier(&self, cid: u64) -> Option<(u32, u32)> {
+        self.rlc.session_frontier(cid)
+    }
+
     /// sessions, summed over both codes. A refused forgery raises the
     /// second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
