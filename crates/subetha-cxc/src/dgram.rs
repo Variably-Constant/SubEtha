@@ -609,11 +609,12 @@ fn linux_gso_send(fd: i32, batch: &[u8], seg_size: u16, addr: SocketAddr) -> io:
 #[cfg(target_os = "linux")]
 mod linux_iou {
     use super::{parse_timestamp, sockaddr_to_socketaddr, socketaddr_to_sockaddr};
-    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::io;
     use std::net::{SocketAddr, UdpSocket};
     use std::os::fd::AsRawFd;
+
+    use parking_lot::Mutex;
 
     use io_uring::{opcode, types, IoUring};
 
@@ -678,10 +679,14 @@ mod linux_iou {
     pub struct IoUringDgram {
         sock: UdpSocket,
         fd: i32,
-        st: RefCell<State>,
+        st: Mutex<State>,
     }
 
+    // SAFETY: every raw pointer in `State` targets fields of its own
+    // boxed ctx (stable heap addresses owned by `State`), and all
+    // access to `State` is serialized by the mutex.
     unsafe impl Send for IoUringDgram {}
+    unsafe impl Sync for IoUringDgram {}
 
     impl IoUringDgram {
         pub fn new(sock: UdpSocket) -> Result<Self, (UdpSocket, io::Error)> {
@@ -702,7 +707,7 @@ mod linux_iou {
                 ready_len: vec![0usize; RECV_DEPTH],
                 free_send: (0..SEND_DEPTH).collect(),
             };
-            let me = Self { sock, fd, st: RefCell::new(st) };
+            let me = Self { sock, fd, st: Mutex::new(st) };
             if let Err(e) = me.submit_all_recv() {
                 return Err((me.sock, e));
             }
@@ -725,7 +730,7 @@ mod linux_iou {
         }
 
         fn submit_all_recv(&self) -> io::Result<()> {
-            let mut st = self.st.borrow_mut();
+            let mut st = self.st.lock();
             for i in 0..st.recv.len() {
                 self.push_recv(&mut st, i)?;
             }
@@ -771,7 +776,7 @@ mod linux_iou {
         }
 
         pub fn recv_with_kts(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
-            let mut st = self.st.borrow_mut();
+            let mut st = self.st.lock();
             self.reap(&mut st);
             if st.ready.is_empty() {
                 st.ring.submit()?;
@@ -801,7 +806,7 @@ mod linux_iou {
             if data.len() > FRAME_CAP {
                 return Err(io::Error::other("datagram exceeds frame cap"));
             }
-            let mut st = self.st.borrow_mut();
+            let mut st = self.st.lock();
             self.reap(&mut st);
             if st.free_send.is_empty() {
                 st.ring.submit()?;
@@ -963,8 +968,9 @@ fn wire_link_fast_enough(ifname: &str) -> bool {
 #[cfg(all(feature = "wire-locale", any(target_os = "linux", target_os = "freebsd", target_os = "macos")))]
 mod wire_backend {
     use super::*;
-    use std::cell::RefCell;
     use std::net::{IpAddr, Ipv4Addr};
+
+    use parking_lot::Mutex;
 
     use crate::locale_wire::WireSocket;
 
@@ -1063,8 +1069,8 @@ mod wire_backend {
     /// NIC name on Linux and a netmap port spec (e.g. `vale0:a`,
     /// `netmap:em0`) on FreeBSD.
     pub struct WireDgram {
-        wire: RefCell<WireSocket>,
-        scratch: RefCell<Vec<u8>>,
+        wire: Mutex<WireSocket>,
+        scratch: Mutex<Vec<u8>>,
         local_ip: [u8; 4],
         local_mac: [u8; 6],
         peer_mac: [u8; 6],
@@ -1085,8 +1091,8 @@ mod wire_backend {
                 .ok_or_else(|| io::Error::other("bad SUBETHA_WIRE_PEER_MAC"))?;
             let wire = WireSocket::bind(&ifname, 0)?;
             Ok(Self {
-                wire: RefCell::new(wire),
-                scratch: RefCell::new(Vec::with_capacity(HDRS + 2048)),
+                wire: Mutex::new(wire),
+                scratch: Mutex::new(Vec::with_capacity(HDRS + 2048)),
                 local_ip,
                 local_mac,
                 peer_mac,
@@ -1108,7 +1114,7 @@ mod wire_backend {
                 IpAddr::V4(v) => v.octets(),
                 IpAddr::V6(_) => return Err(io::Error::other("wire backend is IPv4-only")),
             };
-            let mut scratch = self.scratch.borrow_mut();
+            let mut scratch = self.scratch.lock();
             build_frame(
                 self.peer_mac,
                 self.local_mac,
@@ -1119,7 +1125,7 @@ mod wire_backend {
                 buf,
                 &mut scratch,
             );
-            self.wire.borrow_mut().send_frame(&scratch)?;
+            self.wire.lock().send_frame(&scratch)?;
             Ok(buf.len())
         }
 
@@ -1128,7 +1134,7 @@ mod wire_backend {
             buf: &mut [u8],
         ) -> io::Result<(usize, SocketAddr, Option<i128>)> {
             let mut fb = [0u8; 2048];
-            let mut wire = self.wire.borrow_mut();
+            let mut wire = self.wire.lock();
             loop {
                 // Non-blocking poll of the RX ring (0 ms timeout).
                 let n = wire.recv_frame(&mut fb, 0)?;
