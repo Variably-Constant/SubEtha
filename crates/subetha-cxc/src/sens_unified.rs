@@ -290,6 +290,23 @@ fn decode_unified_fb(buf: &[u8]) -> Option<u64> {
 
 /// How often the receiver reports its cumulative received-datagram count.
 const UNIFIED_FB_PERIOD: Duration = Duration::from_millis(50);
+
+/// How long a peer keeps receiving raw-loss feedback after its last
+/// datagram. Covers a sparse sender's cadence with wide margin (600 feedback
+/// periods) and bounds the outbound set to peers that recently spoke, so a
+/// spoofed source address ages out instead of accumulating.
+pub const FB_PEER_RETENTION: Duration = Duration::from_secs(30);
+
+/// The deadline [`UnifiedSensSender::finish`] drains for.
+pub const DEFAULT_FINISH_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Counter slots the demux reader publishes.
+const DEMUX_STAT_SLOTS: usize = 7;
+/// Nanoseconds since the reader started, stamped at the top of every loop:
+/// the heartbeat a staleness check reads.
+const DEMUX_SLOT_LAST_ITER: usize = 5;
+/// Socket errors that were neither `WouldBlock` nor `TimedOut`.
+const DEMUX_SLOT_ERRORS: usize = 6;
 /// Minimum datagrams sent in a sample window before the raw-loss estimate is
 /// trusted (a tiny window is too noisy to switch on).
 const MIN_LOSS_SAMPLE: u64 = 30;
@@ -371,22 +388,36 @@ fn spawn_demux(
     loss_pct: u32,
     seed: u64,
     stop: Arc<AtomicBool>,
-    stats: Option<Arc<[AtomicU64; 5]>>,
+    stats: Option<Arc<[AtomicU64; DEMUX_STAT_SLOTS]>>,
+    demux_start: Instant,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
+        let stop_report = Arc::clone(&stop);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let Some(s) = &stats {
             s[4].store(Arc::as_ptr(&rlc_q) as usize as u64, Ordering::Relaxed);
         }
         let mut buf = vec![0u8; 2048];
-        let mut last_from: Option<SocketAddr> = None;
+        // Every peer heard from inside FB_PEER_RETENTION, with the instant it
+        // last spoke. Feedback goes to all of them, not just the most recent
+        // speaker, so a sparse sender's loss estimate matures instead of
+        // starving whenever another peer speaks after it.
+        let mut peers: Vec<(SocketAddr, Instant)> = Vec::new();
         let mut last_fb = Instant::now();
         let mut rng = seed;
+        // Set while the socket is returning real errors, so entering and
+        // leaving that state each report exactly once instead of either
+        // going unmentioned or flooding stderr every 200us.
+        let mut erroring = false;
         while !stop.load(Ordering::Relaxed) {
             if let Some(s) = &stats {
                 s[0].fetch_add(1, Ordering::Relaxed);
+                // The heartbeat a watchdog reads: a reader wedged in recv or
+                // blocked pushing to a queue stops advancing this.
+                s[DEMUX_SLOT_LAST_ITER]
+                    .store(demux_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
-            match crate::dgram::udp_recv_with_kts(&sock, &mut buf) {
+            let io_ok = match crate::dgram::udp_recv_with_kts(&sock, &mut buf) {
                 Ok((n, from, kts)) if n > 0 => {
                     let b0 = buf[0];
                     if let Some(s) = &stats {
@@ -398,7 +429,10 @@ fn spawn_demux(
                             s[3].fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    last_from = Some(from);
+                    match peers.iter_mut().find(|(a, _)| *a == from) {
+                        Some((_, seen)) => *seen = Instant::now(),
+                        None => peers.push((from, Instant::now())),
+                    }
                     // A path challenge is a verbatim echo needing no session
                     // state, so it is answered here at wire latency and kept
                     // out of the queue: admission completes in one round trip
@@ -438,29 +472,54 @@ fn spawn_demux(
                             None,
                         );
                     }
+                    true
                 }
-                Ok(_) => {}
+                Ok(_) => true,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     if let Some(s) = &stats {
                         s[2].fetch_add(1, Ordering::Relaxed);
                     }
                     std::thread::sleep(Duration::from_micros(100));
+                    true
                 }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
-                Err(_) => std::thread::sleep(Duration::from_micros(200)),
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => true,
+                Err(e) => {
+                    if let Some(s) = &stats {
+                        s[DEMUX_SLOT_ERRORS].fetch_add(1, Ordering::Relaxed);
+                    }
+                    if !erroring {
+                        erroring = true;
+                        eprintln!("subetha: demux reader socket error: {e}");
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                    false
+                }
+            };
+            if io_ok && erroring {
+                erroring = false;
+                eprintln!("subetha: demux reader socket recovered");
             }
             // Receiver: report the cumulative received-datagram count back so
             // the sender derives the true raw channel loss (sent vs received),
             // which neither code's post-recovery feedback reveals.
-            if let (Some(c), Some(dst)) = (&recv_counter, last_from)
+            if let Some(c) = &recv_counter
                 && last_fb.elapsed() >= UNIFIED_FB_PERIOD
             {
                 last_fb = Instant::now();
+                peers.retain(|(_, seen)| seen.elapsed() < FB_PEER_RETENTION);
                 let frame = encode_unified_fb(c.load(Ordering::Relaxed));
-                sock.send_to(&frame, dst).ok();
+                for (dst, _) in &peers {
+                    sock.send_to(&frame, *dst).ok();
+                }
             }
         }
         }));
+        // A reader that stops while nobody asked it to leaves a process that
+        // looks healthy and has stopped hearing the world, so both ways out
+        // announce themselves.
+        if !stop_report.load(Ordering::Relaxed) {
+            eprintln!("subetha: demux reader exited without a stop request");
+        }
         if let Err(p) = r {
             let msg = p
                 .downcast_ref::<&str>()
@@ -620,9 +679,12 @@ pub struct UnifiedSensSender {
     /// statement in the method.
     send_item_calls: u64,
     /// Demux reader loop counters: `[iterations, recv_ok, would_block,
-    /// rlc_frames_routed, rlc_queue_ptr]`, written by the reader
-    /// thread; the last slot holds the pushed-to queue's `Arc` address.
-    demux_stats: Arc<[AtomicU64; 5]>,
+    /// rlc_frames_routed, rlc_queue_ptr, last_iter_nanos, socket_errors]`,
+    /// written by the reader thread; slot 4 holds the pushed-to queue's
+    /// `Arc` address.
+    demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]>,
+    /// The reader's clock origin, so `last_iter_nanos` reads as an age.
+    demux_start: Instant,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -756,7 +818,9 @@ impl UnifiedSensSender {
         rs.set_sock(rs_sock);
 
         let stop = Arc::new(AtomicBool::new(false));
-        let demux_stats: Arc<[AtomicU64; 5]> = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
+        let demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]> =
+            Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
+        let demux_start = Instant::now();
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -768,6 +832,7 @@ impl UnifiedSensSender {
             1,
             Arc::clone(&stop),
             Some(Arc::clone(&demux_stats)),
+            demux_start,
         );
 
         Ok(Self {
@@ -776,6 +841,7 @@ impl UnifiedSensSender {
             rlc,
             rs,
             demux_stats,
+            demux_start,
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
@@ -893,6 +959,25 @@ impl UnifiedSensSender {
         self.demux.as_ref().is_some_and(|h| !h.is_finished())
     }
 
+    /// How long since the demux reader last completed a loop. A reader
+    /// wedged inside its recv or blocked pushing to a queue is alive by
+    /// [`demux_alive`](Self::demux_alive) and stale by this, which is the
+    /// pair that separates a healthy idle socket from a deaf one. Compare
+    /// it against the reader's own cadence: an idle reader still loops
+    /// every 100us, so anything past a few milliseconds is wedged.
+    pub fn demux_stale_for(&self) -> Duration {
+        let last = self.demux_stats[DEMUX_SLOT_LAST_ITER].load(Ordering::Relaxed);
+        let now = self.demux_start.elapsed().as_nanos() as u64;
+        Duration::from_nanos(now.saturating_sub(last))
+    }
+
+    /// Socket errors the demux reader met that were neither `WouldBlock`
+    /// nor a read timeout. Each transition into and out of the erroring
+    /// state is also reported on stderr.
+    pub fn demux_errors(&self) -> u64 {
+        self.demux_stats[DEMUX_SLOT_ERRORS].load(Ordering::Relaxed)
+    }
+
     /// Demux reader loop counters: `(iterations, recv_ok, would_block,
     /// rlc_frames_routed)`. Iterations frozen with the thread alive is
     /// a reader blocked inside the recv; iterations climbing with
@@ -917,6 +1002,7 @@ impl UnifiedSensSender {
     pub fn queue_seam_probe(&self) -> (u64, Option<(u64, u64, u64, u64)>) {
         (
             self.demux_stats[4].load(Ordering::Relaxed),
+
             self.rlc.sock_probe(),
         )
     }
@@ -1202,15 +1288,27 @@ impl UnifiedSensSender {
 
     /// Flush and drain the active code so the final items are delivered. Returns
     /// whether everything was acked before the deadline.
+    ///
+    /// Drains for [`DEFAULT_FINISH_DEADLINE`]; a peer that died mid-stream
+    /// holds the caller for that whole window, so a caller with its own
+    /// shutdown budget wants [`finish_within`](Self::finish_within).
     pub fn finish(&mut self) -> io::Result<bool> {
+        self.finish_within(DEFAULT_FINISH_DEADLINE)
+    }
+
+    /// [`finish`](Self::finish) with the caller's own deadline. Returns
+    /// `false` when the deadline passed with items still unacked, which is
+    /// the ordinary answer for a peer that stopped responding - the caller
+    /// decides whether that is a failure.
+    pub fn finish_within(&mut self, deadline: Duration) -> io::Result<bool> {
         match self.active {
             SensCode::Rlc => {
                 let target = self.rlc.next_source_id();
-                self.rlc.drain_until_acked(target, Duration::from_secs(120))
+                self.rlc.drain_until_acked(target, deadline)
             }
             SensCode::Rs => {
                 self.rs.flush()?;
-                self.rs.drain_until_acked(Duration::from_secs(120))
+                self.rs.drain_until_acked(deadline)
             }
         }
     }
@@ -1277,6 +1375,11 @@ pub struct UnifiedSensReceiver {
     expect_tls: bool,
     stop: Arc<AtomicBool>,
     demux: Option<JoinHandle<()>>,
+    /// Same slots the sender's reader publishes; a receiver whose reader
+    /// wedges is the case that presents as a healthy, deaf process. `None`
+    /// on a receiver fed by an external demux, which owns no reader here.
+    demux_stats: Option<Arc<[AtomicU64; DEMUX_STAT_SLOTS]>>,
+    demux_start: Instant,
 }
 
 impl UnifiedSensReceiver {
@@ -1335,6 +1438,9 @@ impl UnifiedSensReceiver {
         let switch_signal: SwitchSignal = Arc::new(Mutex::new(None));
         let recv_counter = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
+        let demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]> =
+            Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
+        let demux_start = Instant::now();
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -1345,7 +1451,8 @@ impl UnifiedSensReceiver {
             cfg.debug_loss,
             cfg.seed,
             Arc::clone(&stop),
-            None,
+            Some(Arc::clone(&demux_stats)),
+            demux_start,
         );
 
         Ok(Self {
@@ -1364,6 +1471,8 @@ impl UnifiedSensReceiver {
             expect_tls: false,
             stop,
             demux: Some(demux),
+            demux_stats: Some(demux_stats),
+            demux_start,
         })
     }
 
@@ -1409,6 +1518,10 @@ impl UnifiedSensReceiver {
             expect_tls: false,
             stop,
             demux: Some(demux),
+            // The QUIC endpoint owns the reader; this receiver has no
+            // heartbeat of its own to report.
+            demux_stats: None,
+            demux_start: Instant::now(),
         })
     }
 
@@ -1470,6 +1583,31 @@ impl UnifiedSensReceiver {
     /// Code switches the receiver has followed.
     pub fn switches(&self) -> u64 {
         self.switches
+    }
+
+    /// How long since this receiver's demux reader last completed a loop,
+    /// or `None` when an external demux feeds it and it owns no reader.
+    /// A wedged reader still reports `demux_alive`, so this is what
+    /// separates a healthy idle socket from a process that has silently
+    /// stopped hearing the world: an idle reader loops every 100us.
+    pub fn demux_stale_for(&self) -> Option<Duration> {
+        let stats = self.demux_stats.as_ref()?;
+        let last = stats[DEMUX_SLOT_LAST_ITER].load(Ordering::Relaxed);
+        let now = self.demux_start.elapsed().as_nanos() as u64;
+        Some(Duration::from_nanos(now.saturating_sub(last)))
+    }
+
+    /// Socket errors this receiver's demux reader met that were neither
+    /// `WouldBlock` nor a read timeout, or `None` when an external demux
+    /// feeds it. Entering and leaving the erroring state also report on
+    /// stderr.
+    pub fn demux_errors(&self) -> Option<u64> {
+        Some(self.demux_stats.as_ref()?[DEMUX_SLOT_ERRORS].load(Ordering::Relaxed))
+    }
+
+    /// Whether this receiver's demux reader thread is still running.
+    pub fn demux_alive(&self) -> bool {
+        self.demux.as_ref().is_some_and(|h| !h.is_finished())
     }
 
     /// Whether either decoder adopted a replacement session since this was
@@ -2025,6 +2163,111 @@ mod tests {
                 mine.len(),
             );
         }
+    }
+
+    /// Raw-loss feedback reaches every peer inside the retention window,
+    /// not just the most recent speaker. The first sender goes quiet while
+    /// a second keeps talking; before per-peer targeting the first one's
+    /// fed-back count stayed frozen at zero from the moment the second
+    /// spoke, so its loss estimate could never mature.
+    #[test]
+    fn fb_reaches_a_peer_that_stopped_speaking() {
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let mut recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+
+        let mut quiet = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+        let mut talker = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+
+        // The quiet peer speaks once, then never again.
+        quiet.send_item(&0u64.to_le_bytes()).unwrap();
+
+        // The talker keeps the socket busy, so it is always the last
+        // speaker the reader saw.
+        let start = Instant::now();
+        let mut i = 1u64;
+        while start.elapsed() < Duration::from_secs(3) {
+            talker.send_item(&i.to_le_bytes()).ok();
+            i += 1;
+            recv.poll().ok();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let (_, quiet_fb) = quiet.raw_sent_recv();
+        assert!(
+            quiet_fb > 0,
+            "a peer that stopped speaking starved of raw-loss feedback",
+        );
+    }
+
+    /// finish_within honours the caller's deadline instead of holding it
+    /// for the two-minute default when the peer is gone.
+    #[test]
+    fn finish_within_returns_on_the_callers_deadline() {
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        // A receiver that never existed: the drain can never be acked.
+        let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut send = UnifiedSensSender::connect("0.0.0.0:0", dead, cfg).unwrap();
+        send.send_item(&7u64.to_le_bytes()).ok();
+
+        let t0 = Instant::now();
+        let acked = send.finish_within(Duration::from_millis(300)).unwrap();
+        let waited = t0.elapsed();
+        assert!(!acked, "a dead peer cannot have acked the drain");
+        assert!(
+            waited < Duration::from_secs(5),
+            "finish_within held the caller for {waited:?}, past its own deadline",
+        );
+    }
+
+    /// A live reader keeps its heartbeat fresh, so staleness separates an
+    /// idle socket from a deaf one.
+    #[test]
+    fn demux_heartbeat_stays_fresh_on_a_live_reader() {
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        // The reader loops on a 100us idle cadence, so let several pass.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(recv.demux_alive(), "reader died");
+        let stale = recv.demux_stale_for().expect("receiver owns its reader");
+        assert!(
+            stale < Duration::from_secs(1),
+            "an idle-but-live reader reported {stale:?} of staleness",
+        );
+        assert_eq!(recv.demux_errors(), Some(0), "no socket errors expected");
     }
 
     #[test]

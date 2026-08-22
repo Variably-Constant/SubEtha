@@ -137,6 +137,29 @@ exist: `SUBETHA_SEND_TRACE=1` prints each `send_item` entry for the
 first 32 calls per sender, and `SUBETHA_WAKE_TRACE=1` prints the
 reactor and net-bridge wake ledgers once per second.
 
+Raw-loss feedback goes to **every peer heard from in the last
+`FB_PEER_RETENTION` (30 s)**, not only the most recent speaker, so a
+sparse sender's loss estimate matures instead of freezing the moment
+another peer talks. A peer silent past the window ages out of the set,
+which is what bounds both the memory and the outbound feedback to
+addresses that recently sent something.
+
+`finish()` drains for `DEFAULT_FINISH_DEADLINE` (120 s); a peer that
+died mid-stream holds the caller for that whole window, so
+`finish_within(deadline)` takes the caller's own budget and returns
+`false` when the deadline passes with items unacked.
+
+A wedged reader is a process that looks healthy and has stopped
+hearing the world, so it is never left to be inferred:
+`demux_stale_for()` reports how long since the reader last completed a
+loop (an idle reader still loops every 100 us, so anything past a few
+milliseconds is wedged), `demux_errors()` counts socket errors that
+were neither `WouldBlock` nor a timeout, and the reader itself prints
+to stderr when it enters or leaves an erroring state, when it panics,
+and when it exits without a stop request. On the receiver both
+accessors return `None` when an external demux owns the reader, which
+is a different answer from "not stale".
+
 Both codes survive a peer restart, by different means. RLC routes by the
 connection id it already carries; block-RS carries a
 [session epoch](../reliable-udp-bridge/#surviving-a-peer-restart) in
