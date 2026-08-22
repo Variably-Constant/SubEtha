@@ -745,9 +745,13 @@ impl AutoIpc {
         self
     }
 
-    /// Ring slot capacity (rounded to next pow2).
+    /// Ring slot capacity, clamped to `>= 2` and rounded up to the
+    /// next power of two. Every terminal's backing store requires a
+    /// pow2 capacity, and they disagree on how they say so: the ring
+    /// asserts, the deque returns `InvalidCapacity`, the KHL deque
+    /// rounds. Rounding here is what makes the hint declarative.
     pub fn capacity(mut self, n: usize) -> Self {
-        self.capacity = n.max(2);
+        self.capacity = n.max(2).next_power_of_two();
         self
     }
 
@@ -1044,6 +1048,43 @@ mod tests {
         let v = chan.recv().expect("recv");
         assert_eq!(v, U32Item(123));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn auto_ipc_rounds_a_non_pow2_capacity_up_for_every_terminal() {
+        // Every terminal's backing store requires a pow2 capacity and
+        // refuses one differently: the ring asserts, the deque returns
+        // InvalidCapacity. The builder rounds so a caller's arbitrary
+        // number reaches all of them as the same legal value.
+        let ch_path = tmp("auto_cap_ch");
+        let chan: Channel<U32Item> = AutoIpc::new(&ch_path)
+            .capacity(100)
+            .build_channel()
+            .expect("100 rounds to 128");
+        chan.send(&U32Item(5)).expect("send");
+        assert_eq!(chan.recv().expect("recv"), U32Item(5));
+        std::fs::remove_file(&ch_path).ok();
+
+        let q_path = tmp("auto_cap_wsq");
+        let q: WorkStealQueue<u64> = AutoIpc::new(&q_path)
+            .batch_size(8)
+            .capacity(100)
+            .build_work_steal_queue()
+            .expect("100 rounds to 128");
+        q.push(&1).expect("push");
+        assert_eq!(q.pop(), Some(1));
+        std::fs::remove_file(&q_path).ok();
+
+        // The >= 2 clamp survives the rounding: 0 and 1 are both
+        // illegal capacities downstream.
+        let z_path = tmp("auto_cap_zero");
+        let zero: Channel<U32Item> = AutoIpc::new(&z_path)
+            .capacity(0)
+            .build_channel()
+            .expect("0 clamps to 2");
+        zero.send(&U32Item(9)).expect("send");
+        assert_eq!(zero.recv().expect("recv"), U32Item(9));
+        std::fs::remove_file(&z_path).ok();
     }
 
     #[test]

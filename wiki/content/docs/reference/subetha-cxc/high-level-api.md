@@ -54,7 +54,7 @@ terminal `build_*` call infers the shape and constructs the handle.
 | `producers(n)` | Number of producers expected to push concurrently (clamped to `>= 1`). |
 | `consumers(n)` | Number of consumers expected to drain concurrently (clamped to `>= 1`). |
 | `batch_size(k)` | Hint that the producer publishes batches of `k`; this is what flips a single-producer streaming workload into work-stealing routing. |
-| `idle_wait(on)` | Hint that consumers idle-wait between batches (WAITPKG on capable silicon, PAUSE-spin otherwise). |
+| `idle_wait(on)` | Hint that consumers idle-wait between batches (WAITPKG on capable silicon, PAUSE-spin otherwise). Like `batch_size`, this flips the inference to work-stealing on its own. |
 | `capacity(n)` | Ring slot capacity, clamped to `>= 2` and rounded to the next power of two. |
 | `ordering(ordering)` | Declare the ordering requirement. `GlobalFifo` pins inference to the streaming family and, through `build_adaptive`, turns on the stamped merge. |
 | `auto_order(threshold)` | Pre-authorize automatic global-FIFO when observed cross-producer inversions per second exceed `threshold`. Effective through `build_adaptive`. |
@@ -70,10 +70,12 @@ terminal `build_*` call infers the shape and constructs the handle.
 | `build_work_steal_queue::<T>()` | `WorkStealQueue<T>` | forces work-stealing routing. `WrongFamily` if `GlobalFifo` ordering was declared. |
 | `build_kv_map::<K, V>()` | `KvMap<K, V>` | key-value access (declared by calling this terminal). |
 
-The inference is observable before you build. `.batch_size(64)` flips to
-work-stealing, `.consumers(4)` widens to streaming MPMC, no shape hint
-is one-to-one streaming. `inferred_shape()` returns the resolved
-`MmfWorkloadShape` so a caller can assert the route.
+The inference is observable before you build. `.batch_size(64)` or
+`.idle_wait(true)` flips to work-stealing, `.consumers(4)` widens to
+streaming MPMC, no shape hint is one-to-one streaming, and a declared
+`GlobalFifo` ordering overrides all of it back to streaming.
+`inferred_shape()` returns the resolved `MmfWorkloadShape` so a caller
+can assert the route before constructing anything.
 
 ## `Channel<T>`
 
@@ -85,6 +87,12 @@ calling conventions; async is a convention, not a second type.
 | Sync | `send(&item) -> Result<(), ApiError>` | `recv() -> Result<T, ApiError>` | Non-blocking. Returns `Full` / `Empty` immediately. |
 | Blocking | `send_blocking(&item, timeout) -> Result<(), ApiError>` | `recv_blocking(timeout) -> Result<T, ApiError>` | Parks the calling thread until there is room / an item. `timeout: Option<Duration>`; `None` waits indefinitely. |
 | Async | `send_async(&item) -> SendFut` | `recv_async() -> RecvFut` | Suspends the task. The futures resolve to `Result<(), ApiError>` / `Result<T, ApiError>` and run on any executor. |
+
+`T` marshals into one ring slot, and a slot is one cache line: 64 bytes
+less the 8-byte sequence number leaves **56 payload bytes**. A `T` whose
+`PAYLOAD_BYTES` exceeds that is refused at construction with
+`ApiError::PayloadTooLarge` rather than truncated. Send a handle or an
+index for anything larger.
 
 `Channel::create(path, shape, capacity)` and `Channel::open(path,
 capacity)` construct directly when you already know the shape;
@@ -100,7 +108,7 @@ the same three conventions as `Channel`, plus shape-aware extras.
 |---|---|
 | `send(&item)` / `recv()` | Sync send / recv (`Result`). |
 | `send_u64(item)` | Specialized `u64` send; collapses the marshal branch to a direct ring push. |
-| `send_batch(items)` | Push a slice in one call. A batch of ≥ 2 items whose payload is ≤ 16 bytes publishes through a KHL deque (three items per cache-line write), drained transparently by `recv`; larger payloads take the per-item path. |
+| `send_batch(items)` | Push a slice in one call, all-or-nothing: `Ok` means every item landed, so a `while send_batch(&b).is_err() { spin }` loop cannot double-send. It spins on backpressure and re-reads the active family per item, so a migration mid-batch routes the rest to the new backing. A batch of ≥ 2 items whose payload is ≤ 16 bytes publishes through a KHL deque (three items per Release-store), drained transparently by `recv`; larger payloads take the per-item path. |
 | `send_blocking(&item, timeout)` / `recv_blocking(timeout)` | Thread-parking send / recv. |
 | `send_async(&item)` / `recv_async()` | Task-suspending send / recv (`AdaptiveSendFut` / `AdaptiveRecvFut`). |
 | `active_family()` | The family the endpoint is currently morphed to. |
