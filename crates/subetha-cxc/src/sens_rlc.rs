@@ -83,6 +83,11 @@ const AMPLIFICATION_FACTOR: u64 = 3;
 /// answers; a genuine migration answers within a round trip).
 const CHALLENGE_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Consecutive latched-reset receives one drain absorbs before giving up. Each
+/// reset reports a previous send to a dead peer, so the drain reads past them
+/// to reach datagrams from peers that are still alive.
+const MAX_DRAIN_RESETS: usize = 64;
+
 /// TLS handshake flight (cleartext, before keys exist) + its ack, and the AEAD
 /// envelope `[17][pn u64-le][sealed inner datagram + tag]` for the data phase.
 #[cfg(feature = "tls")]
@@ -2742,6 +2747,7 @@ impl SensOMaticRlcReceiver {
         // when TLS is on.
         let mut buf = vec![0u8; self.symbol_len + 64];
         let mut received = 0usize;
+        let mut resets = 0usize;
         // Drain pass: pull every available datagram, stamping its arrival time
         // and routing it to the session that owns its id, with NO Gaussian solve
         // in the loop - so the arrival stamp the congestion classifier reads
@@ -2782,10 +2788,19 @@ impl SensOMaticRlcReceiver {
                 Ok(_) => {}
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(ref e) if e.kind() == io::ErrorKind::TimedOut => break,
-                // Windows surfaces an ICMP port-unreachable (e.g. a stale ack to
-                // a peer that just migrated off its old socket) as a spurious
-                // ConnectionReset on UDP recv - transient, not fatal.
-                Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => break,
+                // Windows reports an ICMP port-unreachable provoked by a
+                // PREVIOUS send as ConnectionReset on the next receive. It
+                // describes that send, not the datagrams queued behind it, so
+                // the drain continues: ending it here strands every peer whose
+                // datagrams sit after the reset while the receiver keeps
+                // feeding a dead peer and re-arming the ICMP each tick.
+                // Bounded so a socket that only ever resets still terminates.
+                Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                    resets += 1;
+                    if resets >= MAX_DRAIN_RESETS {
+                        break;
+                    }
+                }
                 Err(e) => return Err(e),
             }
         }
