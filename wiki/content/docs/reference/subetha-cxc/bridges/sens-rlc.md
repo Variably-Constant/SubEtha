@@ -47,35 +47,63 @@ many *other* packets it drops, so the gap measures capacity independently
 of loss. The sender cruises just under the measured capacity and lets the
 FEC cover the residual loss, rather than probing into the cliff.
 
-## Surviving a peer restart
+## One window per peer
 
-The connection id identifies the SESSION, and a restarted process draws a
-new one. The receiver does not latch the first id it sees: a datagram
-announcing an unknown id arms a `PATH_CHALLENGE` carrying that candidate
-id and a fresh nonce, and the session is adopted when the nonce returns.
-The provoking datagram is not delivered in the meantime, so a forged id
-costs the receiver one challenge and leaves the established session
-untouched; an unanswered challenge is retired after `CHALLENGE_TIMEOUT`.
+The connection id identifies the SESSION, and the receiver keeps a
+decode window per id: its own delivery frontier, loss estimate, gap
+tracking and path validation. A node receiving from several peers at
+once - a replication mesh, where every member ships to every other -
+decodes each stream independently, so nothing one peer sends can stall
+or displace another's.
 
-Adopting is gated on the answer rather than the id alone because the two
-are indistinguishable from a datagram: without the challenge, anyone able
-to guess the 4-tuple could reset a receiver's decode window with a single
-packet. What the answer proves is return-routability - the responder
-echoes the challenge without inspecting the id - which is what an
-off-path attacker cannot supply.
+That is also what makes a restart ordinary rather than special. A
+restarted process draws a new id, so it opens a new window; the dead
+session's window simply goes quiet. There is no replacement step,
+because a session is never rebound to a different id.
 
-Adoption drops the decode state keyed to the dead session's source-id
-space and keeps the path sensors, which describe the link rather than the
-session. The delivery frontier anchors on the first source id a session
-presents, so a receiver that binds mid-stream starts where the stream is
-instead of waiting on ids it could never have received.
+`poll_from()` returns `(connection_id, item)` and is the call a
+multi-peer node wants. `poll()` is the same drain with the tag
+dropped. Ordering is guaranteed WITHIN a connection id; nothing orders
+one peer against another, since they are independent streams.
+`live_sessions()` lists the ids with a window.
+
+## Admitting a peer
+
+The first id a receiver sees is admitted outright: there is no
+established session for a forgery to disturb, and that is the ordinary
+point-to-point case. Every id after that is challenged. A datagram
+carrying an unfamiliar id arms a `PATH_CHALLENGE` with that id and a
+fresh nonce, and the window opens only when the nonce returns from the
+address it was sent to. The provoking datagram is not delivered
+meanwhile, and an unanswered challenge is retired after
+`CHALLENGE_TIMEOUT`.
+
+Admission is gated on the answer rather than on the id alone because
+the two are indistinguishable from a datagram: without the challenge,
+anyone able to guess the 4-tuple could make a receiver allocate a
+decode window with a single packet. What the answer proves is
+return-routability - the responder echoes the challenge without
+inspecting the id - which is what an off-path attacker cannot supply.
+Both directions are bounded regardless: 256 live windows and 64
+candidates under challenge at once.
+
+A newly admitted window anchors its delivery frontier at the bottom
+rather than at the first id it happens to see. The datagrams the peer
+sent during the challenge round trip were not delivered, so anchoring
+where the stream *is* would skip them silently; anchoring at the bottom
+leaves them as a gap ARQ recovers.
 
 | Call | Answers |
 |---|---|
-| `take_session_changed()` | whether a replacement session was adopted since the last call; edge-triggered, one report per adoption |
-| `session_adoption_counts()` | `(adopted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
+| `take_session_changed()` | whether a window was admitted since the last call; edge-triggered |
+| `session_adoption_counts()` | `(admitted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
+| `session_admissions_for(cid)` | the address that id answered from, or `None` if it holds no window |
+| `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
 
-Both are also on `UnifiedSensReceiver`.
+`take_session_changed()`, `session_adoption_counts()` and
+`poll_from()` are also on `UnifiedSensReceiver`, whose
+[multi-peer contract](../unified-code-switch/#one-window-per-peer)
+stops at delivery.
 
 ## Optional TLS 1.3
 

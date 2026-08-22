@@ -109,16 +109,36 @@ over an endpoint whose codes share one socket.
 
 `take_session_changed()` and `session_adoption_counts()` are surfaced
 here with the same meaning they have on the standalone receiver: one
-report per adoption, and `(adopted, unanswered)` so a refused forgery is
-visible as the second rising without the first. Both cover either code,
-so an endpoint pinned with `CodePolicy::ForceRs` reports its own
+report per admission, and `(admitted, unanswered)` so a refused forgery
+is visible as the second rising without the first. Both cover either
+code, so an endpoint pinned with `CodePolicy::ForceRs` reports its own
 sessions rather than an idle RLC decoder's.
 
 Both codes survive a peer restart, by different means. RLC routes by the
 connection id it already carries; block-RS carries a
 [session epoch](../reliable-udp-bridge/#surviving-a-peer-restart) in
-every data datagram and announces it on the heartbeat. Either way the
-adoption is gated on a challenge.
+every data datagram and announces it on the heartbeat. Either way a
+window opens only on a challenge answer.
+
+## One window per peer
+
+`poll_from()` returns `(peer, item)` - the RLC connection id, or the
+block-RS session epoch widened to `u64` - so a node receiving from
+several peers can tell whose item it is holding. `poll()` is the same
+drain with the tag dropped, and is unchanged.
+
+**The multi-peer contract stops at delivery, and that boundary is
+deliberate.** RLC decodes each peer in
+[its own window](../sens-rlc/#one-window-per-peer), so every stream
+arrives. The code-switch machinery layered above it is still one
+stream: the delivery frontier, the switch boundary and the TLS packet
+number are per endpoint, not per peer, because a code switch is
+negotiated for a connection and the unified endpoint carries one.
+
+So a mesh node should pin `CodePolicy::ForceRlc` and leave TLS off, or
+drive [`SensOMaticRlcReceiver`](../sens-rlc/) directly. Block-RS is
+single-session, so under `Auto` a link that sustains loss past the
+crossover switches to a code that carries one peer.
 
 A code switch is not a session change. The connection id belongs to the
 process, so RLC <-> RS handover leaves it untouched and no window reset

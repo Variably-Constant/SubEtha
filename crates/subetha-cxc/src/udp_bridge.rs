@@ -2115,7 +2115,10 @@ impl ReliableUdpSender {
 
 /// Receiver half of the reliable-UDP bridge.
 pub struct ReliableUdpReceiver {
-    sock: crate::dgram::DgramSock,
+    /// Shared with every per-session decode window: `DgramSock::send_to` and
+    /// `recv_from` take `&self`, so a session drives the wire toward its own
+    /// peer without owning the socket. One socket, N sessions.
+    sock: std::sync::Arc<crate::dgram::DgramSock>,
     dec: Decoder,
     /// A session epoch under challenge: `(addr, epoch, nonce, sent_at)`.
     /// Adopted only when that nonce comes back from that address.
@@ -2500,7 +2503,7 @@ impl ReliableUdpReceiver {
         // the standalone path keeps the fd (via as_udp) for the TTL/ECN recvmsg.
         let sock = crate::dgram::DgramSock::from_udp(sock);
         Ok(Self {
-            sock,
+            sock: std::sync::Arc::new(sock),
             dec: Decoder::new(),
             pending_session: None,
             session_changed: false,
@@ -2587,7 +2590,7 @@ impl ReliableUdpReceiver {
     /// Swap the datagram socket for one the caller already built (a demux socket
     /// the unified endpoint shares across both codes).
     pub fn set_sock(&mut self, sock: crate::dgram::DgramSock) {
-        self.sock = sock;
+        self.sock = std::sync::Arc::new(sock);
     }
 
     /// The bound local address (useful when binding to port 0).
@@ -3934,6 +3937,89 @@ mod tests {
     /// retransmits: `pump_feedback` only samples, beats and reads, so a
     /// sender that flushed once into a socket still bound to its dead
     /// predecessor would have nothing left to re-offer.
+    /// Two independent block-RS senders, distinct session epochs, delivering
+    /// to ONE receiver at the same time - the replication-mesh shape, where a
+    /// node receives from several peers concurrently rather than from one peer
+    /// that restarted.
+    ///
+    /// The RLC code carries this (each connection id decodes in its own
+    /// window); block-RS holds a single session epoch, so the second sender's
+    /// blocks are gated out by the epoch check ahead of the block-id checks.
+    /// Each sender tags its items in the high byte so the streams stay
+    /// distinguishable; ordering is asserted WITHIN a sender, since nothing
+    /// orders one against the other.
+    #[test]
+    #[ignore = "subetha-8: block-RS is single-session; this is the reproduction, not a regression"]
+    fn two_concurrent_rs_senders_both_deliver() {
+        const PER: u64 = 200;
+        const SENDERS: u64 = 2;
+        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap();
+        let addr = recv.local_addr().unwrap();
+
+        // Both senders bind first and then start together. Without the barrier
+        // a 40-item sender finishes before the other binds, so the receiver
+        // sees a restart rather than a second live peer - the test passes
+        // while never exercising concurrency at all.
+        let gate = Arc::new(std::sync::Barrier::new(SENDERS as usize));
+        let done = Arc::new(AtomicBool::new(false));
+        let mut txs = Vec::new();
+        let mut epochs = Vec::new();
+        for s in 0..SENDERS {
+            let stop = Arc::clone(&done);
+            let gate = Arc::clone(&gate);
+            let (etx, erx) = std::sync::mpsc::channel();
+            txs.push(std::thread::spawn(move || {
+                let mut send = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+                etx.send(send.enc.epoch()).ok();
+                gate.wait();
+                for i in 0..PER {
+                    send.send_item(&((s << 56) | i).to_le_bytes()).unwrap();
+                }
+                send.flush().unwrap();
+                while !stop.load(AtomicOrdering::Relaxed) {
+                    send.drain_until_acked(Duration::from_millis(50)).ok();
+                }
+            }));
+            epochs.push(erx.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        assert_ne!(epochs[0], epochs[1], "independent senders must draw distinct epochs");
+
+        let mut got: Vec<u64> = Vec::new();
+        let start = Instant::now();
+        while (got.len() as u64) < PER * SENDERS && start.elapsed() < Duration::from_secs(25) {
+            for item in recv.poll().unwrap() {
+                got.push(u64::from_le_bytes(item.try_into().unwrap()));
+            }
+        }
+        done.store(true, AtomicOrdering::Relaxed);
+        for t in txs {
+            t.join().ok();
+        }
+
+        let (adopted, unanswered) = recv.session_adoption_counts();
+        for s in 0..SENDERS {
+            let mine: Vec<u64> =
+                got.iter().filter(|v| (*v >> 56) == s).map(|v| v & 0x00FF_FFFF_FFFF_FFFF).collect();
+            assert_eq!(
+                mine,
+                (0..PER).collect::<Vec<_>>(),
+                "sender {s} (epoch {}) must deliver every item in order alongside the other sender",
+                epochs[s as usize],
+            );
+        }
+        // Delivery alone does not prove the receiver carried two sessions. A
+        // single-session receiver reaches the same result by ADOPTING back and
+        // forth - each adoption resets the decoder and ARQ re-delivers - which
+        // converges at this size and collapses at scale. Two live peers should
+        // cost at most one adoption, so a count that tracks the traffic is the
+        // thrash showing itself.
+        assert!(
+            adopted <= 1,
+            "receiver thrashed between the two peers: {adopted} adoptions, {unanswered} \
+             unanswered, for {SENDERS} concurrent senders",
+        );
+    }
+
     #[test]
     fn restarted_sender_is_adopted_after_the_challenge() {
         const N: u64 = 40;

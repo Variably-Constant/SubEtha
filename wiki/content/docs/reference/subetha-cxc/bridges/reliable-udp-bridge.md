@@ -120,6 +120,17 @@ discarded by the kernel before the transport sees it.
 |---|---|
 | `take_session_changed()` | whether a replacement session was adopted since the last call; edge-triggered, one report per adoption |
 | `session_adoption_counts()` | `(adopted, challenges_that_went_unanswered)`; a refused forgery raises the second without the first |
+| `session_epoch()` | the epoch currently being decoded - this peer's block-RS identity, the counterpart to the RLC connection id |
+
+**One session at a time.** The receiver decodes a single epoch, so this
+is a point-to-point code: a restarted peer replaces the session it
+replaced. Two peers sending CONCURRENTLY is a different shape, and the
+epoch gate sits ahead of the block-id checks, so the peer the receiver
+did not lock onto is dropped whole rather than degraded. The
+[RLC code](../sens-rlc/#one-window-per-peer) keeps a window per peer and
+is the one to use for a mesh; under `CodePolicy::Auto` a link that
+sustains loss past the crossover switches to this code and back to one
+peer.
 
 ## Adaptive control
 
