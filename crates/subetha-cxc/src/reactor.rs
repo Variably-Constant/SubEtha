@@ -57,6 +57,22 @@ use crate::spsc_ring::{SpscRingCore, SPSC_PAYLOAD_BYTES};
 /// hang the consumer; large enough that an idle reactor barely ticks.
 const REACTOR_HEAL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Env-gated wake-path trace (`SUBETHA_WAKE_TRACE=1`): the reactor
+/// prints a per-second counter snapshot and `serve_one` prints its
+/// read/wake ledger, so a stalled pipeline names the stage whose
+/// counter froze.
+pub(crate) fn wake_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SUBETHA_WAKE_TRACE").is_some_and(|v| v == "1"))
+}
+
+/// Wake-path counters, process-wide. Futures aggregate across
+/// instances; reactor snapshots carry the ring address to tell
+/// concurrent reactors apart.
+pub(crate) static POLLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static POPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static REGISTERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A `Waker` that unparks a specific thread. The driver behind
 /// [`block_on`].
 struct ThreadWaker {
@@ -168,14 +184,18 @@ impl Future for ReactiveRecv {
     type Output = [u8; SPSC_PAYLOAD_BYTES];
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        POLLS.fetch_add(1, Ordering::Relaxed);
         let mut out = [0u8; SPSC_PAYLOAD_BYTES];
         if self.ring.try_pop(&mut out).is_ok() {
+            POPS.fetch_add(1, Ordering::Relaxed);
             return Poll::Ready(out);
         }
         // Register, then re-check: an item that landed between the first
         // pop and this registration is caught here, not lost.
         *self.slot.lock() = Some(cx.waker().clone());
+        REGISTERS.fetch_add(1, Ordering::Relaxed);
         if self.ring.try_pop(&mut out).is_ok() {
+            POPS.fetch_add(1, Ordering::Relaxed);
             return Poll::Ready(out);
         }
         Poll::Pending
@@ -264,22 +284,47 @@ fn reactor_loop(
     slot: Arc<Mutex<Option<Waker>>>,
     shutdown: Arc<AtomicBool>,
 ) {
+    let trace = wake_trace();
+    let (mut iters, mut advances, mut fires, mut fires_empty) = (0u64, 0u64, 0u64, 0u64);
+    let (mut parks, mut park_full, mut waits) = (0u64, 0u64, 0u64);
+    let mut last_snap = std::time::Instant::now();
     let mut last = ring.head();
     loop {
+        if trace {
+            iters += 1;
+            if last_snap.elapsed() >= Duration::from_secs(1) {
+                last_snap = std::time::Instant::now();
+                eprintln!(
+                    "subetha: reactor ring={:p} head={} iters={iters} adv={advances} \
+                     fires={fires} fires_empty={fires_empty} parks={parks} \
+                     park_full={park_full} waits={waits} | futures polls={} pops={} regs={}",
+                    Arc::as_ptr(&ring),
+                    ring.head(),
+                    POLLS.load(Ordering::Relaxed),
+                    POPS.load(Ordering::Relaxed),
+                    REGISTERS.load(Ordering::Relaxed),
+                );
+            }
+        }
         if shutdown.load(Ordering::Acquire) {
             break;
         }
         let head = ring.head();
         if head != last {
             last = head;
+            advances += 1;
             if let Some(w) = slot.lock().take() {
+                fires += 1;
                 w.wake();
+            } else {
+                fires_empty += 1;
             }
             continue;
         }
         // Park until the producer publishes past `head`.
         match xwaker.try_park(head + 1) {
             Ok(token) => {
+                parks += 1;
                 // Lost-wake guard: an item that landed (or a shutdown
                 // that fired) between the head read and the park is
                 // caught here.
@@ -293,8 +338,10 @@ fn reactor_loop(
                 // register/visibility race self-heals at the loop top
                 // (head re-check) instead of hanging the consumer.
                 xwaker.wait(token, Some(REACTOR_HEAL_INTERVAL)).ok();
+                waits += 1;
             }
             Err(crate::cross_process_waker::WakerError::Full) => {
+                park_full += 1;
                 // No free waker slot; re-check shortly.
                 std::hint::spin_loop();
             }

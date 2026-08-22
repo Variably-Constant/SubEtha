@@ -111,8 +111,22 @@ pub fn serve_one(
     let mut buf = vec![0u8; INGRESS_BUF_BYTES];
     let mut carry: Vec<u8> = Vec::with_capacity(SLOT);
     let mut received: u64 = 0;
+    let trace = crate::reactor::wake_trace();
+    let (mut reads, mut eor_wakes) = (0u64, 0u64);
+    let mut last_snap = std::time::Instant::now();
     while received < total {
+        if trace && last_snap.elapsed() >= std::time::Duration::from_secs(1) {
+            last_snap = std::time::Instant::now();
+            eprintln!(
+                "subetha: serve_one ring={:p} reads={reads} received={received}/{total} \
+                 eor_wakes={eor_wakes} full_wakes={} head={}",
+                Arc::as_ptr(consumer_ring),
+                FULL_WAKES.load(std::sync::atomic::Ordering::Relaxed),
+                consumer_ring.head(),
+            );
+        }
         let n = stream.read(&mut buf)?;
+        reads += 1;
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -151,17 +165,22 @@ pub fn serve_one(
         // into a single local Waker fire and the consumer drains all
         // newly-available items.
         if pushed_any {
+            eor_wakes += 1;
             xwaker.wake_up_to(consumer_ring.head());
         }
     }
     Ok(total)
 }
 
+/// Full-path wakes fired from `push_spin`, process-wide.
+static FULL_WAKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn push_spin(ring: &SpscRingCore, xwaker: &CrossProcessWaker, slot: &[u8]) {
     while ring.try_push(slot).is_err() {
         // Ring full and a parked consumer has not yet been signalled for
         // this read (the end-of-read wake fires later). Wake it now so it
         // drains, else this push and the parked recv() would deadlock.
+        FULL_WAKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         xwaker.wake_up_to(ring.head());
         std::hint::spin_loop();
     }
