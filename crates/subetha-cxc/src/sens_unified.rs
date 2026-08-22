@@ -371,6 +371,7 @@ fn spawn_demux(
     loss_pct: u32,
     seed: u64,
     stop: Arc<AtomicBool>,
+    stats: Option<Arc<[AtomicU64; 4]>>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -379,9 +380,21 @@ fn spawn_demux(
         let mut last_fb = Instant::now();
         let mut rng = seed;
         while !stop.load(Ordering::Relaxed) {
+            if let Some(s) = &stats {
+                s[0].fetch_add(1, Ordering::Relaxed);
+            }
             match crate::dgram::udp_recv_with_kts(&sock, &mut buf) {
                 Ok((n, from, kts)) if n > 0 => {
                     let b0 = buf[0];
+                    if let Some(s) = &stats {
+                        s[1].fetch_add(1, Ordering::Relaxed);
+                        if (10..=14).contains(&b0)
+                            || b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
+                            || b0 == crate::sens_rlc::PKT_RLC_PATH_RESPONSE
+                        {
+                            s[3].fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     last_from = Some(from);
                     // Uniform link-loss injection on the forward data/repair
                     // stream (RS data 1, RLC data 10 / repair 11): drop BEFORE
@@ -411,6 +424,9 @@ fn spawn_demux(
                 }
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if let Some(s) = &stats {
+                        s[2].fetch_add(1, Ordering::Relaxed);
+                    }
                     std::thread::sleep(Duration::from_micros(100));
                 }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
@@ -586,6 +602,9 @@ pub struct UnifiedSensSender {
     /// Cumulative entries into `send_item`, counted before any other
     /// statement in the method.
     send_item_calls: u64,
+    /// Demux reader loop counters: `[iterations, recv_ok, would_block,
+    /// rlc_frames_routed]`, written by the reader thread.
+    demux_stats: Arc<[AtomicU64; 4]>,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -719,6 +738,7 @@ impl UnifiedSensSender {
         rs.set_sock(rs_sock);
 
         let stop = Arc::new(AtomicBool::new(false));
+        let demux_stats: Arc<[AtomicU64; 4]> = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -729,6 +749,7 @@ impl UnifiedSensSender {
             0,
             1,
             Arc::clone(&stop),
+            Some(Arc::clone(&demux_stats)),
         );
 
         Ok(Self {
@@ -736,6 +757,7 @@ impl UnifiedSensSender {
             peer,
             rlc,
             rs,
+            demux_stats,
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
@@ -851,6 +873,20 @@ impl UnifiedSensSender {
     /// counter again; a panic report is on stderr.
     pub fn demux_alive(&self) -> bool {
         self.demux.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// Demux reader loop counters: `(iterations, recv_ok, would_block,
+    /// rlc_frames_routed)`. Iterations frozen with the thread alive is
+    /// a reader blocked inside the recv; iterations climbing with
+    /// recv_ok frozen is a socket no datagram reaches; recv_ok climbing
+    /// with routed frozen is a frame the routing arms refuse.
+    pub fn demux_probe(&self) -> (u64, u64, u64, u64) {
+        (
+            self.demux_stats[0].load(Ordering::Relaxed),
+            self.demux_stats[1].load(Ordering::Relaxed),
+            self.demux_stats[2].load(Ordering::Relaxed),
+            self.demux_stats[3].load(Ordering::Relaxed),
+        )
     }
 
     /// Send one item over the active code, then periodically sample the fed-back
@@ -1269,6 +1305,7 @@ impl UnifiedSensReceiver {
             cfg.debug_loss,
             cfg.seed,
             Arc::clone(&stop),
+            None,
         );
 
         Ok(Self {
