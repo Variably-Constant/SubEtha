@@ -438,13 +438,13 @@ On the read side, `try_recv` drains the **stale backing first**: an item pushed 
 <details>
 <summary>Your one job: declare the producer / consumer count (or don't)</summary>
 
-You choose no lock and no shape. On the fixed-shape rings you declare **how many producers and consumers can be live at once** at construction; registering past that envelope returns an error rather than corrupting silently. On `AdaptiveRing` the construction counts are **sizing hints**: peers register and unregister at runtime, registration past the hint **grows the ring on demand** (new per-producer backings, published cross-process through a shared peer directory), and the shape re-morphs to the live counts on every join / leave - no sidecar, no explicit morph call. Errors exist only when you pin: a declared `with_contract` ceiling makes `register_producer` / `register_consumer` return `AdaptiveError::TooManyProducers` / `TooManyConsumers`, and an explicit `morph_to` / `pin_shape` fixes the shape.
+You choose no lock and no shape. On the fixed-shape rings you declare **how many producers and consumers can be live at once** at construction; registering past that envelope returns an error rather than corrupting silently. On `AdaptiveRing` the construction counts are **sizing hints**: peers register and unregister at runtime, registration past the hint **grows the ring on demand** (new per-producer backings, published cross-process through a shared peer directory), and the shape re-morphs to the live counts on every join / leave - no sidecar, no explicit morph call. A declared `with_contract` ceiling makes `register_producer` / `register_consumer` return `AdaptiveError::TooManyProducers` / `TooManyConsumers`, and an explicit `morph_to` / `pin_shape` fixes the shape. One ceiling is not yours to declare: the peer-directory region is fixed-size, so 4096 concurrent producers or 256 concurrent consumers refuse with the same error even under no contract. Slots recycle on `unregister`, so both bound peers live at once rather than over the ring's lifetime.
 
 | Ring | Producers x Consumers | Who enforces it |
 |---|---|---|
 | Typed SPSC pair | exactly 1 x 1 | **the compiler** - both handles are `Send + !Sync + !Clone` |
 | `SharedRing` (Vyukov) / composed MPMC | N x N | the CAS protocol, at runtime |
-| `AdaptiveRing` | grows with the live peer set | the shared peer directory: slot claims + on-demand backing growth; a declared `with_contract` ceiling is the only source of `TooMany*` errors |
+| `AdaptiveRing` | grows with the live peer set | the shared peer directory: slot claims + on-demand backing growth. `TooMany*` comes from a declared `with_contract` ceiling, or from the substrate's own limit on CONCURRENT peers - 4096 producers, 256 consumers - which is the fixed size of the peer-directory region and applies whether or not you declare a contract |
 
 </details>
 

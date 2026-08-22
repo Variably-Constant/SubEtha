@@ -53,15 +53,23 @@ shape or a peer ceiling either. The construction counts
 Peers `register_producer` / `register_consumer` at runtime from any attached
 process; registration past the hint **grows the ring on demand** (new
 backings, published cross-process through the shared peer directory), and the
-shape re-morphs to the live counts on every join and leave. Registration
-fails only when you explicitly pin a ceiling with `with_contract` - the pin is
-the ONLY source of `AdaptiveError::TooManyProducers` / `TooManyConsumers`.
+shape re-morphs to the live counts on every join and leave.
+
+Registration has two ceilings, and only one of them is yours. A ceiling you
+pin with `with_contract` refuses past the count you declared. Above that sits
+a substrate-wide ceiling on CONCURRENT peers - `PRODUCER_SLOT_CEILING` is
+4096 and `CONSUMER_SLOT_CEILING` is 256 - fixed by the size of the shared
+peer-directory region. Both refusals arrive as
+`AdaptiveError::TooManyProducers` / `TooManyConsumers`, so a program that
+declares no contract can still see one, at 4096 live producers or 256 live
+consumers. Slots are recycled on `unregister`, so these bound peers alive at
+once rather than peers over the ring's life.
 
 | Ring | Producers x Consumers | Who enforces the count |
 |---|---|---|
 | Typed SPSC pair (`Producer` / `Consumer` from `SharedRingSpsc::create_anon_pair`) | exactly 1 x 1 | **the compiler**: both handles are `Send + !Sync + !Clone`, so a second producer cannot be cloned and a single producer cannot be shared across threads |
 | `SharedRing` (Vyukov global-FIFO) / composed MPMC | N x N | the CAS protocol, at runtime - any number of producers and consumers race safely |
-| `AdaptiveRing` (the main ring) | grows and shrinks with the live peer set | the shared peer directory: cross-process slot claims, on-demand backing growth, automatic shape morphs; a declared `with_contract` ceiling is the only refusal |
+| `AdaptiveRing` (the main ring) | grows and shrinks with the live peer set | the shared peer directory: cross-process slot claims, on-demand backing growth, automatic shape morphs; refused by a declared `with_contract` ceiling, or by the directory's own 4096-producer / 256-consumer concurrent limit |
 
 Pick the typed SPSC pair only when the topology is genuinely one producer and
 one consumer forever and you want the type system to weld that in. For anything
