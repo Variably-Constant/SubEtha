@@ -105,31 +105,64 @@ impl From<std::io::Error> for HeartbeatError {
 }
 
 impl HeartbeatTable {
+    /// Obtain the table at `path`, initializing it only when the path does
+    /// not yet exist. Attaching leaves live registrations in place; a table
+    /// built with a different capacity is a `LayoutMismatch`. Use
+    /// [`reset`](Self::reset) to deliberately clear it.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, HeartbeatError> {
         assert!(capacity >= 1);
         let total = heartbeat_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr_ptr = mmap.as_mut_ptr() as *mut HeartbeatHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { Self::init_region(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const HeartbeatHeader)).magic == HEARTBEAT_MAGIC },
+        )?;
+        let hdr = unsafe { &*(mmap.as_ptr() as *const HeartbeatHeader) };
+        if hdr.capacity != capacity as u64 {
+            return Err(HeartbeatError::LayoutMismatch);
+        }
+        Ok(Self {
+            _file: file, mmap, capacity,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Reinitialise the table at `path`, discarding every live registration.
+    /// For a caller that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, HeartbeatError> {
+        assert!(capacity >= 1);
+        let total = heartbeat_file_size(capacity);
+        let (file, mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            Self::init_region(ptr, capacity)
+        })?;
+        Ok(Self {
+            _file: file, mmap, capacity,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Lay out a fresh table: slots first, magic last, because attachers spin
+    /// on the magic.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `heartbeat_file_size(capacity)` writable
+    /// zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, capacity: usize) {
+        let hdr_ptr = ptr as *mut HeartbeatHeader;
         unsafe {
             std::ptr::write(hdr_ptr, HeartbeatHeader {
-                magic: HEARTBEAT_MAGIC,
+                magic: 0,
                 capacity: capacity as u64,
                 epoch: AtomicU64::new(0),
                 _reserved: [0; 40],
             });
-        }
-        let slots_base = unsafe {
-            mmap.as_mut_ptr().add(std::mem::size_of::<HeartbeatHeader>())
-        };
-        for i in 0..capacity {
-            let slot_ptr = unsafe {
-                slots_base.add(i * std::mem::size_of::<HeartbeatSlot>()) as *mut HeartbeatSlot
-            };
-            unsafe {
+            let slots_base = ptr.add(std::mem::size_of::<HeartbeatHeader>());
+            for i in 0..capacity {
+                let slot_ptr =
+                    slots_base.add(i * std::mem::size_of::<HeartbeatSlot>()) as *mut HeartbeatSlot;
                 std::ptr::write(slot_ptr, HeartbeatSlot {
                     pid: AtomicU32::new(EMPTY_PID),
                     seq_version: AtomicU32::new(0),
@@ -139,12 +172,8 @@ impl HeartbeatTable {
                     _pad: [0; 36],
                 });
             }
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr_ptr).magic), HEARTBEAT_MAGIC);
         }
-        Ok(Self {
-            _file: file, mmap, capacity,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
     }
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, HeartbeatError> {

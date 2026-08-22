@@ -133,17 +133,20 @@ impl GenAtom {
         Ok(Self { backing: GenBacking::Anon(mmap), ptr })
     }
 
+    /// Obtain the generation region at `path`, initialising it only when the
+    /// path does not yet exist. Attaching leaves a live generation counter in
+    /// place, so a racing creator cannot rewind waiters mid-wait.
     fn create_file(path: &Path) -> Result<Self, CondvarError> {
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path)?;
-        file.set_len(GEN_REGION_SIZE as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(GEN_REGION_SIZE).map_mut(&file)? };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path,
+            GEN_REGION_SIZE,
+            |base| unsafe {
+                (base.add(GEN_OFFSET) as *mut AtomicU64).write(AtomicU64::new(0));
+                std::ptr::write_volatile(base as *mut u64, CONDVAR_GEN_MAGIC);
+            },
+            |base| unsafe { (base as *const u64).read() == CONDVAR_GEN_MAGIC },
+        )?;
         let base = mmap.as_mut_ptr();
-        unsafe {
-            (base as *mut u64).write(CONDVAR_GEN_MAGIC);
-            (base.add(GEN_OFFSET) as *mut AtomicU64).write(AtomicU64::new(0));
-        }
         let ptr = unsafe { base.add(GEN_OFFSET) as *const AtomicU64 };
         Ok(Self { backing: GenBacking::File(file, mmap), ptr })
     }

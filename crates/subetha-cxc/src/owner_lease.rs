@@ -101,17 +101,56 @@ impl<T: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Owne
 }
 
 impl<T: Copy + 'static> OwnerLease<T> {
+    /// Obtain the lease at `path`, initializing it with `initial` only when
+    /// the path does not yet exist. Attaching leaves the current owner and
+    /// term in place; `initial` is then unused. A region built for a
+    /// different payload type is a `LayoutMismatch`. Use
+    /// [`reset`](Self::reset) to deliberately strip a lease.
     pub fn create(path: impl AsRef<Path>, initial: T) -> Result<Self, LeaseError> {
         Self::check_layout()?;
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(LEASE_FILE_SIZE as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(LEASE_FILE_SIZE).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut LeaseHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            LEASE_FILE_SIZE,
+            |ptr| unsafe { Self::init_region(ptr, initial) },
+            |ptr| unsafe { (*(ptr as *const LeaseHeader)).magic == LEASE_MAGIC },
+        )?;
+        let hdr = unsafe { &*(mmap.as_ptr() as *const LeaseHeader) };
+        if hdr.payload_size as usize != size_of::<T>() {
+            return Err(LeaseError::LayoutMismatch);
+        }
+        Ok(Self {
+            _file: file, mmap, _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Reinitialise the lease at `path`, stripping whatever owner and term a
+    /// live holder has. For a caller that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, initial: T) -> Result<Self, LeaseError> {
+        Self::check_layout()?;
+        let (file, mmap) =
+            crate::mmf_attach::reset(path.as_ref(), LEASE_FILE_SIZE, |ptr| unsafe {
+                Self::init_region(ptr, initial)
+            })?;
+        Ok(Self {
+            _file: file, mmap, _phantom: PhantomData,
+            header_sidecar: subetha_core::HandshakeHeader::new(),
+            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
+        })
+    }
+
+    /// Lay out a fresh lease region: payload first, magic last, because
+    /// attachers spin on the magic and must not observe it before the payload
+    /// is in place.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least [`LEASE_FILE_SIZE`] writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, initial: T) {
+        let hdr = ptr as *mut LeaseHeader;
         unsafe {
             std::ptr::write(hdr, LeaseHeader {
-                magic: LEASE_MAGIC,
+                magic: 0,
                 payload_size: size_of::<T>() as u32,
                 seq_version: AtomicU32::new(0),
                 owner_pid: AtomicU32::new(NO_OWNER),
@@ -120,18 +159,12 @@ impl<T: Copy + 'static> OwnerLease<T> {
                 global_epoch: AtomicU64::new(0),
                 _pad: [0; 24],
             });
-        }
-        let payload_ptr = unsafe { mmap.as_mut_ptr().add(size_of::<LeaseHeader>()) as *mut LeasePayload };
-        unsafe {
+            let payload_ptr = ptr.add(size_of::<LeaseHeader>()) as *mut LeasePayload;
             std::ptr::write(payload_ptr, LeasePayload { bytes: [0; PAYLOAD_BYTES], _pad: [0; 16] });
             let dst = (*payload_ptr).bytes.as_mut_ptr() as *mut T;
             std::ptr::write_unaligned(dst, initial);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr).magic), LEASE_MAGIC);
         }
-        Ok(Self {
-            _file: file, mmap, _phantom: PhantomData,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaseError> {
@@ -344,6 +377,32 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-lease-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second `create` on the same path attaches: the holder keeps its
+    /// lease and the payload the owner wrote survives. `reset` is the call
+    /// that strips both.
+    #[test]
+    fn second_create_attaches_and_keeps_the_holder() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+
+        let holder: OwnerLease<u64> = OwnerLease::create(&p, 42).unwrap();
+        assert!(holder.try_acquire(100, 3));
+        assert!(holder.write_as_owner(100, 777));
+
+        let late: OwnerLease<u64> = OwnerLease::create(&p, 42).unwrap();
+        assert_eq!(late.current_owner(), Some(100), "attach stripped the lease");
+        assert_eq!(late.read_as_owner(100), Some(777), "attach cleared the payload");
+
+        // Windows refuses to truncate a file with live mappings, so reset only
+        // works once every handle is gone - which is the ownership reset
+        // demands anyway.
+        drop(late);
+        drop(holder);
+        let fresh: OwnerLease<u64> = OwnerLease::reset(&p, 42).unwrap();
+        assert_eq!(fresh.current_owner(), None);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

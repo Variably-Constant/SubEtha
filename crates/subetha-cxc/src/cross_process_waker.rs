@@ -288,18 +288,42 @@ impl CrossProcessWaker {
         })
     }
 
-    /// File-backed waker. Cross-process visible via the OS page
-    /// cache.
+    /// File-backed waker, cross-process visible via the OS page cache.
+    /// Initialises the region only when `path` does not yet exist; otherwise
+    /// attaches, so racing callers cannot clear parked waiters a live peer
+    /// owns. Attaching to a region built with a different capacity is a
+    /// `LayoutMismatch`. Use [`reset`](Self::reset) to deliberately
+    /// reinitialise.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, WakerError> {
         assert!(capacity >= 1, "capacity must be >= 1");
         let total = waker_region_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        let (file, mut mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            total,
+            |ptr| unsafe { init_waker_layout_raw(ptr, capacity) },
+            |ptr| unsafe { (*(ptr as *const WakerHeader)).magic == WAKER_MAGIC },
+        )?;
         let raw_ptr = mmap.as_mut_ptr();
-        unsafe { init_waker_layout_raw(raw_ptr, capacity); }
+        let hdr = unsafe { &*(raw_ptr as *const WakerHeader) };
+        if hdr.capacity as usize != capacity {
+            return Err(WakerError::LayoutMismatch);
+        }
+        Ok(Self {
+            _backing: WakerBacking::File(file, mmap),
+            raw_ptr,
+            capacity,
+        })
+    }
+
+    /// Reinitialise the waker at `path`, discarding any parked waiters a live
+    /// peer holds. For a caller that knows it owns the path.
+    pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, WakerError> {
+        assert!(capacity >= 1, "capacity must be >= 1");
+        let total = waker_region_size(capacity);
+        let (file, mut mmap) = crate::mmf_attach::reset(path.as_ref(), total, |ptr| unsafe {
+            init_waker_layout_raw(ptr, capacity)
+        })?;
+        let raw_ptr = mmap.as_mut_ptr();
         Ok(Self {
             _backing: WakerBacking::File(file, mmap),
             raw_ptr,
@@ -352,7 +376,7 @@ impl CrossProcessWaker {
         })
     }
 
-    /// Open an existing named-shm waker without re-initialising
+    /// Open an existing named-shm waker without re-initializing
     /// the layout.
     pub fn open_from_shm(
         mut shm: crate::shm_file::ShmFile,

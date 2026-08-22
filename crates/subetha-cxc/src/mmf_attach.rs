@@ -92,6 +92,10 @@ where
 
 /// Truncate and reinitialise the region at `path`, discarding any state a live
 /// peer holds. For a caller that knows it owns the path.
+///
+/// On Windows this errors while any process still maps the region
+/// (ERROR_USER_MAPPED_FILE): the OS refuses to truncate a mapped file, so a
+/// reset succeeds only once every handle is gone.
 pub(crate) fn reset<I>(path: &Path, total: usize, init: I) -> io::Result<(File, MmapMut)>
 where
     I: FnOnce(*mut u8),
