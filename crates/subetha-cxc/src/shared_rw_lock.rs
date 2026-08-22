@@ -73,7 +73,23 @@ impl subetha_sidecar::AdaptiveInstance for SharedRWLock {
 }
 
 impl SharedRWLock {
+    /// Obtain the lock at `path`, initializing it if it does not yet exist and
+    /// attaching to it if it does.
+    ///
+    /// Attaching rather than truncating is what makes this safe to call from
+    /// several processes at once: a truncating create run against a live lock
+    /// clears a writer flag another holder owns and mutual exclusion is lost
+    /// with nothing raised. Use [`reset`](Self::reset) to deliberately
+    /// reinitialise a lock, which is the only case truncation was ever right
+    /// for.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
+        Self::create_or_open(path)
+    }
+
+    /// Reinitialise the lock at `path`, discarding any state a live holder
+    /// owns: the header is truncated and zeroed. For a caller that knows it
+    /// owns the path and wants a clean instance.
+    pub fn reset(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
         let total = size_of::<RWLockHeader>();
         let file = OpenOptions::new()
             .read(true).write(true).create(true).truncate(true)
