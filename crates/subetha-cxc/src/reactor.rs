@@ -321,6 +321,19 @@ fn reactor_loop(
             }
             continue;
         }
+        // A parked future with a non-empty ring is a lost fire: the
+        // future's register-then-recheck means it only parks against an
+        // empty ring, so items it never saw were published after its
+        // registration - and if they landed before this thread's first
+        // head read, the baseline above swallowed the advance. Fire
+        // here regardless of head history.
+        if ring.head() != ring.tail()
+            && let Some(w) = slot.lock().take()
+        {
+            fires += 1;
+            w.wake();
+            continue;
+        }
         // Park until the producer publishes past `head`.
         match xwaker.try_park(head + 1) {
             Ok(token) => {
@@ -393,7 +406,10 @@ fn seq_reactor_loop(
     slot: &Mutex<Option<Waker>>,
     shutdown: &AtomicBool,
 ) {
-    let mut last = published();
+    // Sentinel baseline: the first pass always takes the advance
+    // branch, so anything published before this thread's first read is
+    // fired for rather than silently becoming the baseline.
+    let mut last = u64::MAX;
     loop {
         if shutdown.load(Ordering::Acquire) {
             break;
