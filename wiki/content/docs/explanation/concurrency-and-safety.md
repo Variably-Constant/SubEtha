@@ -127,10 +127,16 @@ once every process has unmapped the region. `SharedRateLimiter` and
 `SharedHistogram` instead carry an in-place `reset()` that reseeds
 the live instance.
 
-The remaining data-plane primitives (rings, the other maps, sketches)
-still truncate on `create` and pair with `open` - conversion is
-tracked and ongoing, so check the type's own page before racing two
-creators on one of those.
+The remaining data-plane primitives still truncate on `create` and
+pair with `open` - conversion is tracked and ongoing, so check the
+type's own page before racing two creators on one of those.
+
+The owner-exclusive primitives - the `SharedDeque` family,
+`SharedRing` and the `ordering` types - keep truncate-on-create by
+design: their `create` is called by the single owner their protocol
+names (thieves and consumers use `open_as_thief` / `open`), so racing
+creators are outside their contract and attach semantics would record
+a stale owner.
 
 ## What you must not do
 
