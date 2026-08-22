@@ -2943,7 +2943,12 @@ impl ReliableUdpReceiver {
         let mut idle = true;
         loop {
             match self.sock.recv_from(&mut buf) {
-                Ok((n, _)) => {
+                Ok((n, src)) => {
+                    // Keep the source. On a shared socket this is the only
+                    // place it is observed, and anything addressed back to
+                    // the peer - feedback, and the challenge that adopts a
+                    // replacement session - has nowhere to go without it.
+                    self.peer = Some(src);
                     self.process_datagram(&buf[..n], out);
                     idle = false;
                 }
