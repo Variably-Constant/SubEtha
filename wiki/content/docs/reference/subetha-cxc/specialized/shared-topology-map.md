@@ -65,6 +65,15 @@ observed fan statistics.
   `AllToAllMesh` (u32-encoded; `from_u32` defaults unknown
   values to `PointToPoint`). `TopologyError`:
   `NodeIndexOutOfBounds` / `LayoutMismatch` / `IoError`.
+- **`create` obtains, `reset` truncates**: `create(path, n)`
+  initializes an empty map only when the path does not yet exist,
+  and otherwise attaches with observed edges and the live
+  recommendation intact - racing creators all reach the same map. A
+  region built with a different node count is a `LayoutMismatch`.
+  `reset(path, n, fan_out, fan_in)` truncates and reinitializes, for
+  a caller that owns the path; on Windows it succeeds only once
+  every process has unmapped the region. The in-place
+  `reset_observations()` starts a new window without truncating.
 - **Cross-process backed by MMF.**
 
 ---

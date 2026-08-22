@@ -161,6 +161,12 @@ impl SharedTopologyMap {
         )
     }
 
+    /// Obtain the map at `path`, initializing an empty one if the path
+    /// does not yet exist and attaching to it if it does. Attaching
+    /// leaves observed edges and the live recommendation in place;
+    /// `fan_out_threshold` / `fan_in_threshold` are then unused. A
+    /// region built with a different node count is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create_with_thresholds(
         path: impl AsRef<Path>,
         n_nodes: usize,
@@ -169,24 +175,81 @@ impl SharedTopologyMap {
     ) -> Result<Self, TopologyError> {
         assert!(n_nodes >= 1);
         assert!(n_nodes <= u32::MAX as usize);
-        let total = topology_file_size(n_nodes);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
-        file.set_len(total as u64)?;
-        let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = mmap.as_mut_ptr() as *mut TopologyHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            topology_file_size(n_nodes),
+            |ptr| unsafe {
+                Self::init_region(ptr, n_nodes, fan_out_threshold, fan_in_threshold)
+            },
+            |ptr| unsafe { (*(ptr as *const TopologyHeader)).magic == TOPOLOGY_MAGIC },
+        )?;
+        Self::from_region(file, mmap, n_nodes)
+    }
+
+    /// Truncate the map at `path` and initialize an empty one,
+    /// discarding every observed edge live peers share. For a caller
+    /// that knows it owns the path.
+    pub fn reset(
+        path: impl AsRef<Path>,
+        n_nodes: usize,
+        fan_out_threshold: u32,
+        fan_in_threshold: u32,
+    ) -> Result<Self, TopologyError> {
+        assert!(n_nodes >= 1);
+        assert!(n_nodes <= u32::MAX as usize);
+        let (file, mmap) = crate::mmf_attach::reset(
+            path.as_ref(),
+            topology_file_size(n_nodes),
+            |ptr| unsafe {
+                Self::init_region(ptr, n_nodes, fan_out_threshold, fan_in_threshold)
+            },
+        )?;
+        Self::from_region(file, mmap, n_nodes)
+    }
+
+    /// Lay out an empty map: config and the point-to-point
+    /// recommendation first, magic last, because attachers spin on it.
+    /// The zeroed region is already the zero edge matrix.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `topology_file_size(n_nodes)` writable
+    /// zeroed bytes.
+    unsafe fn init_region(
+        ptr: *mut u8,
+        n_nodes: usize,
+        fan_out_threshold: u32,
+        fan_in_threshold: u32,
+    ) {
+        let hdr = ptr as *mut TopologyHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, size_of::<TopologyHeader>());
-            (*hdr).magic = TOPOLOGY_MAGIC;
             (*hdr).n_nodes = n_nodes as u32;
-            (*hdr).fan_out_threshold.store(fan_out_threshold, Ordering::Release);
-            (*hdr).fan_in_threshold.store(fan_in_threshold, Ordering::Release);
-            (*hdr).recommendation.store(
-                TopologyKind::PointToPoint as u32, Ordering::Release,
+            std::ptr::write(
+                &raw mut (*hdr).fan_out_threshold,
+                AtomicU32::new(fan_out_threshold),
             );
+            std::ptr::write(
+                &raw mut (*hdr).fan_in_threshold,
+                AtomicU32::new(fan_in_threshold),
+            );
+            std::ptr::write(
+                &raw mut (*hdr).recommendation,
+                AtomicU32::new(TopologyKind::PointToPoint as u32),
+            );
+            std::ptr::write_volatile(&raw mut (*hdr).magic, TOPOLOGY_MAGIC);
         }
-        // Edge counters are zero-filled by set_len + map_mut.
+    }
+
+    /// Wrap an initialized region, refusing one built with a different
+    /// node count.
+    fn from_region(
+        file: File,
+        mmap: MmapMut,
+        n_nodes: usize,
+    ) -> Result<Self, TopologyError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const TopologyHeader) };
+        if hdr.magic != TOPOLOGY_MAGIC || hdr.n_nodes != n_nodes as u32 {
+            return Err(TopologyError::LayoutMismatch);
+        }
         Ok(Self {
             _file: file, mmap, n_nodes,
             header_sidecar: subetha_core::HandshakeHeader::new(),
@@ -204,15 +267,7 @@ impl SharedTopologyMap {
             return Err(TopologyError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const TopologyHeader) };
-        if hdr.magic != TOPOLOGY_MAGIC || hdr.n_nodes != expected_n_nodes as u32 {
-            return Err(TopologyError::LayoutMismatch);
-        }
-        Ok(Self {
-            _file: file, mmap, n_nodes: expected_n_nodes,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Self::from_region(file, mmap, expected_n_nodes)
     }
 
     #[inline]
@@ -424,6 +479,34 @@ mod tests {
         let pid = std::process::id();
         p.push(format!("subetha-topology-{name}-{pid}.bin"));
         p
+    }
+
+    /// A second create attaches with observed edges in place; reset is
+    /// what zeroes them.
+    #[test]
+    fn second_create_attaches_and_keeps_edges() {
+        let p = tmp("attach");
+        std::fs::remove_file(&p).ok();
+        let t = SharedTopologyMap::create(&p, 4).unwrap();
+        t.record_send(0, 1).unwrap();
+
+        let t2 = SharedTopologyMap::create(&p, 4).unwrap();
+        assert_eq!(t2.total_msgs(), 1, "attach zeroed observed edges");
+        assert!(matches!(
+            SharedTopologyMap::create(&p, 2),
+            Err(TopologyError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(t);
+        drop(t2);
+        let fresh = SharedTopologyMap::reset(
+            &p, 4, DEFAULT_FAN_OUT_THRESHOLD, DEFAULT_FAN_IN_THRESHOLD,
+        ).unwrap();
+        assert_eq!(fresh.total_msgs(), 0, "reset kept an edge");
+        drop(fresh);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
