@@ -52,6 +52,13 @@ via Kirsch-Mitzenmacher double-hashing
 - **Configuration locked at create**: cross-handle opens verify
   `n_bits` and `n_hashes` match and fail with `LayoutMismatch`
   otherwise.
+- **`create` obtains, `reset` truncates**: `create(base, ...)`
+  initializes an empty filter only when its files do not yet exist,
+  and otherwise attaches with inserted members intact - racing
+  creators all reach the same filter. `reset(base, ...)` truncates
+  both files and reinitializes, for a caller that owns the path; on
+  Windows it succeeds only once every process has unmapped the
+  regions. The in-place `clear()` empties without truncating.
 
 ---
 

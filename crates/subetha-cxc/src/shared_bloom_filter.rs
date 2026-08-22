@@ -141,6 +141,11 @@ impl SharedBloomFilter {
         (n_bits.max(64), n_hashes.max(1))
     }
 
+    /// Obtain the filter at `base_path`, initializing an empty one if
+    /// its files do not yet exist and attaching to them if they do.
+    /// Attaching leaves inserted members in place; a region built with
+    /// a different `n_bits` or `n_hashes` is a `LayoutMismatch`.
+    /// [`reset`](Self::reset) reinitializes.
     pub fn create(
         base_path: impl AsRef<Path>, n_bits: usize, n_hashes: u32,
     ) -> Result<Self, BloomError> {
@@ -148,28 +153,76 @@ impl SharedBloomFilter {
             return Err(BloomError::InvalidConfig);
         }
         let base = base_path.as_ref();
-        let hpath = header_path(base);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(&hpath)?;
-        file.set_len(std::mem::size_of::<BloomHeader>() as u64)?;
-        let mut mmap = unsafe {
-            MmapOptions::new().len(std::mem::size_of::<BloomHeader>()).map_mut(&file)?
-        };
-        let hdr = mmap.as_mut_ptr() as *mut BloomHeader;
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            &header_path(base),
+            std::mem::size_of::<BloomHeader>(),
+            |ptr| unsafe { Self::init_region(ptr, n_bits, n_hashes) },
+            |ptr| unsafe { (*(ptr as *const BloomHeader)).magic == BLOOM_MAGIC },
+        )?;
+        Self::check_header(&mmap, n_bits, n_hashes)?;
+        let bits = SharedBitVec::create(bits_path(base), n_bits)?;
+        Ok(Self::assemble(file, mmap, bits, n_bits, n_hashes))
+    }
+
+    /// Truncate both of the filter's files at `base_path` and
+    /// initialize an empty one, discarding every member live peers
+    /// share. For a caller that knows it owns the path.
+    pub fn reset(
+        base_path: impl AsRef<Path>, n_bits: usize, n_hashes: u32,
+    ) -> Result<Self, BloomError> {
+        if n_bits == 0 || n_hashes == 0 {
+            return Err(BloomError::InvalidConfig);
+        }
+        let base = base_path.as_ref();
+        let (file, mmap) = crate::mmf_attach::reset(
+            &header_path(base),
+            std::mem::size_of::<BloomHeader>(),
+            |ptr| unsafe { Self::init_region(ptr, n_bits, n_hashes) },
+        )?;
+        let bits = SharedBitVec::reset(bits_path(base), n_bits)?;
+        Ok(Self::assemble(file, mmap, bits, n_bits, n_hashes))
+    }
+
+    /// Lay out the config header: sizes first, magic last, because
+    /// attachers spin on it.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `size_of::<BloomHeader>()` writable
+    /// zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, n_bits: usize, n_hashes: u32) {
+        let hdr = ptr as *mut BloomHeader;
         unsafe {
-            std::ptr::write_bytes(hdr as *mut u8, 0, std::mem::size_of::<BloomHeader>());
-            (*hdr).magic = BLOOM_MAGIC;
             (*hdr).n_bits = n_bits as u64;
             (*hdr).n_hashes = n_hashes;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, BLOOM_MAGIC);
         }
-        let bits = SharedBitVec::create(bits_path(base), n_bits)?;
-        Ok(Self {
+    }
+
+    /// Refuse a header built with a different config.
+    fn check_header(mmap: &MmapMut, n_bits: usize, n_hashes: u32) -> Result<(), BloomError> {
+        let hdr = unsafe { &*(mmap.as_ptr() as *const BloomHeader) };
+        if hdr.magic != BLOOM_MAGIC
+            || hdr.n_bits != n_bits as u64
+            || hdr.n_hashes != n_hashes
+        {
+            return Err(BloomError::LayoutMismatch);
+        }
+        Ok(())
+    }
+
+    fn assemble(
+        file: File,
+        mmap: MmapMut,
+        bits: SharedBitVec,
+        n_bits: usize,
+        n_hashes: u32,
+    ) -> Self {
+        Self {
             _file: file, _mmap: mmap, bits,
             n_bits: n_bits as u64, n_hashes,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        }
     }
 
     pub fn open(
@@ -184,20 +237,9 @@ impl SharedBloomFilter {
         let mmap = unsafe {
             MmapOptions::new().len(std::mem::size_of::<BloomHeader>()).map_mut(&file)?
         };
-        let hdr = unsafe { &*(mmap.as_ptr() as *const BloomHeader) };
-        if hdr.magic != BLOOM_MAGIC
-            || hdr.n_bits != n_bits as u64
-            || hdr.n_hashes != n_hashes
-        {
-            return Err(BloomError::LayoutMismatch);
-        }
+        Self::check_header(&mmap, n_bits, n_hashes)?;
         let bits = SharedBitVec::open(bits_path(base), n_bits)?;
-        Ok(Self {
-            _file: file, _mmap: mmap, bits,
-            n_bits: n_bits as u64, n_hashes,
-            header_sidecar: subetha_core::HandshakeHeader::new(),
-            ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
-        })
+        Ok(Self::assemble(file, mmap, bits, n_bits, n_hashes))
     }
 
     #[inline]
@@ -299,6 +341,32 @@ mod tests {
     fn cleanup(base: &Path) {
         std::fs::remove_file(header_path(base)).ok();
         std::fs::remove_file(bits_path(base)).ok();
+    }
+
+    /// A second create attaches with inserted members in place; reset
+    /// is what strips them.
+    #[test]
+    fn second_create_attaches_and_keeps_members() {
+        let base = tmp_base("attach");
+        cleanup(&base);
+        let b = SharedBloomFilter::create(&base, 1024, 3).unwrap();
+        b.insert(b"member").unwrap();
+
+        let b2 = SharedBloomFilter::create(&base, 1024, 3).unwrap();
+        assert!(b2.contains(b"member").unwrap(), "attach lost a member");
+        assert!(matches!(
+            SharedBloomFilter::create(&base, 512, 3),
+            Err(BloomError::LayoutMismatch),
+        ));
+
+        // Windows refuses to truncate a mapped file, so every handle goes
+        // before the reset.
+        drop(b);
+        drop(b2);
+        let fresh = SharedBloomFilter::reset(&base, 1024, 3).unwrap();
+        assert!(!fresh.contains(b"member").unwrap(), "reset kept a member");
+        drop(fresh);
+        cleanup(&base);
     }
 
     #[test]
