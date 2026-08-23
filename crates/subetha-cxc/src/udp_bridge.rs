@@ -4528,6 +4528,80 @@ mod tests {
         );
     }
 
+    /// A challenge that is never answered leaves the pending table on its
+    /// own timeout, without needing the candidate to send anything more.
+    ///
+    /// This is what keeps the table bounded: a peer that announces epochs
+    /// it cannot receive at must not be able to occupy admission slots,
+    /// which with a session ceiling set would crowd out a real restart.
+    #[test]
+    fn a_challenge_retires_on_its_timeout() {
+        const N: u64 = 8;
+        let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap();
+        let addr = recv.local_addr().unwrap();
+
+        // A first session, so a second epoch is a REPLACEMENT and gets
+        // challenged rather than taking the free first-admission slot.
+        let mut first = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
+        for i in 0..N {
+            first.send_item(&i.to_le_bytes()).unwrap();
+        }
+        first.flush().unwrap();
+        let start = Instant::now();
+        let mut seen = 0u64;
+        while seen < N && start.elapsed() < Duration::from_secs(10) {
+            seen += recv.poll().unwrap().len() as u64;
+            first.pump_feedback().ok();
+        }
+        assert_eq!(seen, N, "first session did not deliver");
+
+        // A second epoch, from a socket that is then dropped so the
+        // challenge it provokes can never be answered. A fresh encoder
+        // derives its own epoch, which is what makes this a replacement.
+        let mut enc = Encoder::new(4, 2, 8);
+        assert_ne!(enc.epoch(), first.enc.epoch(), "encoder epochs collided");
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut pkts = Vec::new();
+        for i in 0..4u64 {
+            pkts.extend(enc.push(&i.to_le_bytes()));
+        }
+        pkts.extend(enc.flush());
+        for p in &pkts {
+            sock.send_to(p, addr).unwrap();
+        }
+        drop(sock);
+
+        // It must be challenged, then leave on its own, with nothing but
+        // polling driving it.
+        let armed = Instant::now();
+        while recv.pending_admissions().is_empty() && armed.elapsed() < Duration::from_secs(5) {
+            recv.poll().ok();
+        }
+        assert!(
+            !recv.pending_admissions().is_empty(),
+            "the unknown epoch was never challenged, so nothing was under admission"
+        );
+        let (_, failures_before) = recv.session_adoption_counts();
+
+        let retire = Instant::now();
+        while !recv.pending_admissions().is_empty() && retire.elapsed() < Duration::from_secs(5) {
+            recv.poll().ok();
+        }
+        assert!(
+            recv.pending_admissions().is_empty(),
+            "an unanswered challenge outlived its timeout and still holds an \
+             admission slot: {:?}",
+            recv.pending_admissions()
+        );
+        let (adopted, failures_after) = recv.session_adoption_counts();
+        assert!(
+            failures_after > failures_before,
+            "the challenge left the table without being counted as unanswered \
+             ({failures_before} -> {failures_after})"
+        );
+        assert_eq!(adopted, 0, "an unanswered epoch was adopted");
+    }
+
     /// A replacement sender is delivered once its epoch is challenged and
     /// answered. Both senders live in this process, so the second one's
     /// block ids start at zero against a frontier the first advanced -

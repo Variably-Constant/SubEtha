@@ -124,18 +124,25 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
              unauthenticated peer can reset this receiver's window"
         ),
     )?;
+    // The security property is that an unanswered epoch is CHALLENGED and
+    // never adopted. Whether the challenge has additionally been retired
+    // as failed by now is bookkeeping on a timer, and asserting it here
+    // made the gate fail on a busy host while the property itself held.
+    // Retirement is reported below, and guarded on its own terms by
+    // `a_challenge_retires_on_its_timeout`.
     require(
-        failed_after > failed_before,
+        armed_after > armed_before,
         format!(
-            "the forgery was not challenged ({failed_before} -> {failed_after} \
-             unanswered, challenges armed {armed_before} -> {armed_after}, still \
-             pending {:?}); the receiver is not exercising the path check",
-            rx.rs_pending_admissions()
+            "the forgery was not challenged (challenges armed {armed_before} -> \
+             {armed_after}, {failed_before} -> {failed_after} unanswered); the \
+             receiver is not exercising the path check"
         ),
     )?;
+    let still_pending = rx.rs_pending_admissions();
     println!(
-        "   parent: forged epoch refused - adoptions {adopted_after}, unanswered \
-         {failed_after}, challenges armed {armed_after}"
+        "   parent: forged epoch refused - adoptions {adopted_after}, challenges \
+         armed {armed_after}, unanswered {failed_after}, still pending \
+         {still_pending:?}"
     );
 
     first.kill()?;
