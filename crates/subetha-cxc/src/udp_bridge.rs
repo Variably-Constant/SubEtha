@@ -4156,8 +4156,14 @@ impl ReliableUdpReceiver {
     /// Epochs currently under an admission challenge, with the address each
     /// was challenged at. A restarted peer sits here until its nonce comes
     /// back, and every datagram it sends meanwhile is refused.
-    pub fn pending_admissions(&self) -> Vec<(u32, SocketAddr)> {
-        self.pending_admissions.iter().map(|(e, (a, _, _))| (*e, *a)).collect()
+    /// Each entry carries how long it has been outstanding, so a candidate
+    /// still here is separable into one challenged recently and one whose
+    /// timeout has passed without it being retired.
+    pub fn pending_admissions(&self) -> Vec<(u32, SocketAddr, Duration)> {
+        self.pending_admissions
+            .iter()
+            .map(|(e, (a, _, sent))| (*e, *a, sent.elapsed()))
+            .collect()
     }
 
     /// Bound the live windows and the candidates under challenge at `max`.

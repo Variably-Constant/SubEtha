@@ -1671,7 +1671,7 @@ impl UnifiedSensReceiver {
     /// Epochs under an admission challenge, with the address challenged.
     /// A restarted peer sits here until its nonce returns, and every
     /// datagram it sends meanwhile is refused.
-    pub fn rs_pending_admissions(&self) -> Vec<(u32, SocketAddr)> {
+    pub fn rs_pending_admissions(&self) -> Vec<(u32, SocketAddr, Duration)> {
         self.rs.pending_admissions()
     }
 
