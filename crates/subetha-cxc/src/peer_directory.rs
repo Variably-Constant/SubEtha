@@ -58,6 +58,12 @@ pub const CONSUMER_SLOT_CEILING: usize = 256;
 /// "No consumer" marker in the ring owner table.
 pub const OWNER_NONE: u16 = u16::MAX;
 
+/// Pid word of a consumer slot that held a claim and gave it up. Distinct
+/// from the zero a slot carries before it is ever claimed: a claim that
+/// was released names a consumer that has finished with its rings, while
+/// zero names one that never registered and may still be draining.
+const SLOT_RELEASED: u64 = u64::MAX;
+
 const DIR_MAGIC: u32 = 0x5045_4552; // "PEER"
 
 const P_WORDS: usize = PRODUCER_SLOT_CEILING / 64;
@@ -363,7 +369,7 @@ impl PeerDirectory {
         if slot >= CONSUMER_SLOT_CEILING {
             return;
         }
-        self.pid_word(slot).store(0, AtomOrd::Release);
+        self.pid_word(slot).store(SLOT_RELEASED, AtomOrd::Release);
         if self.release_bit(OFF_C_BITMAP, C_WORDS, slot) {
             self.header().active_consumers.fetch_sub(1, AtomOrd::AcqRel);
             self.bump_epoch();
@@ -470,15 +476,18 @@ impl PeerDirectory {
         }
     }
 
-    /// Crash takeover: steal `ring` from `dead_owner` only when that
-    /// slot is unclaimed OR its recorded process is gone. Both cases
-    /// preclude a concurrent pop by the old owner, preserving the
-    /// single-reader invariant. An alive-but-idle owner is never
-    /// stolen from.
+    /// Crash takeover: steal `ring` from `dead_owner` when that owner
+    /// released its consumer slot, or still holds one whose recorded
+    /// process is gone. An owner that never claimed a slot, or whose
+    /// process is alive, is left alone, so each core keeps a single
+    /// reader.
     pub fn try_takeover(&self, ring: usize, dead_owner: u16, me: u16) -> bool {
         let slot = dead_owner as usize;
-        if self.consumer_slot_claimed(slot) {
-            let pid = self.pid_word(slot).load(AtomOrd::Acquire);
+        let pid = self.pid_word(slot).load(AtomOrd::Acquire);
+        if pid != SLOT_RELEASED {
+            if !self.consumer_slot_claimed(slot) {
+                return false;
+            }
             if pid == std::process::id() as u64 || pid == 0 || process_alive(pid as u32) {
                 return false;
             }
@@ -625,6 +634,32 @@ mod tests {
         dir.release_consumer_slot(slot as usize);
         assert!(dir.try_takeover(0, slot, 9));
         assert_eq!(dir.ring_owner(0), (9, OWNER_NONE));
+    }
+
+    /// A consumer that drains through `try_claim_ring` owns rings without
+    /// ever claiming a consumer slot, which is what every in-process
+    /// consumer does. Such an owner is live and popping, so its rings are
+    /// not available for takeover; stealing one puts a second reader on a
+    /// single-reader core and both drain the same slots.
+    #[test]
+    fn an_owner_that_never_claimed_a_slot_is_not_taken_over() {
+        let dir = PeerDirectory::create_anon().unwrap();
+        let owner: u16 = 3;
+        assert!(!dir.consumer_slot_claimed(owner as usize));
+        assert!(dir.try_claim_ring(0, owner), "ring claim needs no slot");
+
+        assert!(
+            !dir.try_takeover(0, owner, 9),
+            "an owner with no slot claim is live, not departed"
+        );
+        assert_eq!(dir.ring_owner(0), (owner, OWNER_NONE));
+
+        // The same owner having held and released a slot IS departed.
+        let slot = dir.claim_consumer_slot().unwrap();
+        dir.release_consumer_slot(slot);
+        assert!(dir.try_claim_ring(1, slot as u16));
+        assert!(dir.try_takeover(1, slot as u16, 9));
+        assert_eq!(dir.ring_owner(1), (9, OWNER_NONE));
     }
 
     #[test]

@@ -47,9 +47,7 @@ const PKT_DATA: u8 = 1;
 /// k(1) r(1) flags(1) epoch(4)`.
 pub const DATA_HEADER: usize = 13;
 
-/// Offset of the session epoch within the data header. Public so a caller
-/// building a data datagram from outside the crate reads the layout from
-/// here rather than restating it.
+/// Offset of the session epoch within the data header.
 pub const EPOCH_OFFSET: usize = 9;
 
 /// The session epoch a data datagram carries, or `None` if `buf` is not a data
