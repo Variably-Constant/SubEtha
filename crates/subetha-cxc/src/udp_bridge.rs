@@ -2202,6 +2202,10 @@ struct RsSession {
     /// a caller distinguish "no packets arriving" from "packets arrive
     /// but do not decode/deliver").
     recv_count: u64,
+    /// Feedback packets no send path could deliver. Each one is an ACK or
+    /// a NAK this session's peer never received, so it goes on waiting for
+    /// something it was never told about.
+    feedback_send_failures: std::sync::atomic::AtomicU64,
     /// Per-block time of last NAK, to rate-limit re-requests of each gap
     /// to ~one per RTT while still NAKing every gap in parallel. Pruned
     /// below the delivery frontier each cycle.
@@ -2612,6 +2616,7 @@ impl RsSession {
             last_data_at: Instant::now(),
             peer: None,
             recv_count: 0,
+            feedback_send_failures: std::sync::atomic::AtomicU64::new(0),
             nak_history: BTreeMap::new(),
             last_feedback: Instant::now(),
             ctrl_out: 0,
@@ -3652,6 +3657,11 @@ impl RsSession {
     /// connected on Linux/FreeBSD (for recvmmsg / GRO), and BSD rejects
     /// `send_to` on a connected UDP socket with EISCONN - so `send()` once
     /// connected, `send_to()` only while still unconnected (Windows / other).
+    /// Feedback packets no send path could deliver for this session.
+    fn feedback_send_failures(&self) -> u64 {
+        self.feedback_send_failures.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn send_feedback_bytes(&self, bytes: &[u8], peer: SocketAddr) {
         if self.connected {
             // A connected send carries the socket's latched error: after a
@@ -3663,7 +3673,21 @@ impl RsSession {
                 return;
             }
         }
-        self.sock.send_to(bytes, peer).ok();
+        // Both paths failing loses an ACK or a NAK, and the peer then waits
+        // on a request that was never delivered. Feedback is cumulative and
+        // self-healing so this must not abort the loop, but it is counted
+        // and named rather than discarded.
+        if let Err(e) = self.sock.send_to(bytes, peer) {
+            let prior = self
+                .feedback_send_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if prior == 0 {
+                eprintln!(
+                    "subetha: feedback to {peer} could not be sent: {e} - the peer \
+                     will not learn what this receiver is missing"
+                );
+            }
+        }
     }
 
     /// Send any delayed feedback whose release time has arrived. A no-op
@@ -4343,6 +4367,14 @@ impl ReliableUdpReceiver {
     /// inside its answer window.
     pub fn session_challenges_armed(&self) -> u64 {
         self.session_challenges_armed
+    }
+
+    /// Feedback packets no send path could deliver, summed over every live
+    /// session. Non-zero means a peer has been left waiting on an ACK or a
+    /// NAK it never received, which looks from its side exactly like a
+    /// receiver that stopped asking.
+    pub fn feedback_send_failures(&self) -> u64 {
+        self.sessions.values().map(|s| s.feedback_send_failures()).sum()
     }
 }
 
