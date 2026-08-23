@@ -38,10 +38,15 @@ fn config() -> UnifiedConfig {
 /// provokes has time to go unanswered and be retired.
 const FORGERY_SETTLE: Duration = Duration::from_millis(1500);
 
-/// One window's `(next_needed, highest_seen, datagrams_in)` at an instant,
-/// so two samples a second apart give the rate rather than the lifetime
-/// total.
-type WindowSample = (u32, u32, u64);
+/// One window's `(next_needed, highest_seen, datagrams_in, refused)` at an
+/// instant, so two samples a second apart give the rate rather than the
+/// lifetime total.
+///
+/// `datagrams_in` counts at the session, before the control/data split;
+/// `refused` counts inside the decoder. Traffic arriving while `refused`
+/// stays flat never reached the decoder at all, which is the difference
+/// between a peer sending shards and a peer only beating.
+type WindowSample = (u32, u32, u64, u64);
 
 /// Packet type byte of a block-RS DATA datagram. The forgery case builds
 /// one from outside the crate; the offsets it needs come from the crate's
@@ -193,10 +198,12 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     // still taking traffic from one that went quiet an instant after it
     // stalled. Sample the same windows again after a pause and report the
     // delta, which is the steady state rather than the accumulation.
-    let first_sample: Vec<(u32, Option<WindowSample>)> = live
-        .iter()
-        .map(|e| (*e, rx.rs_session_frontier(*e).map(|(n, h, r, _)| (n, h, r))))
-        .collect();
+    let sample = |rx: &UnifiedSensReceiver, e: u32| -> Option<WindowSample> {
+        let (n, h, r, _) = rx.rs_session_frontier(e)?;
+        Some((n, h, r, rx.rs_session_rejects(e).map_or(0, |j| j.total())))
+    };
+    let first_sample: Vec<(u32, Option<WindowSample>)> =
+        live.iter().map(|e| (*e, sample(&rx, *e))).collect();
     let settle = Instant::now() + Duration::from_millis(1000);
     while Instant::now() < settle {
         rx.poll().ok();
@@ -204,11 +211,12 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     }
     let deltas: Vec<String> = first_sample
         .iter()
-        .map(|(e, before)| match (before, rx.rs_session_frontier(*e)) {
-            (Some((n0, h0, r0)), Some((n1, h1, r1, _))) => format!(
+        .map(|(e, before)| match (before, sample(&rx, *e)) {
+            (Some((n0, h0, r0, j0)), Some((n1, h1, r1, j1))) => format!(
                 "epoch {e}: next_needed {n0}->{n1}, highest_seen {h0}->{h1}, \
-                 datagrams_in +{}",
-                r1.saturating_sub(*r0)
+                 datagrams_in +{}, refused_at_decoder +{}",
+                r1.saturating_sub(*r0),
+                j1.saturating_sub(*j0),
             ),
             _ => format!("epoch {e}: window went away"),
         })
