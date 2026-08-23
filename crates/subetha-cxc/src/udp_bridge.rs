@@ -1007,6 +1007,15 @@ impl ReliableUdpSender {
         )
     }
 
+    /// `(queued_recovery_datagrams, blocks_recovered)`. The recovery queue
+    /// holds datagrams BUILT AT ENQUEUE TIME, so it can still carry a block
+    /// that has since been acked and dropped from the retransmit buffer -
+    /// traffic the receiver refuses as already delivered while the block it
+    /// is actually waiting on competes with it for the link.
+    pub fn recovery_backlog(&self) -> (usize, u64) {
+        (self.recovery_dgrams.len(), self.recovered_blocks)
+    }
+
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
     /// proves the controller dropped FEC fully off the wire (Passthrough) on a
     /// clean link; the second counts blocks that carried parity.
@@ -4297,6 +4306,15 @@ impl ReliableUdpReceiver {
     /// own counters say should be.
     pub fn session_last_data_seen(&self, epoch: u32) -> Option<(u32, u32)> {
         self.sessions.get(&epoch)?.last_data_seen
+    }
+
+    /// `(pop_attempts, pop_yields, queue_ptr, queue_len)` of the inbound
+    /// demux queue, or `None` on a non-demux backend. A `queue_len` that
+    /// climbs is a receiver draining slower than the peer sends: it is then
+    /// reading the PAST, and its view of what is on the wire lags the
+    /// sender's by however long the backlog represents.
+    pub fn inbound_queue(&self) -> Option<(u64, u64, u64, u64)> {
+        self.sock.demux_probe()
     }
 
     /// Epochs currently under an admission challenge, with the address each

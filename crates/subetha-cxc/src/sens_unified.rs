@@ -991,6 +991,13 @@ impl UnifiedSensSender {
         self.rs.liveness_probe()
     }
 
+    /// `(queued_recovery_datagrams, blocks_recovered)` for the block-RS
+    /// sender. The queue holds datagrams built at enqueue time, so it can
+    /// still carry a block that has since been acked.
+    pub fn rs_recovery_backlog(&self) -> (usize, u64) {
+        self.rs.recovery_backlog()
+    }
+
     /// The RLC sender's transmit-side probe: `(last_sid,
     /// wire_datagrams, acked_through, outstanding)`. Splits a stall
     /// between "items never packed" (`last_sid` frozen), "packed but
@@ -1762,6 +1769,14 @@ impl UnifiedSensReceiver {
     /// its decoder, read off the wire before the decoder judged it.
     pub fn rs_session_last_data_seen(&self, epoch: u32) -> Option<(u32, u32)> {
         self.rs.session_last_data_seen(epoch)
+    }
+
+    /// `(pop_attempts, pop_yields, queue_ptr, queue_len)` of the block-RS
+    /// receiver's inbound demux queue. A climbing `queue_len` means this
+    /// receiver is reading the PAST: the demux thread enqueues at the
+    /// peer's rate while the poll loop drains one datagram per call.
+    pub fn rs_inbound_queue(&self) -> Option<(u64, u64, u64, u64)> {
+        self.rs.inbound_queue()
     }
 
     /// Epochs under an admission challenge, with the address challenged.

@@ -224,6 +224,14 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         })
         .collect();
     println!("   parent: over 1s of continued polling [{}]", deltas.join("; "));
+    // A queue that keeps growing means this receiver is reading the past:
+    // the demux thread enqueues at the sender's rate while the poll loop
+    // takes one datagram per call, so what the decoder sees lags what the
+    // sender is actually transmitting by the whole backlog.
+    println!(
+        "   parent: rs inbound queue (pop_attempts, pop_yields, ptr, len) {:?}",
+        rx.rs_inbound_queue(),
+    );
     println!(
         "   parent: demux unroutable {:?}, rejects now {:?}",
         rx.demux_unroutable(),
@@ -362,11 +370,12 @@ fn sender(args: &[String]) -> Result<(), BoxErr> {
         println!(
             "   sender {tag}: round {round}, datagrams sent {sent}, fed back \
              {fed_back}, tx probe {:?}, egress {:?}, last (nak, retx) {:?}, \
-             liveness {:?}",
+             liveness {:?}, recovery backlog {:?}",
             tx.rs_tx_probe(),
             tx.rs_egress_counts(),
             tx.rs_last_nak_and_retx(),
             tx.rs_liveness_probe(),
+            tx.rs_recovery_backlog(),
         );
         drain(&mut tx, tag, round);
         sleep(Duration::from_millis(10));
