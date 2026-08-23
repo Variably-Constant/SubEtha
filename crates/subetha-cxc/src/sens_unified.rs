@@ -302,12 +302,16 @@ pub const FB_PEER_RETENTION: Duration = Duration::from_secs(30);
 pub const DEFAULT_FINISH_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Counter slots the demux reader publishes.
-const DEMUX_STAT_SLOTS: usize = 7;
+const DEMUX_STAT_SLOTS: usize = 8;
 /// Nanoseconds since the reader started, stamped at the top of every loop:
 /// the heartbeat a staleness check reads.
 const DEMUX_SLOT_LAST_ITER: usize = 5;
 /// Socket errors that were neither `WouldBlock` nor `TimedOut`.
 const DEMUX_SLOT_ERRORS: usize = 6;
+/// Datagrams that arrived and no routing arm claimed. A frame counted here
+/// reached the process and was then discarded, which without this reads
+/// exactly like one that never arrived.
+const DEMUX_SLOT_UNROUTABLE: usize = 7;
 /// Minimum datagrams sent in a sample window before the raw-loss estimate is
 /// trusted (a tiny window is too noisy to switch on).
 const MIN_LOSS_SAMPLE: u64 = 30;
@@ -327,7 +331,7 @@ pub(crate) fn route_sens_inbound(
     fb_received: Option<&AtomicU64>,
     recv_counter: Option<&AtomicU64>,
     hs_q: Option<&DemuxQueue>,
-) {
+) -> bool {
     let b0 = data.first().copied().unwrap_or(0);
     if let Some(c) = recv_counter
         && (b0 == 1 || b0 == 10 || b0 == 11)
@@ -360,7 +364,15 @@ pub(crate) fn route_sens_inbound(
         && let (Some(sig), Some(p)) = (switch_signal, decode_code_switch(&data))
     {
         *sig.lock().unwrap() = Some(p);
+    } else {
+        // No arm claims this frame: a first byte no code owns, a QUIC
+        // packet on the one-port path, or a unified-feedback / code-switch
+        // frame that would not decode. The caller counts it; a datagram
+        // that reaches the process and is then discarded must not be
+        // indistinguishable from one that never arrived.
+        return false;
     }
+    true
 }
 
 /// splitmix64 step: a cheap, seedable PRNG for the demux loss injector.
@@ -410,6 +422,9 @@ fn spawn_demux(
         // leaving that state each report exactly once instead of either
         // going unmentioned or flooding stderr every 200us.
         let mut erroring = false;
+        // Set once the first unroutable datagram has been named, so the
+        // condition is reported without flooding stderr per datagram.
+        let mut reported_unroutable = false;
         while !stop.load(Ordering::Relaxed) {
             if let Some(s) = &stats {
                 s[0].fetch_add(1, Ordering::Relaxed);
@@ -456,10 +471,12 @@ fn spawn_demux(
                     let dropped =
                         loss_pct > 0 && is_fwd && (next_rand(&mut rng) % 100) < loss_pct as u64;
                     if !dropped {
-                        // QUIC (0x40 bit set) and unknown first bytes are dropped
-                        // by route_sens_inbound; the one-port quinn demux consumes
-                        // QUIC separately.
-                        route_sens_inbound(
+                        // QUIC (0x40 bit set) and unknown first bytes are claimed
+                        // by no arm; the one-port quinn demux consumes QUIC
+                        // separately. Whatever is left is counted and named once,
+                        // so a discarded datagram is distinguishable from one that
+                        // never arrived.
+                        let routed = route_sens_inbound(
                             buf[..n].to_vec(),
                             from,
                             kts,
@@ -472,6 +489,19 @@ fn spawn_demux(
                             // reader started, so no crypto frames arrive here.
                             None,
                         );
+                        if !routed {
+                            if let Some(s) = &stats {
+                                s[DEMUX_SLOT_UNROUTABLE].fetch_add(1, Ordering::Relaxed);
+                            }
+                            if !reported_unroutable {
+                                reported_unroutable = true;
+                                eprintln!(
+                                    "subetha: demux has no route for a datagram from \
+                                     {from}, first byte {b0}, {n} bytes - it is being \
+                                     discarded"
+                                );
+                            }
+                        }
                     }
                     true
                 }
@@ -1618,6 +1648,13 @@ impl UnifiedSensReceiver {
     /// feeds it. `recv_ok` climbing while `routed` stalls is a datagram
     /// the routing arms refuse; both frozen with iterations climbing is a
     /// socket nothing reaches. The sender reports the same shape.
+    /// Datagrams this receiver's demux read and no routing arm claimed, or
+    /// `None` when an external demux feeds it. Non-zero means traffic is
+    /// reaching the process and being discarded before any decoder sees it.
+    pub fn demux_unroutable(&self) -> Option<u64> {
+        Some(self.demux_stats.as_ref()?[DEMUX_SLOT_UNROUTABLE].load(Ordering::Relaxed))
+    }
+
     pub fn demux_probe(&self) -> Option<(u64, u64, u64, u64)> {
         let s = self.demux_stats.as_ref()?;
         Some((

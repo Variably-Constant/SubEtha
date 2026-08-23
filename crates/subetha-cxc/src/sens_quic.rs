@@ -20,7 +20,7 @@ use std::fmt;
 use std::io;
 use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::task::{ready, Context, Poll};
 
@@ -68,6 +68,9 @@ pub struct SensDemux {
     debug_loss: u32,
     /// splitmix64 state for the loss injector.
     rng: AtomicU64,
+    /// Set once the first datagram no routing arm claimed has been named,
+    /// so the condition is reported without flooding stderr per datagram.
+    reported_unroutable: AtomicBool,
 }
 
 impl SensDemux {
@@ -81,6 +84,7 @@ impl SensDemux {
             sens_peer: Arc::new(Mutex::new(None)),
             debug_loss,
             rng: AtomicU64::new(seed ^ 0x5f3a_c001_d00d_1234),
+            reported_unroutable: AtomicBool::new(false),
         }
     }
 }
@@ -187,7 +191,7 @@ impl AsyncUdpSocket for DemuxQuicSocket {
                         if !drop {
                             let datagram = seg.to_vec();
                             *self.demux.sens_peer.lock().unwrap() = Some(addr);
-                            route_sens_inbound(
+                            let routed = route_sens_inbound(
                                 datagram,
                                 addr,
                                 None,
@@ -198,6 +202,20 @@ impl AsyncUdpSocket for DemuxQuicSocket {
                                 Some(&self.demux.recv_counter),
                                 Some(&self.demux.hs_q),
                             );
+                            if !routed
+                                && !self
+                                    .demux
+                                    .reported_unroutable
+                                    .swap(true, Ordering::Relaxed)
+                            {
+                                eprintln!(
+                                    "subetha: one-port demux has no route for a \
+                                     datagram from {addr}, first byte {}, {} bytes - \
+                                     it is being discarded",
+                                    seg.first().copied().unwrap_or(0),
+                                    seg.len(),
+                                );
+                            }
                         }
                         off += stride;
                     }
