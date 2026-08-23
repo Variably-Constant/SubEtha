@@ -225,6 +225,10 @@ pub struct Encoder {
     /// The block id of the last unservable NAK, so a repeat for the same
     /// block reports once rather than on every feedback frame.
     last_unservable_nak: Option<u32>,
+    /// NAKs naming a block at or above [`next_block`](Self::next_block),
+    /// which no longer exists to be resent because it was never produced.
+    /// The receiver's tail drive raises this on a fully delivered stream.
+    tail_probe_naks: u64,
     /// Highest `ack_through` reported by the receiver; below this every
     /// block is delivered.
     acked_through: u32,
@@ -286,6 +290,7 @@ impl Encoder {
             next_block: 0,
             unservable_naks: 0,
             last_unservable_nak: None,
+            tail_probe_naks: 0,
             acked_through: 0,
             flow_window: 256,
             staged: Vec::with_capacity(k),
@@ -622,7 +627,27 @@ impl Encoder {
                         );
                     }
                 }
-                None => {}
+                // The tail drive probing one past the end of a delivered
+                // stream, which is ordinary. Counted so the arm is not a
+                // silent path, and separated from the block ABOVE that,
+                // which asks for something never produced and cannot be
+                // reached by a receiver whose frontier tracks one epoch.
+                None => {
+                    self.tail_probe_naks += 1;
+                    if fb.nak_block > self.next_block
+                        && self.last_unservable_nak != Some(fb.nak_block)
+                    {
+                        self.last_unservable_nak = Some(fb.nak_block);
+                        eprintln!(
+                            "subetha: NAK for block {} is above anything produced \
+                             (acked through {}, {} pending, next block {})",
+                            fb.nak_block,
+                            self.acked_through,
+                            self.pending.len(),
+                            self.next_block,
+                        );
+                    }
+                }
             }
         }
         out
@@ -638,6 +663,14 @@ impl Encoder {
     /// stalled stream rather than a slow one.
     pub fn unservable_naks(&self) -> u64 {
         self.unservable_naks
+    }
+
+    /// NAKs naming a block at or above the next one to be produced. The
+    /// receiver's tail drive raises this while it probes past the end of a
+    /// delivered stream, so it is ordinary; it is exposed so the arm that
+    /// serves no retransmit is countable rather than silent.
+    pub fn tail_probe_naks(&self) -> u64 {
+        self.tail_probe_naks
     }
 
     /// The oldest unacked block id - the one the receiver's in-order frontier
