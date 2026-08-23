@@ -1615,6 +1615,87 @@ mod tests {
         }
     }
 
+    /// Each refusal gate in `ingest` advances its own counter and no other,
+    /// so a window that is not advancing names the gate holding its shards
+    /// out instead of looking the same as one starved of datagrams.
+    #[test]
+    fn rejects_name_the_gate_that_refused_a_datagram() {
+        // Passthrough (r = 0) carries no parity, so a lossless feed has
+        // nothing surplus in it and the counters stay at zero.
+        let mut enc = Encoder::new(4, 0, 8);
+        let mut dec = Decoder::new();
+        let mut pkts = Vec::new();
+        for i in 0..8u64 {
+            pkts.extend(enc.push(&i.to_le_bytes()));
+        }
+        pkts.extend(enc.flush());
+
+        let mut delivered = 0;
+        for p in &pkts {
+            delivered += dec.on_packet(p).len();
+        }
+        assert_eq!(delivered, 8, "every item delivers on a clean feed");
+        assert_eq!(
+            dec.rejects(),
+            RejectCounts::default(),
+            "a Passthrough feed with no loss refuses nothing"
+        );
+
+        // The same datagrams again: every block is now below the delivery
+        // frontier, so each one is refused as already delivered.
+        for p in &pkts {
+            assert!(dec.on_packet(p).is_empty());
+        }
+        let after_dup = dec.rejects();
+        assert_eq!(after_dup.delivered, pkts.len() as u64);
+        assert_eq!(after_dup.total(), after_dup.delivered);
+
+        dec.on_packet(&[]);
+        dec.on_packet(&[PKT_DATA, 0, 0]);
+        assert_eq!(dec.rejects().malformed, 2);
+
+        let mut foreign = pkts[0].clone();
+        let other = u32::from_le_bytes([
+            foreign[EPOCH_OFFSET],
+            foreign[EPOCH_OFFSET + 1],
+            foreign[EPOCH_OFFSET + 2],
+            foreign[EPOCH_OFFSET + 3],
+        ])
+        .wrapping_add(1);
+        foreign[EPOCH_OFFSET..EPOCH_OFFSET + 4].copy_from_slice(&other.to_le_bytes());
+        assert!(dec.on_packet(&foreign).is_empty());
+        let end = dec.rejects();
+        assert_eq!(end.epoch, 1, "a foreign epoch is refused as an epoch");
+        assert_eq!(end.delivered, after_dup.delivered, "and not as a duplicate");
+        assert_eq!(end.total(), end.delivered + end.malformed + end.epoch);
+    }
+
+    /// A coded block decodes as soon as `k` of its `k + r` shards land, so
+    /// the parity that arrives behind it is surplus and refused as already
+    /// delivered. A `delivered` count on a healthy link is this, which is
+    /// why that counter alone does not indicate a fault.
+    #[test]
+    fn surplus_parity_is_refused_as_already_delivered() {
+        let (k, r, blocks) = (4usize, 1usize, 2u64);
+        let mut enc = Encoder::new(k, r, 8);
+        let mut dec = Decoder::new();
+        let mut pkts = Vec::new();
+        for i in 0..(k as u64 * blocks) {
+            pkts.extend(enc.push(&i.to_le_bytes()));
+        }
+        pkts.extend(enc.flush());
+        for p in &pkts {
+            dec.on_packet(p);
+        }
+        let rej = dec.rejects();
+        assert_eq!(
+            rej.delivered,
+            r as u64 * blocks,
+            "one surplus parity shard per block, and nothing else refused"
+        );
+        assert_eq!(rej.total(), rej.delivered);
+    }
+
     /// Drive `n` items end-to-end through a channel that drops `loss_pct`
     /// of DATA datagrams, with ARQ feedback flowing back. Asserts every
     /// item is delivered exactly once, in order.
