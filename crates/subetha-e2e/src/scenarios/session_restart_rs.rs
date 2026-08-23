@@ -41,6 +41,11 @@ const FORGERY_SETTLE: Duration = Duration::from_millis(1500);
 /// case builds one from outside the crate. Drift here makes the forged
 /// datagram implausible, which is why the case also asserts a challenge
 /// was issued rather than only that nothing was adopted.
+/// One window's `(next_needed, highest_seen, datagrams_in)` at an instant,
+/// so two samples a second apart give the rate rather than the lifetime
+/// total.
+type WindowSample = (u32, u32, u64);
+
 const PKT_DATA: u8 = 1;
 const RS_DATA_HEADER: usize = 13;
 const RS_EPOCH_OFFSET: usize = 9;
@@ -186,6 +191,37 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
             None => format!("epoch {e}: no window"),
         })
         .collect();
+    // The counters above are lifetime totals, which cannot tell a window
+    // still taking traffic from one that went quiet an instant after it
+    // stalled. Sample the same windows again after a pause and report the
+    // delta, which is the steady state rather than the accumulation.
+    let first_sample: Vec<(u32, Option<WindowSample>)> = live
+        .iter()
+        .map(|e| (*e, rx.rs_session_frontier(*e).map(|(n, h, r, _)| (n, h, r))))
+        .collect();
+    let settle = Instant::now() + Duration::from_millis(1000);
+    while Instant::now() < settle {
+        rx.poll().ok();
+        sleep(Duration::from_millis(2));
+    }
+    let deltas: Vec<String> = first_sample
+        .iter()
+        .map(|(e, before)| match (before, rx.rs_session_frontier(*e)) {
+            (Some((n0, h0, r0)), Some((n1, h1, r1, _))) => format!(
+                "epoch {e}: next_needed {n0}->{n1}, highest_seen {h0}->{h1}, \
+                 datagrams_in +{}",
+                r1.saturating_sub(*r0)
+            ),
+            _ => format!("epoch {e}: window went away"),
+        })
+        .collect();
+    println!("   parent: over 1s of continued polling [{}]", deltas.join("; "));
+    println!(
+        "   parent: demux unroutable {:?}, rejects now {:?}",
+        rx.demux_unroutable(),
+        live.iter().map(|e| rx.rs_session_rejects(*e)).collect::<Vec<_>>(),
+    );
+
     let pending = rx.rs_pending_admissions();
     println!(
         "   parent: rs windows [{}], pending admissions {pending:?}, adoptions {:?}",
