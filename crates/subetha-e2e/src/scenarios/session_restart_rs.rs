@@ -69,6 +69,15 @@ fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
     Ok(())
 }
 
+/// Service the transport for one round, reporting any error the drain
+/// returns. Discarding it here would hide an egress failure, which the
+/// receiver cannot tell from a datagram lost in the network.
+fn drain(tx: &mut UnifiedSensSender, tag: u8, round: u32) {
+    if let Err(e) = tx.finish_within(Duration::from_millis(500)) {
+        eprintln!("   sender {tag}: round {round}, drain error: {e}");
+    }
+}
+
 fn payload(session: u8, i: usize) -> Vec<u8> {
     let mut v = vec![session; 16];
     v[1..9].copy_from_slice(&(i as u64).to_le_bytes());
@@ -308,14 +317,17 @@ fn sender(args: &[String]) -> Result<(), BoxErr> {
         // produced and no NAK can ever be served.
         println!(
             "   sender {tag}: round {round}, datagrams sent {sent}, fed back \
-             {fed_back}, tx probe {:?}",
-            tx.rs_tx_probe()
+             {fed_back}, tx probe {:?}, egress {:?}",
+            tx.rs_tx_probe(),
+            tx.rs_egress_counts(),
         );
-        tx.finish_within(Duration::from_millis(500)).ok();
+        drain(&mut tx, tag, round);
         sleep(Duration::from_millis(10));
     }
+    let mut round = 40;
     loop {
-        tx.finish_within(Duration::from_millis(500)).ok();
+        drain(&mut tx, tag, round);
+        round += 1;
         sleep(Duration::from_millis(10));
     }
 }

@@ -89,6 +89,15 @@ pub type SensOMaticSender = ReliableUdpSender;
 /// Bare Sens-O-Matic receiver alias (Reed-Solomon code); see [`SensOMaticSender`].
 pub type SensOMaticReceiver = ReliableUdpReceiver;
 
+/// `(retransmits_sent, lowest_block, highest_block)` an encoder put on the
+/// wire in answer to NAKs.
+pub type RetxRange = (u64, Option<u32>, Option<u32>);
+
+/// `(next_block_id, oldest_pending, pending_len, unservable_naks,
+/// tail_probe_naks, retx_range)` - where a stalled receiver's missing block
+/// stands on the transmit side.
+pub type TxProbe = (u32, Option<u32>, usize, u64, u64, RetxRange);
+
 /// How long a session challenge waits for its answer. A restarted peer
 /// answers within a round trip; a forged epoch from an address that
 /// cannot receive never does.
@@ -349,6 +358,13 @@ pub struct ReliableUdpSender {
     dead_episodes: u64,
     probes_sent: u64,
     recovered_blocks: u64,
+    /// Retransmit datagrams the socket accepted, and those an egress error
+    /// kept off the wire. A receiver cannot tell the second from ordinary
+    /// network loss, so it is counted here rather than only surfaced as an
+    /// error a caller may discard.
+    retx_egress_ok: u64,
+    retx_egress_failed: u64,
+    last_egress_error: Option<String>,
     /// Proactive-recovery resend queue (datagrams, oldest block first) and its
     /// token bucket. On recovery the whole still-unacked gap is enqueued here
     /// and drained at the item-6 BtlBw rate - the rate that fills the pipe
@@ -682,6 +698,9 @@ impl ReliableUdpSender {
             dead_episodes: 0,
             probes_sent: 0,
             recovered_blocks: 0,
+            retx_egress_ok: 0,
+            retx_egress_failed: 0,
+            last_egress_error: None,
             recovery_dgrams: VecDeque::new(),
             recovery_tokens: 0.0,
             last_recovery_us: 0,
@@ -932,7 +951,7 @@ impl ReliableUdpSender {
     /// receiver wants), "produced and still held for ARQ"
     /// (`oldest_pending` naming it), and "held by nobody"
     /// (`unservable_naks` climbing).
-    pub fn tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64, (u64, Option<u32>, Option<u32>)) {
+    pub fn tx_probe(&self) -> TxProbe {
         (
             self.enc.next_block_id(),
             self.enc.oldest_pending(),
@@ -940,6 +959,17 @@ impl ReliableUdpSender {
             self.enc.unservable_naks(),
             self.enc.tail_probe_naks(),
             self.enc.retx_range(),
+        )
+    }
+
+    /// `(retransmits the socket accepted, retransmits an egress error kept
+    /// off the wire, that error)`. A receiver cannot tell an egress failure
+    /// from network loss, so a stall reads this to place the two apart.
+    pub fn egress_counts(&self) -> (u64, u64, Option<&str>) {
+        (
+            self.retx_egress_ok,
+            self.retx_egress_failed,
+            self.last_egress_error.as_deref(),
         )
     }
 
@@ -1215,7 +1245,26 @@ impl ReliableUdpSender {
                         }
                         let fb = feedback_from_control(&cp);
                         let rtx = self.enc.on_feedback(&fb);
-                        self.send_batch(&rtx)?;
+                        // An egress failure here is the retransmit never
+                        // reaching the wire, which the receiver cannot tell
+                        // from a datagram lost in the network. Counted and
+                        // named before the error leaves this frame, so a
+                        // caller that discards the error still leaves a trace.
+                        let want = rtx.len() as u64;
+                        match self.send_batch(&rtx) {
+                            Ok(()) => self.retx_egress_ok += want,
+                            Err(e) => {
+                                self.retx_egress_failed += want;
+                                if self.last_egress_error.is_none() {
+                                    eprintln!(
+                                        "subetha: retransmit egress failed for {want} \
+                                         datagram(s): {e}"
+                                    );
+                                }
+                                self.last_egress_error = Some(e.to_string());
+                                return Err(e);
+                            }
+                        }
                         // Proactive recovery: now that this ACK has freed every
                         // block the receiver actually got, ENQUEUE whatever is
                         // STILL unacked oldest-first - the genuinely-lost gap -

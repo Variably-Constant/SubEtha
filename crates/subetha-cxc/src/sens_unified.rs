@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 use crate::dgram::{new_demux_queue, DemuxQueue, DgramSock};
 use crate::sens_rlc::{SensOMaticRlcReceiver, SensOMaticRlcSender};
 use crate::reliable_udp::RejectCounts;
-use crate::udp_bridge::{ReliableUdpReceiver, ReliableUdpSender};
+use crate::udp_bridge::{ReliableUdpReceiver, ReliableUdpSender, TxProbe};
 
 /// Which erasure code the unified transport is currently carrying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -925,10 +925,15 @@ impl UnifiedSensSender {
     /// oldest_pending, pending_len, unservable_naks, tail_probe_naks)`.
     /// Splits a receiver stall between a block never produced, one still
     /// held for ARQ, and one no longer held by anybody.
-    pub fn rs_tx_probe(
-        &self,
-    ) -> (u32, Option<u32>, usize, u64, u64, (u64, Option<u32>, Option<u32>)) {
+    pub fn rs_tx_probe(&self) -> TxProbe {
         self.rs.tx_probe()
+    }
+
+    /// `(retransmits the socket accepted, retransmits an egress error kept
+    /// off the wire, that error)` for the block-RS sender. A receiver
+    /// cannot tell an egress failure from network loss.
+    pub fn rs_egress_counts(&self) -> (u64, u64, Option<&str>) {
+        self.rs.egress_counts()
     }
 
     /// The RLC sender's transmit-side probe: `(last_sid,
