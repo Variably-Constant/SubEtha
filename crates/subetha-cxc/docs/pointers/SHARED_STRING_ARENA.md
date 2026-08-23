@@ -27,9 +27,17 @@ Any process resolves the same StringRef to the same bytes.
   arena.
 - **Bump-pointer allocation**: `fetch_add` on offset; one
   memcpy per intern.
-- **StringRef = (offset: u32, len: u32)**: position-independent
-  (packed into one u64 for stable cross-process transit).
-- **Bounded capacity at create**: arena size in bytes.
+- **StringRef = (offset: 40 bits, len: 24 bits)**: position-
+  independent (packed into one u64 for stable cross-process
+  transit). Addresses a 1 TiB arena holding strings of up to
+  16 MiB; a value past either bound is refused where the ref is
+  minted rather than truncated into one that resolves to another
+  string's bytes.
+- **Bounded capacity at create**: arena size in bytes, up to
+  1 TiB.
+- **A region carrying another format tag is refused**: `create`
+  and `open` report `LayoutMismatch` rather than reading refs
+  under a layout they do not use.
 - **Cross-process backed by MMF.**
 
 ---
@@ -121,9 +129,10 @@ grows linearly with unique metadata, not with event count.
 ## Known limitations
 
 - **No deletion**: the whole arena is reclaimed via `clear`.
-- **Bounded capacity at create**.
-- **StringRef len is u32**: a single interned string is bounded by
-  the arena capacity, not a fixed per-string field limit.
+- **Bounded capacity at create**, to 1 TiB.
+- **One interned string is bounded at 16 MiB** by the length
+  field a StringRef carries; the arena capacity bounds the
+  total.
 - **Cross-process backed by MMF.**
 
 ---

@@ -156,9 +156,15 @@ loop (an idle reader still loops every 100 us, so anything past a few
 milliseconds is wedged), `demux_errors()` counts socket errors that
 were neither `WouldBlock` nor a timeout, and the reader itself prints
 to stderr when it enters or leaves an erroring state, when it panics,
-and when it exits without a stop request. On the receiver both
+and when it exits without a stop request. On the receiver these
 accessors return `None` when an external demux owns the reader, which
 is a different answer from "not stale".
+
+A datagram whose first byte no code owns is claimed by no routing arm.
+`demux_unroutable()` counts those, and the reader names the source,
+the first byte and the length once on stderr, so traffic arriving and
+being discarded before any decoder sees it is distinguishable from
+traffic that never arrived.
 
 Both codes survive a peer restart, by different means. RLC routes by the
 connection id it already carries; block-RS carries a

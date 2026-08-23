@@ -32,9 +32,14 @@ Any process resolves the same StringRef to the same bytes.
   arena.
 - **Bump-pointer allocation**: `fetch_add` on offset; one
   memcpy per intern.
-- **StringRef = (offset: u32, len: u32)**: position-independent;
-  `to_u64()` / `from_u64()` pack it into one word for transport.
-- **Bounded capacity at create**: arena size in bytes.
+- **StringRef = (offset: 40 bits, len: 24 bits)**: position-
+  independent; `to_u64()` / `from_u64()` pack it into one word
+  for transport. Addresses a 1 TiB arena holding strings of up
+  to 16 MiB; a value past either bound is refused where the ref
+  is minted rather than truncated into one that resolves to
+  another string's bytes.
+- **Bounded capacity at create**: arena size in bytes, up to
+  1 TiB.
 - **`open_read_only` maps without write access**: `open` needs a
   read+write file handle, which a consumer of a privileged
   producer's arena does not hold. `get` / `get_bytes` are
@@ -140,9 +145,13 @@ grows linearly with unique metadata, not with event count.
 ## Known limitations
 
 - **No deletion**: the whole arena is reclaimed via `clear`.
-- **Bounded capacity at create**.
-- **StringRef len is u32**: a single interned string is bounded
-  only by the arena capacity, not a 64 KB per-string ceiling.
+- **Bounded capacity at create**, to 1 TiB.
+- **One interned string is bounded at 16 MiB** by the length
+  field a StringRef carries; the arena capacity bounds the
+  total.
+- **A region carrying another format tag is refused**: its refs
+  resolve under a layout this one does not use, so `create` and
+  `open` report `LayoutMismatch` rather than reading it.
 - **Cross-process backed by MMF.**
 
 ---
@@ -167,9 +176,11 @@ grows linearly with unique metadata, not with event count.
 
 ## References
 
-- Source: `crates/subetha-cxc/src/shared_string_arena.rs` (564
+- Source: `crates/subetha-cxc/src/shared_string_arena.rs` (909
   lines, unit tests covering intern + resolve, cross-handle
-  visibility, arena-full handling, and clear semantics).
+  visibility, arena-full handling, clear semantics, the packed
+  ref at both field ceilings, and refusal of a region carrying
+  another format tag).
 - Bench: `crates/subetha-cxc/benches/shared_string_arena.rs`
   (intern short, intern 16-byte, get_bytes vs
   `Mutex<Vec<String>>` and `RwLock<Vec<String>>`).

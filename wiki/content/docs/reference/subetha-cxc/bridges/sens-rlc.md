@@ -111,10 +111,14 @@ leaves them as a gap ARQ recovers.
 | `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap |
 | `session_control(cid)` | one window's `(naks_sent, acks_sent, sends_skipped, peer_validated)`; `sends_skipped` counts control frames dropped for a missing peer address or an exhausted anti-amplification budget |
 | `path_validations()` / `path_validation_failures()` | address validations completed and challenges that timed out, summed over every session |
+| `session_service_errors()` | sessions that could not be serviced; each is a peer left without the feedback that tick would have sent |
 
 A session's control-plane send failure stays with that session: every
 window is serviced each poll, and a tick's delivered items reach the
-caller whether or not some peer's feedback send failed.
+caller whether or not some peer's feedback send failed. The failure is
+counted and named once on stderr rather than discarded, since from the
+peer's side an undelivered NAK is indistinguishable from a receiver
+that stopped asking.
 
 An ACK leaves immediately whenever the delivery frontier advanced; an
 unmoved frontier re-acks at most once per 10 ms. The cumulative

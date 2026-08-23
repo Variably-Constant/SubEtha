@@ -142,9 +142,11 @@ than one peer. Without it the socket connects to its first peer and
 reads through GRO, `recvmmsg` or `WSARecvMsg`, which is where the
 throughput below comes from; a connected socket accepts one address, so
 the kernel discards the others before the transport sees them. With it
-the socket stays unconnected and each datagram is read singly with its
-source captured, below the point-to-point figures. The receiver cannot
-infer this: it never sees the peer it has already connected away from.
+the socket stays unconnected and each datagram carries its own source,
+read in a drain that empties what has arrived before the poll returns -
+below the point-to-point figures, since a per-datagram read with source
+capture cannot coalesce the way GRO does. The receiver cannot infer
+this: it never sees the peer it has already connected away from.
 
 ## Adaptive control
 
@@ -179,6 +181,26 @@ bounded latency over strict reliability sets a shorter hold: a gap held
 past its deadline without recovering is skipped so the stream advances, and
 a genuinely unrecoverable block costs only its own bytes instead of
 blocking forever.
+
+## Placing a stall
+
+A datagram that reaches a process and is then discarded reads, from the
+far end, exactly like one that never arrived - so every place this
+transport declines to act on one is counted and named. The counters are
+what separate a peer that stopped sending from a peer whose traffic is
+being turned away on arrival, which is the distinction the two ends
+cannot draw from their own state.
+
+| Call | Answers |
+|---|---|
+| `session_rejects(epoch)` | a window's ingest refusals by reason - malformed, wrong epoch, shard shape, already delivered, outside the window, disagreeing block shape - with the range of block ids seen and refused |
+| `session_frontier(epoch)` | `(next_needed, highest_seen, datagrams_in, peer)`; `highest_seen` below `next_needed` is a window waiting on a block nothing above has followed |
+| `session_last_data_seen(epoch)` | the `(epoch, block_id)` a window's last DATA datagram claimed, read off the wire before the decoder judged it |
+| `tx_probe()` | `(next_block_id, oldest_pending, pending_len, unservable_naks, tail_probe_naks, retx_range)`; places a stalled block as never produced, still held for ARQ, or held by nobody |
+| `egress_counts()` | retransmits the socket accepted, those an egress error kept off the wire, and that error |
+| `feedback_send_failures()` | ACKs and NAKs no send path could deliver; the peer then waits on a request it was never told about |
+| `recovery_stale_dropped()` | queued recovery datagrams skipped because their block was acknowledged after they were built |
+| `inbound_queue()` | `(pop_attempts, pop_yields, queue_ptr, queue_len)` of the demux queue feeding this receiver |
 
 ## Sharding across cores
 
