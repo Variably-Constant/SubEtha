@@ -128,8 +128,9 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         failed_after > failed_before,
         format!(
             "the forgery was not challenged ({failed_before} -> {failed_after} \
-             unanswered, challenges armed {armed_before} -> {armed_after}); the \
-             receiver is not exercising the path check"
+             unanswered, challenges armed {armed_before} -> {armed_after}, still \
+             pending {:?}); the receiver is not exercising the path check",
+            rx.rs_pending_admissions()
         ),
     )?;
     println!(
