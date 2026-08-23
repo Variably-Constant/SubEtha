@@ -235,6 +235,11 @@ pub struct Encoder {
     retx_sent: u64,
     retx_lo: Option<u32>,
     retx_hi: Option<u32>,
+    /// The most recent NAK this encoder answered and the block id it
+    /// stamped on the answer. Lifetime ranges cannot say what is on the
+    /// wire NOW, which is the only thing that describes a live stall.
+    last_nak_block: Option<u32>,
+    last_retx_block: Option<u32>,
     /// Highest `ack_through` reported by the receiver; below this every
     /// block is delivered.
     acked_through: u32,
@@ -300,6 +305,8 @@ impl Encoder {
             retx_sent: 0,
             retx_lo: None,
             retx_hi: None,
+            last_nak_block: None,
+            last_retx_block: None,
             acked_through: 0,
             flow_window: 256,
             staged: Vec::with_capacity(k),
@@ -599,6 +606,7 @@ impl Encoder {
         // ARQ: retransmit the requested missing shards.
         let mut out = Vec::new();
         if fb.nak_block != NAK_NONE {
+            self.last_nak_block = Some(fb.nak_block);
             match self.pending.get(&fb.nak_block) {
                 Some(pb) => {
                     let n = pb.shards.len();
@@ -611,6 +619,7 @@ impl Encoder {
                                 self.epoch,
                             ));
                             self.retx_sent += 1;
+                            self.last_retx_block = Some(fb.nak_block);
                             self.retx_lo = Some(
                                 self.retx_lo
                                     .map_or(fb.nak_block, |lo| lo.min(fb.nak_block)),
@@ -697,6 +706,13 @@ impl Encoder {
     /// encoder emitted.
     pub fn retx_range(&self) -> (u64, Option<u32>, Option<u32>) {
         (self.retx_sent, self.retx_lo, self.retx_hi)
+    }
+
+    /// `(last NAK received, last block id stamped on a retransmit)`. The
+    /// two describe what is on the wire NOW, which a lifetime range
+    /// cannot: a live stall is a steady state, not an accumulation.
+    pub fn last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
+        (self.last_nak_block, self.last_retx_block)
     }
 
     /// The oldest unacked block id - the one the receiver's in-order frontier

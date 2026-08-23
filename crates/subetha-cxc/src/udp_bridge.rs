@@ -973,6 +973,13 @@ impl ReliableUdpSender {
         )
     }
 
+    /// `(last NAK received, last block id stamped on a retransmit)` - what
+    /// this sender is answering and emitting NOW, as opposed to over its
+    /// lifetime.
+    pub fn last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
+        self.enc.last_nak_and_retx()
+    }
+
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
     /// proves the controller dropped FEC fully off the wire (Passthrough) on a
     /// clean link; the second counts blocks that carried parity.

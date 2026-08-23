@@ -966,6 +966,12 @@ impl UnifiedSensSender {
         self.rs.egress_counts()
     }
 
+    /// `(last NAK received, last block id stamped on a retransmit)` for the
+    /// block-RS sender - what it is answering and emitting NOW.
+    pub fn rs_last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
+        self.rs.last_nak_and_retx()
+    }
+
     /// The RLC sender's transmit-side probe: `(last_sid,
     /// wire_datagrams, acked_through, outstanding)`. Splits a stall
     /// between "items never packed" (`last_sid` frozen), "packed but
