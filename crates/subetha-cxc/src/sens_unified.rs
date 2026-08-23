@@ -1716,6 +1716,12 @@ impl UnifiedSensReceiver {
         self.rs.session_rejects(epoch)
     }
 
+    /// `(epoch, block_id)` of the last DATA datagram this window handed to
+    /// its decoder, read off the wire before the decoder judged it.
+    pub fn rs_session_last_data_seen(&self, epoch: u32) -> Option<(u32, u32)> {
+        self.rs.session_last_data_seen(epoch)
+    }
+
     /// Epochs under an admission challenge, with the address challenged.
     /// A restarted peer sits here until its nonce returns, and every
     /// datagram it sends meanwhile is refused.

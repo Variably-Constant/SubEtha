@@ -214,9 +214,11 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         .map(|(e, before)| match (before, sample(&rx, *e)) {
             (Some((n0, h0, r0, j0)), Some((n1, h1, r1, j1))) => format!(
                 "epoch {e}: next_needed {n0}->{n1}, highest_seen {h0}->{h1}, \
-                 datagrams_in +{}, refused_at_decoder +{}",
+                 datagrams_in +{}, refused_at_decoder +{}, last data on wire \
+                 (epoch, block) {:?}",
                 r1.saturating_sub(*r0),
                 j1.saturating_sub(*j0),
+                rx.rs_session_last_data_seen(*e),
             ),
             _ => format!("epoch {e}: window went away"),
         })

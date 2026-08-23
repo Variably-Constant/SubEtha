@@ -43,7 +43,8 @@ use crate::path_model_sensor::PathModel;
 use crate::path_sensor::PathSensor;
 use crate::rtt_shape_sensor::RttShape;
 use crate::reliable_udp::{
-    datagram_epoch, is_outer_datagram, Decoder, Encoder, Feedback, NAK_NONE,
+    datagram_epoch, is_outer_datagram, Decoder, Encoder, Feedback, DATA_HEADER, EPOCH_OFFSET,
+    NAK_NONE,
 };
 
 /// Receive-buffer size for an inbound CONTROL datagram. Generous: a control
@@ -2232,6 +2233,10 @@ struct RsSession {
     /// a NAK this session's peer never received, so it goes on waiting for
     /// something it was never told about.
     feedback_send_failures: std::sync::atomic::AtomicU64,
+    /// `(epoch, block_id)` of the last DATA datagram handed to this
+    /// session's decoder. Ground truth for what is actually on the wire,
+    /// as opposed to what either end's own counters say it should be.
+    last_data_seen: Option<(u32, u32)>,
     /// Per-block time of last NAK, to rate-limit re-requests of each gap
     /// to ~one per RTT while still NAKing every gap in parallel. Pruned
     /// below the delivery frontier each cycle.
@@ -2643,6 +2648,7 @@ impl RsSession {
             peer: None,
             recv_count: 0,
             feedback_send_failures: std::sync::atomic::AtomicU64::new(0),
+            last_data_seen: None,
             nak_history: BTreeMap::new(),
             last_feedback: Instant::now(),
             ctrl_out: 0,
@@ -2973,6 +2979,18 @@ impl RsSession {
             // shard inter-arrival (the Biaz input); the clock origin is shared
             // with the heartbeat OWD above.
             let recv_us = self.start.elapsed().as_micros() as u64;
+            // What this datagram actually claims to be, read off the wire
+            // before the decoder judges it.
+            if buf.len() >= DATA_HEADER {
+                let block = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                let epoch = u32::from_le_bytes([
+                    buf[EPOCH_OFFSET],
+                    buf[EPOCH_OFFSET + 1],
+                    buf[EPOCH_OFFSET + 2],
+                    buf[EPOCH_OFFSET + 3],
+                ]);
+                self.last_data_seen = Some((epoch, block));
+            }
             out.extend(self.dec.on_packet_at(buf, recv_us));
         }
     }
@@ -4257,6 +4275,14 @@ impl ReliableUdpReceiver {
     /// moving while these climb names the gate holding the shards out.
     pub fn session_rejects(&self, epoch: u32) -> Option<crate::reliable_udp::RejectCounts> {
         Some(self.sessions.get(&epoch)?.dec.rejects())
+    }
+
+    /// `(epoch, block_id)` of the last DATA datagram this window's session
+    /// handed to its decoder, read off the wire before the decoder judged
+    /// it. Ground truth for what is arriving, as against what either end's
+    /// own counters say should be.
+    pub fn session_last_data_seen(&self, epoch: u32) -> Option<(u32, u32)> {
+        self.sessions.get(&epoch)?.last_data_seen
     }
 
     /// Epochs currently under an admission challenge, with the address each
