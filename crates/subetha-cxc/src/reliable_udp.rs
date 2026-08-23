@@ -810,6 +810,12 @@ pub struct RejectCounts {
     /// range the window passed long ago.
     pub delivered_lo: Option<u32>,
     pub delivered_hi: Option<u32>,
+    /// Lowest and highest block id SEEN at ingest, recorded before any gate
+    /// runs. A block the encoder says it sent that never appears here was
+    /// lost below the decoder; one that appears without advancing the
+    /// window was taken by a path that neither delivers nor refuses.
+    pub seen_lo: Option<u32>,
+    pub seen_hi: Option<u32>,
 }
 
 impl RejectCounts {
@@ -1085,6 +1091,10 @@ impl Decoder {
         let k = buf[6] as usize;
         let r = buf[7] as usize;
         let is_retransmit = buf[8] & FLAG_RETRANSMIT != 0;
+        self.rejects.seen_lo =
+            Some(self.rejects.seen_lo.map_or(block_id, |lo| lo.min(block_id)));
+        self.rejects.seen_hi =
+            Some(self.rejects.seen_hi.map_or(block_id, |hi| hi.max(block_id)));
         let epoch = u32::from_le_bytes([
             buf[EPOCH_OFFSET],
             buf[EPOCH_OFFSET + 1],
@@ -1706,10 +1716,12 @@ mod tests {
             delivered += dec.on_packet(p).len();
         }
         assert_eq!(delivered, 8, "every item delivers on a clean feed");
+        let clean = dec.rejects();
+        assert_eq!(clean.total(), 0, "a Passthrough feed with no loss refuses nothing");
         assert_eq!(
-            dec.rejects(),
-            RejectCounts::default(),
-            "a Passthrough feed with no loss refuses nothing"
+            (clean.seen_lo, clean.seen_hi),
+            (Some(0), Some(1)),
+            "and both blocks are recorded as seen"
         );
 
         // The same datagrams again: every block is now below the delivery
