@@ -293,7 +293,16 @@ fn sender(args: &[String]) -> Result<(), BoxErr> {
     // sender transmitted it at all.
     for round in 0..40 {
         let (sent, fed_back) = tx.raw_sent_recv();
-        println!("   sender {tag}: round {round}, datagrams sent {sent}, fed back {fed_back}");
+        // Which side a stall is on. `oldest_pending` naming the block the
+        // receiver is waiting for means this sender still holds it and is
+        // answering NAKs for it, so the loss is on the wire or at ingest;
+        // a `next_block_id` at or below that block means it was never
+        // produced and no NAK can ever be served.
+        println!(
+            "   sender {tag}: round {round}, datagrams sent {sent}, fed back \
+             {fed_back}, tx probe {:?}",
+            tx.rs_tx_probe()
+        );
         tx.finish_within(Duration::from_millis(500)).ok();
         sleep(Duration::from_millis(10));
     }

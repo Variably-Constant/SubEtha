@@ -921,6 +921,14 @@ impl UnifiedSensSender {
         )
     }
 
+    /// The block-RS sender's transmit-side probe: `(next_block_id,
+    /// oldest_pending, pending_len, unservable_naks, tail_probe_naks)`.
+    /// Splits a receiver stall between a block never produced, one still
+    /// held for ARQ, and one no longer held by anybody.
+    pub fn rs_tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64) {
+        self.rs.tx_probe()
+    }
+
     /// The RLC sender's transmit-side probe: `(last_sid,
     /// wire_datagrams, acked_through, outstanding)`. Splits a stall
     /// between "items never packed" (`last_sid` frozen), "packed but

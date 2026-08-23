@@ -926,6 +926,22 @@ impl ReliableUdpSender {
         &self.control
     }
 
+    /// Transmit-side probe: `(next_block_id, oldest_pending, pending_len,
+    /// unservable_naks, tail_probe_naks)`. Splits a receiver stall between
+    /// "the block was never produced" (`next_block_id` at or below what the
+    /// receiver wants), "produced and still held for ARQ"
+    /// (`oldest_pending` naming it), and "held by nobody"
+    /// (`unservable_naks` climbing).
+    pub fn tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64) {
+        (
+            self.enc.next_block_id(),
+            self.enc.oldest_pending(),
+            self.enc.pending_len(),
+            self.enc.unservable_naks(),
+            self.enc.tail_probe_naks(),
+        )
+    }
+
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
     /// proves the controller dropped FEC fully off the wire (Passthrough) on a
     /// clean link; the second counts blocks that carried parity.
