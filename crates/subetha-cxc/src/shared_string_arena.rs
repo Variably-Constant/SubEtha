@@ -67,7 +67,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::{Mmap, MmapMut, MmapOptions};
 
-pub const ARENA_MAGIC: u64 = 0x4150_5341_524E_4131;
+/// Format tag written last when a region is initialized, and required to
+/// match on open. The trailing byte is the layout generation: `A1` carried
+/// a `StringRef` packed as offset:u32|len:u32, `A2` packs it 40:24. A
+/// region written by one generation resolves every ref wrongly under the
+/// other, so the tag differs and the older region is refused rather than
+/// misread.
+pub const ARENA_MAGIC: u64 = 0x4150_5341_524E_4132;
+
+/// The `A1` tag, retained so an old-format region is recognised and named
+/// in the refusal instead of reported as unrecognised bytes.
+pub const ARENA_MAGIC_V1: u64 = 0x4150_5341_524E_4131;
+
+/// Bits of a packed [`StringRef`] given to the byte offset, and the
+/// resulting ceiling on arena capacity.
+pub const OFFSET_BITS: u32 = 40;
+/// Bits given to the string length, and the resulting ceiling on one
+/// interned string.
+pub const LEN_BITS: u32 = 24;
+
+const _: () = assert!(OFFSET_BITS + LEN_BITS == 64);
+
+/// Largest addressable byte offset: 1 TiB - 1.
+pub const MAX_OFFSET: u64 = (1u64 << OFFSET_BITS) - 1;
+/// Largest interned string: 16 MiB - 1.
+pub const MAX_LEN: u64 = (1u64 << LEN_BITS) - 1;
 
 /// How this process mapped the file. `MmapMut` demands a read+write
 /// file handle, which a consumer holding read access alone cannot get.
@@ -137,25 +161,30 @@ impl From<std::io::Error> for ArenaError {
 }
 
 /// Position-independent reference to a string in a SharedStringArena.
-/// Encoded as a `u64` (offset:u32, len:u32) for stable cross-process
-/// passing (the same u64 resolves to the same bytes in every process
-/// that maps the arena).
+/// Encoded as a `u64` of [`OFFSET_BITS`] offset and [`LEN_BITS`] length,
+/// for stable cross-process passing: the same u64 resolves to the same
+/// bytes in every process that maps the arena.
+///
+/// The split gives a 1 TiB arena holding strings of up to 16 MiB each.
+/// Both are enforced where a ref is minted, so a value that does not fit
+/// is refused rather than truncated into a ref that reads someone else's
+/// bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StringRef {
-    pub offset: u32,
+    pub offset: u64,
     pub len: u32,
 }
 
 impl StringRef {
     #[inline]
     pub fn to_u64(self) -> u64 {
-        ((self.offset as u64) << 32) | (self.len as u64)
+        ((self.offset & MAX_OFFSET) << LEN_BITS) | (self.len as u64 & MAX_LEN)
     }
     #[inline]
     pub fn from_u64(v: u64) -> Self {
         Self {
-            offset: (v >> 32) as u32,
-            len: v as u32,
+            offset: v >> LEN_BITS,
+            len: (v & MAX_LEN) as u32,
         }
     }
 }
@@ -190,6 +219,13 @@ impl SharedStringArena {
         path: impl AsRef<Path>, capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
         Self::check_capacity(capacity_bytes)?;
+        // An existing region carrying an older layout tag never satisfies
+        // the readiness test, so attaching would spin to its deadline and
+        // report that the creator never finished - which is not what
+        // happened. Name the layout instead, before any of that.
+        if Self::region_format_tag(path.as_ref()) == Some(ARENA_MAGIC_V1) {
+            return Err(ArenaError::LayoutMismatch);
+        }
         let (file, mmap) = crate::mmf_attach::create_or_attach(
             path.as_ref(),
             arena_file_size(capacity_bytes),
@@ -224,12 +260,24 @@ impl SharedStringArena {
         })
     }
 
+    /// The format tag an existing region carries, or `None` when the path
+    /// does not exist or is too short to hold one. Reads the file rather
+    /// than mapping it, so it says nothing about whether the region is
+    /// otherwise usable.
+    fn region_format_tag(path: &Path) -> Option<u64> {
+        use std::io::Read;
+        let mut f = File::open(path).ok()?;
+        let mut tag = [0u8; 8];
+        f.read_exact(&mut tag).ok()?;
+        Some(u64::from_le_bytes(tag))
+    }
+
     /// A capacity every constructor must agree on: at least one byte,
     /// and no larger than a [`StringRef`] offset can address. Reported
     /// rather than asserted, because a service that panics building its
     /// arena dies with it.
     fn check_capacity(capacity_bytes: usize) -> Result<(), ArenaError> {
-        if capacity_bytes < 1 || capacity_bytes > u32::MAX as usize {
+        if capacity_bytes < 1 || capacity_bytes as u64 > MAX_OFFSET {
             return Err(ArenaError::LayoutMismatch);
         }
         Ok(())
@@ -255,7 +303,7 @@ impl SharedStringArena {
     ) -> Result<Self, ArenaError> {
         // A capacity a StringRef offset cannot address is not a layout
         // this crate ever creates, and interning into it would truncate.
-        if expected_capacity_bytes > u32::MAX as usize {
+        if expected_capacity_bytes as u64 > MAX_OFFSET {
             return Err(ArenaError::LayoutMismatch);
         }
         let total = arena_file_size(expected_capacity_bytes);
@@ -349,7 +397,10 @@ impl SharedStringArena {
             return Err(ArenaError::ReadOnly);
         }
         let len = bytes.len() as u64;
-        if len > self.capacity_bytes as u64 {
+        // A StringRef carries the length in LEN_BITS, so a longer string is
+        // refused here rather than wrapped into a ref that resolves to a
+        // prefix of itself and silently loses the tail.
+        if len > MAX_LEN || len > self.capacity_bytes as u64 {
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 1);
             return Err(ArenaError::Full);
@@ -361,13 +412,13 @@ impl SharedStringArena {
                 .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 1);
             return Err(ArenaError::Full);
         }
-        // A StringRef carries the offset as a u32, so an offset past that
-        // is refused here rather than truncated: a truncated offset lands
-        // inside the used region and resolves to another string's bytes,
-        // which every downstream bounds check would accept. `create` and
-        // `reset` refuse such a capacity, so this covers an arena opened
-        // at a capacity they never sanctioned.
-        if offset.saturating_add(len) > u32::MAX as u64 {
+        // A StringRef carries the offset in OFFSET_BITS, so an offset past
+        // that is refused here rather than truncated: a truncated offset
+        // lands inside the used region and resolves to another string's
+        // bytes, which every downstream bounds check would accept.
+        // `create` and `reset` refuse such a capacity, so this covers an
+        // arena opened at a capacity they never sanctioned.
+        if offset.saturating_add(len) > MAX_OFFSET {
             self.header().used_bytes.fetch_sub(len, Ordering::AcqRel);
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 1);
@@ -384,13 +435,13 @@ impl SharedStringArena {
         }
         self.ring_sidecar
             .push_op(crate::sidecar_ops::string_arena::OP_INTERN, 0);
-        Ok(StringRef { offset: offset as u32, len: len as u32 })
+        Ok(StringRef { offset, len: len as u32 })
     }
 
     /// Resolve a StringRef to its `&[u8]`. Returns `Err(InvalidRef)`
     /// when the ref doesn't fall inside the arena's used region.
     pub fn get_bytes(&self, r: StringRef) -> Result<&[u8], ArenaError> {
-        let end = (r.offset as u64).saturating_add(r.len as u64);
+        let end = r.offset.saturating_add(r.len as u64);
         if end > self.header().used_bytes.load(Ordering::Acquire) {
             self.ring_sidecar
                 .push_op(crate::sidecar_ops::string_arena::OP_GET_BYTES, 1);
@@ -646,7 +697,7 @@ mod tests {
         let mut refs: Vec<StringRef> = all.iter().map(|(_, r)| *r).collect();
         refs.sort_by_key(|r| r.offset);
         for w in refs.windows(2) {
-            let r1_end = w[0].offset + w[0].len;
+            let r1_end = w[0].offset + w[0].len as u64;
             assert!(r1_end <= w[1].offset,
                 "ref {:?} overlaps with ref {:?}", w[0], w[1]);
         }
@@ -712,18 +763,19 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
-    /// A StringRef addresses its bytes with a u32 offset, so a capacity
-    /// past that is refused at construction rather than silently
-    /// truncating every ref past the 4 GiB mark into another string's
-    /// bytes. No file is touched: the check precedes the mapping.
+    /// A StringRef addresses its bytes with an OFFSET_BITS offset, so a
+    /// capacity past that is refused at construction rather than silently
+    /// truncating every ref past the ceiling into another string's bytes.
+    /// No file is touched: the check precedes the mapping.
     #[test]
     fn create_refuses_a_capacity_a_ref_cannot_address() {
+        let past = MAX_OFFSET as usize + 1;
         assert!(matches!(
-            SharedStringArena::create(tmp("too-big"), u32::MAX as usize + 1),
+            SharedStringArena::create(tmp("too-big"), past),
             Err(ArenaError::LayoutMismatch),
         ));
         assert!(matches!(
-            SharedStringArena::reset(tmp("too-big-reset"), u32::MAX as usize + 1),
+            SharedStringArena::reset(tmp("too-big-reset"), past),
             Err(ArenaError::LayoutMismatch),
         ));
         assert!(matches!(
@@ -737,9 +789,81 @@ mod tests {
     #[test]
     fn open_refuses_a_capacity_a_ref_cannot_address() {
         assert!(matches!(
-            SharedStringArena::open(tmp("open-too-big"), u32::MAX as usize + 1),
+            SharedStringArena::open(tmp("open-too-big"), MAX_OFFSET as usize + 1),
             Err(ArenaError::LayoutMismatch),
         ));
+    }
+
+    /// The packing is what every process agrees on, so it has to round-trip
+    /// exactly at the extremes of both fields - the places a shift or mask
+    /// off by one bit shows up and nowhere else.
+    #[test]
+    fn a_string_ref_round_trips_at_both_field_ceilings() {
+        for (offset, len) in [
+            (0u64, 0u32),
+            (MAX_OFFSET, MAX_LEN as u32),
+            (MAX_OFFSET, 0),
+            (0, MAX_LEN as u32),
+            (1, 1),
+            (MAX_OFFSET - 1, MAX_LEN as u32 - 1),
+        ] {
+            let r = StringRef { offset, len };
+            let back = StringRef::from_u64(r.to_u64());
+            assert_eq!(back, r, "offset {offset} len {len} did not round-trip");
+        }
+        // The two fields must not bleed into each other: a maximal length
+        // leaves the offset untouched and the reverse.
+        assert_eq!(StringRef { offset: 0, len: MAX_LEN as u32 }.to_u64(), MAX_LEN);
+        assert_eq!(
+            StringRef { offset: MAX_OFFSET, len: 0 }.to_u64(),
+            MAX_OFFSET << LEN_BITS
+        );
+    }
+
+    /// A region written under the previous layout resolves every ref
+    /// wrongly under this one, so opening it must be refused rather than
+    /// read as though the bits meant the same thing. The fixture is a real
+    /// arena file with only its format tag rewritten, so what is refused is
+    /// the layout and not some other corruption.
+    #[test]
+    fn an_old_format_region_is_refused() {
+        let p = tmp("old-format");
+        std::fs::remove_file(&p).ok();
+        {
+            let a = SharedStringArena::create(&p, 1024).unwrap();
+            a.intern("written-under-the-new-layout").unwrap();
+            a.flush().unwrap();
+        }
+        // Stamp the previous generation's tag over the header's magic.
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = OpenOptions::new().write(true).open(&p).unwrap();
+            f.seek(SeekFrom::Start(0)).unwrap();
+            f.write_all(&ARENA_MAGIC_V1.to_le_bytes()).unwrap();
+            f.flush().unwrap();
+        }
+        assert!(
+            matches!(
+                SharedStringArena::open(&p, 1024),
+                Err(ArenaError::LayoutMismatch)
+            ),
+            "an arena tagged with the previous layout must be refused"
+        );
+        // The obtain-on-create path must name the layout too, rather than
+        // spinning to its deadline and blaming an absent creator.
+        let started = std::time::Instant::now();
+        assert!(
+            matches!(
+                SharedStringArena::create(&p, 1024),
+                Err(ArenaError::LayoutMismatch)
+            ),
+            "create must refuse the previous layout, not attach to it"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "create should refuse immediately, not wait out the attach deadline"
+        );
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
