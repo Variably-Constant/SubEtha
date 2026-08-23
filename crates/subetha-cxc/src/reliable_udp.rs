@@ -682,6 +682,13 @@ impl Encoder {
         out
     }
 
+    /// Highest cumulative ack frontier the receiver has reported. Every
+    /// block below it is delivered, so naming one on the wire costs a
+    /// datagram the receiver will refuse.
+    pub fn acked_through(&self) -> u32 {
+        self.acked_through
+    }
+
     /// Number of unacked blocks held for ARQ.
     pub fn pending_len(&self) -> usize {
         self.pending.len()

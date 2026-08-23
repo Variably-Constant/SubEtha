@@ -376,6 +376,10 @@ pub struct ReliableUdpSender {
     /// without overflowing the buffer - so the recovery cooperates with the
     /// bufferbloat pacer instead of dumping a burst that trips it.
     recovery_dgrams: VecDeque<Vec<u8>>,
+    /// Queued recovery datagrams dropped because the peer acknowledged
+    /// their block after they were built. Each one not sent is a datagram
+    /// the peer would have refused as already delivered.
+    recovery_stale_dropped: u64,
     recovery_tokens: f64,
     last_recovery_us: u64,
     /// Until this time (microseconds since `start`) the bufferbloat pacer holds
@@ -708,6 +712,7 @@ impl ReliableUdpSender {
             last_egress_error: None,
             challenge_answer_failures: 0,
             recovery_dgrams: VecDeque::new(),
+            recovery_stale_dropped: 0,
             recovery_tokens: 0.0,
             last_recovery_us: 0,
             recovery_grace_until_us: 0,
@@ -1014,6 +1019,13 @@ impl ReliableUdpSender {
     /// is actually waiting on competes with it for the link.
     pub fn recovery_backlog(&self) -> (usize, u64) {
         (self.recovery_dgrams.len(), self.recovered_blocks)
+    }
+
+    /// Queued recovery datagrams dropped because the peer acknowledged
+    /// their block after they were built. Non-zero means the queue was
+    /// carrying traffic the peer would have refused as already delivered.
+    pub fn recovery_stale_dropped(&self) -> u64 {
+        self.recovery_stale_dropped
     }
 
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
@@ -1406,6 +1418,17 @@ impl ReliableUdpSender {
     /// without the buffer overflow an unpaced dump caused. While draining (and
     /// for a few round trips after) it arms the pacer grace, so the queue this
     /// adds is not mistaken for steady-state bloat.
+    /// Whether a queued recovery datagram names a block the peer has since
+    /// acknowledged. Non-DATA and short datagrams are never stale, so a
+    /// frame this cannot read is sent rather than dropped.
+    fn recovery_dgram_is_stale(dgram: &[u8], acked_through: u32) -> bool {
+        if dgram.len() < DATA_HEADER || dgram[0] != 1 {
+            return false;
+        }
+        let block = u32::from_le_bytes([dgram[1], dgram[2], dgram[3], dgram[4]]);
+        block < acked_through
+    }
+
     fn drain_recovery(&mut self) -> io::Result<()> {
         if self.recovery_dgrams.is_empty() {
             return Ok(());
@@ -1425,6 +1448,14 @@ impl ReliableUdpSender {
             }
             self.recovery_tokens -= size;
             let dgram = self.recovery_dgrams.pop_front().expect("front exists");
+            // The queue holds datagrams built when the gap was enqueued, so a
+            // block acked since then is still sitting in it. Sending it costs
+            // the link a datagram the peer refuses as already delivered, and
+            // it competes with the block that peer is actually waiting on.
+            if Self::recovery_dgram_is_stale(&dgram, self.enc.acked_through()) {
+                self.recovery_stale_dropped += 1;
+                continue;
+            }
             self.send(&dgram)?;
         }
         // Hold the pacer through the resend and a few round trips after, so the
@@ -4480,6 +4511,52 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::mpsc;
     use std::sync::Arc;
+
+    /// The recovery queue holds datagrams built when the gap was enqueued,
+    /// so a block the peer acknowledges afterwards is still sitting in it.
+    /// Draining those costs the link datagrams the peer refuses as already
+    /// delivered, while the block it is waiting on competes with them.
+    ///
+    /// The fixture is real encoder output rather than hand-written bytes,
+    /// so the header layout the predicate reads is the one the wire carries.
+    #[test]
+    fn a_recovery_datagram_for_an_acked_block_is_stale() {
+        let mut enc = Encoder::new(4, 1, 8);
+        let mut pkts = Vec::new();
+        for i in 0..8u64 {
+            pkts.extend(enc.push(&i.to_le_bytes()));
+        }
+        pkts.extend(enc.flush());
+        assert!(!pkts.is_empty(), "the encoder produced no datagrams");
+
+        let block_of = |d: &[u8]| u32::from_le_bytes([d[1], d[2], d[3], d[4]]);
+        let highest = pkts.iter().map(|d| block_of(d)).max().expect("some block");
+        assert!(highest >= 1, "need at least two blocks to have one acked");
+
+        // Nothing acked: every queued datagram is still owed.
+        for d in &pkts {
+            assert!(
+                !ReliableUdpSender::recovery_dgram_is_stale(d, 0),
+                "block {} is stale against an empty ack frontier",
+                block_of(d)
+            );
+        }
+
+        // Acked through `highest`: everything below it is delivered, and the
+        // frontier block itself is NOT - the ack is exclusive.
+        for d in &pkts {
+            let b = block_of(d);
+            assert_eq!(
+                ReliableUdpSender::recovery_dgram_is_stale(d, highest),
+                b < highest,
+                "block {b} against ack frontier {highest}"
+            );
+        }
+
+        // A frame this cannot read is sent rather than dropped.
+        assert!(!ReliableUdpSender::recovery_dgram_is_stale(&[], u32::MAX));
+        assert!(!ReliableUdpSender::recovery_dgram_is_stale(&[1, 0, 0], u32::MAX));
+    }
 
     /// k must fit the u32 shard bitmap: a k > MAX_SHARDS would overflow
     /// `1 << shard_index` and silently corrupt delivery, so bind rejects it.
