@@ -778,6 +778,12 @@ pub struct RejectCounts {
     /// Shard length or codeword shape disagrees with the block it would
     /// join, which symbol-wise FEC cannot mix.
     pub block_shape: u64,
+    /// Lowest and highest block id refused as already delivered. A stalled
+    /// window names which blocks are being re-offered, which separates
+    /// surplus parity on the block just completed from a peer replaying a
+    /// range the window passed long ago.
+    pub delivered_lo: Option<u32>,
+    pub delivered_hi: Option<u32>,
 }
 
 impl RejectCounts {
@@ -1106,6 +1112,12 @@ impl Decoder {
         // late ARQ).
         if block_id < self.next_deliver.load(Ordering::Relaxed) {
             self.rejects.delivered += 1;
+            self.rejects.delivered_lo = Some(
+                self.rejects.delivered_lo.map_or(block_id, |lo| lo.min(block_id)),
+            );
+            self.rejects.delivered_hi = Some(
+                self.rejects.delivered_hi.map_or(block_id, |hi| hi.max(block_id)),
+            );
             return Vec::new();
         }
         // Bound the reassembly window: refuse blocks too far ahead of
