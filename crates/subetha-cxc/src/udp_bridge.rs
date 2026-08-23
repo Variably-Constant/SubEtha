@@ -365,6 +365,10 @@ pub struct ReliableUdpSender {
     retx_egress_ok: u64,
     retx_egress_failed: u64,
     last_egress_error: Option<String>,
+    /// Session challenges this sender could not answer. Answering is the
+    /// proof of admission, so each one is a receiver left refusing every
+    /// datagram this sender goes on to send.
+    challenge_answer_failures: u64,
     /// Proactive-recovery resend queue (datagrams, oldest block first) and its
     /// token bucket. On recovery the whole still-unacked gap is enqueued here
     /// and drained at the item-6 BtlBw rate - the rate that fills the pipe
@@ -701,6 +705,7 @@ impl ReliableUdpSender {
             retx_egress_ok: 0,
             retx_egress_failed: 0,
             last_egress_error: None,
+            challenge_answer_failures: 0,
             recovery_dgrams: VecDeque::new(),
             recovery_tokens: 0.0,
             last_recovery_us: 0,
@@ -980,6 +985,13 @@ impl ReliableUdpSender {
         self.enc.last_nak_and_retx()
     }
 
+    /// Session challenges this sender could not answer. Non-zero means a
+    /// receiver is refusing everything it sends and neither end can say so
+    /// from its own counters alone.
+    pub fn challenge_answer_failures(&self) -> u64 {
+        self.challenge_answer_failures
+    }
+
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
     /// proves the controller dropped FEC fully off the wire (Passthrough) on a
     /// clean link; the second counts blocks that carried parity.
@@ -1172,7 +1184,21 @@ impl ReliableUdpSender {
                             let mut ans = ControlPacket::new();
                             ans.session_response = Some(sc);
                             let wire = encode_control(&ans);
-                            self.sock.send(&wire).ok();
+                            // Answering is the whole proof of admission: a
+                            // challenge this sender cannot answer leaves the
+                            // receiver refusing every datagram it sends, for
+                            // as long as it keeps sending them.
+                            if let Err(e) = self.sock.send(&wire) {
+                                self.challenge_answer_failures += 1;
+                                if self.challenge_answer_failures == 1 {
+                                    eprintln!(
+                                        "subetha: could not answer the session \
+                                         challenge for epoch {}: {e} - this sender \
+                                         will not be admitted",
+                                        sc.epoch,
+                                    );
+                                }
+                            }
                         }
                         // Link-liveness: ANY feedback means the link is alive.
                         // Note whether we were dead; the proactive recovery
