@@ -2285,6 +2285,10 @@ pub struct ReliableUdpReceiver {
     session_changed: bool,
     session_admissions: u64,
     session_admission_failures: u64,
+    /// Challenges armed since this receiver was created. A candidate that
+    /// was never challenged leaves this flat, which is a different fault
+    /// from one challenged and never answered.
+    session_challenges_armed: u64,
     start: Instant,
     /// Active OS path-event observer (this end's route / carrier / MTU
     /// watcher). Reports its egress MTU to the peer in a `Pmtu` frame; its
@@ -3651,6 +3655,7 @@ impl ReliableUdpReceiver {
             session_changed: false,
             session_admissions: 0,
             session_admission_failures: 0,
+            session_challenges_armed: 0,
             start: Instant::now(),
             net_events: NetEventObserver::start(None),
             multi_peer: false,
@@ -3893,6 +3898,7 @@ impl ReliableUdpReceiver {
         // come back a different number than was stored.
         let nonce = (x ^ (x >> 31)) & crate::control_frame::NONCE_MASK;
         self.pending_admissions.insert(epoch, (addr, nonce, Instant::now()));
+        self.session_challenges_armed += 1;
     }
 
     /// (Re)send every outstanding admission challenge.
@@ -4249,6 +4255,15 @@ impl ReliableUdpReceiver {
     /// without the first is what a forged epoch looks like from here.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
         (self.session_admissions, self.session_admission_failures)
+    }
+
+    /// Challenges armed since this receiver was created. Read against
+    /// [`session_adoption_counts`](Self::session_adoption_counts): a
+    /// candidate epoch that raised neither an admission nor a failure was
+    /// either never challenged, which this distinguishes, or is still
+    /// inside its answer window.
+    pub fn session_challenges_armed(&self) -> u64 {
+        self.session_challenges_armed
     }
 }
 

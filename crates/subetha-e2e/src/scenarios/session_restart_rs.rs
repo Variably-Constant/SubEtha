@@ -104,6 +104,7 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     // session no peer here holds, from a socket that answers nothing. This
     // is the reset an off-path attacker would want.
     let (adopted_before, failed_before) = rx.session_adoption_counts();
+    let armed_before = rx.rs_session_challenges_armed();
     forge_unknown_session(port)?;
     let deadline = Instant::now() + FORGERY_SETTLE;
     while Instant::now() < deadline {
@@ -111,6 +112,11 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         sleep(Duration::from_millis(10));
     }
     let (adopted_after, failed_after) = rx.session_adoption_counts();
+    // Whether a challenge was ever armed for the forged epoch. Without
+    // this, a receiver that never noticed the forgery and one that
+    // challenged it and is still inside the answer window report the
+    // same way, and only the first is a defect.
+    let armed_after = rx.rs_session_challenges_armed();
     require(
         adopted_after == adopted_before,
         format!(
@@ -122,11 +128,13 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         failed_after > failed_before,
         format!(
             "the forgery was not challenged ({failed_before} -> {failed_after} \
-             unanswered); the receiver is not exercising the path check"
+             unanswered, challenges armed {armed_before} -> {armed_after}); the \
+             receiver is not exercising the path check"
         ),
     )?;
     println!(
-        "   parent: forged epoch refused - adoptions {adopted_after}, unanswered {failed_after}"
+        "   parent: forged epoch refused - adoptions {adopted_after}, unanswered \
+         {failed_after}, challenges armed {armed_after}"
     );
 
     first.kill()?;

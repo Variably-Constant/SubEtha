@@ -1716,6 +1716,16 @@ impl UnifiedSensReceiver {
         (ra + sa, rf + sf)
     }
 
+    /// Admission challenges the block-RS receiver has armed. Read against
+    /// [`session_adoption_counts`](Self::session_adoption_counts): a
+    /// candidate epoch that raised neither an admission nor a failure was
+    /// either never challenged, which this distinguishes, or is still
+    /// inside its answer window. RS-only, so it is not summed with the RLC
+    /// side, which has no counterpart.
+    pub fn rs_session_challenges_armed(&self) -> u64 {
+        self.rs.session_challenges_armed()
+    }
+
     /// The bound local address.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.real.local_addr()
