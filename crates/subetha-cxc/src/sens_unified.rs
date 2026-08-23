@@ -706,6 +706,10 @@ pub struct UnifiedSensSender {
     /// Cumulative items handed to the application across both codes (the switch
     /// boundary the receiver keys on).
     items_total: u64,
+    /// Code switches whose announcement reached the peer on no attempt. The
+    /// switch still applies, so each one is the two ends disagreeing about
+    /// which code is live.
+    code_switch_announce_failures: u64,
     /// Cumulative entries into `send_item`, counted before any other
     /// statement in the method.
     send_item_calls: u64,
@@ -876,6 +880,7 @@ impl UnifiedSensSender {
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
+            code_switch_announce_failures: 0,
             send_item_calls: 0,
             last_sample: Instant::now(),
             started: Instant::now(),
@@ -964,6 +969,13 @@ impl UnifiedSensSender {
     /// cannot tell an egress failure from network loss.
     pub fn rs_egress_counts(&self) -> (u64, u64, Option<&str>) {
         self.rs.egress_counts()
+    }
+
+    /// Code switches whose announcement reached the peer on no attempt.
+    /// Non-zero means this sender changed code without its peer being told,
+    /// so the two ends disagree about which code is live.
+    pub fn code_switch_announce_failures(&self) -> u64 {
+        self.code_switch_announce_failures
     }
 
     /// `(last NAK received, last block id stamped on a retransmit)` for the
@@ -1182,6 +1194,35 @@ impl UnifiedSensSender {
         }
     }
 
+    /// Send the code-switch announcement its repeat count of times, and
+    /// report how many left the socket.
+    ///
+    /// The switch is applied whether or not the peer hears it, because the
+    /// sender cannot stay on a code it has already drained. Every repeat
+    /// failing means the two ends are about to disagree on which code is
+    /// live, so it is counted and named rather than discarded: from the
+    /// receiver's side the stream simply stops making sense.
+    fn announce_switch(&mut self, frame: &[u8]) {
+        let mut sent = 0usize;
+        for _ in 0..CODE_SWITCH_REPEATS {
+            if self.real.send_to(frame, self.peer).is_ok() {
+                sent += 1;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if sent == 0 {
+            self.code_switch_announce_failures += 1;
+            if self.code_switch_announce_failures == 1 {
+                eprintln!(
+                    "subetha: no code-switch announcement reached {} in \
+                     {CODE_SWITCH_REPEATS} attempts - this sender is changing code \
+                     and its peer has not been told",
+                    self.peer,
+                );
+            }
+        }
+    }
+
     /// RLC -> RS handover by RESEND (not drain): announce the boundary RLC has
     /// delivered to, switch, and resend the un-acked tail `[boundary,
     /// items_total)` over RS from the replay ring, in order. RS is reliable, so
@@ -1191,10 +1232,7 @@ impl UnifiedSensSender {
     fn switch_rlc_to_rs(&mut self) -> io::Result<()> {
         let boundary = self.rlc.acked_through() as u64;
         let frame = encode_code_switch(boundary, SensCode::Rs);
-        for _ in 0..CODE_SWITCH_REPEATS {
-            self.real.send_to(&frame, self.peer).ok();
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        self.announce_switch(&frame);
         self.active = SensCode::Rs;
         if boundary >= self.ring_base {
             let start = (boundary - self.ring_base) as usize;
@@ -1321,10 +1359,7 @@ impl UnifiedSensSender {
             }
         }
         let frame = encode_code_switch(self.items_total, to);
-        for _ in 0..CODE_SWITCH_REPEATS {
-            self.real.send_to(&frame, self.peer).ok();
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        self.announce_switch(&frame);
         self.active = to;
         // Returning to RLC: another code carried [old RLC frontier, items_total),
         // so RLC's source-id stream diverged from the global index. Re-base it to
