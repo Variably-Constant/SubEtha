@@ -1939,6 +1939,11 @@ pub struct SensOMaticRlcReceiver {
     session_changed: bool,
     session_admissions: u64,
     session_admission_failures: u64,
+    /// Per-session service errors. Servicing a session sends its feedback,
+    /// so each failure is a peer that was not told what this receiver is
+    /// missing. One session's failure must not abort the others, which is
+    /// why it does not propagate, but it is counted rather than discarded.
+    session_service_errors: u64,
     /// First kernel RX timestamp (nanoseconds, `SO_TIMESTAMPNS`) seen, so the
     /// per-packet arrival the congestion detectors read is a small offset from
     /// it. `None` until the first stamped datagram (or always, where the kernel
@@ -2723,6 +2728,7 @@ impl SensOMaticRlcReceiver {
             pending_admissions: HashMap::new(),
             session_ceiling: None,
             session_refusals: 0,
+            session_service_errors: 0,
             challenge_seq: 0,
             session_changed: false,
             session_admissions: 0,
@@ -2930,7 +2936,15 @@ impl SensOMaticRlcReceiver {
             if let Some(mut s) = self.sessions.remove(&cid) {
                 let r = s.service(&mut out);
                 self.sessions.insert(cid, s);
-                r.ok();
+                if let Err(e) = r {
+                    self.session_service_errors += 1;
+                    if self.session_service_errors == 1 {
+                        eprintln!(
+                            "subetha: RLC session {cid} could not be serviced: {e} - \
+                             its peer has not been told what this receiver is missing"
+                        );
+                    }
+                }
             }
         }
         // Idle backoff: the socket is non-blocking, so when nothing arrived and
@@ -3020,6 +3034,13 @@ impl SensOMaticRlcReceiver {
     /// rising without the first is what a forged connection id looks like from
     /// here. Use [`session_admissions_for`](Self::session_admissions_for) to
     /// attribute an admission to one connection id.
+    /// Per-session service errors. Non-zero means a peer was not told what
+    /// this receiver is missing, which from its side is indistinguishable
+    /// from a receiver that stopped asking.
+    pub fn session_service_errors(&self) -> u64 {
+        self.session_service_errors
+    }
+
     pub fn session_adoption_counts(&self) -> (u64, u64) {
         (self.session_admissions, self.session_admission_failures)
     }
