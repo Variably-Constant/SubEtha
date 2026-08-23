@@ -3969,23 +3969,35 @@ impl ReliableUdpReceiver {
         tagged: &mut Vec<(u32, Vec<u8>)>,
         pmtu: u16,
     ) -> io::Result<bool> {
+        // Drain everything already available, not one datagram per call.
+        // The single-peer fast paths above read a whole burst per call (GRO,
+        // recvmmsg, WSARecvMsg); taking one datagram here made this path
+        // drain slower than a peer under ARQ can send, so the backlog grew
+        // and the decoder worked further and further into the past - it
+        // never reached the block it was asking for, so it asked again and
+        // the backlog grew faster. The loop ends when the source is empty,
+        // which bounds it by what has already arrived rather than by a
+        // count chosen here.
         let mut buf = [0u8; RECV_BUF];
-        match self.sock.recv_from(&mut buf) {
-            Ok((n, src)) => {
-                self.route_datagram(&buf[..n], src, tagged, pmtu);
-                Ok(false)
+        let mut read_any = false;
+        loop {
+            match self.sock.recv_from(&mut buf) {
+                Ok((n, src)) => {
+                    self.route_datagram(&buf[..n], src, tagged, pmtu);
+                    read_any = true;
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    return Ok(!read_any);
+                }
+                Err(e) => return Err(e),
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::ConnectionReset
-                ) =>
-            {
-                Ok(true)
-            }
-            Err(e) => Err(e),
         }
     }
 
