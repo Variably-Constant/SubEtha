@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 
 use crate::dgram::{new_demux_queue, DemuxQueue, DgramSock};
 use crate::sens_rlc::{SensOMaticRlcReceiver, SensOMaticRlcSender};
+use crate::reliable_udp::RejectCounts;
 use crate::udp_bridge::{ReliableUdpReceiver, ReliableUdpSender};
 
 /// Which erasure code the unified transport is currently carrying.
@@ -1634,21 +1635,27 @@ impl UnifiedSensReceiver {
         rlc || rs
     }
 
-    /// `(adopted, challenges_that_went_unanswered)` for replacement
     /// The RLC connection ids holding a decode window, in first-seen order.
     /// Empty before any peer is seen.
     pub fn live_rlc_sessions(&self) -> Vec<u64> {
         self.rlc.live_sessions()
     }
 
-    /// The block-RS session epochs holding a decode window, in first-seen
-    /// order.
     /// One block-RS window's `(next_needed, highest_seen)` block ids, the
     /// peer of [`rlc_session_frontier`](Self::rlc_session_frontier).
     /// `highest_seen` ahead of `next_needed` is a window stalled on a block
     /// behind its frontier.
     pub fn rs_session_frontier(&self, epoch: u32) -> Option<(u32, u32, u64, Option<SocketAddr>)> {
         self.rs.session_frontier(epoch)
+    }
+
+    /// One block-RS window's ingest refusals by reason. Read beside
+    /// [`rs_session_frontier`](Self::rs_session_frontier): a frontier that
+    /// is not moving while these climb names the gate holding the shards
+    /// out, which is the difference between a shard that never arrived and
+    /// one that arrived and was turned away.
+    pub fn rs_session_rejects(&self, epoch: u32) -> Option<RejectCounts> {
+        self.rs.session_rejects(epoch)
     }
 
     /// Epochs under an admission challenge, with the address challenged.
@@ -1658,6 +1665,8 @@ impl UnifiedSensReceiver {
         self.rs.pending_admissions()
     }
 
+    /// The block-RS session epochs holding a decode window, in first-seen
+    /// order.
     pub fn live_rs_sessions(&self) -> Vec<u32> {
         self.rs.live_sessions()
     }
@@ -1698,6 +1707,7 @@ impl UnifiedSensReceiver {
         self.rlc.path_validation_failures()
     }
 
+    /// `(adopted, challenges_that_went_unanswered)` for replacement
     /// sessions, summed over both codes. A refused forgery raises the
     /// second without the first.
     pub fn session_adoption_counts(&self) -> (u64, u64) {

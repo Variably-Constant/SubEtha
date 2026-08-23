@@ -721,6 +721,39 @@ impl RxBlock {
     }
 }
 
+/// Datagrams a [`Decoder`] refused at ingest, one counter per reason.
+///
+/// A shard that reaches the process and is then dropped leaves no other
+/// trace: the window simply does not advance. These counters are that
+/// trace. A stalled window whose `epoch` count is climbing is being fed
+/// by a peer whose session stamp disagrees with the one adopted; one
+/// whose `delivered` count is climbing is being fed blocks it has
+/// already emitted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RejectCounts {
+    /// Not a DATA datagram, or shorter than the fixed header.
+    pub malformed: u64,
+    /// Carries a session epoch other than the one this decoder holds.
+    pub epoch: u64,
+    /// Header shard geometry is unusable: no data shards, more shards
+    /// than the codeword allows, or an index outside the codeword.
+    pub shape: u64,
+    /// Names a block already delivered to the caller.
+    pub delivered: u64,
+    /// Names a block beyond the reassembly window's ceiling.
+    pub window: u64,
+    /// Shard length or codeword shape disagrees with the block it would
+    /// join, which symbol-wise FEC cannot mix.
+    pub block_shape: u64,
+}
+
+impl RejectCounts {
+    /// Every refusal, summed.
+    pub fn total(&self) -> u64 {
+        self.malformed + self.epoch + self.shape + self.delivered + self.window + self.block_shape
+    }
+}
+
 /// Receiver side: reassembles blocks, FEC-recovers losses, emits items
 /// in order, and produces ARQ feedback.
 pub struct Decoder {
@@ -753,6 +786,11 @@ pub struct Decoder {
     /// excludes from the loss estimate. A nonzero value on a reorder-carrying
     /// link is the guard firing on real reordered traffic. Diagnostics.
     false_recoveries: u64,
+    /// Every datagram this decoder refused, tallied by the reason it was
+    /// refused. Each refusal site in [`ingest`](Self::ingest) advances
+    /// exactly one of these, so a window that is not advancing names the
+    /// gate that is holding its shards out.
+    rejects: RejectCounts,
     /// Max blocks retained before forcing progress / NAK.
     window_cap: usize,
     /// Timing estimator fed by sender heartbeats (OWD trend, jitter).
@@ -825,6 +863,7 @@ impl Decoder {
             total_missing: 0,
             peak_loss: 0,
             false_recoveries: 0,
+            rejects: RejectCounts::default(),
             window_cap: window_cap.max(1),
             temporal: TemporalSensor::default(),
             loss_class: LossClassSensor::new(),
@@ -905,6 +944,13 @@ impl Decoder {
         self.session_epoch
     }
 
+    /// Datagrams refused at ingest since this decoder was created, by
+    /// reason. A window whose frontier is not advancing while these climb
+    /// is being fed shards it is choosing not to take.
+    pub fn rejects(&self) -> RejectCounts {
+        self.rejects
+    }
+
     /// Record an epoch learned off the data path, from the heartbeat
     /// announce. Recording is not adopting: the caller still challenges it.
     pub fn note_unknown_epoch(&mut self, epoch: u32) {
@@ -966,6 +1012,7 @@ impl Decoder {
 
     fn ingest(&mut self, buf: &[u8], recv_us: Option<u64>) -> Vec<Vec<u8>> {
         if !is_data(buf) || buf.len() < DATA_HEADER {
+            self.rejects.malformed += 1;
             return Vec::new();
         }
         let block_id = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
@@ -989,6 +1036,7 @@ impl Decoder {
             Some(current) if current == epoch => {}
             Some(_) => {
                 self.unknown_epoch = Some(epoch);
+                self.rejects.epoch += 1;
                 return Vec::new();
             }
         }
@@ -997,6 +1045,7 @@ impl Decoder {
         // valid shape (the block completes when all k data shards arrive, via
         // ARQ if any drop), so it is NOT rejected here.
         if k == 0 || k + r > MAX_SHARDS || shard_index >= k + r {
+            self.rejects.shape += 1;
             return Vec::new();
         }
         // Tower outer-parity blocks live in a separate id space; they are
@@ -1023,6 +1072,7 @@ impl Decoder {
         // Ignore packets for already-delivered blocks (duplicates /
         // late ARQ).
         if block_id < self.next_deliver.load(Ordering::Relaxed) {
+            self.rejects.delivered += 1;
             return Vec::new();
         }
         // Bound the reassembly window: refuse blocks too far ahead of
@@ -1032,6 +1082,7 @@ impl Decoder {
         // hostile peer - it caps memory either way.
         let next = self.next_deliver.load(Ordering::Relaxed);
         if block_id >= next.saturating_add(self.window_cap as u32) {
+            self.rejects.window += 1;
             return Vec::new();
         }
         if block_id > self.highest_seen {
@@ -1045,6 +1096,7 @@ impl Decoder {
         // FEC operates symbol-wise across equal-length shards; reject a
         // packet whose shape disagrees with the block it joins.
         if blk.shard_len != shard_len || blk.k != k || blk.r != r {
+            self.rejects.block_shape += 1;
             return self.drain_in_order();
         }
         let bit = 1u32 << shard_index;

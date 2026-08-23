@@ -4122,6 +4122,14 @@ impl ReliableUdpReceiver {
         Some((s.dec.next_needed(), s.dec.highest_seen(), s.recv_count(), s.peer))
     }
 
+    /// One window's ingest refusals by reason, or `None` when no window
+    /// holds that epoch. Read beside
+    /// [`session_frontier`](Self::session_frontier): a frontier that is not
+    /// moving while these climb names the gate holding the shards out.
+    pub fn session_rejects(&self, epoch: u32) -> Option<crate::reliable_udp::RejectCounts> {
+        Some(self.sessions.get(&epoch)?.dec.rejects())
+    }
+
     /// Epochs currently under an admission challenge, with the address each
     /// was challenged at. A restarted peer sits here until its nonce comes
     /// back, and every datagram it sends meanwhile is refused.

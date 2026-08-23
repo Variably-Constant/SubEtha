@@ -149,9 +149,14 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
             // `peer` is the address this window aims its ACKs and NAKs at.
             // A completed window pointing at the RESTARTED sender is the
             // rebinding that would free that sender's pending blocks.
+            // A window that ingested datagrams without advancing either
+            // took them and could not use them, or refused them at a gate.
+            // The reject tally names which gate, so a stall separates a
+            // shard that never arrived from one turned away on arrival.
             Some((next, high, recv, peer)) => format!(
                 "epoch {e}: next_needed {next}, highest_seen {high}, \
-                 datagrams_in {recv}, peer {peer:?}"
+                 datagrams_in {recv}, peer {peer:?}, rejects {:?}",
+                rx.rs_session_rejects(*e)
             ),
             None => format!("epoch {e}: no window"),
         })
