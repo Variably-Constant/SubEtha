@@ -925,7 +925,9 @@ impl UnifiedSensSender {
     /// oldest_pending, pending_len, unservable_naks, tail_probe_naks)`.
     /// Splits a receiver stall between a block never produced, one still
     /// held for ARQ, and one no longer held by anybody.
-    pub fn rs_tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64) {
+    pub fn rs_tx_probe(
+        &self,
+    ) -> (u32, Option<u32>, usize, u64, u64, (u64, Option<u32>, Option<u32>)) {
         self.rs.tx_probe()
     }
 

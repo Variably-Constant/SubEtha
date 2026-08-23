@@ -932,13 +932,14 @@ impl ReliableUdpSender {
     /// receiver wants), "produced and still held for ARQ"
     /// (`oldest_pending` naming it), and "held by nobody"
     /// (`unservable_naks` climbing).
-    pub fn tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64) {
+    pub fn tx_probe(&self) -> (u32, Option<u32>, usize, u64, u64, (u64, Option<u32>, Option<u32>)) {
         (
             self.enc.next_block_id(),
             self.enc.oldest_pending(),
             self.enc.pending_len(),
             self.enc.unservable_naks(),
             self.enc.tail_probe_naks(),
+            self.enc.retx_range(),
         )
     }
 

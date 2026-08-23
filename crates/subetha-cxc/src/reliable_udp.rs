@@ -229,6 +229,12 @@ pub struct Encoder {
     /// which no longer exists to be resent because it was never produced.
     /// The receiver's tail drive raises this on a fully delivered stream.
     tail_probe_naks: u64,
+    /// Retransmit datagrams put on the wire, and the lowest and highest
+    /// block id among them. Read against the receiver's refusal range: the
+    /// two naming disjoint blocks means what left here is not what arrived.
+    retx_sent: u64,
+    retx_lo: Option<u32>,
+    retx_hi: Option<u32>,
     /// Highest `ack_through` reported by the receiver; below this every
     /// block is delivered.
     acked_through: u32,
@@ -291,6 +297,9 @@ impl Encoder {
             unservable_naks: 0,
             last_unservable_nak: None,
             tail_probe_naks: 0,
+            retx_sent: 0,
+            retx_lo: None,
+            retx_hi: None,
             acked_through: 0,
             flow_window: 256,
             staged: Vec::with_capacity(k),
@@ -601,6 +610,15 @@ impl Encoder {
                                 FLAG_RETRANSMIT,
                                 self.epoch,
                             ));
+                            self.retx_sent += 1;
+                            self.retx_lo = Some(
+                                self.retx_lo
+                                    .map_or(fb.nak_block, |lo| lo.min(fb.nak_block)),
+                            );
+                            self.retx_hi = Some(
+                                self.retx_hi
+                                    .map_or(fb.nak_block, |hi| hi.max(fb.nak_block)),
+                            );
                         }
                     }
                 }
@@ -671,6 +689,14 @@ impl Encoder {
     /// serves no retransmit is countable rather than silent.
     pub fn tail_probe_naks(&self) -> u64 {
         self.tail_probe_naks
+    }
+
+    /// `(retransmits_sent, lowest_block, highest_block)` put on the wire in
+    /// answer to NAKs. Compared with the receiver's refusal range, this
+    /// says whether the datagrams a stalled window sees are the ones this
+    /// encoder emitted.
+    pub fn retx_range(&self) -> (u64, Option<u32>, Option<u32>) {
+        (self.retx_sent, self.retx_lo, self.retx_hi)
     }
 
     /// The oldest unacked block id - the one the receiver's in-order frontier
