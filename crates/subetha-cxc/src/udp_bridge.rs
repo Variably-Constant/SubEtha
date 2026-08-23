@@ -993,6 +993,20 @@ impl ReliableUdpSender {
         self.challenge_answer_failures
     }
 
+    /// `(link_dead, dead_episodes, probes_sent, block_being_probed)`. The
+    /// liveness probe resends the oldest unacked block on its own cadence,
+    /// independently of the NAK path, so a receiver can be fed a block it
+    /// already has by a sender whose retransmit counters name a different
+    /// one entirely.
+    pub fn liveness_probe(&self) -> (bool, u64, u64, Option<u32>) {
+        (
+            self.link_dead,
+            self.dead_episodes,
+            self.probes_sent,
+            self.enc.oldest_pending(),
+        )
+    }
+
     /// `(passthrough_blocks, fec_blocks)` sealed so far. A nonzero first value
     /// proves the controller dropped FEC fully off the wire (Passthrough) on a
     /// clean link; the second counts blocks that carried parity.

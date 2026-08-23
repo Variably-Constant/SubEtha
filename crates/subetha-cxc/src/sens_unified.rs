@@ -984,6 +984,13 @@ impl UnifiedSensSender {
         self.rs.last_nak_and_retx()
     }
 
+    /// `(link_dead, dead_episodes, probes_sent, block_being_probed)` for the
+    /// block-RS sender. The liveness probe resends the oldest unacked block
+    /// on its own cadence, independently of the NAK path.
+    pub fn rs_liveness_probe(&self) -> (bool, u64, u64, Option<u32>) {
+        self.rs.liveness_probe()
+    }
+
     /// The RLC sender's transmit-side probe: `(last_sid,
     /// wire_datagrams, acked_through, outstanding)`. Splits a stall
     /// between "items never packed" (`last_sid` frozen), "packed but

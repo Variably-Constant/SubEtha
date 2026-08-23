@@ -361,10 +361,12 @@ fn sender(args: &[String]) -> Result<(), BoxErr> {
         // produced and no NAK can ever be served.
         println!(
             "   sender {tag}: round {round}, datagrams sent {sent}, fed back \
-             {fed_back}, tx probe {:?}, egress {:?}, last (nak, retx) {:?}",
+             {fed_back}, tx probe {:?}, egress {:?}, last (nak, retx) {:?}, \
+             liveness {:?}",
             tx.rs_tx_probe(),
             tx.rs_egress_counts(),
             tx.rs_last_nak_and_retx(),
+            tx.rs_liveness_probe(),
         );
         drain(&mut tx, tag, round);
         sleep(Duration::from_millis(10));
