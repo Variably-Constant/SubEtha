@@ -17,6 +17,7 @@
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use subetha_cxc::reliable_udp::{DATA_HEADER, EPOCH_OFFSET};
 use subetha_cxc::sens_unified::{
     CodePolicy, SensCode, UnifiedConfig, UnifiedSensReceiver, UnifiedSensSender,
 };
@@ -37,18 +38,15 @@ fn config() -> UnifiedConfig {
 /// provokes has time to go unanswered and be retired.
 const FORGERY_SETTLE: Duration = Duration::from_millis(1500);
 
-/// Wire layout of a block-RS DATA datagram, restated because the forgery
-/// case builds one from outside the crate. Drift here makes the forged
-/// datagram implausible, which is why the case also asserts a challenge
-/// was issued rather than only that nothing was adopted.
 /// One window's `(next_needed, highest_seen, datagrams_in)` at an instant,
 /// so two samples a second apart give the rate rather than the lifetime
 /// total.
 type WindowSample = (u32, u32, u64);
 
+/// Packet type byte of a block-RS DATA datagram. The forgery case builds
+/// one from outside the crate; the offsets it needs come from the crate's
+/// own constants so the forged datagram cannot drift out of shape.
 const PKT_DATA: u8 = 1;
-const RS_DATA_HEADER: usize = 13;
-const RS_EPOCH_OFFSET: usize = 9;
 
 /// Send datagrams under an epoch no peer here holds, from a socket that
 /// is dropped without answering anything.
@@ -59,12 +57,12 @@ const RS_EPOCH_OFFSET: usize = 9;
 fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
     let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let target = format!("127.0.0.1:{port}");
-    let mut pkt = vec![0u8; RS_DATA_HEADER + SYMBOL_LEN];
+    let mut pkt = vec![0u8; DATA_HEADER + SYMBOL_LEN];
     pkt[0] = PKT_DATA;
     pkt[5] = 0; // shard index
     pkt[6] = 4; // k
     pkt[7] = 2; // r
-    pkt[RS_EPOCH_OFFSET..RS_EPOCH_OFFSET + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    pkt[EPOCH_OFFSET..EPOCH_OFFSET + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
     for block in 0..4u32 {
         pkt[1..5].copy_from_slice(&block.to_le_bytes());
         sock.send_to(&pkt, &target)?;
