@@ -210,10 +210,29 @@ impl FrameRegion {
     pub fn create_or_open_shm(
         name: &str, block_size: usize, block_count: usize,
     ) -> Result<Self, RingError> {
+        Self::create_or_open_shm_in(
+            name, block_size, block_count, crate::shm_file::ShmNamespace::Session,
+        )
+    }
+
+    /// As [`create_or_open_shm`](Self::create_or_open_shm), naming the
+    /// region in `namespace`.
+    ///
+    /// A ring creates its payload region on the first oversized frame
+    /// rather than at construction, so the namespace its backings were
+    /// named in has to reach this call for the region to land beside
+    /// them. A region named session-scoped behind machine-scoped
+    /// backings splits a ring that has worked until the moment someone
+    /// sends a payload too large to inline.
+    pub fn create_or_open_shm_in(
+        name: &str, block_size: usize, block_count: usize,
+        namespace: crate::shm_file::ShmNamespace,
+    ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
         let total = frame_region_file_size(block_size, block_count);
-        let mut shm = crate::shm_file::ShmFile::create_or_open_named(name, total)
-            .map_err(|_| RingError::LayoutMismatch)?;
+        let mut shm =
+            crate::shm_file::ShmFile::create_or_open_named_in(name, total, namespace)
+                .map_err(|_| RingError::LayoutMismatch)?;
         if shm.len() < total {
             return Err(RingError::LayoutMismatch);
         }

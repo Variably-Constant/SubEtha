@@ -197,8 +197,24 @@ impl PeerDirectory {
     /// initialized only when its magic is absent, so racing attachers
     /// never wipe live claims.
     pub fn create_or_open_shm(name: &str) -> Result<Self, RingError> {
-        let mut shm = crate::shm_file::ShmFile::create_or_open_named(
-            name, peer_directory_size(),
+        Self::create_or_open_shm_in(name, crate::shm_file::ShmNamespace::Session)
+    }
+
+    /// As [`create_or_open_shm`](Self::create_or_open_shm), naming the
+    /// region in `namespace`.
+    ///
+    /// A directory carries the slot claims and the published ring count,
+    /// so it belongs in the same namespace as the ring backings it
+    /// describes. Backings named machine-wide with a session-scoped
+    /// directory leave each side reading its own copy: both creates
+    /// succeed, neither sees the other's claims, and the published count
+    /// stays zero.
+    pub fn create_or_open_shm_in(
+        name: &str,
+        namespace: crate::shm_file::ShmNamespace,
+    ) -> Result<Self, RingError> {
+        let mut shm = crate::shm_file::ShmFile::create_or_open_named_in(
+            name, peer_directory_size(), namespace,
         ).map_err(|e| RingError::IoError(e.kind()))?;
         if shm.len() < peer_directory_size() {
             return Err(RingError::LayoutMismatch);

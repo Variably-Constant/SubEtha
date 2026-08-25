@@ -223,7 +223,11 @@ impl subetha_sidecar::AdaptiveInstance for AdaptiveRing {
 enum BackingId {
     Anon,
     File { prefix: std::path::PathBuf, created: bool },
-    Shm { prefix: String },
+    /// Named shm. Carries the namespace as well as the prefix: the
+    /// ordering and payload regions are created after construction, so
+    /// a namespace held only in a constructor argument is gone by the
+    /// time they are named.
+    Shm { prefix: String, ns: crate::shm_file::ShmNamespace },
 }
 
 /// Ordering state attached to a stamped ring: the shared region
@@ -644,6 +648,35 @@ impl AdaptiveRing {
         max_consumers: usize,
         capacity: usize,
     ) -> Result<Self, RingError> {
+        Self::create_shmfs_in(
+            name_prefix,
+            max_producers,
+            max_consumers,
+            capacity,
+            crate::shm_file::ShmNamespace::Session,
+        )
+    }
+
+    /// As [`create_shmfs`](Self::create_shmfs), naming every region in
+    /// `namespace`.
+    ///
+    /// [`ShmNamespace::Machine`](crate::shm_file::ShmNamespace::Machine)
+    /// is what a ring shared between Windows sessions needs, such as a
+    /// service in session 0 and its interactive clients. The peer that
+    /// attaches must pass the same namespace to
+    /// [`open_shmfs_in`](Self::open_shmfs_in): a machine-scoped create
+    /// and a session-scoped open both succeed and resolve different
+    /// regions, so the two never meet.
+    ///
+    /// The namespace is retained, so the ordering and payload regions
+    /// this ring creates later land beside its backings.
+    pub fn create_shmfs_in(
+        name_prefix: &str,
+        max_producers: usize,
+        max_consumers: usize,
+        capacity: usize,
+        namespace: crate::shm_file::ShmNamespace,
+    ) -> Result<Self, RingError> {
         assert!(max_producers >= 1, "max_producers must be >= 1");
         assert!(max_consumers >= 1, "max_consumers must be >= 1");
 
@@ -651,16 +684,16 @@ impl AdaptiveRing {
         let vyukov_size = crate::shared_ring::ring_file_size(capacity);
 
         // SPSC backing.
-        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named(
-            &format!("{name_prefix}_spsc"), spsc_size,
+        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named_in(
+            &format!("{name_prefix}_spsc"), spsc_size, namespace,
         ).map_err(|_| RingError::PayloadTooLarge)?;
         let spsc = Arc::new(SpscRingCore::create_from_shm(spsc_shm, capacity)?);
 
         // MPSC backings.
         let mut mpsc_rings = Vec::with_capacity(max_producers);
         for i in 0..max_producers {
-            let shm = crate::shm_file::ShmFile::create_or_open_named(
-                &format!("{name_prefix}_mpsc_{i}"), spsc_size,
+            let shm = crate::shm_file::ShmFile::create_or_open_named_in(
+                &format!("{name_prefix}_mpsc_{i}"), spsc_size, namespace,
             ).map_err(|_| RingError::PayloadTooLarge)?;
             mpsc_rings.push(Arc::new(SpscRingCore::create_from_shm(shm, capacity)?));
         }
@@ -672,8 +705,8 @@ impl AdaptiveRing {
         // MPMC backings (one ring per producer; consumers partition).
         let mut mpmc_rings = Vec::with_capacity(max_producers);
         for i in 0..max_producers {
-            let shm = crate::shm_file::ShmFile::create_or_open_named(
-                &format!("{name_prefix}_mpmc_{i}"), spsc_size,
+            let shm = crate::shm_file::ShmFile::create_or_open_named_in(
+                &format!("{name_prefix}_mpmc_{i}"), spsc_size, namespace,
             ).map_err(|_| RingError::PayloadTooLarge)?;
             mpmc_rings.push(Arc::new(SpscRingCore::create_from_shm(shm, capacity)?));
         }
@@ -683,13 +716,13 @@ impl AdaptiveRing {
         });
 
         // Vyukov backing.
-        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named(
-            &format!("{name_prefix}_vyukov"), vyukov_size,
+        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named_in(
+            &format!("{name_prefix}_vyukov"), vyukov_size, namespace,
         ).map_err(|_| RingError::PayloadTooLarge)?;
         let vyukov = Arc::new(SharedRing::create_from_shm(vyukov_shm, capacity)?);
 
-        let directory = Arc::new(PeerDirectory::create_or_open_shm(
-            &format!("{name_prefix}_peers"),
+        let directory = Arc::new(PeerDirectory::create_or_open_shm_in(
+            &format!("{name_prefix}_peers"), namespace,
         )?);
         directory.publish_rings(max_producers);
 
@@ -707,7 +740,7 @@ impl AdaptiveRing {
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
-            backing_id: BackingId::Shm { prefix: name_prefix.to_owned() },
+            backing_id: BackingId::Shm { prefix: name_prefix.to_owned(), ns: namespace },
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
@@ -718,7 +751,7 @@ impl AdaptiveRing {
     /// [`create_shmfs`](Self::create_shmfs).
     ///
     /// The critical difference from `create_shmfs`: this validates each
-    /// backing's magic and attaches WITHOUT re-initialising the layout,
+    /// backing's magic and attaches WITHOUT re-initializing the layout,
     /// so a snapshot the creator already enqueued survives the attach.
     /// (`create_shmfs` unconditionally re-lays-out every backing, which
     /// zeroes any data already in the region - correct for the creator,
@@ -738,6 +771,30 @@ impl AdaptiveRing {
         max_consumers: usize,
         expected_capacity: usize,
     ) -> Result<Self, RingError> {
+        Self::open_shmfs_in(
+            name_prefix,
+            max_producers,
+            max_consumers,
+            expected_capacity,
+            crate::shm_file::ShmNamespace::Session,
+        )
+    }
+
+    /// As [`open_shmfs`](Self::open_shmfs), resolving every region in
+    /// `namespace`.
+    ///
+    /// This must match the namespace the creator passed to
+    /// [`create_shmfs_in`](Self::create_shmfs_in). A mismatch resolves a
+    /// different set of regions, and because these are create-or-open
+    /// names the attach SUCCEEDS against empty regions of its own rather
+    /// than reporting that the creator's ring was not found.
+    pub fn open_shmfs_in(
+        name_prefix: &str,
+        max_producers: usize,
+        max_consumers: usize,
+        expected_capacity: usize,
+        namespace: crate::shm_file::ShmNamespace,
+    ) -> Result<Self, RingError> {
         assert!(max_producers >= 1, "max_producers must be >= 1");
         assert!(max_consumers >= 1, "max_consumers must be >= 1");
 
@@ -748,22 +805,22 @@ impl AdaptiveRing {
         // magic is absent, so attaching never wipes the creator's live
         // claims; its published count is how many per-producer rings
         // really exist (the creator's hint may have grown since).
-        let directory = Arc::new(PeerDirectory::create_or_open_shm(
-            &format!("{name_prefix}_peers"),
+        let directory = Arc::new(PeerDirectory::create_or_open_shm_in(
+            &format!("{name_prefix}_peers"), namespace,
         )?);
         let n_rings = directory.published().max(1);
 
         // SPSC backing - attach, validate magic, NO re-init.
-        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named(
-            &format!("{name_prefix}_spsc"), spsc_size,
+        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named_in(
+            &format!("{name_prefix}_spsc"), spsc_size, namespace,
         ).map_err(|_| RingError::PayloadTooLarge)?;
         let spsc = Arc::new(SpscRingCore::open_from_shm(spsc_shm, expected_capacity)?);
 
         // MPSC backings.
         let mut mpsc_rings = Vec::with_capacity(n_rings);
         for i in 0..n_rings {
-            let shm = crate::shm_file::ShmFile::create_or_open_named(
-                &format!("{name_prefix}_mpsc_{i}"), spsc_size,
+            let shm = crate::shm_file::ShmFile::create_or_open_named_in(
+                &format!("{name_prefix}_mpsc_{i}"), spsc_size, namespace,
             ).map_err(|_| RingError::PayloadTooLarge)?;
             mpsc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
         }
@@ -775,8 +832,8 @@ impl AdaptiveRing {
         // MPMC backings (one ring per producer; consumers partition).
         let mut mpmc_rings = Vec::with_capacity(n_rings);
         for i in 0..n_rings {
-            let shm = crate::shm_file::ShmFile::create_or_open_named(
-                &format!("{name_prefix}_mpmc_{i}"), spsc_size,
+            let shm = crate::shm_file::ShmFile::create_or_open_named_in(
+                &format!("{name_prefix}_mpmc_{i}"), spsc_size, namespace,
             ).map_err(|_| RingError::PayloadTooLarge)?;
             mpmc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
         }
@@ -786,8 +843,8 @@ impl AdaptiveRing {
         });
 
         // Vyukov backing.
-        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named(
-            &format!("{name_prefix}_vyukov"), vyukov_size,
+        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named_in(
+            &format!("{name_prefix}_vyukov"), vyukov_size, namespace,
         ).map_err(|_| RingError::PayloadTooLarge)?;
         let vyukov = Arc::new(SharedRing::open_from_shm(vyukov_shm, expected_capacity)?);
 
@@ -805,7 +862,7 @@ impl AdaptiveRing {
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
-            backing_id: BackingId::Shm { prefix: name_prefix.to_owned() },
+            backing_id: BackingId::Shm { prefix: name_prefix.to_owned(), ns: namespace },
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
@@ -828,7 +885,7 @@ impl AdaptiveRing {
     /// probe passes, the shared counter on x86 without an invariant
     /// TSC, the monotonic clock on non-x86 hosts. Rings opened with
     /// [`AdaptiveRing::open`] adopt the creator's stamp kind from
-    /// the region header (validated, never re-initialised).
+    /// the region header (validated, never re-initialized).
     ///
     /// A stamped ring never morphs to [`RingShape::Vyukov`]: the
     /// stamped 64-byte slot layout does not fit Vyukov's 56-byte
@@ -888,11 +945,12 @@ impl AdaptiveRing {
                     region
                 }
             }
-            BackingId::Shm { prefix } => {
+            BackingId::Shm { prefix, ns } => {
                 let size = ordering_region_size(lines);
-                let shm = crate::shm_file::ShmFile::create_or_open_named(
+                let shm = crate::shm_file::ShmFile::create_or_open_named_in(
                     &format!("{prefix}_ordering"),
                     size,
+                    *ns,
                 ).map_err(|e| RingError::IoError(e.kind()))?;
                 OrderingRegion::create_shm(
                     shm,
@@ -1189,13 +1247,13 @@ impl AdaptiveRing {
                     with_suffix(prefix, &format!(".mpmc.{i}.bin")), self.capacity)?;
                 Ok((Arc::new(a), Arc::new(b)))
             }
-            BackingId::Shm { prefix } => {
+            BackingId::Shm { prefix, ns } => {
                 let size = crate::spsc_ring::spsc_ring_file_size(self.capacity);
-                let shm_a = crate::shm_file::ShmFile::create_or_open_named(
-                    &format!("{prefix}_mpsc_{i}"), size,
+                let shm_a = crate::shm_file::ShmFile::create_or_open_named_in(
+                    &format!("{prefix}_mpsc_{i}"), size, *ns,
                 ).map_err(|e| RingError::IoError(e.kind()))?;
-                let shm_b = crate::shm_file::ShmFile::create_or_open_named(
-                    &format!("{prefix}_mpmc_{i}"), size,
+                let shm_b = crate::shm_file::ShmFile::create_or_open_named_in(
+                    &format!("{prefix}_mpmc_{i}"), size, *ns,
                 ).map_err(|e| RingError::IoError(e.kind()))?;
                 let a = SpscRingCore::create_from_shm(shm_a, self.capacity)?;
                 let b = SpscRingCore::create_from_shm(shm_b, self.capacity)?;
@@ -1227,13 +1285,13 @@ impl AdaptiveRing {
                     with_suffix(prefix, &format!(".mpmc.{i}.bin")), self.capacity)?;
                 Ok((Arc::new(a), Arc::new(b)))
             }
-            BackingId::Shm { prefix } => {
+            BackingId::Shm { prefix, ns } => {
                 let size = crate::spsc_ring::spsc_ring_file_size(self.capacity);
-                let shm_a = crate::shm_file::ShmFile::create_or_open_named(
-                    &format!("{prefix}_mpsc_{i}"), size,
+                let shm_a = crate::shm_file::ShmFile::create_or_open_named_in(
+                    &format!("{prefix}_mpsc_{i}"), size, *ns,
                 ).map_err(|e| RingError::IoError(e.kind()))?;
-                let shm_b = crate::shm_file::ShmFile::create_or_open_named(
-                    &format!("{prefix}_mpmc_{i}"), size,
+                let shm_b = crate::shm_file::ShmFile::create_or_open_named_in(
+                    &format!("{prefix}_mpmc_{i}"), size, *ns,
                 ).map_err(|e| RingError::IoError(e.kind()))?;
                 let a = SpscRingCore::create_from_shm(shm_a, self.capacity)?;
                 let b = SpscRingCore::create_from_shm(shm_b, self.capacity)?;
@@ -1588,15 +1646,16 @@ impl AdaptiveRing {
     /// The region is created lazily on the first offset frame -
     /// the producer create-or-opens it before pushing the descriptor, so
     /// a consumer that create-or-opens it on receipt always finds the
-    /// already-initialised region (the descriptor it popped proves the
+    /// already-initialized region (the descriptor it popped proves the
     /// producer got there first).
     fn build_frame_region(&self, block_size: usize, block_count: usize) -> Arc<FrameRegion> {
         let region = match &self.backing_id {
             BackingId::Anon => FrameRegion::create_anon(block_size, block_count),
-            BackingId::Shm { prefix } => FrameRegion::create_or_open_shm(
+            BackingId::Shm { prefix, ns } => FrameRegion::create_or_open_shm_in(
                 &format!("{prefix}_frames"),
                 block_size,
                 block_count,
+                *ns,
             ),
             BackingId::File { prefix, .. } => FrameRegion::create_or_open_file(
                 with_suffix(prefix, ".frames.bin"),
@@ -2940,6 +2999,47 @@ impl Drop for AdaptiveRingSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every region a shm ring names must land in the namespace the ring
+    /// was built in, including the ordering and payload regions it
+    /// creates after construction. One region left behind resolves for
+    /// only one side, and because these are create-or-open names both
+    /// sides succeed against separate copies rather than reporting it.
+    #[test]
+    fn a_shm_ring_keeps_its_namespace_for_regions_made_later() {
+        let name = format!(
+            "arns_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let ring =
+            AdaptiveRing::create_shmfs_in(&name, 2, 2, 64, crate::shm_file::ShmNamespace::Session)
+                .expect("create in the session namespace");
+
+        match &ring.backing_id {
+            BackingId::Shm { prefix, ns } => {
+                assert_eq!(prefix, &name);
+                assert_eq!(
+                    *ns,
+                    crate::shm_file::ShmNamespace::Session,
+                    "the namespace must be retained for the regions built later"
+                );
+            }
+            _ => panic!("a shmfs ring must carry a Shm backing id"),
+        }
+
+        // The default constructor is the session namespace, so a ring
+        // built either way agrees.
+        let plain = AdaptiveRing::create_shmfs(&format!("{name}_b"), 2, 2, 64)
+            .expect("create via the defaulting constructor");
+        match (&ring.backing_id, &plain.backing_id) {
+            (BackingId::Shm { ns: a, .. }, BackingId::Shm { ns: b, .. }) => assert_eq!(a, b),
+            _ => panic!("both must carry a Shm backing id"),
+        }
+    }
 
     #[test]
     fn create_starts_in_spsc_shape() {
