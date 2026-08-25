@@ -20,8 +20,9 @@ backings.
 | Windows | `windows_sys::CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` + `MapViewOfFile` |
 
 Naming: the caller's logical name is prefixed with `/subetha_` on
-Unix (POSIX shm names must start with `/`) and `Local\\subetha_`
-on Windows (per-session visibility). Embedded slashes in the
+Unix (POSIX shm names must start with `/`) and, on Windows, with
+`Local\\subetha_` or `Global\\subetha_` according to the
+`ShmNamespace` asked for. Embedded slashes in the
 caller's name become underscores. On Apple targets, where POSIX
 shm names are capped at 31 chars (`PSHMNAMLEN`), a prefixed name
 that would overrun the cap collapses to a deterministic short
@@ -35,7 +36,8 @@ as-is); the mapping is prefaulted on construction.
 
 | Call | Behavior |
 |---|---|
-| `ShmFile::create_or_open_named(name: &str, size: usize) -> io::Result<Self>` | Create or open a named shared-memory region of `size` bytes. Asserts `size > 0`. |
+| `ShmFile::create_or_open_named(name: &str, size: usize) -> io::Result<Self>` | Create or open a named shared-memory region of `size` bytes in the per-session namespace. Asserts `size > 0`. |
+| `ShmFile::create_or_open_named_in(name: &str, size: usize, ns: ShmNamespace) -> io::Result<Self>` | The same, naming the region in `ns`. `ShmNamespace::Machine` resolves one name to one region for every Windows session, which is what a service in session 0 and its interactive clients need; creating one requires `SeCreateGlobalPrivilege` and a caller without it gets the OS error rather than a per-session region. On Unix a POSIX name is machine-wide either way and the choice changes nothing. |
 | `shm.as_mut_slice() -> &mut [u8]` | Cross-platform mutable byte slice into the mapped region. |
 | `shm.len() -> usize` | Region size in bytes. |
 | `shm.is_empty() -> bool` | Always false for a valid region. |
