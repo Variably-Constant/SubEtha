@@ -17,9 +17,10 @@
 //!
 //! Naming convention: a caller-supplied logical name is prefixed
 //! with `/subetha_` on Unix (shm_open requires names starting with
-//! `/`) and `Local\\subetha_` on Windows (per-session visibility).
-//! Embedded slashes in the caller's name become underscores so the
-//! whole logical name is one path component.
+//! `/`) and, on Windows, with `Local\\subetha_` or `Global\\subetha_`
+//! according to the [`ShmNamespace`] the caller asks for. Embedded
+//! slashes in the caller's name become underscores so the whole
+//! logical name is one path component.
 
 use std::io;
 
@@ -54,6 +55,32 @@ pub struct ShmFile {
 unsafe impl Send for ShmFile {}
 unsafe impl Sync for ShmFile {}
 
+/// Which object namespace a region's name is created in.
+///
+/// Windows resolves a shared-memory name inside a namespace. Two
+/// processes in different terminal sessions that pass the same logical
+/// name under [`Session`](ShmNamespace::Session) reach two different
+/// regions, and both creates succeed, so a service in session 0 and an
+/// interactive client in session 1 each get memory the other cannot
+/// see. [`Machine`](ShmNamespace::Machine) resolves one name to one
+/// region for every session on the host.
+///
+/// On Unix a POSIX shared-memory name is already machine-wide, so both
+/// variants produce the same name and the choice changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShmNamespace {
+    /// Per-session naming: `Local\` on Windows.
+    #[default]
+    Session,
+    /// Machine-wide naming: `Global\` on Windows. Creating a region
+    /// here requires `SeCreateGlobalPrivilege`, which a service running
+    /// as LocalSystem holds and an ordinary interactive process does
+    /// not; opening one that already exists requires no privilege.
+    /// Naming is all this widens - which processes may map the region
+    /// is still decided by its security descriptor.
+    Machine,
+}
+
 impl ShmFile {
     /// Create or open a named RAM-resident shared-memory region of
     /// `size` bytes. Two handles created with the same logical name
@@ -62,8 +89,25 @@ impl ShmFile {
         logical_name: &str,
         size: usize,
     ) -> io::Result<Self> {
+        Self::create_or_open_named_in(logical_name, size, ShmNamespace::Session)
+    }
+
+    /// Create or open a named region in `namespace`.
+    ///
+    /// [`ShmNamespace::Machine`] is what lets a process in one Windows
+    /// session reach a region created by a process in another, which a
+    /// service and its interactive clients need. A create that the
+    /// caller lacks `SeCreateGlobalPrivilege` for fails with the OS
+    /// error; it does not quietly fall back to a per-session region,
+    /// because that succeeds while leaving each side mapping memory the
+    /// other cannot see.
+    pub fn create_or_open_named_in(
+        logical_name: &str,
+        size: usize,
+        namespace: ShmNamespace,
+    ) -> io::Result<Self> {
         assert!(size > 0, "ShmFile size must be > 0");
-        let safe_name = sanitize(logical_name);
+        let safe_name = sanitize(logical_name, namespace);
         unsafe { Self::platform_create_or_open(&safe_name, size) }
     }
 
@@ -232,8 +276,11 @@ impl Drop for ShmFile {
 
 /// Sanitize the caller's name into a platform-safe identifier.
 /// Replaces path separators with underscores and prefixes with the
-/// platform-appropriate namespace.
-fn sanitize(logical_name: &str) -> String {
+/// namespace `ns` names on this platform. A POSIX shared-memory name is
+/// machine-wide whichever namespace is asked for, so `ns` selects a
+/// prefix only on Windows.
+#[cfg_attr(unix, allow(unused_variables))]
+fn sanitize(logical_name: &str, ns: ShmNamespace) -> String {
     let cleaned: String = logical_name
         .chars()
         .map(|c| if c == '/' || c == '\\' { '_' } else { c })
@@ -261,7 +308,11 @@ fn sanitize(logical_name: &str) -> String {
     }
     #[cfg(windows)]
     {
-        format!("Local\\subetha_{cleaned}")
+        let prefix = match ns {
+            ShmNamespace::Session => "Local",
+            ShmNamespace::Machine => "Global",
+        };
+        format!("{prefix}\\subetha_{cleaned}")
     }
 }
 
@@ -307,7 +358,35 @@ mod tests {
         // backing name from the same logical name; the derivation
         // (including the Apple hash fallback) must be stable.
         let n = unique_name("shm_det");
-        assert_eq!(sanitize(&n), sanitize(&n));
+        assert_eq!(
+            sanitize(&n, ShmNamespace::Session),
+            sanitize(&n, ShmNamespace::Session)
+        );
+    }
+
+    /// The namespace decides which processes can resolve the name, so a
+    /// caller that asks for one must not be handed the other.
+    #[test]
+    fn namespace_selects_the_windows_prefix() {
+        let n = unique_name("shm_ns");
+        let session = sanitize(&n, ShmNamespace::Session);
+        let machine = sanitize(&n, ShmNamespace::Machine);
+
+        assert_eq!(ShmNamespace::default(), ShmNamespace::Session);
+
+        #[cfg(windows)]
+        {
+            assert!(session.starts_with("Local\\subetha_"), "{session}");
+            assert!(machine.starts_with("Global\\subetha_"), "{machine}");
+            assert_ne!(session, machine);
+        }
+        #[cfg(unix)]
+        {
+            // A POSIX name is machine-wide either way, so the two agree
+            // and a caller writes one code path across platforms.
+            assert_eq!(session, machine);
+            assert!(session.starts_with('/'), "{session}");
+        }
     }
 
     #[cfg(target_vendor = "apple")]
@@ -317,10 +396,14 @@ mod tests {
         // shm_open limit (PSHMNAMLEN); sanitize must shorten it while
         // staying deterministic so create and open still agree.
         let long = "subetha_cmp_spsc_p2c_99999_1234567890123456789012_spsc";
-        let name = sanitize(long);
+        let name = sanitize(long, ShmNamespace::Session);
         assert!(name.len() <= 31, "shm name too long for macOS: {name} ({})", name.len());
         assert!(name.starts_with('/'));
-        assert_eq!(sanitize(long), name, "must be deterministic");
+        assert_eq!(
+            sanitize(long, ShmNamespace::Session),
+            name,
+            "must be deterministic"
+        );
     }
 
     #[test]
