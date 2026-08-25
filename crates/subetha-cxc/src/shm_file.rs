@@ -389,6 +389,42 @@ mod tests {
         }
     }
 
+    /// The machine namespace reaches the real OS call rather than
+    /// stopping at name construction. Creating there needs
+    /// `SeCreateGlobalPrivilege`, which an ordinary test process does
+    /// not hold, so a refusal is a valid outcome - what must not happen
+    /// is a per-session region handed back as though the request had
+    /// been honoured.
+    #[test]
+    fn machine_namespace_reaches_the_os_and_never_downgrades() {
+        let n = unique_name("shm_machine");
+        match ShmFile::create_or_open_named_in(&n, 4096, ShmNamespace::Machine) {
+            Ok(shm) => {
+                let want = sanitize(&n, ShmNamespace::Machine);
+                assert_eq!(
+                    shm.logical_name(),
+                    want,
+                    "a region opened in the machine namespace must carry its name"
+                );
+                #[cfg(windows)]
+                assert!(shm.logical_name().starts_with("Global\\"));
+            }
+            Err(e) => {
+                // Refused for want of privilege, which is the honest
+                // answer. The failure must not have been converted into
+                // a session-scoped region behind the caller's back.
+                let session = sanitize(&n, ShmNamespace::Session);
+                let reopened =
+                    ShmFile::create_or_open_named_in(&n, 4096, ShmNamespace::Machine);
+                assert!(
+                    reopened.is_err(),
+                    "a refused machine create must stay refused, not settle into {session}"
+                );
+                println!("machine namespace refused for this process: {e}");
+            }
+        }
+    }
+
     #[cfg(target_vendor = "apple")]
     #[test]
     fn apple_shm_name_within_pshmnamlen() {
