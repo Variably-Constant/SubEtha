@@ -108,6 +108,15 @@ impl RingShape {
 /// Sentinel for "no stale shape pending" in `stale_shape_tag`.
 const STALE_NONE: u8 = u8::MAX;
 
+/// Whether `SUBETHA_RING_DEBUG` asks the MPMC ownership path to report
+/// what it decides. A consumer draining nothing because it owns no ring
+/// reads the same from outside as an idle one, so the table it scanned
+/// is what separates them.
+fn ring_debug() -> bool {
+    static EN: OnceLock<bool> = OnceLock::new();
+    *EN.get_or_init(|| std::env::var("SUBETHA_RING_DEBUG").is_ok())
+}
+
 pub struct AdaptiveRing {
     /// Current shape; one Acquire load per dispatched op.
     shape_tag: AtomicU8,
@@ -1476,6 +1485,21 @@ impl AdaptiveRing {
         self.reshape_for_counts();
     }
 
+    /// Report a consumer that completed a full scan owning no ring, once
+    /// per consumer. Draining nothing because it owns nothing is silent
+    /// otherwise: the ring works, the peer is registered, and one
+    /// consumer sits idle.
+    fn note_owns_nothing(&self, consumer_id: usize, rings: usize) {
+        if !ring_debug() {
+            return;
+        }
+        eprintln!(
+            "subetha ring: consumer {consumer_id} owns none of {rings} ring(s); \
+             ownership {:?}",
+            self.ownership_snapshot()
+        );
+    }
+
     /// Who owns each published MPMC ring and who it is being handed to:
     /// `(ring, owner, pending)`, with [`OWNER_NONE`] for unowned and for
     /// no pending handoff.
@@ -1502,12 +1526,25 @@ impl AdaptiveRing {
     fn rebalance_ownership(&self) {
         let slots = self.directory.claimed_consumer_slots();
         if slots.is_empty() {
+            if ring_debug() {
+                eprintln!("subetha ring: rebalance found no claimed consumer slots");
+            }
             return;
         }
         let n = self.directory.published();
+        if ring_debug() {
+            eprintln!(
+                "subetha ring: rebalance over slots {slots:?}, {n} published ring(s)"
+            );
+        }
         for r in 0..n {
             let desired = slots[r % slots.len()];
             let (owner, pending) = self.directory.ring_owner(r);
+            if ring_debug() {
+                eprintln!(
+                    "subetha ring:   ring {r} owner {owner} pending {pending} -> {desired}"
+                );
+            }
             if owner == desired {
                 continue;
             }
@@ -2227,6 +2264,9 @@ impl AdaptiveRing {
         // so only every 1024th empty scan per consumer attempts it.
         if let Some((idx, owner)) = stuck {
             let probes = cursor_line.1.fetch_add(1, Ordering::Relaxed);
+            if probes % 1024 == 1023 {
+                self.note_owns_nothing(consumer_id, n);
+            }
             if probes % 1024 == 1023
                 && self.directory.try_takeover(idx, owner, me)
                 && let Ok(bytes) = rings[idx].try_pop(out)
