@@ -74,6 +74,7 @@
 pub mod sidecar_ops;
 
 pub mod cached_clock;
+pub mod shared_epochs;
 pub mod epoch_barrier;
 pub mod event_state_log;
 pub mod failover;
@@ -473,6 +474,10 @@ pub use shared_rw_lock::{
     ReadGuard, RWLockError, RWLockHeader, SharedRWLock, WriteGuard, RWLOCK_MAGIC,
 };
 pub use shared_semaphore::{Permit, SemaphoreError, SharedSemaphore};
+pub use shared_epochs::{
+    epoch_file_size, Epoch, EpochError, EpochHeader, PinGuard, SharedEpochs,
+    EPOCH_MAGIC, PIN_FREE,
+};
 pub use shared_slab::{
     slab_file_size, slab_slot_size, SharedSlab, SlabError, SlabHeader,
     SLAB_MAGIC, SLAB_SLOT_PREFIX,
