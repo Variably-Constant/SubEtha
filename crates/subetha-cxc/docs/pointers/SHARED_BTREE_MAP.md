@@ -38,8 +38,18 @@ tree via a global seqlock; a single writer serialises `insert` /
 - **`K: Copy + Ord + Default`, `V: Copy + Default`**.
 - **SINGLE-WRITER, MULTI-READER**: `insert` / `remove` require
   external serialisation. `get`, `contains_key`, `len`, `first`,
-  `iter_ascending` are lock-free against a quiescent (build-then-
-  query) tree.
+  `range`, `iter_ascending` are lock-free against a quiescent (build-
+  then-query) tree.
+- **`range` is bounded and resumed by key**: one call returns at most
+  `limit` entries and is seqlock-validated like `get`, so its retry
+  costs the chunk rather than the scan. A caller continues with
+  `Bound::Excluded` of the last key it received. Resumption is by key
+  because a split moves the upper half of a node into a new node and
+  promotes the median into the parent, so a saved node position can
+  name a different entry afterwards, or sit below one that has moved
+  above it. One call sees a consistent tree; a scan assembled from
+  several calls is not a snapshot, and an entry inserted behind the
+  cursor is not seen while one inserted ahead of it is.
 - **Seqlock reads**: a writer makes the global version odd for the
   duration of a structural mutation and even after; a reader retries
   the whole search if the version changes or is odd, so concurrent
