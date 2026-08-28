@@ -1485,17 +1485,17 @@ impl AdaptiveRing {
         self.reshape_for_counts();
     }
 
-    /// Report a consumer that completed a full scan owning no ring, once
-    /// per consumer. Draining nothing because it owns nothing is silent
-    /// otherwise: the ring works, the peer is registered, and one
-    /// consumer sits idle.
-    fn note_owns_nothing(&self, consumer_id: usize, rings: usize) {
+    /// Report a scan that found nothing to pop while a ring owned by
+    /// another consumer holds items. The caller may own rings and find
+    /// them empty, or own none at all; the ownership table says which,
+    /// and both read from outside as a consumer sitting idle.
+    fn note_scan_empty_while_others_hold(&self, consumer_id: usize, rings: usize) {
         if !ring_debug() {
             return;
         }
         eprintln!(
-            "subetha ring: consumer {consumer_id} owns none of {rings} ring(s); \
-             ownership {:?}",
+            "subetha ring: consumer {consumer_id} scanned {rings} ring(s) and found \
+             nothing while another owner holds items; ownership {:?}",
             self.ownership_snapshot()
         );
     }
@@ -2265,7 +2265,7 @@ impl AdaptiveRing {
         if let Some((idx, owner)) = stuck {
             let probes = cursor_line.1.fetch_add(1, Ordering::Relaxed);
             if probes % 1024 == 1023 {
-                self.note_owns_nothing(consumer_id, n);
+                self.note_scan_empty_while_others_hold(consumer_id, n);
             }
             if probes % 1024 == 1023
                 && self.directory.try_takeover(idx, owner, me)
