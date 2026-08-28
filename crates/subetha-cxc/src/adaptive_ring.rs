@@ -1505,9 +1505,25 @@ impl AdaptiveRing {
         if !ring_debug() {
             return;
         }
+        let stale = self.stale_shape_tag.load(Ordering::Acquire);
         eprintln!(
             "subetha ring: consumer {consumer_id} scanned {rings} ring(s) and found \
-             nothing while another owner holds items; ownership {:?}",
+             nothing while another owner holds items; shape {:?} stale {} pending {}; \
+             ownership {:?}",
+            self.current_shape(),
+            if stale == STALE_NONE {
+                "none".to_owned()
+            } else {
+                format!("{:?}", RingShape::from_u8(stale))
+            },
+            {
+                let p = self.pending_shape_tag.load(Ordering::Acquire);
+                if p == STALE_NONE {
+                    "none".to_owned()
+                } else {
+                    format!("{:?}", RingShape::from_u8(p))
+                }
+            },
             self.ownership_snapshot()
         );
     }
@@ -2360,15 +2376,11 @@ impl AdaptiveRing {
             return Err(RingError::LayoutMismatch);
         }
 
-        // One stale backing at a time: the prior morph's backlog
-        // must be drained before another shape change.
-        // One stale backing at a time: a second morph would leave the
-        // first one's backlog unreachable. Rather than refuse, record
-        // the shape asked for and let the pop path apply it once that
-        // backlog drains - which is the event that makes it safe, and
-        // which the consumers are already driving. A refusal here
-        // returned to callers that discard it, leaving the ring in a
-        // shape whose reader contract the live peer count broke.
+        // One stale backing at a time: a second morph leaves the first
+        // one's backlog unreachable. The shape asked for is recorded
+        // and the pop path applies it once that backlog drains, which
+        // is the event that makes it safe and which the consumers are
+        // already driving.
         let prior_stale = self.stale_shape_tag.load(Ordering::Acquire);
         if prior_stale != STALE_NONE
             && !self.backing_is_empty(RingShape::from_u8(prior_stale))
@@ -2392,6 +2404,21 @@ impl AdaptiveRing {
         self.pin_generation.fetch_add(1, Ordering::AcqRel);
         self.stale_shape_tag.store(old_shape as u8, Ordering::Release);
         self.shape_tag.store(new_shape as u8, Ordering::Release);
+        if ring_debug() {
+            eprintln!(
+                "subetha ring: morph {old_shape:?} -> {new_shape:?}; stale now \
+                 {old_shape:?} (was {}), spsc {} mpsc {:?} mpmc {:?} vyukov {}",
+                if prior_stale == STALE_NONE {
+                    "none".to_owned()
+                } else {
+                    format!("{:?}", RingShape::from_u8(prior_stale))
+                },
+                self.spsc.approx_len(),
+                self.mpsc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
+                self.mpmc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
+                self.vyukov.approx_len(),
+            );
+        }
         Ok(())
     }
 
