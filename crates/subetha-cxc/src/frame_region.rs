@@ -228,11 +228,24 @@ impl FrameRegion {
         name: &str, block_size: usize, block_count: usize,
         namespace: crate::shm_file::ShmNamespace,
     ) -> Result<Self, RingError> {
+        Self::create_or_open_shm_secured(name, block_size, block_count, namespace, None)
+    }
+
+    /// As [`create_or_open_shm_in`](Self::create_or_open_shm_in), with
+    /// `sddl` as the security descriptor a create applies. A ring builds
+    /// this region on its first oversized frame, so a descriptor that
+    /// reaches the backings has to reach here too, or a ring that has
+    /// carried small payloads all along refuses the first large one.
+    pub fn create_or_open_shm_secured(
+        name: &str, block_size: usize, block_count: usize,
+        namespace: crate::shm_file::ShmNamespace,
+        sddl: Option<&str>,
+    ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
         let total = frame_region_file_size(block_size, block_count);
-        let mut shm =
-            crate::shm_file::ShmFile::create_or_open_named_in(name, total, namespace)
-                .map_err(|_| RingError::LayoutMismatch)?;
+        let mut shm = crate::shm_file::ShmFile::create_or_open_named_secured(
+            name, total, namespace, sddl,
+        ).map_err(|_| RingError::LayoutMismatch)?;
         if shm.len() < total {
             return Err(RingError::LayoutMismatch);
         }

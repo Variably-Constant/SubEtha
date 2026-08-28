@@ -106,9 +106,43 @@ impl ShmFile {
         size: usize,
         namespace: ShmNamespace,
     ) -> io::Result<Self> {
+        Self::create_or_open_named_secured(logical_name, size, namespace, None)
+    }
+
+    /// Create or open a named region in `namespace`, with `sddl` as the
+    /// security descriptor a create applies to it.
+    ///
+    /// On Windows a section created with no descriptor carries the
+    /// creator's default, which admits the creating account and
+    /// administrators. A service running as LocalSystem therefore
+    /// creates a region in [`ShmNamespace::Machine`] whose name an
+    /// interactive client resolves and whose contents it is refused, so
+    /// reaching across sessions takes a descriptor that names who may
+    /// map it. `sddl` is that descriptor in SDDL form, applied only when
+    /// this call creates the region; opening one that exists uses the
+    /// descriptor already on it.
+    ///
+    /// The mapping asks for `FILE_MAP_ALL_ACCESS`, so a descriptor that
+    /// grants only read is refused at the map. A caller admitting
+    /// authenticated users to map and query writes
+    /// `"D:(A;;0x000F001F;;;AU)"`.
+    ///
+    /// Who may map a shared region is the creating application's
+    /// decision: the crate applies what it is given and supplies no
+    /// default of its own.
+    ///
+    /// Unix ignores `sddl`. A POSIX shared-memory object carries mode
+    /// bits rather than an ACL, and the caller sets those on the object
+    /// itself.
+    pub fn create_or_open_named_secured(
+        logical_name: &str,
+        size: usize,
+        namespace: ShmNamespace,
+        sddl: Option<&str>,
+    ) -> io::Result<Self> {
         assert!(size > 0, "ShmFile size must be > 0");
         let safe_name = sanitize(logical_name, namespace);
-        unsafe { Self::platform_create_or_open(&safe_name, size) }
+        unsafe { Self::platform_create_or_open(&safe_name, size, sddl) }
     }
 
     /// Mutable byte slice into the mapped region. Length equals the
@@ -144,6 +178,7 @@ impl ShmFile {
     unsafe fn platform_create_or_open(
         safe_name: &str,
         size: usize,
+        #[cfg_attr(unix, allow(unused_variables))] sddl: Option<&str>,
     ) -> io::Result<Self> {
         let c_name = std::ffi::CString::new(safe_name)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -198,11 +233,44 @@ impl ShmFile {
     unsafe fn platform_create_or_open(
         safe_name: &str,
         size: usize,
+        sddl: Option<&str>,
     ) -> io::Result<Self> {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
         use windows_sys::Win32::System::Memory::{
             CreateFileMappingW, MapViewOfFile,
             FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
+        };
+
+        // The descriptor is built before the mapping and released after
+        // it, because CreateFileMappingW copies what it is given.
+        let mut sd = core::ptr::null_mut();
+        if let Some(s) = sddl {
+            let wide_sddl: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+            let ok = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide_sddl.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut sd,
+                    core::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let sa_ptr: *const SECURITY_ATTRIBUTES = if sddl.is_some() {
+            &sa
+        } else {
+            core::ptr::null()
         };
 
         let wide: Vec<u16> = safe_name.encode_utf16().chain(Some(0)).collect();
@@ -211,15 +279,19 @@ impl ShmFile {
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                core::ptr::null(),
+                sa_ptr,
                 PAGE_READWRITE,
                 hi,
                 lo,
                 wide.as_ptr(),
             )
         };
+        let create_err = io::Error::last_os_error();
+        if !sd.is_null() {
+            unsafe { LocalFree(sd as _) };
+        }
         if handle.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(create_err);
         }
         let view = unsafe {
             MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size)
@@ -423,6 +495,44 @@ mod tests {
                 println!("machine namespace refused for this process: {e}");
             }
         }
+    }
+
+    /// A descriptor reaches the OS rather than being carried and
+    /// dropped. A create that names one and succeeds has applied it; one
+    /// that names an unparseable descriptor is refused, so a caller
+    /// cannot end up with a region open to whoever the default admits
+    /// while believing its own descriptor took effect.
+    #[test]
+    fn a_security_descriptor_is_applied_or_the_create_fails() {
+        let n = unique_name("shm_sddl");
+
+        // Grants authenticated users the access the mapping asks for.
+        let granted = ShmFile::create_or_open_named_secured(
+            &n,
+            4096,
+            ShmNamespace::Session,
+            Some("D:(A;;0x000F001F;;;AU)"),
+        );
+        match granted {
+            Ok(shm) => assert_eq!(shm.len(), 4096),
+            Err(e) => println!("descriptor refused for this process: {e}"),
+        }
+
+        let bad = ShmFile::create_or_open_named_secured(
+            &format!("{n}_bad"),
+            4096,
+            ShmNamespace::Session,
+            Some("this is not a security descriptor"),
+        );
+        #[cfg(windows)]
+        assert!(
+            bad.is_err(),
+            "an unparseable descriptor must fail the create, not be ignored"
+        );
+        #[cfg(unix)]
+        assert!(bad.is_ok(), "unix carries mode bits and ignores the descriptor");
+
+        std::fs::remove_file(format!("/tmp/{n}")).ok();
     }
 
     #[cfg(target_vendor = "apple")]

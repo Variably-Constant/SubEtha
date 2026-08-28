@@ -213,8 +213,21 @@ impl PeerDirectory {
         name: &str,
         namespace: crate::shm_file::ShmNamespace,
     ) -> Result<Self, RingError> {
-        let mut shm = crate::shm_file::ShmFile::create_or_open_named_in(
-            name, peer_directory_size(), namespace,
+        Self::create_or_open_shm_secured(name, namespace, None)
+    }
+
+    /// As [`create_or_open_shm_in`](Self::create_or_open_shm_in), with
+    /// `sddl` as the security descriptor a create applies. A directory
+    /// reached across Windows sessions needs the same descriptor as the
+    /// backings it describes, or the peer resolves its name and is
+    /// refused its contents.
+    pub fn create_or_open_shm_secured(
+        name: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        sddl: Option<&str>,
+    ) -> Result<Self, RingError> {
+        let mut shm = crate::shm_file::ShmFile::create_or_open_named_secured(
+            name, peer_directory_size(), namespace, sddl,
         ).map_err(|e| RingError::IoError(e.kind()))?;
         if shm.len() < peer_directory_size() {
             return Err(RingError::LayoutMismatch);
