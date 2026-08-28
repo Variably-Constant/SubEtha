@@ -38,6 +38,7 @@ Keyed lookup and ordered storage.
 | [`SharedBTreeMap<K, V>`](shared-hash-map/#sharedbtreemap) | Cross-process ordered map via B-tree | Key-value with **ordered** iteration; range queries needed | [SHARED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md) |
 | [`SharedLinkedList<T>`](shared-hash-map/#sharedlinkedlist) | Cross-process doubly-linked list | Need stable iterator positions across mutations; not random access | [SHARED_LINKED_LIST.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LINKED_LIST.md) |
 | `SharedVec<T>` | Cross-process bounded indexable sequence | Push/index/pop with a known capacity ceiling | [SHARED_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VEC.md) |
+| [`SharedSlab<T>`](specialized/shared-slab/) | Cross-process slab of caller-indexed records, one SeqLock per slot | Records past 52 bytes read concurrently with the writer; the caller owns the index | [SHARED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SLAB.md) |
 
 ## Atomics and cells
 

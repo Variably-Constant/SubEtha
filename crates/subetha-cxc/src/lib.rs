@@ -473,6 +473,10 @@ pub use shared_rw_lock::{
     ReadGuard, RWLockError, RWLockHeader, SharedRWLock, WriteGuard, RWLOCK_MAGIC,
 };
 pub use shared_semaphore::{Permit, SemaphoreError, SharedSemaphore};
+pub use shared_slab::{
+    slab_file_size, slab_slot_size, SharedSlab, SlabError, SlabHeader,
+    SLAB_MAGIC, SLAB_SLOT_PREFIX,
+};
 pub use shared_btree_map::{BTreeError, SharedBTreeMap};
 pub use shared_string_arena::{
     arena_file_size, ArenaError, ArenaHeader, SharedStringArena, StringRef,

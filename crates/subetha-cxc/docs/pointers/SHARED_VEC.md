@@ -153,3 +153,6 @@ before potentially migrating to SharedHashMap.
 - Sibling primitive: [SHARED_REGION.md](./SHARED_REGION.md) -
   typed slot allocator with reuse; Vec is the simpler
   append-only variant.
+- Sibling primitive: [SHARED_SLAB.md](./SHARED_SLAB.md) - the same
+  per-slot SeqLock over records past the 52-byte payload cap,
+  indexed by the caller.

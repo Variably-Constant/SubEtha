@@ -181,3 +181,6 @@ indices stable across processes that map the same file.
   cascade level reads a SharedRegion slot.
 - Sibling primitive: [OFFSET_PTR.md](./OFFSET_PTR.md) - the
   u32 handle type returned by allocate.
+- Sibling primitive: [SHARED_SLAB.md](./SHARED_SLAB.md) - records
+  of any size read under a per-slot SeqLock, with the caller
+  supplying the index instead of an allocator.

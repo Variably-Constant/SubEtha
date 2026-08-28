@@ -157,6 +157,9 @@ links to.
 - `SharedBTreeMap` -
   [SHARED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md)
   (see [shared-hash-map.md](shared-hash-map.md#sharedbtreemap))
+- `SharedSlab` -
+  [SHARED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SLAB.md)
+  (see [specialized/shared-slab.md](specialized/shared-slab.md))
 - `SharedStringArena` -
   [SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md)
   (see [shared-sketches.md](shared-sketches.md#sharedstringarena))

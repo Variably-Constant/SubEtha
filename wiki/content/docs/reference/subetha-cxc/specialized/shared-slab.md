@@ -1,4 +1,9 @@
-# SharedSlab
+---
+title: "Shared Slab"
+weight: 15
+---
+
+# SharedSlab&lt;T&gt;
 
 ![Rust](https://img.shields.io/badge/Rust-1.96+-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/Edition-2024-blue)
@@ -6,7 +11,7 @@
 ![Protocol](https://img.shields.io/badge/per--slot-SeqLock-brightgreen)
 ![Cross-Process](https://img.shields.io/badge/Cross--Process-yes-success)
 
-Fixed-capacity MMF slab of records, each slot its own SeqLock cell,
+Fixed-capacity slab of records, each slot its own SeqLock cell,
 addressed by an index the caller chooses. `set(i, v)` writes a slot,
 `get(i)` reads one, and a reader racing the writer of that slot
 retries rather than seeing a mixture.
@@ -25,9 +30,9 @@ retries rather than seeing a mixture.
 
 - **`T: Copy + 'static`**. A slot is a byte copy; no `Drop` runs.
 - **One writer per slot, any number of readers.** Two writers on the
-  SAME slot race: the SeqLock makes a torn READ detectable, and does
+  same slot race: the SeqLock makes a torn read detectable, and does
   not make a torn write safe. A caller writing one index from two
-  threads serialises that itself.
+  threads serializes that itself.
 - **The index is the caller's.** There is no allocator, no free list
   and no length. A caller that persists ids - a write-ahead log
   naming a slot, a snapshot restoring one - keeps addressing them
@@ -72,9 +77,14 @@ retries rather than seeing a mixture.
 | `slab.capacity()` / `slab.is_writable()` / `slab.flush()` | Slots addressed; whether this mapping may write; msync. |
 | `slab_slot_size::<T>()` / `slab_file_size::<T>(capacity)` | Stride of one slot; bytes the file needs. |
 
+`SlabError` is `OutOfBounds` / `LayoutMismatch` / `ReadOnly` /
+`IoError`.
+
 ---
 
-## Worked example
+## Worked examples
+
+### Records past the cache line
 
 ```rust
 use subetha_cxc::SharedSlab;
@@ -102,6 +112,31 @@ segments[seg].get(slot)?
 
 ---
 
+## Use case patterns
+
+### Pattern: a store whose ids outlive the process
+
+The index is the caller's, so an id written to a log or a snapshot
+still names the same record after a restart. A slab is the backing
+for a store that hands ids out and takes them back.
+
+### Pattern: a privileged writer with unprivileged readers
+
+The writer holds the read+write handle and calls `set`; readers
+attach with `open_read_only` and see every completed write without a
+lock and without write access to the file.
+
+---
+
+## Known limitations
+
+- **Bounded capacity at create**: no auto-grow. Segment and seal.
+- **No allocator and no length.** Addressing is entirely the
+  caller's; a slab does not know which slots are in use.
+- **`T: Copy`**: pointer-bearing T needs indirection.
+
+---
+
 ## Common pitfalls
 
 - **Two threads writing one slot.** The SeqLock detects a torn read,
@@ -114,12 +149,17 @@ segments[seg].get(slot)?
   `size_of::<T>()`, so a mismatch is refused as `LayoutMismatch`
   rather than returning misaligned records.
 
+- **Reaching for a slab where a `SharedVec` fits.** A record of 52
+  bytes or fewer with append-plus-index semantics is what `SharedVec`
+  is; the slab costs a wider stride to carry the general case.
+
 ---
 
 ## References
 
 - Source: `crates/subetha-cxc/src/shared_slab.rs`.
-- Sibling: [SHARED_VEC.md](SHARED_VEC.md) - the same SeqLock with a
-  one-cache-line slot and append-plus-index semantics.
-- Sibling: [SHARED_REGION.md](SHARED_REGION.md) - records of any size
-  with an allocator and a free list, read and written plainly.
+- Sibling primitive: [Shared Vec](../shared-vec/) - the same SeqLock
+  with a one-cache-line slot and append-plus-index semantics.
+- Sibling primitive: [Shared Region](../arenas/shared-region/) -
+  records of any size with an allocator and a free list, read and
+  written plainly.

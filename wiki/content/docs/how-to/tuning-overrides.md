@@ -45,9 +45,11 @@ above.
 | `SUBETHA_WIRE_MIN_GBPS=<n>` | Link-speed gate (Gbit/s) at or above which the Wire backend engages; `0` disables the gate. | 10 |
 | `SUBETHA_WIRE_LOCAL_IP` / `SUBETHA_WIRE_LOCAL_MAC` / `SUBETHA_WIRE_PEER_MAC` | Wire-backend L2/L3 addressing for the AF_XDP / netmap path. | unset |
 
-Two diagnostic-only switches log decisions to stderr and change no
-behaviour: `SUBETHA_FEC_DEBUG` (each Sens-O-Matic coding-parameter
-decision) and `SUBETHA_PAIR_DEBUG` (each packet-pair id-gap sample).
+Three diagnostic-only switches log decisions to stderr and change no
+behavior: `SUBETHA_FEC_DEBUG` (each Sens-O-Matic coding-parameter
+decision), `SUBETHA_PAIR_DEBUG` (each packet-pair id-gap sample) and
+`SUBETHA_RING_DEBUG` (each `AdaptiveRing` shape transition, including a
+morph deferred behind a stale backlog and the pop that later lands it).
 
 ## Cargo features
 

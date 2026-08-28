@@ -84,6 +84,8 @@ in where the backing memory lives.
 | `create_shmfs(name_prefix, max_producers, max_consumers, capacity)` | named RAM-resident shared memory (ShmFs) | cross-process, never touches the page cache; names `{prefix}_spsc` / `_mpsc_{i}` / `_mpmc_{i}` / `_vyukov` |
 | `create_shmfs_in(name_prefix, max_producers, max_consumers, capacity, ns)` | named shared memory in a chosen namespace | `create_shmfs` with the namespace named explicitly; `ShmNamespace::Machine` puts every region where any Windows session resolves it, which is what a service in session 0 and its interactive clients need. The namespace is retained, so the ordering and payload regions the ring creates later land beside its backings |
 | `open_shmfs_in(name_prefix, max_producers, max_consumers, expected_capacity, ns)` | named shared memory in a chosen namespace (attach) | the attach peer of `create_shmfs_in`, and it must be passed the SAME namespace the creator used. These are create-or-open names, so a mismatch does not report a missing region: both sides succeed against separate regions and neither sees the other |
+| `create_shmfs_secured(name_prefix, max_producers, max_consumers, capacity, ns, sddl)` | named shared memory with a security descriptor | `create_shmfs_in` with `sddl` as the descriptor applied to every region it creates. A `ShmNamespace::Machine` region otherwise carries the creator's default, which admits only the creator's own session, so reaching a service in session 0 from an interactive client takes both the namespace and the descriptor. The descriptor is retained alongside the namespace and reaches the peer directory, the ordering region and the payload region |
+| `open_shmfs_secured(name_prefix, max_producers, max_consumers, expected_capacity, ns, sddl)` | named shared memory with a security descriptor (attach) | the attach peer of `create_shmfs_secured`. These are create-or-open names, so a descriptor is applied only where the call creates a region the creator has not yet made; an attach to a live region uses the descriptor already on it |
 | `create_hugepage(max_producers, max_consumers, capacity)` | huge / large / super pages | each backing on its own 2 MB-paged region (Linux `MAP_HUGETLB`, Windows `MEM_LARGE_PAGES`, FreeBSD `MAP_ALIGNED_SUPER`, macOS x86_64 `VM_FLAGS_SUPERPAGE_SIZE_2MB`); needs a reservation/privilege on Linux/Windows, returns `Err` so the caller can fall back to `create_anon` |
 
 The builders `with_contract`, `with_ordering_stamps` /
@@ -113,7 +115,10 @@ override - until `resume_auto_shape`. The mechanism either way:
    explicit morph_to call requests new_shape.
 2. If old_shape == new_shape: no-op return.
 3. If the previous morph's stale backing still holds a backlog:
-   Err(RingError::StaleBacklog) - retry after the consumer drains.
+   the request is recorded as pending and the caller gets
+   Err(RingError::StaleBacklog). The pop that empties that backlog
+   applies the pending shape, so a peer count the ring could not
+   serve at registration time is served as soon as it safely can be.
 4. pin_generation.fetch_add(1, AcqRel)
      -> all outstanding PinnedRing handles see is_still_valid() == false.
 5. stale_shape_tag.store(old as u8, Release)
@@ -297,8 +302,15 @@ that exist right now - pre-allocated + grown, shared across processes),
 claimed / released by `register_*` / `unregister_*`), `contract()` (the
 effective `RingContract`, UNBOUNDED unless declared with `with_contract`),
 `shape_is_auto()` / `pin_shape()` / `resume_auto_shape()` (the automatic
-shape dial), and `contract_filtered_shape(target)` (maps a proposed shape to
-the nearest contract-legal one - applied before every automatic morph).
+shape dial), `ownership_snapshot()` (one `(ring, owner, pending)` triple
+per MPMC ring, so a consumer that pops `Empty` can be told apart from one
+that owns no ring), and `contract_filtered_shape(target)` (maps a proposed
+shape to the nearest contract-legal one - applied before every automatic
+morph).
+
+`SUBETHA_RING_DEBUG` in the environment logs each shape transition to
+stderr, including a morph deferred behind a stale backlog and the pop
+that later lands it. It changes no behavior.
 
 ## Shape-aware observability
 
@@ -429,11 +441,14 @@ FIFO monotone on both. Run with
   until producers grow (they pop `Empty` in the meantime).
 - **One stale backing at a time**: a second morph before the
   previous shape's backlog drains returns
-  `RingError::StaleBacklog`; the sidecar retries once the
-  consumer catches up.
-- **Stale single-reader backings drain through consumer 0**:
-  after a morph to MPMC, only consumer 0 walks a stale SPSC /
-  MPSC backing (it tolerates exactly one reader).
+  `RingError::StaleBacklog` and is held as pending; the pop that
+  clears the backlog applies it.
+- **Single-reader shapes serve consumer 0**: an SPSC or MPSC
+  backing tolerates exactly one reader, so consumer 0 alone pops
+  it, whether it is the current shape or a stale one. A consumer
+  the current shape cannot serve reads empty and waits for the
+  shape it needs; two of them draining one Lamport core would
+  take the same items twice.
 - **Pin invalidation is caller-polled**: `is_still_valid()` is
   one Acquire load, so callers sample at any cadence (every op,
   every N ops, on backpressure events). No push notification.

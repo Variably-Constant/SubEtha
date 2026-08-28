@@ -38,10 +38,36 @@ as-is); the mapping is prefaulted on construction.
 |---|---|
 | `ShmFile::create_or_open_named(name: &str, size: usize) -> io::Result<Self>` | Create or open a named shared-memory region of `size` bytes in the per-session namespace. Asserts `size > 0`. |
 | `ShmFile::create_or_open_named_in(name: &str, size: usize, ns: ShmNamespace) -> io::Result<Self>` | The same, naming the region in `ns`. `ShmNamespace::Machine` resolves one name to one region for every Windows session, which is what a service in session 0 and its interactive clients need; creating one requires `SeCreateGlobalPrivilege` and a caller without it gets the OS error rather than a per-session region. On Unix a POSIX name is machine-wide either way and the choice changes nothing. |
+| `ShmFile::create_or_open_named_secured(name: &str, size: usize, ns: ShmNamespace, sddl: Option<&str>) -> io::Result<Self>` | The same, with `sddl` as the security descriptor a create applies to the region. See [Access control](#access-control). |
 | `shm.as_mut_slice() -> &mut [u8]` | Cross-platform mutable byte slice into the mapped region. |
 | `shm.len() -> usize` | Region size in bytes. |
 | `shm.is_empty() -> bool` | Always false for a valid region. |
 | `shm.logical_name() -> &str` | The substrate-prefixed safe name. |
+
+## Access control
+
+The namespace decides which name resolves; the security descriptor
+decides who may map it. They are separate, and a region reachable
+across Windows sessions needs both.
+
+A section created with no descriptor carries the creator's default,
+which admits that user's own session. A service in session 0 creating
+in `ShmNamespace::Machine` therefore makes a region whose name an
+interactive client resolves and whose contents it is refused. `sddl`
+is the descriptor that names who may map it, in SDDL form.
+
+- **Applied only by the call that creates the region.** Opening one
+  that already exists uses the descriptor already on it.
+- **The mapping asks for `FILE_MAP_ALL_ACCESS`.** A descriptor
+  granting only read is refused at the map, so a caller admitting
+  authenticated users to map and query writes `"D:(A;;0x000F001F;;;AU)"`.
+- **An unparseable descriptor fails the create.** The region is not
+  built with the creator's default in its place.
+- **The descriptor is the caller's.** The crate applies what it is
+  given and supplies no default of its own; who may reach a region is
+  the calling program's decision.
+- **Unix ignores it.** A POSIX shared-memory object carries mode bits
+  rather than an ACL, and the caller sets those on the object itself.
 
 ## Cross-process visibility
 
@@ -88,11 +114,13 @@ assert_eq!(&b.as_mut_slice()[0..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
 
 ## References
 
-- Source: `crates/subetha-cxc/src/shm_file.rs` (340 lines, 5 unit
+- Source: `crates/subetha-cxc/src/shm_file.rs` (569 lines, 8 unit
   tests: create+read/write, two-handles-same-memory, deterministic
-  sanitize, drop-then-recreate-fresh, and an Apple-gated
-  name-length test). `ShmFile` lives in the `pub mod shm_file`
-  module path.
+  sanitize, namespace prefix selection, a machine-namespace create
+  that reaches the OS and never silently falls back to a per-session
+  region, a descriptor that is either applied or fails the create,
+  drop-then-recreate-fresh, and an Apple-gated name-length test).
+  `ShmFile` lives in the `pub mod shm_file` module path.
 - [`LocaleAdaptiveRing`](../../rings/locale-adaptive-ring/) -
   uses `ShmFile` for the `Locale::ShmFs` backing.
 - [`SpscRingCore::create_from_shm`](../../rings/shared-ring-spsc/),
