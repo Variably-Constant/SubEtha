@@ -32,9 +32,9 @@ that retains all historical versions for time-travel reads.
 
 **Constraints (read first):**
 
-- **In-process only.** All targets are `Arc<T>`. Cross-process
-  versioned storage needs an MMF-backed substrate (not shipped
-  in this primitive).
+- **In-process only.** All targets are `Arc<T>`, so a version
+  chain lives in one process's heap. Cross-process versioned
+  storage is an MMF-backed substrate rather than this pointer.
 - **`VersionedPointer::replace` panics on non-monotonic version.**
   MVCC requires strictly increasing versions; calling
   `replace(new_target, v)` where `v <= self.version` panics with

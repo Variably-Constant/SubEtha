@@ -125,8 +125,8 @@ push/pop, not key/value. Accessors: `submitter()`, `collector()`,
 `watchdog_scan() -> ReclaimReport`. `SchedError` has six variants:
 `Ring(RingError)`, `Transport(TransportError)`, `Heartbeat(HeartbeatError)`,
 `ArgsTooLarge` (a submit whose args exceed 46 bytes), `UnsupportedTransportFamily`,
-and `ResultTooLarge` - which is **reserved and never returned** today (oversized
-results are truncated to `MAX_RESULT_LEN` rather than erroring).
+and `ResultTooLarge` - which is **reserved and never returned**: an oversized
+result is truncated to `MAX_RESULT_LEN` rather than erroring.
 
 ---
 

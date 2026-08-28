@@ -469,12 +469,11 @@ All confirmed against the source or the bench:
   implement `Hash`). Two pointers with the same target+prefix
   but different extensions compare equal. This is by design (the
   extension is metadata, not identity).
-- **No SIMD prefix scan API today.** The architectural claim is
-  "SIMD-friendly array layout" but the shipped API is a scalar
-  iterator filter. Hand-written SIMD scans over a
-  `&[SharedUmbraPointer<T>]` are possible (and the layout
-  guarantees the prefix is at byte offset 4 of each 16-byte
-  slot) but not exposed as a library function.
+- **Prefix scanning is a scalar iterator filter.** The layout is
+  what makes a SIMD scan possible for a caller that writes one:
+  the prefix sits at byte offset 4 of each 16-byte slot across a
+  `&[SharedUmbraPointer<T>]`, so a hand-written vector compare
+  reads it at a fixed stride.
 - **Speedup depends on T size.** The bench uses `Wide = 32
   bytes`; smaller T narrows the gap (prefix filter saves fewer
   bytes per skipped entry). The architectural claim is most

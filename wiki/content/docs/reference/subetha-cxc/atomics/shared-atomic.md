@@ -129,8 +129,9 @@ graph LR
 | `SharedAtomicU64` | 8 bytes | same as U32 |
 | `SharedAtomicBool` | 1 byte (in 8-byte payload slot) | load, store, swap |
 
-`SharedAtomicBool` does not ship `fetch_add` / `fetch_or` / etc.
-because boolean semantics do not map cleanly to those ops.
+`SharedAtomicBool` carries the three operations a boolean has a
+meaning for. Arithmetic and bitwise read-modify-write belong to the
+integer types above.
 
 ---
 

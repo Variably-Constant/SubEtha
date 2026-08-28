@@ -353,8 +353,8 @@ so the barrier releases without it.
   `header() -> &HeartbeatHeader`, the `heartbeat_file_size(capacity)`
   const fn, and `HeartbeatError` (`LayoutMismatch` / `TableFull` /
   `IoError`). The `role` field (0 = worker, 1 = coordinator) is
-  carried in the slot + snapshot but has no public setter today;
-  `register` initialises it to 0.
+  carried in the slot and the snapshot, and `register` initializes
+  it to 0; it is read through the snapshot rather than set.
 - Bench: `crates/subetha-cxc/benches/heartbeat.rs` (beat, snapshot,
   mark_in_flight, register+unregister cycle vs
   `Mutex<table>` and `Vec<Mutex<slot>>`).

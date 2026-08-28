@@ -62,9 +62,9 @@ that has the region mapped.
 - **Reserved tags 6 and 7 are present** (source lines 30-32).
   Construct via the public constants -
   `from_raw(BOXED_PREFIX | (6 << TAG_SHIFT))` (the `pack` helper is
-  private); `type_tag()` returns `NaNValueType::Reserved(6)`. No
-  accessor exists today; reserved for caller-defined extensions or
-  later-added tagged variants.
+  private); `type_tag()` returns `NaNValueType::Reserved(6)`. The
+  tag is what a caller reads to recognize its own extension; the
+  payload beneath it is the caller's to interpret.
 
 ---
 
@@ -166,7 +166,7 @@ processes that share the SharedRegion.
 | 5 | reserved (TaggedOffsetPtr) | - |
 | 6, 7 | reserved | - |
 
-Three bits = 8 values; 6 are used today, 2 stay reserved as
+Three bits = 8 values; 6 carry a defined type and 2 are reserved as
 caller-defined extension slots. The `NaNValueType::Reserved(u64)`
 variant exposes the raw tag if you query a slot with a reserved
 tag, so existing readers don't crash on tags they don't

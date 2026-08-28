@@ -235,13 +235,13 @@ At each level `N`, the `region_id` indexes into a TABLE OF
 recursion depth is a runtime / type-level choice:
 
 - **Shallow tower (depth 1):** dense address spaces, fast lookup.
-  This is what `KTower2` ships today.
-- **Medium tower (depth 2):** hierarchical naming. `KTower3` ships
-  this for zone -> region -> offset.
+  `KTower2` is this depth.
+- **Medium tower (depth 2):** hierarchical naming. `KTower3` is
+  this depth, for zone -> region -> offset.
 - **Deep tower (depth 4):** very sparse address spaces, minimal
-  storage for empty regions. The crate does NOT ship a
-  general-depth `KTowerCascade` today; that lives in the
-  recursive form as a build-on-top-of-base-case option.
+  storage for empty regions. A tower this deep is composed from
+  the shipped types by treating one as the base case of the next,
+  which is the recursive form the encoding is built for.
 
 ---
 
@@ -264,10 +264,9 @@ let target: *const u64 = unsafe { p.resolve(&region_table) };
 let value: u64 = unsafe { *target };
 ```
 
-`KTower3` exposes `zone()`, `region()`, `offset()`, `raw()` but
-does NOT ship a `resolve` method today. The multi-level table
-indirection is delegated to the caller (the caller picks how to
-build the zone -> region table walk).
+`KTower3` exposes `zone()`, `region()`, `offset()` and `raw()`.
+The zone -> region table walk is the caller's, which is what lets
+the caller choose how those tables are laid out and reached.
 
 ---
 
@@ -384,17 +383,16 @@ two-hop cost.
 These have all been confirmed by reading the source or running
 the bench:
 
-- **`KTower3::resolve` is not shipped.** `KTower3` defines only
-  `new` / `zone` / `region` / `offset` / `raw` accessors; the
-  two-level walk is the caller's responsibility today.
+- **`KTower3` is accessors only.** It defines `new` / `zone` /
+  `region` / `offset` / `raw`, and the two-level walk from zone to
+  region to target belongs to the caller.
 - **Resolution panics on out-of-range `region_id`.**
   `KTower2::resolve` indexes `region_table[self.region_id() as
   usize]`, an ordinary slice index. Out-of-range hits an
   `index_out_of_bounds` panic. This is documented as a Safety
   constraint in the rustdoc.
-- **No `KTower2Mut` for mutable resolution.** The shipped API
-  returns `*const T`. Callers needing `*mut T` cast it themselves
-  from the same encoded form.
+- **Resolution returns `*const T`.** A caller needing `*mut T`
+  casts it from the same encoded form.
 - **Per-segment ceilings are baked in.** `KTower2`: 4 G regions by
   4 GiB / region. `KTower3`: 64 K zones by 64 K regions / zone by
   4 GiB / region. These cover virtually any realistic deployment

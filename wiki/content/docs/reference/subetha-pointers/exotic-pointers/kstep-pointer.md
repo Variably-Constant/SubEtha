@@ -44,11 +44,10 @@ shift amount rather than a multiplicand, the compiler can emit
 - **`k_step: u8` limits stride to `sizeof(T) << 255`.** In
   practice the cap is the address space; usable values are
   `0..=12` (covers tight packing through page-aligned strides).
-- **No iteration over **mutable** elements.** `KStepPointer<T>`
-  exposes `&T` only; for mutable strided iteration use the
-  unsafe raw-pointer math via `at(i)` and the caller's own
-  unsafe mutable deref. The crate does not ship
-  `KStepMutPointer<T>` today.
+- **Iteration yields shared references.** `KStepPointer<T>`
+  exposes `&T`; strided mutable access goes through the raw
+  pointer `at(i)` gives back and the caller's own unsafe
+  mutable deref.
 - **Size is 16 bytes due to alignment.** The struct contains a
   pointer (8 bytes, 8-byte alignment) + u8 + PhantomData. Rust
   rounds up to 16 bytes for the next 8-byte boundary, so
@@ -432,8 +431,8 @@ runtime stride, including the wrong one.
    bare pointer. For collections of strided pointers this
    doubles the storage cost vs raw `*const T`.
 
-6. **No `KStepMutPointer<T>` shipped.** Strided mutable access
-   requires hand-rolled unsafe pointer math via `at(i) as *mut T`.
+6. **Strided mutable access is hand-rolled.** It goes through
+   `at(i) as *mut T` and the caller's own unsafe deref.
 
 7. **Codegen win is ~4% on modern x86.** The architectural
    claim "SHL vs IMUL" is real but small because modern IMUL is
