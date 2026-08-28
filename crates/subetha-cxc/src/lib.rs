@@ -201,6 +201,7 @@ pub mod peer_directory;
 pub mod protocol_pubsub;
 pub mod qos_policy;
 pub mod replay_positions;
+pub mod shared_slab;
 pub mod shm_file;
 pub mod virtual_endpoint;
 #[cfg(target_os = "linux")]

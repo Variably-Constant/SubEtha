@@ -253,9 +253,17 @@ fn main() {
     }
 
     // Stage 4: exactly-once accounting across both consumer processes.
+    // A joiner that received nothing either owned no ring or owned one
+    // nobody filled, and the ownership table is what separates those.
     let sent = [ITEMS_A, ITEMS_B, ITEMS_C];
     for (slot, want) in sent.iter().enumerate() {
         let got = tally.count[slot] + d_counts[slot];
+        if got != *want {
+            println!(
+                "   ownership (ring, owner, pending): {:?}",
+                ring.ownership_snapshot()
+            );
+        }
         assert_eq!(
             got, *want,
             "producer {slot}: sent {want}, consumers received {got} \

@@ -1476,6 +1476,24 @@ impl AdaptiveRing {
         self.reshape_for_counts();
     }
 
+    /// Who owns each published MPMC ring and who it is being handed to:
+    /// `(ring, owner, pending)`, with [`OWNER_NONE`] for unowned and for
+    /// no pending handoff.
+    ///
+    /// A consumer draining nothing reads this to tell "owns no ring"
+    /// from "owns a ring that is empty". A ring whose pending target
+    /// never becomes its owner is a handoff the incumbent has not
+    /// applied, which it does only on a pop scan that reaches that ring.
+    pub fn ownership_snapshot(&self) -> Vec<(usize, u16, u16)> {
+        let n = self.directory.published();
+        (0..n)
+            .map(|r| {
+                let (owner, pending) = self.directory.ring_owner(r);
+                (r, owner, pending)
+            })
+            .collect()
+    }
+
     /// Spread MPMC ring ownership round-robin over the CURRENT
     /// consumer set: unowned rings are claimed directly for their
     /// target; owned rings get a pending handoff their current
