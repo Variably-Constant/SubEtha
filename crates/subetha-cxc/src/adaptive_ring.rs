@@ -131,6 +131,12 @@ pub struct AdaptiveRing {
     /// consumer still looks. `STALE_NONE` = nothing pending.
     stale_shape_tag: AtomicU8,
 
+    /// A shape asked for while a stale backlog still blocked the morph.
+    /// The pop path applies it once that backlog drains, so a peer count
+    /// the ring could not serve at registration time is served as soon
+    /// as it safely can be. `STALE_NONE` when nothing is waiting.
+    pending_shape_tag: AtomicU8,
+
     /// Bumped on every successful morph. Pinned handles capture
     /// this value at pin time and compare on `is_still_valid`.
     pin_generation: AtomicU64,
@@ -388,6 +394,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -469,6 +476,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -541,6 +549,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -623,6 +632,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -769,6 +779,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc, mpsc, mpmc, vyukov,
@@ -913,6 +924,7 @@ impl AdaptiveRing {
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
             stale_shape_tag: AtomicU8::new(STALE_NONE),
+            pending_shape_tag: AtomicU8::new(STALE_NONE),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc, mpsc, mpmc, vyukov,
@@ -1711,6 +1723,7 @@ impl AdaptiveRing {
         {
             return Ok(n);
         }
+        self.land_pending_shape();
         self.shape_pop(shape, consumer_id, out)
     }
 
@@ -2349,12 +2362,28 @@ impl AdaptiveRing {
 
         // One stale backing at a time: the prior morph's backlog
         // must be drained before another shape change.
+        // One stale backing at a time: a second morph would leave the
+        // first one's backlog unreachable. Rather than refuse, record
+        // the shape asked for and let the pop path apply it once that
+        // backlog drains - which is the event that makes it safe, and
+        // which the consumers are already driving. A refusal here
+        // returned to callers that discard it, leaving the ring in a
+        // shape whose reader contract the live peer count broke.
         let prior_stale = self.stale_shape_tag.load(Ordering::Acquire);
         if prior_stale != STALE_NONE
             && !self.backing_is_empty(RingShape::from_u8(prior_stale))
         {
+            self.pending_shape_tag.store(new_shape as u8, Ordering::Release);
+            if ring_debug() {
+                eprintln!(
+                    "subetha ring: morph to {new_shape:?} deferred behind the \
+                     {:?} backlog",
+                    RingShape::from_u8(prior_stale)
+                );
+            }
             return Err(RingError::StaleBacklog);
         }
+        self.pending_shape_tag.store(STALE_NONE, Ordering::Release);
 
         // Bump the pin generation so existing pins see
         // is_still_valid() == false on their next check; then
@@ -2364,6 +2393,34 @@ impl AdaptiveRing {
         self.stale_shape_tag.store(old_shape as u8, Ordering::Release);
         self.shape_tag.store(new_shape as u8, Ordering::Release);
         Ok(())
+    }
+
+    /// Apply a shape whose morph was deferred behind a stale backlog,
+    /// once that backlog is drained. Called from the pop path because
+    /// draining is what makes it safe, so the consumers that clear the
+    /// backlog are the ones that release the shape waiting on it.
+    fn land_pending_shape(&self) {
+        let want = self.pending_shape_tag.load(Ordering::Acquire);
+        if want == STALE_NONE {
+            return;
+        }
+        let stale = self.stale_shape_tag.load(Ordering::Acquire);
+        if stale != STALE_NONE && !self.backing_is_empty(RingShape::from_u8(stale)) {
+            return; // the backlog it waits on still holds items
+        }
+        if self
+            .pending_shape_tag
+            .compare_exchange(want, STALE_NONE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if ring_debug() {
+                eprintln!(
+                    "subetha ring: deferred morph to {:?} landing, backlog drained",
+                    RingShape::from_u8(want)
+                );
+            }
+            self.morph_shape(RingShape::from_u8(want)).ok();
+        }
     }
 
     /// Whether one shape's backing holds no items right now.
@@ -2404,6 +2461,15 @@ impl AdaptiveRing {
         consumer_id: usize,
         out: &mut [u8],
     ) -> Result<usize, RingError> {
+        // A single-reader shape is served to consumer 0 alone, the same
+        // rule `may_walk_stale` applies to a single-reader STALE
+        // backing. A consumer the current shape cannot serve reads
+        // empty and waits: the shape it needs arrives when the morph
+        // lands, and until then two of them draining one Lamport core
+        // would take the same items twice.
+        if !Self::may_walk_stale(shape, consumer_id) {
+            return Err(RingError::Empty);
+        }
         match shape {
             RingShape::Spsc => self.spsc.try_pop(out),
             RingShape::Mpsc => self.mpsc_pop(out),
