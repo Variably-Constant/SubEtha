@@ -17,6 +17,28 @@
 //! - [`scheduler`]: BackgroundScheduler tying the above into an
 //!   autonomous executor
 //!
+//! # How many producers, how many consumers
+//!
+//! Several queue primitives here give ONE thread ownership of one end.
+//! Exceeding that is not slow, it is a data race, and the usual symptom
+//! is a hang rather than an error. The counts are the first thing to
+//! check when picking one:
+//!
+//! | Primitive | Producers | Consumers | Why |
+//! |---|---|---|---|
+//! | [`mpmc_ring`] `SharedRingMpmc` | N | M | N Lamport SPSC rings; each consumer sole-drains a round-robin subset, so neither side CASes |
+//! | [`shared_deque`] `SharedDeque` | **1** | N | Chase-Lev: the owner's `bottom` push/pop is a Relaxed store with no CAS. A second producer races the index |
+//! | [`adaptive_ring`] under `MergeByStamp` / `MergeStrict` | N | **1** | the k-way merge that makes stamps monotone runs under the single-drainer lease |
+//! | [`spsc_ring`] | 1 | 1 | pure Lamport |
+//!
+//! A consumer that holds no drainer lease on a merge-ordered
+//! [`adaptive_ring`] never makes progress and spins; the lease has to be
+//! acquired and renewed, and a silent drainer becomes preemptible after
+//! a grace window counted in drainer epochs.
+//!
+//! [`dispatch_deque`] routes across the deque family by `WorkloadShape`
+//! when the choice is per-call rather than fixed.
+//!
 //! # The unifying mechanism
 //!
 //! Every primitive in this crate uses one mechanism: a file-mapped
