@@ -28,6 +28,13 @@ use memmap2::{MmapMut, MmapOptions};
 pub const T: usize = 8;
 /// Max keys per node.
 pub const B: usize = 2 * T - 1; // 15
+
+/// Descent budget for a range walk. Every node below the root holds at
+/// least `T - 1` keys, so a tree addressed by `u32` node indices is at
+/// most about eleven levels deep; a walk that goes further is reading a
+/// tree a concurrent writer is mid-way through changing, and the budget
+/// stops it following a cycle instead of recursing until the stack ends.
+const MAX_TREE_DEPTH: u32 = 64;
 /// Sentinel "no node".
 pub const NIL: u32 = u32::MAX;
 
@@ -741,6 +748,162 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
         r
     }
 
+    /// Entries whose keys fall in `low..high`, ascending, at most `limit`
+    /// of them.
+    ///
+    /// Resume a longer scan by passing `Bound::Excluded` of the last key
+    /// returned. Resumption is by KEY: a node index is not a stable
+    /// cursor, because a split moves the upper half of a node's entries
+    /// into a new node and promotes the median into the parent, so a
+    /// saved position can name a different entry afterwards, or sit below
+    /// one that has moved above it.
+    ///
+    /// One call is validated against the seqlock exactly as
+    /// [`get`](Self::get) is, so it observes a consistent tree. A scan
+    /// built from several calls is not a snapshot: an entry inserted
+    /// behind the cursor is not seen, one inserted ahead of it is. A
+    /// point-in-time view of a whole range needs writers held off for the
+    /// scan, which is the caller's to arrange.
+    ///
+    /// `limit` bounds the work one call does, and with it the cost of a
+    /// seqlock retry. An unbounded walk retries from the start on every
+    /// concurrent insert, so over a large range it need never finish.
+    pub fn range(
+        &self,
+        low: std::ops::Bound<&K>,
+        high: std::ops::Bound<&K>,
+        limit: usize,
+    ) -> Vec<(K, V)> {
+        let r = self.range_inner(low, high, limit);
+        self.ring_sidecar.push_op(
+            crate::sidecar_ops::ordered::OP_GET,
+            if r.is_empty() { 2 } else { 0 },
+        );
+        r
+    }
+
+    fn range_inner(
+        &self,
+        low: std::ops::Bound<&K>,
+        high: std::ops::Bound<&K>,
+        limit: usize,
+    ) -> Vec<(K, V)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let h = self.header();
+        let cap = self.capacity as u32;
+        loop {
+            let v1 = h.version.load(Ordering::Acquire);
+            if v1 & 1 != 0 {
+                std::hint::spin_loop();
+                continue; // a writer is mid-mutation
+            }
+            let mut out = Vec::new();
+            let mut torn = false;
+            let mut stop = false;
+            let root = h.root.load(Ordering::Acquire);
+            if root != NIL {
+                self.walk_range(
+                    root, low, high, limit, &mut out, cap, MAX_TREE_DEPTH,
+                    &mut torn, &mut stop,
+                );
+            }
+            let v2 = h.version.load(Ordering::Acquire);
+            if v1 == v2 && !torn {
+                return out;
+            }
+            out.clear();
+            std::hint::spin_loop();
+        }
+    }
+
+    /// In-order walk restricted to `low..high`, stopping at `limit`.
+    ///
+    /// Every node index is bounds-guarded and the descent carries a depth
+    /// budget, so a torn read under a concurrent writer cannot deref out
+    /// of range or follow a cycle; either sets `torn` and the caller's
+    /// version re-check discards the partial result.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_range(
+        &self,
+        idx: u32,
+        low: std::ops::Bound<&K>,
+        high: std::ops::Bound<&K>,
+        limit: usize,
+        out: &mut Vec<(K, V)>,
+        cap: u32,
+        depth: u32,
+        torn: &mut bool,
+        stop: &mut bool,
+    ) {
+        if *torn || *stop {
+            return;
+        }
+        if idx >= cap || depth == 0 {
+            *torn = true;
+            return;
+        }
+        let n = self.node(idx);
+        let count = (unsafe { (*n).count } as usize).min(B);
+        let is_leaf = unsafe { (*n).is_leaf } != 0;
+        for i in 0..count {
+            let k = unsafe { (*n).keys[i] };
+            // Child i holds keys below k, so it can only hold entries in
+            // range when k itself is above the low bound.
+            if !is_leaf && Self::low_admits_below(&k, low) {
+                let c = unsafe { (*n).children[i] };
+                self.walk_range(c, low, high, limit, out, cap, depth - 1, torn, stop);
+                if *torn || *stop {
+                    return;
+                }
+            }
+            if Self::above_high(&k, high) {
+                *stop = true;
+                return;
+            }
+            if Self::at_or_above_low(&k, low) {
+                out.push((k, unsafe { (*n).values[i] }));
+                if out.len() >= limit {
+                    *stop = true;
+                    return;
+                }
+            }
+        }
+        if !is_leaf {
+            let c = unsafe { (*n).children[count] };
+            self.walk_range(c, low, high, limit, out, cap, depth - 1, torn, stop);
+        }
+    }
+
+    /// Whether a subtree holding keys strictly below `k` can hold an
+    /// entry at or above the low bound.
+    #[inline]
+    fn low_admits_below(k: &K, low: std::ops::Bound<&K>) -> bool {
+        match low {
+            std::ops::Bound::Unbounded => true,
+            std::ops::Bound::Included(l) | std::ops::Bound::Excluded(l) => k > l,
+        }
+    }
+
+    #[inline]
+    fn at_or_above_low(k: &K, low: std::ops::Bound<&K>) -> bool {
+        match low {
+            std::ops::Bound::Unbounded => true,
+            std::ops::Bound::Included(l) => k >= l,
+            std::ops::Bound::Excluded(l) => k > l,
+        }
+    }
+
+    #[inline]
+    fn above_high(k: &K, high: std::ops::Bound<&K>) -> bool {
+        match high {
+            std::ops::Bound::Unbounded => false,
+            std::ops::Bound::Included(hi) => k > hi,
+            std::ops::Bound::Excluded(hi) => k >= hi,
+        }
+    }
+
     /// Collect all (K, V) in ascending key order (validation / iteration).
     pub fn iter_ascending(&self) -> Vec<(K, V)> {
         let mut out = Vec::with_capacity(self.len());
@@ -808,6 +971,139 @@ mod tests {
         assert_eq!(fresh.get(&7), None, "reset kept an entry");
         assert_eq!(fresh.len(), 0);
         drop(fresh);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Ordered semantics come from `std::collections::BTreeMap::range`,
+    /// an implementation with nothing in common with this one, so the
+    /// expected values are not a restatement of what this code does.
+    #[test]
+    fn range_agrees_with_the_std_btreemap() {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+
+        let p = tmp("range_oracle");
+        let m: SharedBTreeMap<u64, u64> = SharedBTreeMap::create(&p, 4096).unwrap();
+        let mut oracle = std::collections::BTreeMap::new();
+
+        // A spread that is not contiguous, so a bound can fall between
+        // stored keys as well as on one.
+        for i in 0..400u64 {
+            let k = i * 3 + 7;
+            m.insert(k, k * 11).unwrap();
+            oracle.insert(k, k * 11);
+        }
+
+        let probes = [0u64, 6, 7, 8, 100, 101, 102, 613, 1000, 1206, 1207, 5000];
+        for &a in &probes {
+            for &b in &probes {
+                for (lo, hi) in [
+                    (Included(&a), Included(&b)),
+                    (Included(&a), Excluded(&b)),
+                    (Excluded(&a), Included(&b)),
+                    (Excluded(&a), Excluded(&b)),
+                    (Unbounded, Included(&b)),
+                    (Included(&a), Unbounded),
+                    (Unbounded, Unbounded),
+                ] {
+                    // std panics rather than returning empty on a range
+                    // it considers malformed - start beyond end, or an
+                    // empty exclusive span. This returns empty for both,
+                    // so the oracle is only consulted where it answers.
+                    let std_panics = match (lo, hi) {
+                        (Included(l) | Excluded(l), Included(h)) => l > h,
+                        (Included(l), Excluded(h)) => l > h,
+                        (Excluded(l), Excluded(h)) => l >= h,
+                        _ => false,
+                    };
+                    let got = m.range(lo, hi, usize::MAX);
+                    let want: Vec<(u64, u64)> = if std_panics {
+                        Vec::new()
+                    } else {
+                        oracle.range((lo, hi)).map(|(k, v)| (*k, *v)).collect()
+                    };
+                    assert_eq!(got, want, "low {lo:?} high {hi:?}");
+                }
+            }
+        }
+        drop(m);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A scan longer than one call reassembles the whole ordered range,
+    /// with no key dropped between chunks and none returned twice.
+    #[test]
+    fn a_chunked_scan_resumed_by_key_covers_the_range_exactly_once() {
+        use std::ops::Bound::{Excluded, Unbounded};
+
+        let p = tmp("range_chunk");
+        let m: SharedBTreeMap<u64, u64> = SharedBTreeMap::create(&p, 4096).unwrap();
+        for i in 0..500u64 {
+            m.insert(i * 2, i).unwrap();
+        }
+
+        for limit in [1usize, 2, 7, 64, 499, 500, 501] {
+            let mut seen: Vec<(u64, u64)> = Vec::new();
+            let mut low = Unbounded;
+            loop {
+                let chunk = m.range(low, Unbounded, limit);
+                if chunk.is_empty() {
+                    break;
+                }
+                assert!(chunk.len() <= limit, "limit {limit} exceeded");
+                let last = chunk[chunk.len() - 1].0;
+                seen.extend(chunk);
+                low = Excluded(Box::leak(Box::new(last)));
+            }
+            let want: Vec<(u64, u64)> = (0..500u64).map(|i| (i * 2, i)).collect();
+            assert_eq!(seen, want, "chunked scan at limit {limit}");
+        }
+        drop(m);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// A range walked while a writer inserts must never return keys out
+    /// of order, outside its bounds, or past its limit. It is not a
+    /// snapshot, so which entries appear is not asserted.
+    #[test]
+    fn range_stays_ordered_and_bounded_under_a_concurrent_writer() {
+        use std::ops::Bound::Included;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrd};
+        use std::sync::Arc;
+
+        let p = tmp("range_conc");
+        let m: Arc<SharedBTreeMap<u64, u64>> =
+            Arc::new(SharedBTreeMap::create(&p, 8192).unwrap());
+        for i in 0..200u64 {
+            m.insert(i, i).unwrap();
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let w = {
+            let m = Arc::clone(&m);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut k = 1000u64;
+                while !stop.load(AtomOrd::Acquire) {
+                    m.insert(k, k).ok();
+                    k += 1;
+                }
+            })
+        };
+
+        let (lo, hi) = (50u64, 150u64);
+        for _ in 0..2000 {
+            let got = m.range(Included(&lo), Included(&hi), 32);
+            assert!(got.len() <= 32);
+            for w in got.windows(2) {
+                assert!(w[0].0 < w[1].0, "range returned keys out of order: {got:?}");
+            }
+            for (k, _) in &got {
+                assert!((lo..=hi).contains(k), "range returned {k} outside {lo}..={hi}");
+            }
+        }
+        stop.store(true, AtomOrd::Release);
+        w.join().unwrap();
+        drop(m);
         std::fs::remove_file(&p).ok();
     }
 
