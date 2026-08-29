@@ -129,11 +129,17 @@ only, `first()` as the horizon.
 ## Layout
 
 ```text
-| EpochHeader (64B) | PinSlot 0 (64B) | PinSlot 1 (64B) | ... |
+| EpochHeader (64B) | HolderSlot 0 (64B) | HolderSlot 1 (64B) | ... |
 
 EpochHeader = | magic | capacity | now: AtomicU64 | pad |
-PinSlot     = | state: AtomicU64 | owner_pid: AtomicU32 | pad |
+HolderSlot  = | state: AtomicU64 | owner_pid: AtomicU32 | pad |
 ```
+
+The pins are a [Holder Table](../holder-table/) over the slots behind
+the header, and a slot's payload is the pinned epoch plus one - the bias
+is what lets epoch 0 be pinned while `HOLDER_FREE` still means
+unclaimed. `PIN_FREE` and `PIN_RESERVED` name that table's states from
+here.
 
 ---
 
@@ -208,7 +214,7 @@ the record it names or be dropped while a scan still needs it.
 
 ## References
 
-- Source: `crates/subetha-cxc/src/shared_epochs.rs` (13 unit tests
+- Source: `crates/subetha-cxc/src/shared_epochs.rs` (15 unit tests
   covering the horizon with and without readers, the oldest pin
   setting it, two readers at one epoch, visibility at the pin,
   concurrent pins against a writer, a horizon that never passes a pin

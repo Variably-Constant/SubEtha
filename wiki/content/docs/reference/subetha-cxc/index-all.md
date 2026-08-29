@@ -40,6 +40,9 @@ links to.
 - `HeartbeatTable` -
   [HEARTBEAT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HEARTBEAT.md)
   (see [coordination.md](coordination.md#heartbeattable))
+- `HolderTable` -
+  [HOLDER_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HOLDER_TABLE.md)
+  (see [coordination-types/holder-table.md](coordination-types/holder-table.md))
 
 ## K
 
@@ -102,6 +105,9 @@ links to.
 - `SharedCountMinSketch` -
   [SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md)
   (see [shared-sketches.md](shared-sketches.md#sharedcountminsketch))
+- `SharedArc` -
+  [SHARED_ARC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARC.md)
+  (see [ownership-types/shared-arc.md](ownership-types/shared-arc.md))
 - `SharedEpochs` -
   [SHARED_EPOCHS.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_EPOCHS.md)
   (see [coordination-types/shared-epochs.md](coordination-types/shared-epochs.md))
@@ -192,3 +198,9 @@ links to.
 
 - `TaggedOffsetPtr` -
   [TAGGED_OFFSET_PTR.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/TAGGED_OFFSET_PTR.md)
+
+## V
+
+- `VersionedBTreeMap` -
+  [VERSIONED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/VERSIONED_BTREE_MAP.md)
+  (see [maps/versioned-btree-map.md](maps/versioned-btree-map.md))

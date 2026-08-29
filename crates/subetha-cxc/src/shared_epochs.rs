@@ -60,6 +60,16 @@ pub const EPOCH_MAGIC: u64 = 0x4550_4F43_4853_5F31; // "EPOCHS_1"
 /// A monotonic point in the store's history.
 pub type Epoch = u64;
 
+/// A pin slot holding nothing. The pins are a
+/// [`HolderTable`], so this is that table's
+/// [`HOLDER_FREE`](crate::holder_table::HOLDER_FREE) under the name
+/// 0.2.4 published it as.
+pub const PIN_FREE: u64 = crate::holder_table::HOLDER_FREE;
+
+/// A pin slot claimed whose epoch is not decided yet, the same value as
+/// [`HOLDER_RESERVED`](crate::holder_table::HOLDER_RESERVED).
+pub const PIN_RESERVED: u64 = crate::holder_table::HOLDER_RESERVED;
+
 /// Scans a reclaimer spins on a reservation before probing whether the
 /// process holding it is still there.
 const RESERVATION_SPINS: u32 = 64;

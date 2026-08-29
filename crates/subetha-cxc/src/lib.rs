@@ -486,7 +486,7 @@ pub use holder_table::{
 };
 pub use shared_epochs::{
     epoch_file_size, Epoch, EpochError, EpochHeader, PinGuard, SharedEpochs,
-    EPOCH_MAGIC,
+    EPOCH_MAGIC, PIN_FREE, PIN_RESERVED,
 };
 pub use shared_slab::{
     slab_file_size, slab_slot_size, SharedSlab, SlabError, SlabHeader,

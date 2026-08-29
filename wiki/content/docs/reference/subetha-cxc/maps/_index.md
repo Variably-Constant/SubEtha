@@ -13,6 +13,7 @@ Keyed lookup and ordered storage primitives.
 |---|---|
 | [Shared Hash Map](shared-hash-map/) | O(1) average; open-addressed; FNV-1a hashing for cross-process determinism |
 | [Shared B-Tree Map](shared-btree-map/) | Ordered; supports range queries |
+| [Versioned BTree Map](versioned-btree-map/) | Ordered with epoch-stamped entries; a scan reads a fixed view while writers run |
 | [Shared Linked List](shared-linked-list/) | Doubly-linked; stable iterator positions across mutations |
 
 For prose overview of the category, see [shared-hash-map](../shared-hash-map/).
