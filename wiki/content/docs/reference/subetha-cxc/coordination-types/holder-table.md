@@ -52,6 +52,47 @@ whether that process is still there.
 
 ---
 
+## Bench evidence
+
+Against the `AtomicU32` refcount it replaces.
+
+| Op | `HolderTable` | `AtomicU32` refcount | relative |
+|---|---:|---:|---|
+| claim + release, table empty | **7.69 ns** | 15.26 ns | **1.98x faster** |
+| claim + release, 3/4 held | 51.85 ns | 15.26 ns | 3.4x slower |
+| live count | 68.45 ns | **1.79 ns** | **38x slower** |
+
+### Reading the trade-offs
+
+1. **A sparse table beats the refcount.** One CAS plus two stores to
+   distinct cache lines costs less than `fetch_add` and `fetch_sub` on
+   the same word, which serialize against each other.
+2. **The scan is the cost, and it shows when the table is full.** A
+   claim searches for a free slot, so a three-quarters-held table pays
+   6.7x the empty case.
+3. **Counting is a scan.** `live()` walks every slot where a refcount
+   is one load. A caller polling the count in a loop has the ratio the
+   wrong way round.
+4. **Size the capacity to expected holders, not to the worst case.**
+   Both slow numbers are functions of capacity, not of holders.
+
+### Bench audit
+
+- **Fair contender**: the refcount is what a caller would otherwise
+  write, and `fetch_add` / `fetch_sub` is the whole of what it does.
+- **No surplus work in either arm**: table and counter both allocated
+  outside the measured loop.
+- **Claim measured loaded as well as empty**, because an empty table
+  hides the free-slot scan that is the design's cost.
+
+### What the numbers do NOT show
+
+- **The reap.** A refcount has no equivalent - there is nothing in it
+  to probe - which is the reason the table exists and the reason a
+  bench cannot express its value.
+
+---
+
 ## API
 
 | Call | Behavior |
@@ -135,6 +176,9 @@ table.release(slot);
   that is visible but not a payload, folding published payloads, a dead
   holder and a dead reservation being reaped, a refused sentinel
   payload, and concurrent claims never handing two callers one slot).
+- Bench: `crates/subetha-cxc/benches/holder_table.rs` (claim and
+  release on an empty and a three-quarters-held table, and the live
+  count, against an `AtomicU32` refcount).
 - Consumer: [Shared Epochs](../shared-epochs/) - the pin table, with the
   pinned epoch plus one as its payload.
 - Consumer: [Shared Arc](../../ownership-types/shared-arc/) - the

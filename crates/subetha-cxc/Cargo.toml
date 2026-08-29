@@ -451,6 +451,18 @@ name = "shared_epochs"
 harness = false
 
 [[bench]]
+name = "holder_table"
+harness = false
+
+[[bench]]
+name = "shared_arc"
+harness = false
+
+[[bench]]
+name = "versioned_btree_map"
+harness = false
+
+[[bench]]
 name = "shared_broadcast_ring"
 harness = false
 

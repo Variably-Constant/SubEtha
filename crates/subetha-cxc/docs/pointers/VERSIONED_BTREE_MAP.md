@@ -40,6 +40,49 @@ plain tree is untouched and no existing user pays for versioning.
 
 ---
 
+## Bench evidence
+
+Against the same `SharedBTreeMap` without versioning, at 4,000 entries
+in a 16,384-node arena, so the numbers say what the snapshot costs and
+nothing else.
+
+| Op | Versioned | Plain | relative |
+|---|---:|---:|---|
+| insert | 157.79 ns | **65.49 ns** | **2.41x slower** |
+| get (current) | 48.70 ns | **38.75 ns** | 1.26x slower |
+| get_at (pinned) | 55.15 ns | n/a | the plain tree has no equivalent |
+| range, 1024 rows, no tombstones | 10.85 us | **7.17 us** | 1.51x slower |
+| range, a quarter tombstoned | 10.95 us | **7.17 us** | 1.53x slower |
+
+### Reading the trade-offs
+
+1. **Insert pays most.** An epoch advance, a wider node, and a lookup
+   before the write to check the reborn-key case.
+2. **Reads pay the node width, not the filter.** A range over a
+   quarter-tombstoned tree costs 1% more than a clean one, so the
+   visibility predicate is free next to walking the larger nodes.
+3. **`get_at` is what the plain tree cannot do at all.** It is not a
+   slower `get`; it answers a different question.
+4. **The cost is the snapshot, and it is paid on writes.** A
+   write-heavy store with rare scans is the wrong shape for this; a
+   store scanned while it is written is what it is for.
+
+### Bench audit
+
+- **Fair contender**: the same B-tree at the same node capacity, so
+  the only difference is `Versioned<u64>` against `u64`.
+- **No surplus work in either arm**: both created and populated
+  outside the measured loop.
+- **The range is measured tombstoned as well as clean**, because a
+  clean tree hides the filter entirely.
+
+### What the numbers do NOT show
+
+- **The plain tree has no answer to a scan that must not see a
+  concurrent write.** It is not a faster way of doing the same thing.
+
+---
+
 ## The one refusal
 
 A map holds one entry per key. When a key that is currently a tombstone
@@ -144,6 +187,9 @@ let low = match next { Some(k) => Bound::Excluded(&k), None => break };
   sweeping and retrying, a range matching a `std::collections::BTreeMap`
   filtered at the pin, and a chunked resume covering the same rows as
   one call).
+- Bench: `crates/subetha-cxc/benches/versioned_btree_map.rs` (insert,
+  get, pinned get and range with and without tombstones, against the
+  same tree unversioned).
 - Substrate: [SHARED_BTREE_MAP.md](SHARED_BTREE_MAP.md) - the ordered
   map it holds, unchanged.
 - Substrate: [SHARED_EPOCHS.md](SHARED_EPOCHS.md) - the counter and the

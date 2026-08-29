@@ -44,6 +44,53 @@ returns it, and `strong_count` is how many are held.
 
 ---
 
+## Bench evidence
+
+Against `std::sync::Arc<T>`, which cannot cross a process boundary at
+any price.
+
+| Op | `SharedArc` | `std::sync::Arc` | relative |
+|---|---:|---:|---|
+| open + drop | 133.89 us | **13.84 ns** | dominated by the mmap |
+| slot claim + release alone | **7.22 ns** | 13.84 ns | **1.92x faster** |
+| read the value | 1.28 ns | **1.17 ns** | tied |
+| strong_count | 62.24 ns | **1.25 ns** | **50x slower** |
+
+### Reading the trade-offs
+
+1. **`open` is a file mapping, not a refcount bump.** The 133 us is
+   `mmap` plus header validation; the primitive's own work is the 7.22
+   ns slot claim beside it. A caller opens once per process and holds,
+   so this is a startup cost, not a hot-path one.
+2. **The slot claim itself beats `Arc::clone`**, for the same reason
+   the holder table does: distinct cache lines against one contended
+   word.
+3. **Reading is a tie.** Both are a load through a pointer; the value
+   lives in a mapping rather than on the heap and costs the same to
+   reach.
+4. **`strong_count` is a slot scan** where `Arc`'s is one load. Read it
+   when something changes, not in a loop.
+
+### Bench audit
+
+- **Fair contender**: `Arc<T>` is the primitive this is shaped after,
+  and `Arc::clone` plus drop is the whole of what it does to take a
+  hold.
+- **The mmap is separated from the slot claim** rather than reported as
+  one number, because they are different costs and only one belongs to
+  this design.
+- **Reading is measured through an already-held handle**, which is what
+  a caller does after opening once.
+
+### What the numbers do NOT show
+
+- **Cross-process access.** `Arc` cannot address a value in another
+  process at all.
+- **A count that survives a crash.** `Arc`'s strong count cannot be
+  asked whether a holder is still running.
+
+---
+
 ## API
 
 | Call | Behavior |
@@ -147,6 +194,9 @@ assert_eq!(a.get().get(), 15);
   capacity, a full holder table, a dead holder ceasing to count, the
   last holder unlinking only when asked, an atomic value every holder
   bumps, and concurrent handles never sharing a slot).
+- Bench: `crates/subetha-cxc/benches/shared_arc.rs` (open, the slot
+  claim alone, reading the value and the strong count, against
+  `std::sync::Arc`).
 - Substrate: [HOLDER_TABLE.md](HOLDER_TABLE.md) - the slots and the
   liveness probe.
 - Sibling primitive: [SHARED_CELL.md](SHARED_CELL.md) - a single
