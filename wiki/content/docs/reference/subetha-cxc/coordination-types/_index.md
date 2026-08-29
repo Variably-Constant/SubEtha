@@ -13,6 +13,7 @@ Heartbeat, failover, barrier, and work-distribution primitives layered on the su
 |---|---|
 | [Heartbeat Table](heartbeat/) | Per-process heartbeat slots; backs failover |
 | [Epoch Barrier](epoch-barrier/) | All N processes finish phase K before any starts phase K+1 |
+| [Shared Epochs](shared-epochs/) | Visibility clock: a scan pins an epoch and reads a fixed view while writers run |
 | [Failover Watchdog](failover/) | Scans heartbeats; reclaims work from dead peers |
 | [Event State Log](event-state-log/) | Event-sourced state with cross-process replay |
 | [Priority Fanout](priority-fanout/) | Tiered work queue; O(1) priority selection |

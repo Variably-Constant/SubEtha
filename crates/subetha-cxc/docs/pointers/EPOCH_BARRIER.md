@@ -365,3 +365,7 @@ soon as the threshold is met without waiting for stragglers.
 - Sibling primitive: [FAILOVER.md](./FAILOVER.md) -
   same heartbeat dependency; failover triggers on staleness
   rather than synchronizing on liveness.
+- Not to be confused with:
+  [SHARED_EPOCHS.md](./SHARED_EPOCHS.md) - a visibility clock,
+  where the number orders versions rather than phases and nobody
+  waits for anybody.

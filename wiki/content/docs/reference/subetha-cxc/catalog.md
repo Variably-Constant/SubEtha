@@ -111,6 +111,7 @@ Coordination across process boundaries.
 | [`HeartbeatTable`](coordination/#heartbeattable) | Per-process heartbeat slots in an MMF | Discover which peer processes are alive; the table backs failover | [HEARTBEAT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HEARTBEAT.md) |
 | [`FailoverWatchdog`](coordination/#failoverwatchdog) | Scans the heartbeat table and reclaims work from dead peers | Reassign owner-leases / leader-roles when a process dies | [FAILOVER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/FAILOVER.md) |
 | [`EpochBarrier`](coordination/#epochbarrier) | Multi-process phase synchronisation | All N processes must finish phase K before any starts phase K+1 | [EPOCH_BARRIER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/EPOCH_BARRIER.md) |
+| [`SharedEpochs`](coordination-types/shared-epochs/) | Cross-process epoch counter with a shared pin table | A scan needs a fixed view of a store the writers keep changing, and a reclaimer in another process must not drop what that scan can still see | [SHARED_EPOCHS.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_EPOCHS.md) |
 
 ## Work distribution
 

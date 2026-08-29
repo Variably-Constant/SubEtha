@@ -102,6 +102,9 @@ links to.
 - `SharedCountMinSketch` -
   [SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md)
   (see [shared-sketches.md](shared-sketches.md#sharedcountminsketch))
+- `SharedEpochs` -
+  [SHARED_EPOCHS.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_EPOCHS.md)
+  (see [coordination-types/shared-epochs.md](coordination-types/shared-epochs.md))
 - `SharedFenceClock` -
   [SHARED_FENCE_CLOCK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_FENCE_CLOCK.md)
   (see [shared-locks.md](shared-locks.md#sharedfenceclock))

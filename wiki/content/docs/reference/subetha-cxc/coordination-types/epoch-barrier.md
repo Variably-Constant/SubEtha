@@ -380,3 +380,6 @@ soon as the threshold is met without waiting for stragglers.
 - Sibling primitive: [FAILOVER.md](failover/) -
   same heartbeat dependency; failover triggers on staleness
   rather than synchronizing on liveness.
+- Not to be confused with: [Shared Epochs](../shared-epochs/) - a
+  visibility clock, where the number orders versions rather than
+  phases and nobody waits for anybody.
