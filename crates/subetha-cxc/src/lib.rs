@@ -75,6 +75,7 @@ pub mod sidecar_ops;
 
 pub mod cached_clock;
 pub mod shared_epochs;
+pub mod versioned_btree_map;
 pub mod epoch_barrier;
 pub mod event_state_log;
 pub mod failover;
@@ -483,6 +484,9 @@ pub use shared_slab::{
     SLAB_MAGIC, SLAB_SLOT_PREFIX,
 };
 pub use shared_btree_map::{BTreeError, SharedBTreeMap};
+pub use versioned_btree_map::{
+    Versioned, VersionedBTreeMap, VersionedError, DIED_LIVE,
+};
 pub use shared_string_arena::{
     arena_file_size, ArenaError, ArenaHeader, SharedStringArena, StringRef,
     ARENA_MAGIC,
