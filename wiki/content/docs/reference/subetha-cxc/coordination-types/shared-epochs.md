@@ -59,6 +59,52 @@ nothing else.
 
 ---
 
+## Bench evidence
+
+Against a process-local `Mutex<Vec<(Epoch, u32)>>` pin set - the design
+this replaces, a mutex over a sorted vector taken on pin and release
+only, `first()` as the horizon.
+
+| Op | `SharedEpochs` (mmf) | local `Mutex<Vec>` | relative |
+|---|---:|---:|---|
+| advance | 8.62 ns | 8.90 ns | tied |
+| pin + release | **11.50 ns** | 32.69 ns | **2.84x faster** |
+| reclaim_horizon, no pins | 60.37 ns | **17.52 ns** | **3.4x slower** |
+| reclaim_horizon, 32 pins | 88.35 ns | **18.01 ns** | **4.9x slower** |
+
+### Reading the trade-offs
+
+1. **A pin is one CAS**; the baseline takes a mutex, binary-searches
+   and inserts, then does it again to release.
+2. **The horizon is a slot scan**, O(capacity), where the baseline
+   reads `first()`. It is the price of putting the pin set somewhere a
+   second process can read it: a sorted vector cannot live in a
+   mapping.
+3. **The shape suits the caller.** A scan pins once at each end and a
+   reclaimer reads the horizon when it needs space, so the fast
+   operation is the frequent one. A caller that polls the horizon in a
+   loop has the ratio the wrong way round.
+4. **Cross-process visibility** is the architectural lever, and it is
+   why the slower operation is worth its cost.
+
+### Bench audit
+
+- **Fair contender**: the exact shape of the implementation replaced,
+  not a strawman.
+- **No surplus work in either arm**: the vector is allocated and the
+  table mapped once, outside the measured loop.
+- **The horizon is measured loaded as well as idle**, because an idle
+  table hides the slot scan that is the whole cost.
+
+### What the numbers do NOT show
+
+- **Cross-process visibility.** The baseline cannot do it at any price;
+  a pin it holds is invisible to a reclaimer in another process.
+- **The dead-owner reap.** It has no baseline, because a process-local
+  pin set cannot outlive its process.
+
+---
+
 ## API
 
 | Call | Behavior |
@@ -169,6 +215,9 @@ the record it names or be dropped while a scan still needs it.
   taken beside it, a full table refusing rather than overwriting, a
   dead owner's slot being reaped, and two handles on one file sharing
   both the counter and the pins).
+- Bench: `crates/subetha-cxc/benches/shared_epochs.rs` (advance, pin +
+  release, and the horizon both idle and loaded, against a
+  process-local mutex pin set).
 - Sibling primitive:
   [Shared Versioned Chain](../../specialized/shared-versioned-chain/) -
   MVCC linked list; the same visibility question answered per chain

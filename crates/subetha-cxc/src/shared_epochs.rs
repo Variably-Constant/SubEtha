@@ -64,6 +64,14 @@ pub type Epoch = u64;
 /// A slot holding no pin.
 pub const PIN_FREE: u64 = 0;
 
+/// A slot claimed whose epoch has not been decided yet. Held for one
+/// load and one store, and never reported as a pin.
+pub const PIN_RESERVED: u64 = u64::MAX;
+
+/// Scans a reclaimer spins on a reservation before probing whether the
+/// process holding it is still there.
+const RESERVATION_SPINS: u32 = 64;
+
 #[repr(C, align(64))]
 pub struct EpochHeader {
     pub magic: u64,
@@ -241,6 +249,17 @@ impl SharedEpochs {
         self.try_claim().ok_or(EpochError::PinsExhausted)
     }
 
+    /// Reserve a slot, THEN decide the epoch.
+    ///
+    /// The order is the safety property. A pinner that read the epoch
+    /// first could claim at an epoch a reclaimer had already passed: the
+    /// reclaimer samples the counter, scans, sees the slot still free,
+    /// and returns a horizon above a pin that becomes visible an
+    /// instant later. Reserving first inverts it - the epoch is read
+    /// AFTER the slot is visible, so it is at or above any horizon a
+    /// reclaimer could have been computing, and
+    /// [`reclaim_horizon`](Self::reclaim_horizon) waits out a
+    /// reservation rather than reading past it.
     fn try_claim(&self) -> Option<PinGuard<'_>> {
         let pid = std::process::id();
         for i in 0..self.capacity {
@@ -248,16 +267,14 @@ impl SharedEpochs {
             if slot.state.load(Ordering::Acquire) != PIN_FREE {
                 continue;
             }
-            // Read the epoch inside the loop: a claim that lost the race
-            // retries against the epoch current when it wins, never one
-            // sampled before an intervening advance.
-            let at = self.now();
             if slot
                 .state
-                .compare_exchange(PIN_FREE, at + 1, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange(PIN_FREE, PIN_RESERVED, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 slot.owner_pid.store(pid, Ordering::Release);
+                let at = self.now();
+                slot.state.store(at + 1, Ordering::Release);
                 return Some(PinGuard { epochs: self, at, slot: i });
             }
         }
@@ -269,18 +286,36 @@ impl SharedEpochs {
     ///
     /// With no pins outstanding this is the current epoch: nothing is
     /// being read, so everything superseded is reclaimable.
+    /// A slot mid-reservation restarts the scan: its epoch is being read
+    /// right now, and reading past it would return a horizon above the
+    /// pin it is about to publish. The window is one load and one store
+    /// wide.
     pub fn reclaim_horizon(&self) -> Epoch {
-        // Sample the counter BEFORE the slots. A pin claimed after this
-        // load takes an epoch at or above it, so the value returned
-        // stays at or below every live pin.
-        let mut horizon = self.now();
-        for i in 0..self.capacity {
-            let state = self.slot(i).state.load(Ordering::Acquire);
-            if state != PIN_FREE {
-                horizon = horizon.min(state - 1);
+        let mut restarts = 0u32;
+        'scan: loop {
+            // Sample the counter BEFORE the slots. A pin that reserves
+            // after this load reads its epoch after reserving, so it
+            // lands at or above the value returned.
+            let mut horizon = self.now();
+            for i in 0..self.capacity {
+                let state = self.slot(i).state.load(Ordering::Acquire);
+                if state == PIN_RESERVED {
+                    restarts += 1;
+                    // A reservation that outlives its window belongs to
+                    // a process that died inside it, and spinning on it
+                    // would never end.
+                    if restarts.is_multiple_of(RESERVATION_SPINS) {
+                        self.reap_dead_pins();
+                    }
+                    std::hint::spin_loop();
+                    continue 'scan;
+                }
+                if state != PIN_FREE {
+                    horizon = horizon.min(state - 1);
+                }
             }
+            return horizon;
         }
-        horizon
     }
 
     /// Pins outstanding.
@@ -537,6 +572,62 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// The order the whole scheme rests on: a slot is reserved BEFORE
+    /// its epoch is read, and a reclaimer waits out the reservation. A
+    /// reclaimer that read past it would return a horizon above the pin
+    /// about to publish there, and reclaim a version that pin needs.
+    #[test]
+    fn a_reservation_holds_the_horizon_until_its_epoch_is_published() {
+        let e = std::sync::Arc::new(table(2));
+        e.advance();
+        let _live = e.pin().unwrap();
+        for _ in 0..10 {
+            e.advance();
+        }
+        assert_eq!(e.reclaim_horizon(), 1);
+
+        // Stand in for a pinner between its reserve and its publish.
+        e.slot(1).state.store(PIN_RESERVED, Ordering::Release);
+        e.slot(1).owner_pid.store(std::process::id(), Ordering::Release);
+
+        let reader = std::sync::Arc::clone(&e);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&done);
+        let h = std::thread::spawn(move || {
+            let got = reader.reclaim_horizon();
+            flag.store(true, Ordering::Release);
+            got
+        });
+
+        // It must still be scanning: the reservation is unresolved.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !done.load(Ordering::Acquire),
+            "the horizon read past a slot whose epoch was not yet decided"
+        );
+
+        // Publish an epoch below the live pin and it must be respected.
+        e.slot(1).state.store(1, Ordering::Release);
+        assert_eq!(h.join().unwrap(), 0, "the published reservation sets the horizon");
+    }
+
+    /// A process that died between reserving and publishing must not
+    /// spin every reclaimer forever.
+    #[test]
+    fn a_reservation_whose_process_died_is_reaped_by_the_reclaimer() {
+        let e = table(2);
+        e.advance();
+        e.advance();
+        e.slot(0).state.store(PIN_RESERVED, Ordering::Release);
+        e.slot(0).owner_pid.store(u32::MAX - 1, Ordering::Release);
+        assert_eq!(
+            e.reclaim_horizon(),
+            2,
+            "a dead process's reservation must not hold the horizon"
+        );
+        assert_eq!(e.live_pins(), 0, "and its slot is returned to the table");
     }
 
     #[test]

@@ -37,9 +37,10 @@ that resolve in any process holding the same region - use the
 
 The structure of the crate mirrors that:
 
-```
+```text
 subetha-pointers/
 └── src/
+    ├── lib.rs
     ├── umbra_pointer.rs
     ├── bloom_pointer.rs
     ├── cardinality_pointer.rs

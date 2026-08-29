@@ -58,6 +58,52 @@ retries rather than seeing a mixture.
 
 ---
 
+## Bench evidence
+
+A 168-byte record - past `VEC_PAYLOAD_BYTES`, so the case a `SharedVec`
+slot cannot carry at all - against `Mutex<Vec<Record>>` and
+`RwLock<Vec<Record>>`, single-threaded.
+
+| Op | `SharedSlab` (mmf) | `Mutex<Vec>` | `RwLock<Vec>` | relative |
+|---|---:|---:|---:|---|
+| set(i, v) | **36.55 ns** | 68.29 ns | 37.43 ns | **1.87x faster than Mutex**, tied with RwLock |
+| get(i) | 87.05 ns | **59.96 ns** | **52.96 ns** | **1.45x / 1.64x slower** |
+| scattered get | 418.45 ns | **355.27 ns** | n/a | 1.18x slower |
+
+### Reading the trade-offs
+
+1. **Writes win.** A SeqLock write is a version increment, the copy,
+   and a second increment. `Mutex` pays a lock and unlock around the
+   same copy.
+2. **Single-threaded reads lose.** An uncontended `Mutex` read is at
+   its best case here, and the SeqLock pays two ordered loads plus a
+   validation branch on top of the same copy.
+3. **The comparison is single-threaded, which is the baselines' best
+   case.** SeqLock reads of distinct slots do not contend; a `Mutex`
+   serializes every reader against every writer and every other
+   reader. Neither of those shows up in this table.
+
+### Bench audit
+
+- **Fair contenders**: `Mutex<Vec<T>>` (textbook) and `RwLock<Vec<T>>`
+  (reader-optimized), both indexing a plain pre-sized `Vec` with no
+  indirection the slab does not also have.
+- **No surplus work in either arm**: the vector is pre-sized to the
+  slab's capacity, so nothing pays a growth reallocation inside the
+  measured loop.
+- **Sized to the workload the primitive is for**: 168 bytes, chosen
+  because a 4-byte record would measure `SharedVec`'s territory and
+  flatter the slab's stride.
+
+### What the numbers do NOT show
+
+- **Cross-process access.** Both baselines are impossible across a
+  process boundary; that is the reason to reach for the slab.
+- **Concurrent readers.** SeqLock reads of distinct slots do not
+  contend, where the lock arms serialize.
+
+---
+
 ## API
 
 | Call | Behavior |
@@ -79,7 +125,9 @@ retries rather than seeing a mixture.
 ```rust
 use subetha_cxc::SharedSlab;
 
-#[derive(Clone, Copy, Default)]
+// Copy is the whole bound. An array past 32 elements has no Default,
+// and the slab does not ask for one.
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct Record { id: u64, payload: [u8; 160] }
 
@@ -119,6 +167,9 @@ segments[seg].get(slot)?
 ## References
 
 - Source: `crates/subetha-cxc/src/shared_slab.rs`.
+- Bench: `crates/subetha-cxc/benches/shared_slab.rs` (get, set and a
+  scattered get on a 168-byte record vs `Mutex<Vec>` and
+  `RwLock<Vec>`).
 - Sibling: [SHARED_VEC.md](SHARED_VEC.md) - the same SeqLock with a
   one-cache-line slot and append-plus-index semantics.
 - Sibling: [SHARED_REGION.md](SHARED_REGION.md) - records of any size

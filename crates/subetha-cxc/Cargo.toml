@@ -443,6 +443,14 @@ name = "shared_vec"
 harness = false
 
 [[bench]]
+name = "shared_slab"
+harness = false
+
+[[bench]]
+name = "shared_epochs"
+harness = false
+
+[[bench]]
 name = "shared_broadcast_ring"
 harness = false
 
