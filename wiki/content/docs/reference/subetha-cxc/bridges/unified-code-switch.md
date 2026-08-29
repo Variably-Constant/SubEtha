@@ -99,6 +99,26 @@ to the receiver. `connect_tls` / `bind_tls` wrap the whole endpoint in one
 rustls TLS 1.3 handshake whose 1-RTT key seals every datagram of **both**
 codes, so the switch is crypto-transparent and adds no extra round trip.
 
+## A peer that leaves, on Windows
+
+The receiver sends feedback to every peer it has heard from, so a sender
+that finishes and drops its socket leaves the receiver addressing a port
+nothing holds. That draws an ICMP port-unreachable, and Winsock reports
+it to the application as `WSAECONNRESET` on a later `recv_from`: the
+recv completes as an error rather than delivering a datagram, and the
+datagram it displaced belonged to whichever peer happened to be next.
+
+The endpoint disables that mapping through `SIO_UDP_CONNRESET` on every
+socket it binds, so a departure costs the peers still sending nothing.
+The cost it removes, measured on the demux socket under load: 712
+errors against 773 successful receives, every received datagram routed
+and none unroutable, and one of two peers delivering 112 of its 150
+items.
+
+The other platforms report an ICMP port-unreachable through `SO_ERROR`
+on a connected socket, so an unconnected receiver never has a datagram
+displaced by one and the call is a no-op there.
+
 ## Peer restart across the shared socket
 
 The endpoint's demux routes by wire byte, and the two path-validation

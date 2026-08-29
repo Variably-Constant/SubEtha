@@ -67,6 +67,13 @@ dropped. Ordering is guaranteed WITHIN a connection id; nothing orders
 one peer against another, since they are independent streams.
 `live_sessions()` lists the ids with a window.
 
+Independence holds below the decode windows as well. A peer that leaves
+makes the receiver's control sends draw an ICMP port-unreachable, which
+on Windows displaces a datagram belonging to whichever peer was next;
+the receiver disables that at bind, so one peer's departure costs the
+others nothing. See
+[a peer that leaves, on Windows](../unified-code-switch/#a-peer-that-leaves-on-windows).
+
 ## Admitting a peer
 
 The first id a receiver sees is admitted outright: there is no
