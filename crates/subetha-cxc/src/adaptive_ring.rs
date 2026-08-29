@@ -117,6 +117,20 @@ fn ring_debug() -> bool {
     *EN.get_or_init(|| std::env::var("SUBETHA_RING_DEBUG").is_ok())
 }
 
+/// Emit one diagnostic line, stamped with the process that produced it.
+///
+/// Formatted whole and written once. A ring under test spans several
+/// processes writing to one stderr, and a line assembled by `eprintln!`
+/// leaves the formatter in several writes, so their output interleaves
+/// mid-word and no line can be attributed to a process. A write that
+/// fails has nowhere left to report it, which is why this is the one
+/// place a discarded result is the whole story.
+fn ring_note(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let line = format!("subetha ring [pid {}]: {args}\n", std::process::id());
+    std::io::stderr().write_all(line.as_bytes()).ok();
+}
+
 pub struct AdaptiveRing {
     /// Current shape; one Acquire load per dispatched op.
     shape_tag: AtomicU8,
@@ -1506,8 +1520,8 @@ impl AdaptiveRing {
             return;
         }
         let stale = self.stale_shape_tag.load(Ordering::Acquire);
-        eprintln!(
-            "subetha ring: consumer {consumer_id} scanned {rings} ring(s) and found \
+        ring_note(format_args!(
+            "consumer {consumer_id} scanned {rings} ring(s) and found \
              nothing while another owner holds items; shape {:?} stale {} pending {}; \
              ownership {:?}",
             self.current_shape(),
@@ -1525,7 +1539,7 @@ impl AdaptiveRing {
                 }
             },
             self.ownership_snapshot()
-        );
+        ));
     }
 
     /// Who owns each published MPMC ring and who it is being handed to:
@@ -1555,23 +1569,23 @@ impl AdaptiveRing {
         let slots = self.directory.claimed_consumer_slots();
         if slots.is_empty() {
             if ring_debug() {
-                eprintln!("subetha ring: rebalance found no claimed consumer slots");
+                ring_note(format_args!("rebalance found no claimed consumer slots"));
             }
             return;
         }
         let n = self.directory.published();
         if ring_debug() {
-            eprintln!(
-                "subetha ring: rebalance over slots {slots:?}, {n} published ring(s)"
-            );
+            ring_note(format_args!(
+                "rebalance over slots {slots:?}, {n} published ring(s)"
+            ));
         }
         for r in 0..n {
             let desired = slots[r % slots.len()];
             let (owner, pending) = self.directory.ring_owner(r);
             if ring_debug() {
-                eprintln!(
-                    "subetha ring:   ring {r} owner {owner} pending {pending} -> {desired}"
-                );
+                ring_note(format_args!(
+                    "  ring {r} owner {owner} pending {pending} -> {desired}"
+                ));
             }
             if owner == desired {
                 continue;
@@ -2387,11 +2401,11 @@ impl AdaptiveRing {
         {
             self.pending_shape_tag.store(new_shape as u8, Ordering::Release);
             if ring_debug() {
-                eprintln!(
-                    "subetha ring: morph to {new_shape:?} deferred behind the \
+                ring_note(format_args!(
+                    "morph {old_shape:?} -> {new_shape:?} deferred behind the \
                      {:?} backlog",
                     RingShape::from_u8(prior_stale)
-                );
+                ));
             }
             return Err(RingError::StaleBacklog);
         }
@@ -2405,8 +2419,8 @@ impl AdaptiveRing {
         self.stale_shape_tag.store(old_shape as u8, Ordering::Release);
         self.shape_tag.store(new_shape as u8, Ordering::Release);
         if ring_debug() {
-            eprintln!(
-                "subetha ring: morph {old_shape:?} -> {new_shape:?}; stale now \
+            ring_note(format_args!(
+                "morph {old_shape:?} -> {new_shape:?}; stale now \
                  {old_shape:?} (was {}), spsc {} mpsc {:?} mpmc {:?} vyukov {}",
                 if prior_stale == STALE_NONE {
                     "none".to_owned()
@@ -2417,7 +2431,7 @@ impl AdaptiveRing {
                 self.mpsc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
                 self.mpmc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
                 self.vyukov.approx_len(),
-            );
+            ));
         }
         Ok(())
     }
@@ -2441,10 +2455,10 @@ impl AdaptiveRing {
             .is_ok()
         {
             if ring_debug() {
-                eprintln!(
-                    "subetha ring: deferred morph to {:?} landing, backlog drained",
+                ring_note(format_args!(
+                    "deferred morph to {:?} landing, backlog drained",
                     RingShape::from_u8(want)
-                );
+                ));
             }
             self.morph_shape(RingShape::from_u8(want)).ok();
         }

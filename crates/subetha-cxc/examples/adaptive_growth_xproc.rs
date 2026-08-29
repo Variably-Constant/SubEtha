@@ -22,7 +22,7 @@
 //! Run: `cargo run --release -p subetha-cxc --example adaptive_growth_xproc`
 //! Exit code 0 with a PASS line per assertion; any violation exits 1.
 
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -180,7 +180,17 @@ fn main() {
     let mut buf = [0u8; 64];
 
     // Stage 1: one producer -> the ring settles on SPSC.
+    //
+    // Wait for the REGISTRATION, not for the shape. The ring is
+    // constructed Spsc, so a shape wait here passes before the child has
+    // claimed a slot, and the next producer then races it for slot 0.
     let child_a = spawn_role(exe, "producer", &prefix, ITEMS_A);
+    while ring.active_producers() < 1 {
+        if let Ok(n) = ring.try_recv(0, &mut buf) {
+            tally.record(&buf[..n]);
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for the first producer to register");
+    }
     wait_for_shape(&ring, &mut tally, RingShape::Spsc, "1P/1C", deadline);
 
     // Stage 2: two more producer PROCESSES join mid-stream. Slots 1
@@ -210,8 +220,13 @@ fn main() {
 
     // Drain while the producers finish, then signal stop and drain
     // the tail.
-    let mut children = [(child_a, ITEMS_A), (child_b, ITEMS_B), (child_c, ITEMS_C)];
-    for (child, _) in children.iter_mut() {
+    // What each producer SENT, indexed by the slot it actually claimed.
+    // Registration order is the ring's to decide, so the tally is
+    // checked against what each child reports rather than against the
+    // order they were spawned in.
+    let mut sent = [0u64; MAX_SLOTS];
+    let mut children = [child_a, child_b, child_c];
+    for child in children.iter_mut() {
         loop {
             if let Ok(n) = ring.try_recv(0, &mut buf) {
                 tally.record(&buf[..n]);
@@ -223,7 +238,37 @@ fn main() {
             }
             assert!(Instant::now() < deadline, "timed out draining");
         }
+        let mut line = String::new();
+        child
+            .stdout
+            .take()
+            .expect("producer stdout")
+            .read_to_string(&mut line)
+            .expect("read producer stdout");
+        let reported = line
+            .lines()
+            .find_map(|l| l.strip_prefix("SENT "))
+            .expect("producer did not report SENT");
+        let mut parts = reported.split(' ');
+        let slot: usize = parts.next().expect("slot").parse().expect("slot");
+        let count: u64 = parts.next().expect("count").parse().expect("count");
+        assert!(slot < MAX_SLOTS, "producer reported slot {slot}");
+        assert_eq!(sent[slot], 0, "two producers reported slot {slot}");
+        sent[slot] = count;
     }
+    assert_eq!(
+        {
+            let mut got: Vec<u64> = sent.iter().copied().filter(|c| *c > 0).collect();
+            got.sort_unstable();
+            got
+        },
+        {
+            let mut want = vec![ITEMS_A, ITEMS_B, ITEMS_C];
+            want.sort_unstable();
+            want
+        },
+        "the three producers between them did not send what they were asked to"
+    );
     std::fs::write(&stop_flag, b"1").expect("stop flag");
     let mut idle = 0u32;
     while idle < 20_000 {
@@ -252,8 +297,8 @@ fn main() {
         }
     }
 
-    // Stage 4: exactly-once accounting across both consumer processes.
-    let sent = [ITEMS_A, ITEMS_B, ITEMS_C];
+    // Stage 4: exactly-once accounting across both consumer processes,
+    // per slot against what the producer holding that slot reported.
     for (slot, want) in sent.iter().enumerate() {
         let got = tally.count[slot] + d_counts[slot];
         assert_eq!(
@@ -268,7 +313,7 @@ fn main() {
     println!(
         "PASS: exactly-once across 2 consumer processes \
          (driver {:?} + joiner {:?} == sent {:?})",
-        &tally.count[..3], &d_counts[..3], sent
+        &tally.count[..3], &d_counts[..3], &sent[..3]
     );
     println!("PASS: per-producer FIFO monotone on both consumers");
 
