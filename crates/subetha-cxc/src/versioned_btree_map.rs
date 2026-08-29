@@ -6,30 +6,21 @@
 //!
 //! A [`SharedBTreeMap`] holding [`Versioned<V>`] beside a
 //! [`SharedEpochs`]. An entry records the epoch it became current and
-//! the epoch it stopped being current; a delete STAMPS the second
+//! the epoch it stopped being current; a delete stamps the second
 //! rather than removing the entry; a scan pins an epoch and sees the
 //! entries that were current then. Superseded entries are dropped once
 //! no pin can still reach them.
 //!
-//! # Why not copy-on-write
+//! # Retention
 //!
-//! The obvious shape is a persistent tree: a writer copies the path it
-//! touches and publishes a new root, and a reader keeps the old root
-//! alive for its whole scan. Against a FIXED node arena that shape has
-//! a failure mode that does not belong to the problem - a retained root
-//! pins every superseded node, so a slow reader starves the arena and
-//! WRITES begin to fail. Retention becomes scan duration times write
-//! rate, and there is no honest bound to put on it.
-//!
-//! Versioning the entries removes it. Nothing is copied, no root is
-//! retained, and growth is tombstones under one horizon rather than
-//! whole paths under a reader. What a long scan costs is the tombstones
-//! created during it, which is bounded by write volume, not by how long
-//! the scan takes to walk what it already pinned.
+//! Nothing is copied and no root is retained, so the arena holds the
+//! live entries plus the tombstones created since the last sweep.
+//! Retention is bounded by write volume between horizon advances, not
+//! by how long a scan runs.
 //!
 //! # The one refusal
 //!
-//! A map holds ONE entry per key. When a key that is currently a
+//! A map holds one entry per key. When a key that is currently a
 //! tombstone is inserted again while a live pin can still need that
 //! tombstone, there is nowhere to put the new entry that does not
 //! destroy the old one - and destroying it makes the pinned scan lose a

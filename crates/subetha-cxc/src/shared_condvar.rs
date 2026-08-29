@@ -346,14 +346,25 @@ mod tests {
                 })
             })
             .collect();
-        thread::sleep(Duration::from_millis(50));
+        // Wait for a waiter to be parked, which is what notify_one
+        // reporting a non-zero count means. A sleep here asserts that
+        // three threads have reached `wait` within a duration, which
+        // under load they have not, and the test then reads a scheduler
+        // delay as notify_one failing to see a parked slot.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let woken = loop {
+            // pred is still false, so a woken waiter re-checks and
+            // re-parks; this never consumes the waiter set.
+            let n = cv.notify_one();
+            if n > 0 {
+                break n;
+            }
+            assert!(Instant::now() < deadline, "no waiter ever parked");
+            std::hint::spin_loop();
+        };
+        assert_eq!(woken, 1, "notify_one woke more than one waiter");
 
-        // First notify: pred still false, the woken waiter
-        // re-checks, re-parks. We're checking that notify_one
-        // returns 1 (saw a parked slot).
-        assert_eq!(cv.notify_one(), 1);
-        // Now flip the predicate and wake all so the test exits.
-        thread::sleep(Duration::from_millis(20));
+        // Flip the predicate and wake all so the test exits.
         pred.store(true, Ordering::Release);
         cv.notify_all();
         for h in waiters {
@@ -374,10 +385,19 @@ mod tests {
                 })
             })
             .collect();
-        thread::sleep(Duration::from_millis(30));
+        // Wait for the waiters to park before claiming notify_all woke
+        // them. pred is still false, so each wakes, re-checks and
+        // re-parks, and the count is what says they are there.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if cv.notify_all() >= 1 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no waiter ever parked");
+            std::hint::spin_loop();
+        }
         pred.store(true, Ordering::Release);
-        let woken = cv.notify_all();
-        assert!(woken >= 1, "at least one waiter woken (got {woken})");
+        cv.notify_all();
         for h in waiters {
             h.join().unwrap();
         }

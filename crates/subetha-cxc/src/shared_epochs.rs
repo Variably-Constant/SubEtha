@@ -12,61 +12,53 @@
 //! holds a low pin, and every version superseded since stays until it
 //! finishes.
 //!
-//! # Why the pins live in shared memory
+//! # The pins are in the mapping
 //!
-//! The counter alone would fit in a process-local atomic, and the pins
-//! would not. A pin is a claim against reclamation, and the party that
-//! reclaims may be a different process from the one scanning - which is
-//! the normal arrangement for every primitive in this crate. A pin table
-//! private to one process is invisible to the other, so that other
-//! process reclaims a version this one is still reading and the scan
-//! silently loses rows. The table is therefore in the mapping, next to
-//! the counter, and every attached process sees every pin.
+//! Both the counter and the pin table live in shared memory, so every
+//! attached process sees every pin. A pin is a claim against
+//! reclamation and the party that reclaims may be a different process
+//! from the one scanning; a pin table private to one of them is
+//! invisible to the other, which reclaims a version that scan is still
+//! reading and loses rows with nothing reporting it.
 //!
 //! # Layout
 //!
 //! ```text
-//! | EpochHeader (64B) | PinSlot 0 (64B) | PinSlot 1 (64B) | ... |
-//!
-//! PinSlot = | state: AtomicU64 | owner_pid: AtomicU32 | pad |
+//! | EpochHeader (64B) | HolderSlot 0 (64B) | HolderSlot 1 (64B) | ... |
 //! ```
 //!
-//! One slot holds one pin. `state` is [`PIN_FREE`] when the slot is
-//! unclaimed and `epoch + 1` when it is held, so a claim is a single CAS
-//! on one word and a reader of the table never sees a half-written pin.
-//! The bias by one is what lets epoch 0 be pinned. `capacity` is
-//! therefore the number of pins that may be held at once, and the caller
-//! chooses it at create.
+//! The pins are a [`HolderTable`] over the slots behind the header. One
+//! slot holds one pin, and its payload is `epoch + 1` - the bias is
+//! what lets epoch 0 be pinned while
+//! [`HOLDER_FREE`](crate::holder_table::HOLDER_FREE) still means
+//! unclaimed. `capacity` is therefore the number of pins that may be
+//! held at once, and the caller chooses it at create.
 //!
 //! # A pin whose process died
 //!
 //! A slot is released when its [`PinGuard`] drops. A process that
 //! crashes mid-scan leaves its slot claimed, and that pin holds the
-//! horizon down for as long as it stands. `owner_pid` is what resolves
-//! it: [`reap_dead_pins`](SharedEpochs::reap_dead_pins) frees every slot
-//! whose owning process is gone, and [`pin`](SharedEpochs::pin) calls it
-//! before reporting the table full, so the ordinary path recovers
-//! without the caller arranging anything. The horizon itself reads only
-//! the atomic state, so it costs no liveness probe.
+//! horizon down for as long as it stands. The holder table's pid stamp
+//! resolves it: [`reap_dead_pins`](SharedEpochs::reap_dead_pins) frees
+//! every slot whose owning process is gone, and
+//! [`pin`](SharedEpochs::pin) calls it before reporting the table full,
+//! so the ordinary path recovers without the caller arranging anything.
+//! The horizon itself reads only atomics, so it costs no liveness
+//! probe.
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
+
+use crate::holder_table::{holder_table_size, HolderTable};
 
 pub const EPOCH_MAGIC: u64 = 0x4550_4F43_4853_5F31; // "EPOCHS_1"
 
 /// A monotonic point in the store's history.
 pub type Epoch = u64;
-
-/// A slot holding no pin.
-pub const PIN_FREE: u64 = 0;
-
-/// A slot claimed whose epoch has not been decided yet. Held for one
-/// load and one store, and never reported as a pin.
-pub const PIN_RESERVED: u64 = u64::MAX;
 
 /// Scans a reclaimer spins on a reservation before probing whether the
 /// process holding it is still there.
@@ -83,20 +75,10 @@ pub struct EpochHeader {
 
 const _: () = {
     assert!(size_of::<EpochHeader>() == 64);
-    assert!(size_of::<PinSlot>() == 64);
 };
 
-#[repr(C, align(64))]
-struct PinSlot {
-    /// [`PIN_FREE`], or the pinned epoch biased by one.
-    state: AtomicU64,
-    /// The process that claimed it, for the dead-owner reap.
-    owner_pid: AtomicU32,
-    _pad: [u8; 52],
-}
-
 pub const fn epoch_file_size(capacity: usize) -> usize {
-    size_of::<EpochHeader>() + capacity * size_of::<PinSlot>()
+    size_of::<EpochHeader>() + holder_table_size(capacity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +113,7 @@ pub struct SharedEpochs {
     _file: Option<File>,
     mmap: MmapMut,
     capacity: usize,
+    pins: HolderTable,
 }
 
 unsafe impl Send for SharedEpochs {}
@@ -148,7 +131,7 @@ impl SharedEpochs {
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const EpochHeader)).magic == EPOCH_MAGIC },
         )?;
-        let this = Self { _file: Some(file), mmap, capacity };
+        let this = Self::attach(Some(file), mmap, capacity);
         this.validate(capacity)?;
         Ok(this)
     }
@@ -161,7 +144,7 @@ impl SharedEpochs {
             return Err(EpochError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        let this = Self { _file: Some(file), mmap, capacity: expected_capacity };
+        let this = Self::attach(Some(file), mmap, expected_capacity);
         this.validate(expected_capacity)?;
         Ok(this)
     }
@@ -171,12 +154,20 @@ impl SharedEpochs {
         assert!(capacity >= 1);
         let mut mmap = MmapOptions::new().len(epoch_file_size(capacity)).map_anon()?;
         unsafe { Self::init_region(mmap.as_mut_ptr(), capacity) };
-        Ok(Self { _file: None, mmap, capacity })
+        Ok(Self::attach(None, mmap, capacity))
+    }
+
+    /// Build the view over the slots behind the header.
+    fn attach(_file: Option<File>, mmap: MmapMut, capacity: usize) -> Self {
+        let pins = unsafe {
+            HolderTable::from_ptr(mmap.as_ptr().add(size_of::<EpochHeader>()), capacity)
+        };
+        Self { _file, mmap, capacity, pins }
     }
 
     /// Lay out an empty table: sizes first, magic last, because
     /// attachers spin on it. The zeroed region is already the free slot
-    /// array, every state [`PIN_FREE`].
+    /// array, every slot unclaimed.
     ///
     /// # Safety
     /// `ptr` addresses at least `epoch_file_size(capacity)` writable
@@ -202,16 +193,10 @@ impl SharedEpochs {
         unsafe { &*(self.mmap.as_ptr() as *const EpochHeader) }
     }
 
+    /// The pin slots, for a caller that wants the table directly.
     #[inline]
-    fn slot(&self, i: usize) -> &PinSlot {
-        debug_assert!(i < self.capacity);
-        unsafe {
-            &*(self
-                .mmap
-                .as_ptr()
-                .add(size_of::<EpochHeader>() + i * size_of::<PinSlot>())
-                as *const PinSlot)
-        }
+    pub fn pins(&self) -> &HolderTable {
+        &self.pins
     }
 
     /// Pins that may be held at once.
@@ -249,36 +234,19 @@ impl SharedEpochs {
         self.try_claim().ok_or(EpochError::PinsExhausted)
     }
 
-    /// Reserve a slot, THEN decide the epoch.
+    /// Reserve a slot, then decide the epoch.
     ///
-    /// The order is the safety property. A pinner that read the epoch
-    /// first could claim at an epoch a reclaimer had already passed: the
-    /// reclaimer samples the counter, scans, sees the slot still free,
-    /// and returns a horizon above a pin that becomes visible an
-    /// instant later. Reserving first inverts it - the epoch is read
-    /// AFTER the slot is visible, so it is at or above any horizon a
-    /// reclaimer could have been computing, and
+    /// The order is the safety property: the epoch is read once the
+    /// slot is visible, so it lands at or above any horizon a reclaimer
+    /// could be computing, and
     /// [`reclaim_horizon`](Self::reclaim_horizon) waits out a
-    /// reservation rather than reading past it.
+    /// reservation rather than reading past one.
     fn try_claim(&self) -> Option<PinGuard<'_>> {
-        let pid = std::process::id();
-        for i in 0..self.capacity {
-            let slot = self.slot(i);
-            if slot.state.load(Ordering::Acquire) != PIN_FREE {
-                continue;
-            }
-            if slot
-                .state
-                .compare_exchange(PIN_FREE, PIN_RESERVED, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                slot.owner_pid.store(pid, Ordering::Release);
-                let at = self.now();
-                slot.state.store(at + 1, Ordering::Release);
-                return Some(PinGuard { epochs: self, at, slot: i });
-            }
-        }
-        None
+        let slot = self.pins.reserve()?;
+        let at = self.now();
+        // Biased by one so epoch 0 is a payload and not the free state.
+        self.pins.publish(slot, at + 1);
+        Some(PinGuard { epochs: self, at, slot })
     }
 
     /// Epochs at or below this have no reader, so anything superseded in
@@ -292,37 +260,28 @@ impl SharedEpochs {
     /// wide.
     pub fn reclaim_horizon(&self) -> Epoch {
         let mut restarts = 0u32;
-        'scan: loop {
+        loop {
             // Sample the counter BEFORE the slots. A pin that reserves
             // after this load reads its epoch after reserving, so it
             // lands at or above the value returned.
-            let mut horizon = self.now();
-            for i in 0..self.capacity {
-                let state = self.slot(i).state.load(Ordering::Acquire);
-                if state == PIN_RESERVED {
-                    restarts += 1;
-                    // A reservation that outlives its window belongs to
-                    // a process that died inside it, and spinning on it
-                    // would never end.
-                    if restarts.is_multiple_of(RESERVATION_SPINS) {
-                        self.reap_dead_pins();
-                    }
-                    std::hint::spin_loop();
-                    continue 'scan;
-                }
-                if state != PIN_FREE {
-                    horizon = horizon.min(state - 1);
-                }
+            let now = self.now();
+            if let Some(h) = self.pins.try_fold(now, |acc, payload| acc.min(payload - 1)) {
+                return h;
             }
-            return horizon;
+            restarts += 1;
+            // A reservation that outlives its window belongs to a
+            // process that died inside it, and spinning on it would
+            // never end.
+            if restarts.is_multiple_of(RESERVATION_SPINS) {
+                self.reap_dead_pins();
+            }
+            std::hint::spin_loop();
         }
     }
 
     /// Pins outstanding.
     pub fn live_pins(&self) -> usize {
-        (0..self.capacity)
-            .filter(|i| self.slot(*i).state.load(Ordering::Acquire) != PIN_FREE)
-            .count()
+        self.pins.live()
     }
 
     /// Free every slot whose owning process is gone, and report how many
@@ -332,33 +291,11 @@ impl SharedEpochs {
     /// it, so the slot names a scan that will never finish and the
     /// horizon it holds down is stale.
     pub fn reap_dead_pins(&self) -> usize {
-        let mut freed = 0;
-        for i in 0..self.capacity {
-            let slot = self.slot(i);
-            let state = slot.state.load(Ordering::Acquire);
-            if state == PIN_FREE {
-                continue;
-            }
-            let pid = slot.owner_pid.load(Ordering::Acquire);
-            // A slot claimed but not yet stamped is mid-claim, not dead.
-            if pid == 0 || crate::peer_directory::process_alive(pid) {
-                continue;
-            }
-            if slot
-                .state
-                .compare_exchange(state, PIN_FREE, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                freed += 1;
-            }
-        }
-        freed
+        self.pins.reap_dead()
     }
 
     fn release(&self, slot: usize) {
-        let s = self.slot(slot);
-        s.owner_pid.store(0, Ordering::Release);
-        s.state.store(PIN_FREE, Ordering::Release);
+        self.pins.release(slot);
     }
 }
 
@@ -416,6 +353,7 @@ impl Drop for PinGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::holder_table::HOLDER_RESERVED;
 
     fn table(capacity: usize) -> SharedEpochs {
         SharedEpochs::create_anon(capacity).unwrap()
@@ -574,10 +512,10 @@ mod tests {
         });
     }
 
-    /// The order the whole scheme rests on: a slot is reserved BEFORE
-    /// its epoch is read, and a reclaimer waits out the reservation. A
-    /// reclaimer that read past it would return a horizon above the pin
-    /// about to publish there, and reclaim a version that pin needs.
+    /// A slot is reserved before its epoch is read, and a reclaimer
+    /// waits out the reservation. Reading past one returns a horizon
+    /// above the pin about to publish there, and reclaims a version
+    /// that pin needs.
     #[test]
     fn a_reservation_holds_the_horizon_until_its_epoch_is_published() {
         let e = std::sync::Arc::new(table(2));
@@ -589,8 +527,8 @@ mod tests {
         assert_eq!(e.reclaim_horizon(), 1);
 
         // Stand in for a pinner between its reserve and its publish.
-        e.slot(1).state.store(PIN_RESERVED, Ordering::Release);
-        e.slot(1).owner_pid.store(std::process::id(), Ordering::Release);
+        e.pins().slot(1).state.store(HOLDER_RESERVED, Ordering::Release);
+        e.pins().slot(1).owner_pid.store(std::process::id(), Ordering::Release);
 
         let reader = std::sync::Arc::clone(&e);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -609,7 +547,7 @@ mod tests {
         );
 
         // Publish an epoch below the live pin and it must be respected.
-        e.slot(1).state.store(1, Ordering::Release);
+        e.pins().slot(1).state.store(1, Ordering::Release);
         assert_eq!(h.join().unwrap(), 0, "the published reservation sets the horizon");
     }
 
@@ -620,8 +558,8 @@ mod tests {
         let e = table(2);
         e.advance();
         e.advance();
-        e.slot(0).state.store(PIN_RESERVED, Ordering::Release);
-        e.slot(0).owner_pid.store(u32::MAX - 1, Ordering::Release);
+        e.pins().slot(0).state.store(HOLDER_RESERVED, Ordering::Release);
+        e.pins().slot(0).owner_pid.store(u32::MAX - 1, Ordering::Release);
         assert_eq!(
             e.reclaim_horizon(),
             2,
@@ -648,7 +586,7 @@ mod tests {
         e.advance();
         // Stand in for a crashed peer: claim the second slot and stamp it
         // with a pid that cannot be running.
-        let dead = e.slot(1);
+        let dead = e.pins().slot(1);
         dead.state.store(1, Ordering::Release);
         dead.owner_pid.store(u32::MAX - 1, Ordering::Release);
         assert_eq!(e.live_pins(), 2);
@@ -659,7 +597,7 @@ mod tests {
     #[test]
     fn a_full_table_of_dead_pins_recovers_on_the_next_pin() {
         let e = table(1);
-        let slot = e.slot(0);
+        let slot = e.pins().slot(0);
         slot.state.store(1, Ordering::Release);
         slot.owner_pid.store(u32::MAX - 1, Ordering::Release);
         let p = e.pin().expect("pin reaps the dead owner rather than reporting full");

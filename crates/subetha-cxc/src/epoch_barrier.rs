@@ -383,21 +383,44 @@ mod tests {
         }
         let barrier = Arc::new(barrier);
 
+        // The claim is ORDER, not duration: the early arriver must not
+        // pass the barrier until the late one reaches it. Asserting an
+        // elapsed time instead measures the scheduler, and reads a slow
+        // thread start as the barrier releasing early.
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         let b1 = barrier.clone();
+        let r1 = Arc::clone(&released);
+        let e1 = Arc::clone(&entered);
         let early = thread::spawn(move || {
-            let start = Instant::now();
+            e1.store(true, O::Release);
             b1.wait(0).unwrap();
-            start.elapsed()
+            r1.store(true, O::Release);
         });
-        thread::sleep(Duration::from_millis(20));
+
+        // Wait for the early arriver to be IN the barrier, then check
+        // it has not passed while it is the only one there.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !entered.load(O::Acquire) {
+            assert!(Instant::now() < deadline, "the early arriver never started");
+            std::hint::spin_loop();
+        }
+        assert!(
+            !released.load(O::Acquire),
+            "the barrier released with only one of two arrivers"
+        );
+
         let b2 = barrier.clone();
         let late = thread::spawn(move || {
             b2.wait(0).unwrap();
         });
-        let elapsed = early.join().unwrap();
+        early.join().unwrap();
         late.join().unwrap();
-        assert!(elapsed >= Duration::from_millis(15),
-            "early arriver should have waited ~20ms, got {elapsed:?}");
+        assert!(
+            released.load(O::Acquire),
+            "the barrier never released once both arrived"
+        );
         cleanup(&base, &hb_path);
     }
 

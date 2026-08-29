@@ -74,6 +74,8 @@
 pub mod sidecar_ops;
 
 pub mod cached_clock;
+pub mod holder_table;
+pub mod shared_arc;
 pub mod shared_epochs;
 pub mod versioned_btree_map;
 pub mod epoch_barrier;
@@ -475,9 +477,16 @@ pub use shared_rw_lock::{
     ReadGuard, RWLockError, RWLockHeader, SharedRWLock, WriteGuard, RWLOCK_MAGIC,
 };
 pub use shared_semaphore::{Permit, SemaphoreError, SharedSemaphore};
+pub use shared_arc::{
+    arc_file_size, ArcError, ArcHeader, LastHolder, SharedArc, SharedCounter,
+    ARC_MAGIC,
+};
+pub use holder_table::{
+    holder_table_size, HolderSlot, HolderTable, HOLDER_FREE, HOLDER_RESERVED,
+};
 pub use shared_epochs::{
     epoch_file_size, Epoch, EpochError, EpochHeader, PinGuard, SharedEpochs,
-    EPOCH_MAGIC, PIN_FREE,
+    EPOCH_MAGIC,
 };
 pub use shared_slab::{
     slab_file_size, slab_slot_size, SharedSlab, SlabError, SlabHeader,
