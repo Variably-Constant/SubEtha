@@ -235,6 +235,11 @@ impl SharedCondvar {
     /// Park until `predicate()` returns true. Re-evaluates the
     /// predicate after every wake (Mesa-style). Spurious wakes
     /// re-loop without surfacing to the caller.
+    ///
+    /// Parks without a deadline, so a predicate only a since-dead
+    /// process would have satisfied is waited on forever. Use
+    /// [`wait_timeout`](Self::wait_timeout) where the notifier might
+    /// not come back.
     pub fn wait<F: FnMut() -> bool>(&self, mut predicate: F) -> Result<(), CondvarError> {
         loop {
             if predicate() {

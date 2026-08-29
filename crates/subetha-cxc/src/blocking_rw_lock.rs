@@ -178,6 +178,13 @@ impl BlockingRWLock {
     }
 
     /// Read-lock with kernel-park slow path.
+    ///
+    /// Parks without a deadline and retries until the lock is taken, so
+    /// a writer whose process died holding it is never waited out. Use
+    /// [`read_park_timeout`](Self::read_park_timeout) where the holder
+    /// might not come back, or
+    /// [`OwnerLease`](crate::owner_lease::OwnerLease), which takes over
+    /// on a stale heartbeat.
     pub fn read_park(&self) -> Result<BlockingReadGuard<'_>, BlockingRWLockError> {
         loop {
             if let Ok(g) = self.inner.try_read_lock() {
@@ -242,6 +249,13 @@ impl BlockingRWLock {
     }
 
     /// Write-lock with kernel-park slow path.
+    ///
+    /// Parks without a deadline and retries until the lock is taken, so
+    /// a holder whose process died is never waited out. Use
+    /// [`write_park_timeout`](Self::write_park_timeout) where the
+    /// holder might not come back, or
+    /// [`OwnerLease`](crate::owner_lease::OwnerLease), which takes over
+    /// on a stale heartbeat.
     pub fn write_park(&self) -> Result<BlockingWriteGuard<'_>, BlockingRWLockError> {
         loop {
             if let Ok(g) = self.inner.try_write_lock() {

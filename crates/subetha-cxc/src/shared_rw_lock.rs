@@ -12,6 +12,23 @@
 //! - bits 0-31: reader count (32 bits)
 //!
 //! All transitions are single CAS so observers never see torn state.
+//!
+//! # A holder that dies
+//!
+//! State is released by the guard's `Drop`. A process that exits while
+//! holding one leaves its bit or its reader count set for the lifetime
+//! of the region: [`read_lock`](SharedRWLock::read_lock) and
+//! [`write_lock`](SharedRWLock::write_lock) then spin without bound,
+//! and [`try_read_lock`](SharedRWLock::try_read_lock) and
+//! [`try_write_lock`](SharedRWLock::try_write_lock) return
+//! `WouldBlock` on every subsequent call. There is no timeout variant
+//! and no liveness probe; the only way back is
+//! [`reset`](SharedRWLock::reset), which discards whatever a live
+//! holder owns.
+//!
+//! [`OwnerLease`](crate::owner_lease::OwnerLease) is the primitive for
+//! a resource whose holder might die: it takes over on a heartbeat
+//! that has gone stale past a grace window.
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;

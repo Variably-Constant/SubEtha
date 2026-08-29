@@ -110,6 +110,13 @@ impl BlockingSemaphore {
     /// Blocking acquire with kernel-park slow path. Returns when a
     /// permit is available. No timeout variant returns
     /// `Err(Timeout)`; for a bounded wait use `acquire_park_timeout`.
+    ///
+    /// A permit is returned by its guard's `Drop`, so a process that
+    /// exits holding one leaves it taken and this waits for it
+    /// forever. Where a holder might not come back, use
+    /// `acquire_park_timeout` or
+    /// [`OwnerLease`](crate::owner_lease::OwnerLease), which takes over
+    /// on a stale heartbeat.
     pub fn acquire_park(&self) -> Result<BlockingPermit<'_>, BlockingSemaphoreError> {
         loop {
             if let Ok(p) = self.inner.try_acquire() {
