@@ -2005,11 +2005,12 @@ struct RlcSession {
     /// Successful path validations and validation timeouts (reverts). Telemetry.
     path_validations: u64,
     path_validation_failures: u64,
-    /// The 1-RTT keys for this peer, handed over by the receiver when the
-    /// session opens. There is one handshake per receiver, so exactly one
-    /// session can hold it and a TLS receiver therefore serves one peer.
+    /// The 1-RTT keys for this peer, shared with the receiver when the session
+    /// opens: the receiver opens inbound datagrams with them, this session
+    /// seals its control sends. There is one handshake per receiver, so a TLS
+    /// receiver serves one peer.
     #[cfg(feature = "tls")]
-    crypto: Option<crate::rlc_crypto::CryptoState>,
+    crypto: Option<std::sync::Arc<crate::rlc_crypto::CryptoState>>,
 }
 
 /// Receiver side of the RLC transport.
@@ -2062,8 +2063,11 @@ pub struct SensOMaticRlcReceiver {
     /// The 1-RTT keys from the handshake, held until the first session opens
     /// and then moved into it. `tls_armed` outlives the move, so a second
     /// connection id can still be refused after the keys are gone.
+    /// The receiver's keys, shared with the session that serves the peer:
+    /// the receiver opens inbound datagrams with them and the session seals
+    /// its control sends.
     #[cfg(feature = "tls")]
-    crypto: Option<crate::rlc_crypto::CryptoState>,
+    crypto: Option<std::sync::Arc<crate::rlc_crypto::CryptoState>>,
     #[cfg(feature = "tls")]
     handshake_peer: Option<SocketAddr>,
     /// Whether TLS was armed at all. A TLS receiver serves one peer, so this
@@ -2880,17 +2884,22 @@ impl SensOMaticRlcReceiver {
     /// on a TLS receiver is refused rather than admitted unsealed.
     #[cfg(feature = "tls")]
     pub fn with_tls_server(mut self, cfg: std::sync::Arc<rustls::ServerConfig>) -> io::Result<Self> {
-        self.crypto =
-            Some(crate::rlc_crypto::CryptoState::new_server(cfg).map_err(io::Error::other)?);
+        self.crypto = Some(std::sync::Arc::new(
+            crate::rlc_crypto::CryptoState::new_server(cfg).map_err(io::Error::other)?,
+        ));
         self.tls_armed = true;
         Ok(self)
     }
 
     /// Run the TLS handshake as the server (no-op when TLS is not armed). Blocks
     /// until the client connects and the 1-RTT keys are derived; learns the peer.
+    /// Runs before any session opens, while the receiver alone holds the keys.
     #[cfg(feature = "tls")]
     pub fn handshake(&mut self) -> io::Result<()> {
-        if let Some(crypto) = self.crypto.as_mut() {
+        if let Some(shared) = self.crypto.as_mut() {
+            let crypto = std::sync::Arc::get_mut(shared).ok_or_else(|| {
+                io::Error::other("tls handshake after a session already holds the keys")
+            })?;
             let peer = drive_handshake(&self.sock, None, crypto, false)?;
             self.handshake_peer = Some(peer);
         }
@@ -2925,7 +2934,7 @@ impl SensOMaticRlcReceiver {
                 return None;
             }
             #[cfg(feature = "tls")]
-            if self.tls_armed && self.crypto.is_none() {
+            if self.tls_armed && !self.sessions.is_empty() {
                 self.session_refusals += 1;
                 return None;
             }
@@ -2942,7 +2951,7 @@ impl SensOMaticRlcReceiver {
             s.pair_debug = self.pair_debug;
             #[cfg(feature = "tls")]
             {
-                s.crypto = self.crypto.take();
+                s.crypto = self.crypto.clone();
                 s.peer = self.handshake_peer;
             }
             self.sessions.insert(cid, s);
@@ -3914,6 +3923,82 @@ mod tests {
             "the receiver must not be left pointing at the spoofed address"
         );
         assert_eq!(recv.peer(), Some(real_peer), "it reverts to the real peer");
+    }
+
+    /// The blocking handshake driver alone, both roles on real loopback
+    /// sockets: the server learns its peer from the first flight and both
+    /// sides reach 1-RTT keys that agree.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn drive_handshake_completes_both_roles_over_loopback() {
+        use crate::rlc_crypto;
+        let (cert, key) = rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let ccfg = rlc_crypto::client_config(&cert).expect("client cfg");
+
+        let server_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        server_udp.set_nonblocking(true).unwrap();
+        let server_addr = server_udp.local_addr().unwrap();
+        let client_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        client_udp.set_nonblocking(true).unwrap();
+        let client_addr = client_udp.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let sock = crate::dgram::DgramSock::from_udp(server_udp);
+            let mut crypto = rlc_crypto::CryptoState::new_server(scfg).expect("server");
+            let peer = drive_handshake(&sock, None, &mut crypto, false).expect("server handshake");
+            (peer, crypto)
+        });
+        let client = std::thread::spawn(move || {
+            let sock = crate::dgram::DgramSock::from_udp(client_udp);
+            let mut crypto = rlc_crypto::CryptoState::new_client(ccfg).expect("client");
+            drive_handshake(&sock, Some(server_addr), &mut crypto, true).expect("client handshake");
+            crypto
+        });
+        let (peer, server_crypto) = server.join().expect("server thread");
+        let client_crypto = client.join().expect("client thread");
+        assert_eq!(peer, client_addr, "the server learns its peer from the first flight");
+
+        let plaintext = b"both roles".to_vec();
+        let mut wire = plaintext.clone();
+        let pn = client_crypto.seal(&mut wire).expect("seal");
+        let n = server_crypto.open(pn, &mut wire).expect("open");
+        assert_eq!(&wire[..n], &plaintext[..]);
+    }
+
+    /// The sender's and receiver's own `handshake()` wrappers complete against
+    /// each other with no data phase: the receiver learns the sender's
+    /// address and both are armed to seal.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn sender_and_receiver_handshake_wrappers_complete() {
+        use crate::rlc_crypto;
+        let (cert, key) = rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let ccfg = rlc_crypto::client_config(&cert).expect("client cfg");
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let rx = std::thread::spawn(move || {
+            let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", 64)
+                .unwrap()
+                .with_tls_server(scfg)
+                .unwrap();
+            addr_tx.send(recv.local_addr().unwrap()).unwrap();
+            recv.handshake().expect("server handshake");
+            recv.handshake_peer
+        });
+        let recv_addr = addr_rx.recv().unwrap();
+        let tx = std::thread::spawn(move || {
+            let mut send = SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, 64)
+                .unwrap()
+                .with_tls_client(ccfg)
+                .unwrap();
+            send.handshake().expect("client handshake");
+            send.local_addr().ok()
+        });
+        let peer = rx.join().unwrap();
+        let sender_addr = tx.join().unwrap();
+        assert!(peer.is_some(), "the receiver learns its peer");
+        assert_eq!(peer, sender_addr, "and it is the sender's address");
     }
 
     /// Real loopback sockets with the TLS record layer on: the client and server
