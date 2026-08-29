@@ -772,6 +772,7 @@ impl UnifiedSensSender {
     pub fn connect<A: ToSocketAddrs>(local: A, peer: SocketAddr, cfg: UnifiedConfig) -> io::Result<Self> {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
+        crate::dgram::quiet_icmp_connreset(&udp);
         Self::assemble(udp, peer, cfg, 0)
     }
 
@@ -788,6 +789,7 @@ impl UnifiedSensSender {
     ) -> io::Result<Self> {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
+        crate::dgram::quiet_icmp_connreset(&udp);
         let mut cs = crate::rlc_crypto::CryptoState::new_client(tls)
             .map_err(io::Error::other)?;
         let hs = DgramSock::from_udp(udp.try_clone()?);
@@ -1488,6 +1490,7 @@ impl UnifiedSensReceiver {
     pub fn bind<A: ToSocketAddrs>(local: A, cfg: UnifiedConfig) -> io::Result<Self> {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
+        crate::dgram::quiet_icmp_connreset(&udp);
         Self::assemble(udp, cfg, 0)
     }
 
@@ -1503,6 +1506,7 @@ impl UnifiedSensReceiver {
     ) -> io::Result<Self> {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
+        crate::dgram::quiet_icmp_connreset(&udp);
         let mut cs = crate::rlc_crypto::CryptoState::new_server(tls)
             .map_err(io::Error::other)?;
         let hs = DgramSock::from_udp(udp.try_clone()?);

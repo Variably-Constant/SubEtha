@@ -502,6 +502,60 @@ pub(crate) fn udp_recv_with_kts(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<
     Ok((n, from, None))
 }
 
+/// Stop Winsock reporting an inbound ICMP port-unreachable as a recv
+/// error on this socket.
+///
+/// A socket that sends to a peer whose socket has closed draws an ICMP
+/// port-unreachable, and by default Winsock surfaces that as
+/// `WSAECONNRESET` from a later `recv_from`. The recv then completes as
+/// an error instead of delivering a datagram, so an endpoint talking to
+/// peers that come and go spends recv attempts on errors while traffic
+/// from every OTHER peer keeps arriving. A sender finishing and
+/// dropping its socket is enough to start it, which is every normal
+/// end of stream.
+///
+/// Measured on the Sens-O-Matic demux socket: 712 errors against 773
+/// successful receives in one run, with every received datagram routed
+/// and none unroutable, so the loss sat below routing entirely
+/// (subetha-25).
+///
+/// Returns whether the option was applied. A failure is not fatal: the
+/// socket still works and is merely noisy again, and a caller has no
+/// better response than carrying on.
+#[cfg(windows)]
+pub(crate) fn quiet_icmp_connreset(sock: &UdpSocket) -> bool {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{WSAIoctl, SIO_UDP_CONNRESET};
+
+    let mut disable: u32 = 0;
+    let mut returned: u32 = 0;
+    // SAFETY: a live socket owned by the caller, a u32 in-buffer sized
+    // by size_of, no out-buffer, and null overlapped/completion because
+    // this is a blocking control call.
+    let rc = unsafe {
+        WSAIoctl(
+            sock.as_raw_socket() as _,
+            SIO_UDP_CONNRESET,
+            &mut disable as *mut u32 as *mut core::ffi::c_void,
+            size_of::<u32>() as u32,
+            core::ptr::null_mut(),
+            0,
+            &mut returned,
+            core::ptr::null_mut(),
+            None,
+        )
+    };
+    rc == 0
+}
+
+/// Every other platform reports ICMP port-unreachable through
+/// `SO_ERROR` on a CONNECTED socket only, so an unconnected receiver
+/// never has a datagram displaced by one.
+#[cfg(not(windows))]
+pub(crate) fn quiet_icmp_connreset(_sock: &UdpSocket) -> bool {
+    true
+}
+
 #[cfg(target_os = "linux")]
 fn parse_timestamp(msg: &libc::msghdr) -> Option<i128> {
     unsafe {

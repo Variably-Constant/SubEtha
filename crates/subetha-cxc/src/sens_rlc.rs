@@ -186,6 +186,10 @@ fn set_buffers(sock: &UdpSocket) {
     let s = socket2::SockRef::from(sock);
     s.set_recv_buffer_size(SOCK_BUF).ok();
     s.set_send_buffer_size(SOCK_BUF).ok();
+    // A peer that closes its socket makes this one's next recv fail
+    // with WSAECONNRESET on Windows, costing a recv attempt for every
+    // ICMP the departure draws.
+    crate::dgram::quiet_icmp_connreset(sock);
 }
 
 /// Send one datagram, treating `WouldBlock`/EAGAIN - a full send buffer or
