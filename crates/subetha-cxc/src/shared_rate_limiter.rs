@@ -372,7 +372,14 @@ mod tests {
         r.try_acquire(40).unwrap();
 
         let r2 = SharedRateLimiter::create(&p, 100, 1).unwrap();
-        assert_eq!(r2.available(), 60, "attach refilled a live bucket");
+        // At 1 token/sec a second between the acquire and this read
+        // refills one, so the claim is that attaching did not REFILL
+        // the bucket, not that no time passed.
+        let avail = r2.available();
+        assert!(
+            (60..=61).contains(&avail),
+            "attach refilled a live bucket: available={avail}",
+        );
         assert!(matches!(
             SharedRateLimiter::create(&p, 50, 1),
             Err(RateLimiterError::LayoutMismatch),
@@ -539,9 +546,20 @@ mod tests {
         let p = tmp("cross-handle");
         let writer = SharedRateLimiter::create(&p, 100, 10).unwrap();
         let reader = SharedRateLimiter::open(&p, 100, 10).unwrap();
+        // The refill runs against wall-clock, so any delay between the
+        // acquire and the read adds real tokens: at 10/sec one per
+        // 100ms. A fixed 59..=60 window asserts the two calls happen
+        // within 100ms of each other, which under load they do not.
+        let t0 = Instant::now();
         writer.try_acquire(40).unwrap();
         let avail = reader.available();
-        assert!((59..=60).contains(&avail));
+        let elapsed_ms = t0.elapsed().as_millis() as u32;
+        let refilled = elapsed_ms / 100;
+        assert!(
+            (59..=60 + refilled).contains(&avail),
+            "the reading handle must see the writer's acquire: available={avail} \
+             after {elapsed_ms}ms, which allows {refilled} refilled",
+        );
         std::fs::remove_file(&p).ok();
     }
 

@@ -2479,7 +2479,11 @@ mod tests {
                     std::thread::sleep(Duration::from_micros(200));
                 }
             }
-            tx.send(got).ok();
+            // The demux counters travel with the rows, so a peer that
+            // delivers nothing distinguishes a datagram that never
+            // arrived from one that arrived and was discarded.
+            tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
+                .ok();
         });
 
         let gate = Arc::new(std::sync::Barrier::new(peers as usize));
@@ -2518,8 +2522,13 @@ mod tests {
             );
         }
 
-        let got = rx.recv_timeout(Duration::from_secs(35)).unwrap();
+        let (got, probe, unroutable, demux_errs) =
+            rx.recv_timeout(Duration::from_secs(35)).unwrap();
         rh.join().ok();
+        // (iterations, recv_ok, would_block, rlc_frames_routed)
+        let demux = format!(
+            "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
+        );
         for p in 0..peers {
             let mine: Vec<u64> = got
                 .iter()
@@ -2529,7 +2538,7 @@ mod tests {
             assert_eq!(
                 mine,
                 (0..per_peer).collect::<Vec<_>>(),
-                "peer {p} of {peers} did not deliver through the unified block-RS path",
+                "peer {p} of {peers} did not deliver through the unified block-RS path; {demux}",
             );
         }
     }
@@ -2572,7 +2581,11 @@ mod tests {
                     std::thread::sleep(Duration::from_micros(200));
                 }
             }
-            tx.send(got).ok();
+            // The demux counters travel with the rows, so a peer that
+            // delivers nothing distinguishes a datagram that never
+            // arrived from one that arrived and was discarded.
+            tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
+                .ok();
         });
 
         let gate = Arc::new(std::sync::Barrier::new(peers as usize));
@@ -2611,8 +2624,13 @@ mod tests {
             );
         }
 
-        let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let (got, probe, unroutable, demux_errs) =
+            rx.recv_timeout(Duration::from_secs(30)).unwrap();
         rh.join().ok();
+        // (iterations, recv_ok, would_block, rlc_frames_routed)
+        let demux = format!(
+            "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
+        );
         for p in 0..peers {
             let mine: Vec<u64> = got
                 .iter()
@@ -2622,7 +2640,7 @@ mod tests {
             assert_eq!(
                 mine,
                 (0..per_peer).collect::<Vec<_>>(),
-                "block-RS peer {p} must deliver every item alongside the other peer",
+                "block-RS peer {p} must deliver every item alongside the other peer; {demux}",
             );
         }
     }
@@ -2665,7 +2683,12 @@ mod tests {
                     std::thread::sleep(Duration::from_micros(200));
                 }
             }
-            tx.send(got).ok();
+            // The demux counters travel with the rows. A peer that
+            // delivers nothing is either a datagram that never arrived
+            // or one that arrived and was discarded, and only these
+            // separate the two.
+            tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
+                .ok();
         });
 
         let mut handles = Vec::new();
@@ -2701,8 +2724,13 @@ mod tests {
             );
         }
 
-        let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let (got, probe, unroutable, demux_errs) =
+            rx.recv_timeout(Duration::from_secs(30)).unwrap();
         rh.join().ok();
+        // (iterations, recv_ok, would_block, rlc_frames_routed)
+        let demux = format!(
+            "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
+        );
 
         for p in 0..peers {
             let mine: Vec<u64> = got
@@ -2713,17 +2741,138 @@ mod tests {
             assert_eq!(
                 mine,
                 (0..per_peer).collect::<Vec<_>>(),
-                "peer {p} must deliver every item in order alongside the other peer",
+                "peer {p} must deliver every item in order alongside the other peer; {demux}",
             );
             // Every item a peer sent must carry ONE tag, and the two peers'
             // tags must differ - otherwise the attribution is a label, not a
             // routing fact.
             let tags: std::collections::BTreeSet<u64> =
                 got.iter().filter(|(_, v)| (v >> 56) == p).map(|(t, _)| *t).collect();
-            assert_eq!(tags.len(), 1, "peer {p} items must all carry one tag, got {tags:?}");
+            assert_eq!(
+                tags.len(), 1,
+                "peer {p} items must all carry one tag, got {tags:?}; {demux}",
+            );
         }
         let all_tags: std::collections::BTreeSet<u64> = got.iter().map(|(t, _)| *t).collect();
-        assert_eq!(all_tags.len(), 2, "the two peers must be attributed distinctly");
+        assert_eq!(
+            all_tags.len(), 2,
+            "the two peers must be attributed distinctly; {demux}",
+        );
+    }
+
+    /// A peer that leaves mid-stream must not take another peer's
+    /// delivery with it.
+    ///
+    /// When a sender exits, its socket closes, and the receiver's next
+    /// feedback datagram to that address draws an ICMP port-unreachable.
+    /// On Windows that surfaces as WSAECONNRESET on the receiver's NEXT
+    /// recv, whatever peer the pending datagram belonged to - so one
+    /// peer's departure repeatedly errors the shared demux socket while
+    /// the survivor is still sending.
+    ///
+    /// Written for subetha-25, where a run under load delivered every
+    /// item from one peer and NOTHING from the other, with the log
+    /// carrying 344 socket-error episodes and zero unroutable
+    /// datagrams. The demux counters ride the assertion so a failure
+    /// says whether the survivor's datagrams stopped arriving or
+    /// arrived and were discarded.
+    #[test]
+    fn a_peer_leaving_does_not_strand_the_peer_that_stays() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRs,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let leaver_items: u64 = 20;
+        let stayer_items: u64 = 120;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<u64> = Vec::new();
+            let start = Instant::now();
+            while (got.len() as u64) < leaver_items + stayer_items
+                && start.elapsed() < Duration::from_secs(60)
+            {
+                let items = recv.poll().unwrap_or_default();
+                let empty = items.is_empty();
+                for it in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push(u64::from_le_bytes(s));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
+                .ok();
+        });
+
+        // The peer that leaves: sends a little, then drops its socket
+        // so the receiver's feedback to it starts drawing ICMP.
+        let leaver = std::thread::spawn(move || {
+            let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+            let mut buf = vec![0u8; 8];
+            for i in 0..leaver_items {
+                buf[..8].copy_from_slice(&i.to_le_bytes());
+                if send.send_item(&buf).is_err() {
+                    break;
+                }
+            }
+            send.finish().ok();
+        });
+        leaver.join().unwrap();
+
+        // The peer that stays, sending across the churn the departure
+        // causes.
+        let stayer = std::thread::spawn(move || {
+            let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+            let mut buf = vec![0u8; 8];
+            let mut sent = 0u64;
+            for i in 0..stayer_items {
+                buf[..8].copy_from_slice(&((1u64 << 56) | i).to_le_bytes());
+                if send.send_item(&buf).is_err() {
+                    break;
+                }
+                sent += 1;
+            }
+            send.finish().ok();
+            sent
+        });
+        let sent = stayer.join().unwrap();
+        assert_eq!(
+            sent, stayer_items,
+            "the staying peer failed to SEND; that is not what this test is for",
+        );
+
+        let (got, probe, unroutable, demux_errs) =
+            rx.recv_timeout(Duration::from_secs(70)).unwrap();
+        rh.join().ok();
+        let demux = format!(
+            "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
+        );
+
+        let stayed: Vec<u64> = got
+            .iter()
+            .filter(|v| (*v >> 56) == 1)
+            .map(|v| v & 0x00FF_FFFF_FFFF_FFFF)
+            .collect();
+        assert_eq!(
+            stayed,
+            (0..stayer_items).collect::<Vec<_>>(),
+            "the staying peer must deliver every item after the other peer left; {demux}",
+        );
     }
 
     #[test]
