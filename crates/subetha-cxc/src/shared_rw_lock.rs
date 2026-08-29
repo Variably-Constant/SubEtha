@@ -537,38 +537,49 @@ mod tests {
         let l_reader = l.clone();
         let reader_done = Arc::new(AtomicU32::new(0));
         let reader_done_clone = reader_done.clone();
+        // The reader holds until told to let go. Holding for a fixed
+        // 30ms makes the state under test transient: a main thread
+        // descheduled for longer than that finds reader_count already
+        // back to 0 and waits out its deadline on a window that has
+        // closed.
+        let release = Arc::new(AtomicU32::new(0));
+        let release_reader = release.clone();
         let reader = thread::spawn(move || {
             let _g = l_reader.read_lock();
-            std::thread::sleep(std::time::Duration::from_millis(30));
             reader_done_clone.store(1, O::Release);
+            while release_reader.load(O::Acquire) == 0 {
+                std::thread::yield_now();
+            }
             // Guard drops here, releasing the lock.
         });
-        // Wait (bounded) for the reader thread to acquire; a fixed
-        // sleep races the scheduler under full-suite load.
         let acquire_deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(30);
-        while l.reader_count() != 1
+        while reader_done.load(O::Acquire) == 0
             && std::time::Instant::now() < acquire_deadline
         {
             std::thread::yield_now();
         }
+        assert_eq!(reader_done.load(O::Acquire), 1, "reader never acquired");
         assert_eq!(l.reader_count(), 1);
 
         let l_writer = l.clone();
-        let writer_started = std::time::Instant::now();
+        let writer_got_it = Arc::new(AtomicU32::new(0));
+        let writer_flag = writer_got_it.clone();
         let writer = thread::spawn(move || {
             let _g = l_writer.write_lock();
-            writer_started.elapsed()
+            writer_flag.store(1, O::Release);
         });
 
-        let elapsed = writer.join().unwrap();
-        reader.join().unwrap();
-        // Writer should have blocked at least until reader finished
-        // (which is ~30ms - 5ms from when writer was spawned = ~25ms).
-        assert!(
-            elapsed >= std::time::Duration::from_millis(15),
-            "writer should have blocked for the reader's hold time, got {elapsed:?}",
+        // The claim is order, not duration: the writer must not hold
+        // the lock while the reader still does.
+        assert_eq!(
+            writer_got_it.load(O::Acquire), 0,
+            "writer took the lock while a reader held it",
         );
+        release.store(1, O::Release);
+        writer.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(writer_got_it.load(O::Acquire), 1, "writer never took the lock");
         assert_eq!(reader_done.load(O::Acquire), 1);
         std::fs::remove_file(&p).ok();
     }
