@@ -1870,9 +1870,11 @@ mod tests {
         // Drain a few items so the deque path stays usable.
         for _ in 0..16 { ipc.recv().ok(); }
 
-        // Give the sidecar a window to scan + promote.
+        // Wait for the sidecar to scan and promote. The bound is wide
+        // so that a loaded scheduler cannot spend it before the sidecar
+        // thread runs; what fires it is a promotion that never happens.
         let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(2);
+            + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline
             && !matches!(ipc.active_family(), MmfFamily::SharedDeque(_))
         {

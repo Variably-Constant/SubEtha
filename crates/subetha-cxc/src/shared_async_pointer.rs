@@ -326,19 +326,26 @@ mod tests {
     fn speculative_first_finisher_wins() {
         let p = tmp("first-wins");
         let sap: SharedAsyncPointer<u64> = SharedAsyncPointer::create(&p).unwrap();
-        // Two closures: one fast (returns 100), one slow (returns 999).
-        // Fast should win the publish race.
+        // Which closure finishes first is established by a flag, not by
+        // sleeping 2ms against 100ms: a 50x duration gap is still only
+        // a claim about the scheduler, and under load the short sleeper
+        // may not be scheduled until after the long one has returned.
+        let first_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter = Arc::clone(&first_done);
         let result = sap.get_or_speculative_with([
-            Box::new(|| {
-                thread::sleep(Duration::from_millis(100));
+            Box::new(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !waiter.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                    std::hint::spin_loop();
+                }
                 999u64
             }) as Box<dyn FnOnce() -> u64 + Send>,
-            Box::new(|| {
-                thread::sleep(Duration::from_millis(2));
+            Box::new(move || {
+                first_done.store(true, Ordering::Release);
                 100u64
             }) as Box<dyn FnOnce() -> u64 + Send>,
         ]);
-        assert_eq!(result, 100, "fast closure should win");
+        assert_eq!(result, 100, "the closure that finished first should win");
         std::fs::remove_file(&p).ok();
     }
 

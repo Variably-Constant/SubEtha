@@ -33,6 +33,15 @@ Composes
   via the platform wait syscall. The kernel returns within
   microseconds of the next `release`.
 
+## A holder that dies
+
+A permit is returned by its guard's `Drop`, so a process that exits
+holding one leaves it taken. `acquire_park` parks with no deadline and
+retries, so such a holder is never waited out; `acquire_park_timeout`
+bounds the wait and lets a caller detect it. Where a holder can crash,
+use [Owner Lease](../ownership-types/owner-lease/), which takes over on
+a heartbeat stale past a grace window.
+
 ## Operations
 
 ```rust

@@ -42,6 +42,9 @@ when a notifier advances the predicate AND calls `notify_*`.
   monitor tier (`MONITORX` / `UMONITOR`, physical-address keyed)
   on Windows for file/shm-backed condvars; anon-backed Windows
   condvars stay intra-process via `WaitOnAddress`.
+- **`wait` parks with no deadline.** A predicate only a
+  since-dead process would have satisfied is waited on forever;
+  `wait_timeout` bounds it and lets a caller detect that.
 
 ## Operations
 

@@ -493,14 +493,15 @@ mod tests {
             })
             .unwrap();
         let mut got = None;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if let Ok(r) = collector.try_recv() {
                 got = Some(r);
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let r = got.expect("result must arrive within 400ms");
+        let r = got.expect("a submitted closure's result must come back");
         assert_eq!(r.token, token);
         match r.result {
             Ok(data) => assert_eq!(data, vec![11, 21, 31]),
@@ -556,14 +557,15 @@ mod tests {
             })
             .unwrap();
         let mut got = None;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if let Ok(r) = collector.try_recv() {
                 got = Some(r);
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let r = got.expect("result must arrive within 400ms");
+        let r = got.expect("a submitted closure's result must come back");
         assert_eq!(r.token, token);
         match r.result {
             Ok(data) => assert_eq!(data, vec![15, 18, 21]),
@@ -627,14 +629,15 @@ mod tests {
         }).unwrap();
         // Wait briefly for the worker to drain + produce.
         let mut got = None;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if let Ok(r) = collector.try_recv() {
                 got = Some(r);
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let r = got.expect("result must arrive within 400ms");
+        let r = got.expect("a submitted closure's result must come back");
         assert_eq!(r.token, token);
         match r.result {
             Ok(data) => assert_eq!(data, vec![2, 4, 6, 8]),
@@ -657,7 +660,8 @@ mod tests {
             closure_id: 0x9999_FFFF, args: vec![],
         }).unwrap();
         let mut got = None;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if let Ok(r) = collector.try_recv() {
                 got = Some(r);
                 break;

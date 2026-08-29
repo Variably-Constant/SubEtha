@@ -226,6 +226,16 @@ even under reader pressure.
   cannot upgrade to writer (deadlock-by-design); call drop+reclaim.
 - **Spin-based blocking**: there is no parking; high-contention
   workloads burn CPU rather than blocking on a kernel object.
+- **A holder that dies is not recoverable.** State is released by the
+  guard's `Drop`, so a process that exits holding one leaves its
+  writer bit or its reader count set for the lifetime of the region.
+  `read_lock` and `write_lock` then spin without bound, and
+  `try_read_lock` / `try_write_lock` return `WouldBlock` on every
+  subsequent call. There is no timeout variant and no liveness probe;
+  the only way back is `reset`, which discards whatever a live holder
+  owns. Where a participant can crash, use
+  [Owner Lease](../../ownership-types/owner-lease/), which takes over
+  on a heartbeat stale past a grace window.
 - **Cross-process backed by MMF.**
 
 ---

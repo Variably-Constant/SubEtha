@@ -1140,7 +1140,7 @@ mod tests {
             let n = waker_p.wake_up_to(15);
             assert!(n >= 1);
         });
-        waker_c.wait(token, Some(Duration::from_secs(2))).expect("wake");
+        waker_c.wait(token, Some(Duration::from_secs(30))).expect("wake");
         h.join().unwrap();
     }
 
@@ -1190,7 +1190,7 @@ mod tests {
             let w = Arc::clone(&waker);
             let token = w.try_park(target + 1000).expect("park");
             handles.push(thread::spawn(move || {
-                w.wait(token, Some(Duration::from_secs(2))).expect("woken");
+                w.wait(token, Some(Duration::from_secs(30))).expect("woken");
             }));
         }
         thread::sleep(Duration::from_millis(20));

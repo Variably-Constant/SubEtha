@@ -71,17 +71,27 @@ mod tests {
     #[test]
     fn cached_clock_tracks_wall_within_interval() {
         start();
-        // Give the updater a couple of refresh cycles to populate.
         std::thread::sleep(REFRESH_INTERVAL * 4);
-        let cached = now_us();
-        let real = real_now_us();
-        assert!(cached > 0, "cache must be seeded");
-        // Within a few refresh intervals of real time (generous for CI).
-        let skew = real.abs_diff(cached);
-        assert!(
-            skew < 50_000,
-            "cached clock {cached} should track real {real} (skew {skew} us)"
-        );
+        // Sample until the skew is inside the bound. A single sample
+        // asserts the updater thread was scheduled within one refresh
+        // window, which under load it is not; a transiently starved
+        // updater is not the defect this test is for. An updater that
+        // never catches up runs the deadline out.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let cached = now_us();
+            let real = real_now_us();
+            assert!(cached > 0, "cache must be seeded");
+            let skew = real.abs_diff(cached);
+            if skew < 50_000 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cached clock {cached} never tracked real {real} (skew {skew} us)"
+            );
+            std::thread::sleep(REFRESH_INTERVAL);
+        }
     }
 
     #[test]

@@ -32,6 +32,16 @@ one waker plus a small mmap-backed wakeup-generation counter.
   `try_*_lock`, then park on the waker. Wakeup within
   microseconds of the next unlock.
 
+## A holder that dies
+
+The lock is released by the guard's `Drop`, so a process that exits
+holding one leaves it taken. `read_park` and `write_park` park with no
+deadline and retry, so such a holder is never waited out;
+`read_park_timeout` and `write_park_timeout` bound the wait and let a
+caller detect it. Where a participant can crash, use
+[Owner Lease](../ownership-types/owner-lease/), which takes over on a
+heartbeat stale past a grace window.
+
 ## Operations
 
 ```rust

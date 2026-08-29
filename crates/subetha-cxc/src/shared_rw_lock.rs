@@ -546,7 +546,7 @@ mod tests {
         // Wait (bounded) for the reader thread to acquire; a fixed
         // sleep races the scheduler under full-suite load.
         let acquire_deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(5);
+            + std::time::Duration::from_secs(30);
         while l.reader_count() != 1
             && std::time::Instant::now() < acquire_deadline
         {

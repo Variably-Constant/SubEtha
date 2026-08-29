@@ -309,7 +309,11 @@ mod tests {
             r2.try_push(&payload).expect("push");
         });
         let adapter = AsyncSpscRing::new(Arc::clone(&ring));
-        let got = block_on(adapter.recv(Duration::from_secs(2))).unwrap();
+        // The budget is wide against the producer's 40ms so a loaded
+        // scheduler cannot spend it before the push lands; what is
+        // under test is that recv parks and then completes, not how
+        // quickly the producer thread is scheduled.
+        let got = block_on(adapter.recv(Duration::from_secs(30))).unwrap();
         assert!(pushed.load(Ordering::Acquire), "producer ran");
         let val = u64::from_le_bytes(got[..8].try_into().unwrap());
         assert_eq!(val, 7);

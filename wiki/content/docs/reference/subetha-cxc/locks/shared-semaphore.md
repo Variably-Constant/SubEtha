@@ -129,6 +129,12 @@ Acquire-only-when-N-released for batch fan-out / fan-in.
 - **Spin/yield wait**: no kernel parking. High-contention
   workloads burn some CPU.
 - **u32 max permits**: 4 billion cap (unreachable in practice).
+- **A permit whose holder dies is not returned.** The guard's `Drop`
+  releases it, so a process that exits holding one leaves it taken.
+  `acquire_timeout` bounds the wait and lets a caller detect it;
+  `acquire` does not. Where a holder can crash, use
+  [Owner Lease](../../ownership-types/owner-lease/), which takes over
+  on a heartbeat stale past a grace window.
 - **Cross-process backed by MMF.**
 
 ---

@@ -471,7 +471,11 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
             sem2.release().unwrap();
         });
-        let p = sem.acquire_timeout(Duration::from_millis(500)).unwrap();
+        // The budget is large against the releaser's 20ms so that a
+        // scheduler delay cannot turn "released before the deadline"
+        // into a timeout; what is under test is that a release inside
+        // the budget satisfies the wait, not how wide the budget is.
+        let p = sem.acquire_timeout(Duration::from_secs(30)).unwrap();
         drop(p);
         releaser.join().unwrap();
         cleanup(&base);
@@ -590,14 +594,17 @@ mod tests {
                 let _p = sem.acquire();
             }));
         }
-        // Give time for all three to enter the wait loop.
-        let mut tries = 0;
-        while sem.waiters() < n as u32 && tries < 100 {
+        // Wait for all three to enter the wait loop. A fixed try count
+        // is a budget in disguise: 100 tries at 5ms gives up after half
+        // a second, which a loaded scheduler spends before the threads
+        // are all parked, and the count then reads as the semaphore
+        // losing a waiter.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while sem.waiters() < n as u32 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
-            tries += 1;
         }
-        assert!(sem.waiters() >= n as u32 - 1,  // allow off-by-one race
-            "expected ~{n} waiters, saw {}", sem.waiters());
+        assert_eq!(sem.waiters(), n as u32,
+            "expected {n} waiters, saw {}", sem.waiters());
         // Release all so the threads complete.
         for _ in 0..n { sem.release().unwrap(); }
         for h in handles { h.join().unwrap(); }

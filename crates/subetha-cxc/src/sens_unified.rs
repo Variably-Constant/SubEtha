@@ -2491,6 +2491,7 @@ mod tests {
                 let mut buf = vec![0u8; 8];
                 gate.wait();
                 let start = Instant::now();
+                let mut sent = 0u64;
                 for i in 0..per_peer {
                     if start.elapsed() > Duration::from_secs(20) {
                         break;
@@ -2499,12 +2500,22 @@ mod tests {
                     if send.send_item(&buf).is_err() {
                         break;
                     }
+                    sent += 1;
                 }
                 send.finish().ok();
+                sent
             }));
         }
-        for h in handles {
-            h.join().ok();
+        // What each peer actually sent. The budget above can cut a
+        // sender short, and asserting delivery of every item regardless
+        // reports a slow test as the transport losing data.
+        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
+        for (p, n) in sent.iter().enumerate() {
+            assert_eq!(
+                *n, per_peer,
+                "peer {p} sent {n} of {per_peer} before its budget ran out; \
+                 that is this test being slow, not the transport",
+            );
         }
 
         let got = rx.recv_timeout(Duration::from_secs(35)).unwrap();
@@ -2573,6 +2584,7 @@ mod tests {
                 let mut buf = vec![0u8; 8];
                 gate.wait();
                 let start = Instant::now();
+                let mut sent = 0u64;
                 for i in 0..per_peer {
                     if start.elapsed() > Duration::from_secs(15) {
                         break;
@@ -2581,12 +2593,22 @@ mod tests {
                     if send.send_item(&buf).is_err() {
                         break;
                     }
+                    sent += 1;
                 }
                 send.finish().ok();
+                sent
             }));
         }
-        for h in handles {
-            h.join().ok();
+        // How many each peer actually sent. The budget above can cut a
+        // sender short, and asserting delivery of every item regardless
+        // reports a slow test as the transport losing data.
+        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
+        for (p, n) in sent.iter().enumerate() {
+            assert_eq!(
+                *n, per_peer,
+                "peer {p} sent {n} of {per_peer} before its budget ran out; \
+                 that is this test being slow, not the transport",
+            );
         }
 
         let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -2652,6 +2674,7 @@ mod tests {
                 let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
                 let mut buf = vec![0u8; 8];
                 let start = Instant::now();
+                let mut sent = 0u64;
                 for i in 0..per_peer {
                     if start.elapsed() > Duration::from_secs(15) {
                         break;
@@ -2660,12 +2683,22 @@ mod tests {
                     if send.send_item(&buf).is_err() {
                         break;
                     }
+                    sent += 1;
                 }
                 send.finish().ok();
+                sent
             }));
         }
-        for h in handles {
-            h.join().ok();
+        // What each peer actually sent. The budget above can cut a
+        // sender short, and asserting delivery of every item regardless
+        // reports a slow test as the transport losing data.
+        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
+        for (p, n) in sent.iter().enumerate() {
+            assert_eq!(
+                *n, per_peer,
+                "peer {p} sent {n} of {per_peer} before its budget ran out; \
+                 that is this test being slow, not the transport",
+            );
         }
 
         let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();

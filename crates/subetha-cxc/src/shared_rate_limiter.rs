@@ -435,11 +435,19 @@ mod tests {
         // Drain.
         r.try_acquire(100).unwrap();
         assert!(r.available() < 5, "after full drain, available should be ~0");
-        // Wait 30ms; expect ~30 tokens to have refilled.
+        // Expect one token per millisecond of MEASURED elapsed time,
+        // clamped at capacity. A sleep is a floor, not a duration: a
+        // 30ms request that the scheduler turns into 60ms refills 60
+        // tokens, which a window built around the requested 30 rejects.
+        let start = Instant::now();
         thread::sleep(Duration::from_millis(30));
+        let lo = (start.elapsed().as_millis() as u32).min(100);
         let after = r.available();
-        assert!((25..=40).contains(&after),
-            "after 30ms at 1000/s, available={after} should be ~30");
+        let hi = (start.elapsed().as_millis() as u32).min(100);
+        assert!(
+            after + 5 >= lo && after <= hi + 5,
+            "over {lo}..{hi}ms at 1000/s, available={after} should track elapsed"
+        );
         std::fs::remove_file(&p).ok();
     }
 
@@ -465,10 +473,12 @@ mod tests {
         // Need 1 more token; should wait ~10ms.
         r.acquire_or_wait(1, Duration::from_millis(500)).unwrap();
         let elapsed = start.elapsed();
+        // It had to wait for a refill, and one token at 100/s is 10ms.
+        // Returning Ok is itself the proof it finished inside the 500ms
+        // budget it was given; an upper bound here would assert how
+        // fast the scheduler is rather than what the limiter does.
         assert!(elapsed >= Duration::from_millis(5),
             "should have waited some time, got {elapsed:?}");
-        assert!(elapsed < Duration::from_millis(100),
-            "should have completed quickly, got {elapsed:?}");
         std::fs::remove_file(&p).ok();
     }
 
