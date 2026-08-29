@@ -41,6 +41,8 @@ anti-flap set).
 TLS 1.3 handshake and AEAD-seals every item payload, so the RLC <-> RS
 switch is crypto-transparent and the whole stream is confidential; the
 standalone RLC sender also takes `with_tls_client` / `with_tls_server`.
+`UnifiedSensReceiver::listen_tls` serves any number of TLS senders on
+one socket, each with its own handshake, keys and packet numbers.
 The encrypted transport can even share one UDP port with QUIC, demuxed
 by first wire byte:
 [`examples/one_port_tls_e2e.rs`](../crates/subetha-cxc/examples/one_port_tls_e2e.rs)
