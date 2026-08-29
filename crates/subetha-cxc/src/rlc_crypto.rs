@@ -38,8 +38,19 @@ pub fn install_provider() {
 
 /// Generate a self-signed cert + PKCS#8 key (DER), issued for [`SNI`].
 pub fn self_signed_cert() -> Result<(Vec<u8>, Vec<u8>), String> {
-    let ck = rcgen::generate_simple_self_signed(vec![SNI.to_string()])
-        .map_err(|e| e.to_string())?;
+    self_signed_cert_for(&[SNI])
+}
+
+/// Generate a self-signed cert + PKCS#8 key (DER) carrying `names` as its
+/// subject alternative names. A client validating any one of them with
+/// [`new_client_for`](CryptoState::new_client_for) accepts the cert; the
+/// first name is the certificate subject.
+pub fn self_signed_cert_for(names: &[&str]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if names.is_empty() {
+        return Err("a self-signed cert needs at least one name".to_string());
+    }
+    let subjects: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+    let ck = rcgen::generate_simple_self_signed(subjects).map_err(|e| e.to_string())?;
     Ok((ck.cert.der().to_vec(), ck.key_pair.serialize_der()))
 }
 
@@ -59,13 +70,25 @@ pub fn server_config(cert_der: &[u8], key_der: &[u8]) -> Result<Arc<ServerConfig
 /// Build a TLS client config trusting exactly the given cert DER (TLS 1.3, ring,
 /// RLC ALPN). The cert is shared out-of-band, like the QUIC bridge's DER files.
 pub fn client_config(cert_der: &[u8]) -> Result<Arc<ClientConfig>, String> {
+    client_config_trusting(&[cert_der])
+}
+
+/// Build a TLS client config trusting every DER in `roots` (TLS 1.3, ring, RLC
+/// ALPN). A CA root goes here to accept any leaf it signed, or several leaf
+/// certs to accept exactly those; [`client_config`] is the one-leaf case.
+pub fn client_config_trusting(roots: &[&[u8]]) -> Result<Arc<ClientConfig>, String> {
     install_provider();
-    let mut roots = RootCertStore::empty();
-    roots
-        .add(CertificateDer::from(cert_der.to_vec()))
-        .map_err(|e| e.to_string())?;
+    if roots.is_empty() {
+        return Err("a client config needs at least one trusted root".to_string());
+    }
+    let mut store = RootCertStore::empty();
+    for der in roots {
+        store
+            .add(CertificateDer::from(der.to_vec()))
+            .map_err(|e| e.to_string())?;
+    }
     let mut cfg = ClientConfig::builder()
-        .with_root_certificates(roots)
+        .with_root_certificates(store)
         .with_no_client_auth();
     cfg.alpn_protocols = vec![ALPN.to_vec()];
     Ok(Arc::new(cfg))
@@ -84,9 +107,17 @@ pub struct CryptoState {
 }
 
 impl CryptoState {
-    /// Client side of the handshake (connects to `SNI`).
+    /// Client side of the handshake, asserting [`SNI`] as the server name.
     pub fn new_client(cfg: Arc<ClientConfig>) -> Result<Self, String> {
-        let name = ServerName::try_from(SNI).map_err(|e| e.to_string())?;
+        Self::new_client_for(cfg, SNI)
+    }
+
+    /// Client side of the handshake, asserting `server_name`. The server's
+    /// cert must carry it as a subject alternative name, and `cfg` must trust
+    /// the cert or its issuer. [`new_client`](Self::new_client) is the [`SNI`]
+    /// case.
+    pub fn new_client_for(cfg: Arc<ClientConfig>, server_name: &str) -> Result<Self, String> {
+        let name = ServerName::try_from(server_name.to_string()).map_err(|e| e.to_string())?;
         let conn = ClientConnection::new(cfg, Version::V1, name, Vec::new())
             .map_err(|e| e.to_string())?;
         Ok(Self { conn: Connection::Client(conn), local: None, remote: None, send_pn: AtomicU64::new(0) })
@@ -203,5 +234,56 @@ mod tests {
         let pn2 = client.seal(&mut bad).expect("seal2");
         *bad.last_mut().unwrap() ^= 0xff;
         assert!(server.open(pn2, &mut bad).is_err(), "tampered AEAD must not open");
+    }
+
+    /// A cert issued for a chosen name completes the handshake when the client
+    /// asserts that name, and a client asserting a name the cert does not carry
+    /// is refused.
+    #[test]
+    fn a_named_cert_validates_its_name_and_refuses_another() {
+        let (cert, key) = self_signed_cert_for(&["replica-3.lan"]).expect("cert");
+        let ccfg = client_config_trusting(&[&cert]).expect("cc");
+
+        let mut ok_client =
+            CryptoState::new_client_for(ccfg.clone(), "replica-3.lan").expect("named client");
+        let mut server =
+            CryptoState::new_server(server_config(&cert, &key).expect("sc")).expect("server");
+        for _ in 0..8 {
+            for f in ok_client.take_outgoing() {
+                server.read_handshake(&f).expect("server read");
+            }
+            for f in server.take_outgoing() {
+                ok_client.read_handshake(&f).expect("client read");
+            }
+            if ok_client.is_complete() && server.is_complete() {
+                break;
+            }
+        }
+        assert!(ok_client.is_complete(), "the asserted name matches a SAN, so it completes");
+
+        // The client asserting a name the cert does not carry must fail to
+        // validate: the server's Certificate does not satisfy the name, so the
+        // client rejects it as it feeds the server's flight.
+        let mut bad_client =
+            CryptoState::new_client_for(ccfg, "replica-9.lan").expect("named client");
+        let mut server2 =
+            CryptoState::new_server(server_config(&cert, &key).expect("sc")).expect("server");
+        let mut rejected = false;
+        'drive: for _ in 0..8 {
+            for f in bad_client.take_outgoing() {
+                server2.read_handshake(&f).expect("server read");
+            }
+            for f in server2.take_outgoing() {
+                if bad_client.read_handshake(&f).is_err() {
+                    rejected = true;
+                    break 'drive;
+                }
+            }
+            if bad_client.is_complete() {
+                break;
+            }
+        }
+        assert!(rejected, "a wrong asserted name must be refused, not completed");
+        assert!(!bad_client.is_complete(), "a refused handshake must not reach 1-RTT keys");
     }
 }

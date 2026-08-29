@@ -41,6 +41,8 @@
 //! down threshold for `hold` ticks, since dropping the stronger code under a
 //! brief quiet spell risks a recovery gap.
 
+#[cfg(feature = "tls")]
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -375,7 +377,219 @@ pub(crate) fn route_sens_inbound(
     true
 }
 
-/// splitmix64 step: a cheap, seedable PRNG for the demux loss injector.
+/// A TLS listener's peer table: one handshake, one set of 1-RTT keys and one
+/// packet-number space per dialing peer, driven from the demux thread so key
+/// publication is ordered before any data frame from the same peer routes.
+///
+/// The demux thread feeds crypto frames (first byte 15 / 16) through
+/// [`on_frame`](Self::on_frame) and gates data frames on
+/// [`admits_data`](Self::admits_data); the receiver's poll side binds a
+/// completed peer's keys to its session tag through
+/// [`completed_for`](Self::completed_for). Data from a peer that has not
+/// completed its handshake - keys derived and every flight this side sent
+/// acked - is dropped BEFORE the decoder sees it: to the transport that is
+/// link loss, which its own FEC and ARQ absorb, so an item reordered ahead
+/// of the peer's final flight is recovered rather than lost.
+#[cfg(feature = "tls")]
+pub(crate) struct TlsListen {
+    server_cfg: std::sync::Arc<rustls::ServerConfig>,
+    peers: Mutex<HashMap<SocketAddr, PeerTls>>,
+    /// Pending handshakes admitted at once; a ClientHello past it is refused.
+    cap: std::sync::atomic::AtomicUsize,
+    refusals: AtomicU64,
+    /// Handshakes that failed (a flight the TLS state rejected) or timed out.
+    failures: AtomicU64,
+    /// Data datagrams dropped because their peer had not completed.
+    preauth_dropped: AtomicU64,
+}
+
+#[cfg(feature = "tls")]
+enum PeerTls {
+    /// Mid-handshake: the reliability machine and the TLS state it drives,
+    /// boxed so the table's variants stay pointer-sized.
+    Pending {
+        machine: crate::sens_rlc::HandshakeMachine,
+        crypto: Box<crate::rlc_crypto::CryptoState>,
+    },
+    /// Complete: the keys shared with the poll side's tag bindings, the
+    /// machine kept to ack the peer's retransmitted final flight, and when
+    /// the peer last spoke, so an abandoned entry ages out.
+    Done {
+        crypto: Arc<crate::rlc_crypto::CryptoState>,
+        machine: crate::sens_rlc::HandshakeMachine,
+        last_heard: Instant,
+    },
+}
+
+/// With the `tls` feature off no listener can exist, and the uninhabited
+/// type states exactly that: an `Option<Arc<TlsListen>>` can only be `None`.
+#[cfg(not(feature = "tls"))]
+pub(crate) enum TlsListen {}
+
+#[cfg(feature = "tls")]
+impl TlsListen {
+    fn new(server_cfg: std::sync::Arc<rustls::ServerConfig>, cap: usize) -> Self {
+        Self {
+            server_cfg,
+            peers: Mutex::new(HashMap::new()),
+            cap: std::sync::atomic::AtomicUsize::new(cap),
+            refusals: AtomicU64::new(0),
+            failures: AtomicU64::new(0),
+            preauth_dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// Feed one crypto frame from `from` and return the datagrams to send
+    /// back. A ClientHello from a new peer opens a handshake unless the
+    /// pending set is at the cap, in which case it is refused and counted; a
+    /// flight the TLS state rejects removes the handshake and counts a
+    /// failure, and the peer may dial again.
+    fn on_frame(&self, pkt: &[u8], from: SocketAddr) -> Vec<Vec<u8>> {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(state) = peers.remove(&from) {
+            let (replies, kept) = match state {
+                PeerTls::Done { crypto, machine, .. } => {
+                    // A crypto flight at sequence 0 against a completed peer
+                    // is a NEW ClientHello - the completed machine consumed
+                    // the old one, so a replay of it cannot sit at 0 - which
+                    // is a peer redialing from the same address. The old keys
+                    // go (any session tag already bound keeps its clone) and
+                    // the hello opens a fresh handshake below.
+                    if pkt.first() == Some(&15)
+                        && pkt.len() >= 5
+                        && pkt[1..5] == [0, 0, 0, 0]
+                        && machine.recv_seq() > 0
+                    {
+                        return self.open_handshake(&mut peers, pkt, from);
+                    }
+                    let r: Vec<Vec<u8>> = machine.ack_replay(pkt).into_iter().collect();
+                    (r, PeerTls::Done { crypto, machine, last_heard: Instant::now() })
+                }
+                PeerTls::Pending { mut machine, mut crypto } => {
+                    match machine.on_datagram(&mut crypto, pkt) {
+                        Ok(replies) if machine.is_complete(&crypto) => (
+                            replies,
+                            PeerTls::Done {
+                                crypto: Arc::new(*crypto),
+                                machine,
+                                last_heard: Instant::now(),
+                            },
+                        ),
+                        Ok(replies) => (replies, PeerTls::Pending { machine, crypto }),
+                        Err(_) => {
+                            // The TLS state rejected a flight: the handshake is
+                            // over and the entry goes, so the peer may dial again.
+                            self.failures.fetch_add(1, Ordering::Relaxed);
+                            return Vec::new();
+                        }
+                    }
+                }
+            };
+            peers.insert(from, kept);
+            return replies;
+        }
+        // An unknown peer: only a ClientHello (crypto flight, not an ack)
+        // opens a handshake.
+        if pkt.first() != Some(&15) {
+            return Vec::new();
+        }
+        self.open_handshake(&mut peers, pkt, from)
+    }
+
+    /// Open a fresh handshake for a ClientHello from `from`, unless the
+    /// pending set is at the cap, in which case it is refused and counted.
+    fn open_handshake(
+        &self,
+        peers: &mut HashMap<SocketAddr, PeerTls>,
+        pkt: &[u8],
+        from: SocketAddr,
+    ) -> Vec<Vec<u8>> {
+        let pending =
+            peers.values().filter(|p| matches!(p, PeerTls::Pending { .. })).count();
+        if pending >= self.cap.load(std::sync::atomic::Ordering::Relaxed) {
+            self.refusals.fetch_add(1, Ordering::Relaxed);
+            return Vec::new();
+        }
+        let mut crypto =
+            match crate::rlc_crypto::CryptoState::new_server(Arc::clone(&self.server_cfg)) {
+                Ok(c) => c,
+                Err(_) => {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                    return Vec::new();
+                }
+            };
+        let mut machine = crate::sens_rlc::HandshakeMachine::new(&mut crypto, false);
+        match machine.on_datagram(&mut crypto, pkt) {
+            Ok(replies) => {
+                peers.insert(from, PeerTls::Pending { machine, crypto: Box::new(crypto) });
+                replies
+            }
+            Err(_) => {
+                self.failures.fetch_add(1, Ordering::Relaxed);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Whether a data datagram from `from` may reach the decoders: only a
+    /// peer whose handshake has completed. Anything else is counted and
+    /// dropped before the decoder sees it - link loss to the transport,
+    /// which its FEC and ARQ recover once the peer completes.
+    fn admits_data(&self, from: SocketAddr) -> bool {
+        let mut peers = self.peers.lock().unwrap();
+        match peers.get_mut(&from) {
+            Some(PeerTls::Done { last_heard, .. }) => {
+                *last_heard = Instant::now();
+                true
+            }
+            _ => {
+                self.preauth_dropped.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    /// Retransmit whatever is due across the pending handshakes, and drop the
+    /// abandoned: a pending machine past its 10s deadline (counted as a
+    /// failure), and a completed peer silent past [`FB_PEER_RETENTION`],
+    /// whose keys live on in any session tag already bound to them.
+    fn tick(&self) -> Vec<(SocketAddr, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut peers = self.peers.lock().unwrap();
+        peers.retain(|addr, state| match state {
+            PeerTls::Pending { machine, .. } => {
+                if machine.timed_out() {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+                for pkt in machine.due_flights() {
+                    out.push((*addr, pkt));
+                }
+                true
+            }
+            PeerTls::Done { last_heard, .. } => last_heard.elapsed() < FB_PEER_RETENTION,
+        });
+        out
+    }
+
+    /// The completed keys for `from`, for binding to the session tag that
+    /// delivers this peer's items.
+    fn completed_for(&self, from: SocketAddr) -> Option<Arc<crate::rlc_crypto::CryptoState>> {
+        match self.peers.lock().unwrap().get(&from) {
+            Some(PeerTls::Done { crypto, .. }) => Some(Arc::clone(crypto)),
+            _ => None,
+        }
+    }
+
+    fn pending(&self) -> usize {
+        self.peers
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|p| matches!(p, PeerTls::Pending { .. }))
+            .count()
+    }
+}
 fn next_rand(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -403,6 +617,9 @@ fn spawn_demux(
     stop: Arc<AtomicBool>,
     stats: Option<Arc<[AtomicU64; DEMUX_STAT_SLOTS]>>,
     demux_start: Instant,
+    #[cfg_attr(not(feature = "tls"), allow(unused_variables))] tls_listen: Option<
+        Arc<TlsListen>,
+    >,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let stop_report = Arc::clone(&stop);
@@ -425,6 +642,10 @@ fn spawn_demux(
         // Set once the first unroutable datagram has been named, so the
         // condition is reported without flooding stderr per datagram.
         let mut reported_unroutable = false;
+        // Retransmit / age-out cadence for the TLS peer table, matching the
+        // handshake machine's own 100ms retransmit timer.
+        #[cfg(feature = "tls")]
+        let mut last_tls_tick = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             if let Some(s) = &stats {
                 s[0].fetch_add(1, Ordering::Relaxed);
@@ -462,6 +683,29 @@ fn spawn_demux(
                         resp.extend_from_slice(&buf[1..crate::sens_rlc::PATH_FRAME_LEN]);
                         sock.send_to(&resp, from).ok();
                         continue;
+                    }
+                    // A multi-peer TLS listener drives its handshakes HERE, on
+                    // the demux thread: a peer's keys publish before this same
+                    // thread routes any later data frame from it, so the poll
+                    // side never races the handshake. Data from a peer whose
+                    // handshake has not completed is dropped before the
+                    // decoders see it - link loss to the transport, recovered
+                    // by its own FEC and ARQ once the peer completes - so an
+                    // item reordered ahead of the peer's final flight is
+                    // recovered rather than lost.
+                    #[cfg(feature = "tls")]
+                    if let Some(tl) = &tls_listen {
+                        if b0 == 15 || b0 == 16 {
+                            for r in tl.on_frame(&buf[..n], from) {
+                                sock.send_to(&r, from).ok();
+                            }
+                            continue;
+                        }
+                        if (b0 == 1 || b0 == 4 || (10..=14).contains(&b0))
+                            && !tl.admits_data(from)
+                        {
+                            continue;
+                        }
                     }
                     // Uniform link-loss injection on the forward data/repair
                     // stream (RS data 1, RLC data 10 / repair 11): drop BEFORE
@@ -541,6 +785,16 @@ fn spawn_demux(
                 let frame = encode_unified_fb(c.load(Ordering::Relaxed));
                 for (dst, _) in &peers {
                     sock.send_to(&frame, *dst).ok();
+                }
+            }
+            // Retransmit due handshake flights and drop abandoned peers.
+            #[cfg(feature = "tls")]
+            if let Some(tl) = &tls_listen
+                && last_tls_tick.elapsed() >= Duration::from_millis(100)
+            {
+                last_tls_tick = Instant::now();
+                for (dst, pkt) in tl.tick() {
+                    sock.send_to(&pkt, dst).ok();
                 }
             }
         }
@@ -787,10 +1041,26 @@ impl UnifiedSensSender {
         cfg: UnifiedConfig,
         tls: std::sync::Arc<rustls::ClientConfig>,
     ) -> io::Result<Self> {
+        Self::connect_tls_named(local, peer, cfg, tls, crate::rlc_crypto::SNI)
+    }
+
+    /// Like [`connect_tls`](Self::connect_tls) but asserts `server_name` as the
+    /// peer's TLS identity rather than the fixed [`SNI`](crate::rlc_crypto::SNI).
+    /// The peer's cert must carry `server_name` as a subject alternative name
+    /// and `tls` must trust the cert or its issuer, so a receiver serving many
+    /// peers can present a per-host cert.
+    #[cfg(feature = "tls")]
+    pub fn connect_tls_named<A: ToSocketAddrs>(
+        local: A,
+        peer: SocketAddr,
+        cfg: UnifiedConfig,
+        tls: std::sync::Arc<rustls::ClientConfig>,
+        server_name: &str,
+    ) -> io::Result<Self> {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
         crate::dgram::quiet_icmp_connreset(&udp);
-        let mut cs = crate::rlc_crypto::CryptoState::new_client(tls)
+        let mut cs = crate::rlc_crypto::CryptoState::new_client_for(tls, server_name)
             .map_err(io::Error::other)?;
         let hs = DgramSock::from_udp(udp.try_clone()?);
         crate::sens_rlc::drive_handshake(&hs, Some(peer), &mut cs, true)?;
@@ -870,6 +1140,7 @@ impl UnifiedSensSender {
             Arc::clone(&stop),
             Some(Arc::clone(&demux_stats)),
             demux_start,
+            None,
         );
 
         Ok(Self {
@@ -1476,6 +1747,27 @@ pub struct UnifiedSensReceiver {
     /// races ahead of the handshake completion is never opened with absent keys.
     #[cfg(feature = "tls")]
     expect_tls: bool,
+    /// The multi-peer handshake table of a listening receiver
+    /// ([`listen_tls`](Self::listen_tls)), shared with the demux thread that
+    /// drives it. `None` on every other receiver.
+    #[cfg(feature = "tls")]
+    tls_listen: Option<Arc<TlsListen>>,
+    /// A listening receiver's keys per session tag, bound on the first item a
+    /// tag delivers so a later address migration keeps them.
+    #[cfg(feature = "tls")]
+    tag_crypto: HashMap<u64, Arc<crate::rlc_crypto::CryptoState>>,
+    /// A listening receiver's packet number per session tag: each peer seals
+    /// its own stream 0, 1, 2..., so each tag opens with its own count.
+    #[cfg(feature = "tls")]
+    tag_pn: HashMap<u64, u64>,
+    /// Items a listening receiver could not open: no completed handshake
+    /// bound to the tag, or a failed AEAD. Counted because a dropped item
+    /// otherwise reads exactly like one that never arrived.
+    #[cfg(feature = "tls")]
+    tls_unopened: u64,
+    /// When the tag maps were last pruned against the live sessions.
+    #[cfg(feature = "tls")]
+    last_tag_prune: Instant,
     stop: Arc<AtomicBool>,
     demux: Option<JoinHandle<()>>,
     /// Same slots the sender's reader publishes; a receiver whose reader
@@ -1491,7 +1783,7 @@ impl UnifiedSensReceiver {
         let udp = UdpSocket::bind(local)?;
         udp.set_nonblocking(true)?;
         crate::dgram::quiet_icmp_connreset(&udp);
-        Self::assemble(udp, cfg, 0)
+        Self::assemble(udp, cfg, 0, None)
     }
 
     /// Like [`bind`](Self::bind) but runs a TLS 1.3 server handshake first and
@@ -1511,15 +1803,70 @@ impl UnifiedSensReceiver {
             .map_err(io::Error::other)?;
         let hs = DgramSock::from_udp(udp.try_clone()?);
         crate::sens_rlc::drive_handshake(&hs, None, &mut cs, false)?;
-        let mut s = Self::assemble(udp, cfg, crate::rlc_crypto::TAG_LEN)?;
+        let mut s = Self::assemble(udp, cfg, crate::rlc_crypto::TAG_LEN, None)?;
         s.crypto.set(cs).ok();
         s.expect_tls = true;
         Ok(s)
     }
 
+    /// Bind `local` and serve any number of TLS senders: the listening
+    /// counterpart to [`bind_tls`](Self::bind_tls), up before any peer dials.
+    /// Each dialing peer runs its own TLS 1.3 handshake against `tls` and
+    /// AEAD-seals its own stream; every delivered item is opened with that
+    /// peer's keys and packet numbers and tagged with its session id, so N
+    /// senders share the listener without sharing a crypto state.
+    ///
+    /// `peers` is the number of concurrent senders this listener is
+    /// provisioned for; it must be at least 1. Handshakes pending at once
+    /// are capped at twice it - adjust with
+    /// [`set_pending_handshake_cap`](Self::set_pending_handshake_cap) - and a
+    /// ClientHello past the cap is refused and counted in
+    /// [`handshake_refusals`](Self::handshake_refusals).
+    ///
+    /// The policy must pin a code. Each peer's CODE_SWITCH carries its own
+    /// boundary while the switch layer compares one boundary against the sum
+    /// of every peer's deliveries and re-bases the shared decoder, so an
+    /// automatic switch under several peers would misdeliver silently;
+    /// [`CodePolicy::Auto`] is refused here instead.
+    #[cfg(feature = "tls")]
+    pub fn listen_tls<A: ToSocketAddrs>(
+        local: A,
+        cfg: UnifiedConfig,
+        tls: std::sync::Arc<rustls::ServerConfig>,
+        peers: usize,
+    ) -> io::Result<Self> {
+        if peers == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a TLS listener provisioned for zero peers serves nobody; \
+                 pass the concurrent sender count it is for",
+            ));
+        }
+        if matches!(cfg.policy, CodePolicy::Auto { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a multi-peer TLS listener needs a pinned code (ForceRlc or \
+                 ForceRs): the switch boundary is per endpoint, so an \
+                 automatic switch under several peers would misdeliver",
+            ));
+        }
+        let udp = UdpSocket::bind(local)?;
+        udp.set_nonblocking(true)?;
+        crate::dgram::quiet_icmp_connreset(&udp);
+        let listen = Arc::new(TlsListen::new(tls, peers.saturating_mul(2)));
+        Self::assemble(udp, cfg, crate::rlc_crypto::TAG_LEN, Some(listen))
+    }
+
     /// Build the receiver over an already-bound (and, for TLS, already-handshaked)
     /// socket: bring up both decoders sharing it and spawn the demux reader.
-    fn assemble(udp: UdpSocket, cfg: UnifiedConfig, seal_overhead: usize) -> io::Result<Self> {
+    /// `tls_listen` is the multi-peer handshake table for a listening
+    /// receiver, driven by the demux thread it spawns; `None` everywhere else.
+    fn assemble(
+        udp: UdpSocket,
+        cfg: UnifiedConfig,
+        seal_overhead: usize,
+        tls_listen: Option<Arc<TlsListen>>,
+    ) -> io::Result<Self> {
         // The decoder must accept the sealed wire width (item + AEAD tag under
         // TLS); the RS decoder learns its shard width from the wire header, so
         // only the RLC decoder's symbol size needs widening here.
@@ -1558,6 +1905,7 @@ impl UnifiedSensReceiver {
             Arc::clone(&stop),
             Some(Arc::clone(&demux_stats)),
             demux_start,
+            tls_listen.clone(),
         );
 
         Ok(Self {
@@ -1574,6 +1922,16 @@ impl UnifiedSensReceiver {
             crypto: Arc::new(std::sync::OnceLock::new()),
             #[cfg(feature = "tls")]
             expect_tls: false,
+            #[cfg(feature = "tls")]
+            tls_listen,
+            #[cfg(feature = "tls")]
+            tag_crypto: HashMap::new(),
+            #[cfg(feature = "tls")]
+            tag_pn: HashMap::new(),
+            #[cfg(feature = "tls")]
+            tls_unopened: 0,
+            #[cfg(feature = "tls")]
+            last_tag_prune: Instant::now(),
             stop,
             demux: Some(demux),
             demux_stats: Some(demux_stats),
@@ -1621,6 +1979,16 @@ impl UnifiedSensReceiver {
             crypto: Arc::new(std::sync::OnceLock::new()),
             #[cfg(feature = "tls")]
             expect_tls: false,
+            #[cfg(feature = "tls")]
+            tls_listen: None,
+            #[cfg(feature = "tls")]
+            tag_crypto: HashMap::new(),
+            #[cfg(feature = "tls")]
+            tag_pn: HashMap::new(),
+            #[cfg(feature = "tls")]
+            tls_unopened: 0,
+            #[cfg(feature = "tls")]
+            last_tag_prune: Instant::now(),
             stop,
             demux: Some(demux),
             // The QUIC endpoint owns the reader; this receiver has no
@@ -1851,9 +2219,115 @@ impl UnifiedSensReceiver {
         self.rs.session_challenges_armed()
     }
 
+    /// ClientHellos a listening receiver refused because the pending set was
+    /// at the cap. Always 0 off [`listen_tls`](Self::listen_tls).
+    #[cfg(feature = "tls")]
+    pub fn handshake_refusals(&self) -> u64 {
+        self.tls_listen.as_ref().map_or(0, |tl| tl.refusals.load(Ordering::Relaxed))
+    }
+
+    /// Handshakes a listening receiver dropped: a flight the TLS state
+    /// rejected, or a peer that went silent past the 10s deadline.
+    #[cfg(feature = "tls")]
+    pub fn handshake_failures(&self) -> u64 {
+        self.tls_listen.as_ref().map_or(0, |tl| tl.failures.load(Ordering::Relaxed))
+    }
+
+    /// Handshakes in flight on a listening receiver right now.
+    #[cfg(feature = "tls")]
+    pub fn pending_handshakes(&self) -> usize {
+        self.tls_listen.as_ref().map_or(0, |tl| tl.pending())
+    }
+
+    /// Data datagrams a listening receiver dropped before the decoders
+    /// because their peer had not completed a handshake. The peer's own FEC
+    /// and ARQ recover the items once it completes; a count that keeps
+    /// climbing is a peer sending data with no handshake at all.
+    #[cfg(feature = "tls")]
+    pub fn tls_preauth_dropped(&self) -> u64 {
+        self.tls_listen.as_ref().map_or(0, |tl| tl.preauth_dropped.load(Ordering::Relaxed))
+    }
+
+    /// Items a listening receiver delivered from a decoder and could not
+    /// open: no completed handshake bound to the tag, or a failed AEAD.
+    #[cfg(feature = "tls")]
+    pub fn tls_unopened(&self) -> u64 {
+        self.tls_unopened
+    }
+
+    /// Adjust the pending-handshake cap
+    /// [`listen_tls`](Self::listen_tls) derived from its peer count.
+    /// No-op off a listener.
+    #[cfg(feature = "tls")]
+    pub fn set_pending_handshake_cap(&self, cap: usize) {
+        if let Some(tl) = &self.tls_listen {
+            tl.cap.store(cap, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// The bound local address.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.real.local_addr()
+    }
+
+    /// Open one delivered item on a listening receiver with its OWN peer's
+    /// keys and packet number: the tag's next pn (each sender seals its
+    /// stream 0, 1, 2...), and the keys bound to the tag - bound here on the
+    /// tag's first item, by the session's admitted address, so a later
+    /// address migration keeps them. `None` when no completed handshake
+    /// covers the tag or the AEAD refuses; both are counted in
+    /// [`tls_unopened`](Self::tls_unopened), and the pn still advances so
+    /// one refused item cannot desynchronize the rest of the stream.
+    #[cfg(feature = "tls")]
+    fn open_listen(&mut self, tag: u64, mut payload: Vec<u8>) -> Option<Vec<u8>> {
+        let pn = {
+            let e = self.tag_pn.entry(tag).or_insert(0);
+            let pn = *e;
+            *e += 1;
+            pn
+        };
+        if self.last_tag_prune.elapsed() >= FB_PEER_RETENTION {
+            self.last_tag_prune = Instant::now();
+            let mut live: std::collections::BTreeSet<u64> =
+                self.rlc.live_sessions().into_iter().collect();
+            live.extend(self.rs.live_sessions().into_iter().map(u64::from));
+            self.tag_crypto.retain(|t, _| live.contains(t));
+            self.tag_pn.retain(|t, _| live.contains(t));
+        }
+        let crypto = match self.tag_crypto.get(&tag) {
+            Some(c) => Arc::clone(c),
+            None => {
+                let addr = match self.active {
+                    SensCode::Rlc => self.rlc.peer_of(tag),
+                    SensCode::Rs => self
+                        .rs
+                        .session_frontier(tag as u32)
+                        .and_then(|(_, _, _, addr)| addr),
+                };
+                let bound = addr
+                    .and_then(|a| self.tls_listen.as_ref().and_then(|tl| tl.completed_for(a)));
+                match bound {
+                    Some(c) => {
+                        self.tag_crypto.insert(tag, Arc::clone(&c));
+                        c
+                    }
+                    None => {
+                        self.tls_unopened += 1;
+                        return None;
+                    }
+                }
+            }
+        };
+        match crypto.open(pn, &mut payload) {
+            Ok(n) => {
+                payload.truncate(n);
+                Some(payload)
+            }
+            Err(_) => {
+                self.tls_unopened += 1;
+                None
+            }
+        }
     }
 
     /// Recover an item from a delivered wire payload: AEAD-open (TLS) with `pn`
@@ -1915,6 +2389,14 @@ impl UnifiedSensReceiver {
                 let raw = self.rlc.poll_from()?;
                 let mut d = Vec::with_capacity(raw.len());
                 for (cid, payload) in raw {
+                    #[cfg(feature = "tls")]
+                    if self.tls_listen.is_some() {
+                        self.delivered_total += 1;
+                        if let Some(item) = self.open_listen(cid, payload) {
+                            d.push((cid, item));
+                        }
+                        continue;
+                    }
                     let item = self.open_payload(payload, self.delivered_total)?;
                     self.delivered_total += 1;
                     d.push((cid, item));
@@ -1932,6 +2414,15 @@ impl UnifiedSensReceiver {
                 let raw = self.rs.poll_from()?;
                 let mut d = Vec::with_capacity(raw.len());
                 for (epoch, payload) in raw {
+                    #[cfg(feature = "tls")]
+                    if self.tls_listen.is_some() {
+                        self.delivered_total += 1;
+                        self.rs_next_global += 1;
+                        if let Some(item) = self.open_listen(u64::from(epoch), payload) {
+                            d.push((u64::from(epoch), item));
+                        }
+                        continue;
+                    }
                     if self.rs_next_global >= self.delivered_total {
                         let item = self.open_payload(payload, self.rs_next_global)?;
                         self.delivered_total += 1;
@@ -2941,5 +3432,258 @@ mod tests {
             assert_eq!(v, i as u64, "delivery in order across the switch at index {i}");
         }
         assert!(rswitches >= 1, "receiver followed the code switch");
+    }
+
+    /// The listening receiver is up BEFORE either peer dials, each peer runs
+    /// its own handshake against a cert issued for a chosen name, and every
+    /// item opens with its own peer's keys and packet numbers: complete
+    /// in-order delivery per peer, distinct attribution, nothing unopened.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn listen_tls_serves_two_named_peers_bound_before_either_dials() {
+        use std::sync::mpsc;
+        let sym = 64usize;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: sym,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let (cert, key) =
+            crate::rlc_crypto::self_signed_cert_for(&["listener.lan"]).expect("cert");
+        let scfg = crate::rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let ccfg = crate::rlc_crypto::client_config_trusting(&[&cert]).expect("client cfg");
+
+        let recv = UnifiedSensReceiver::listen_tls("127.0.0.1:0", cfg, scfg, 2).unwrap();
+        let addr = recv.local_addr().unwrap();
+        let per_peer: u64 = 150;
+        let peers: u64 = 2;
+        let total = per_peer * peers;
+
+        let (tx, rx) = mpsc::channel();
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<(u64, u64)> = Vec::with_capacity(total as usize);
+            let start = Instant::now();
+            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
+                let items = recv.poll_from().unwrap_or_default();
+                let empty = items.is_empty();
+                for (tag, it) in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push((tag, u64::from_le_bytes(s)));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send((
+                got,
+                recv.tls_unopened(),
+                recv.handshake_refusals(),
+                recv.handshake_failures(),
+                recv.tls_preauth_dropped(),
+            ))
+            .ok();
+        });
+
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            let ccfg = std::sync::Arc::clone(&ccfg);
+            handles.push(std::thread::spawn(move || {
+                let mut send = UnifiedSensSender::connect_tls_named(
+                    "0.0.0.0:0",
+                    addr,
+                    cfg,
+                    ccfg,
+                    "listener.lan",
+                )
+                .unwrap();
+                let mut buf = vec![0u8; 8];
+                let mut sent = 0u64;
+                let start = Instant::now();
+                for i in 0..per_peer {
+                    if start.elapsed() > Duration::from_secs(15) {
+                        break;
+                    }
+                    buf[..8].copy_from_slice(&((p << 56) | i).to_le_bytes());
+                    if send.send_item(&buf).is_err() {
+                        break;
+                    }
+                    sent += 1;
+                }
+                send.finish().ok();
+                sent
+            }));
+        }
+        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
+        for (p, n) in sent.iter().enumerate() {
+            assert_eq!(
+                *n, per_peer,
+                "peer {p} sent {n} of {per_peer} before its budget ran out; \
+                 that is this test being slow, not the transport",
+            );
+        }
+
+        let (got, unopened, refusals, failures, preauth) =
+            rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        rh.join().ok();
+        let diag = format!(
+            "unopened {unopened}, refusals {refusals}, failures {failures}, \
+             preauth_dropped {preauth}",
+        );
+
+        for p in 0..peers {
+            let mine: Vec<u64> = got
+                .iter()
+                .filter(|(_, v)| (v >> 56) == p)
+                .map(|(_, v)| v & 0x00FF_FFFF_FFFF_FFFF)
+                .collect();
+            assert_eq!(
+                mine,
+                (0..per_peer).collect::<Vec<_>>(),
+                "peer {p} must deliver every item in order through its own keys; {diag}",
+            );
+            let tags: std::collections::BTreeSet<u64> =
+                got.iter().filter(|(_, v)| (v >> 56) == p).map(|(t, _)| *t).collect();
+            assert_eq!(tags.len(), 1, "peer {p} items must all carry one tag; {diag}");
+        }
+        let all_tags: std::collections::BTreeSet<u64> = got.iter().map(|(t, _)| *t).collect();
+        assert_eq!(all_tags.len(), 2, "the two peers must be attributed distinctly; {diag}");
+        assert_eq!(unopened, 0, "every delivered item must open with its peer's keys");
+        assert_eq!(refusals, 0, "two peers fit a cap of four");
+        assert_eq!(failures, 0, "both handshakes must complete");
+    }
+
+    /// The switch boundary is per endpoint, so an automatic policy on a
+    /// multi-peer listener would misdeliver silently; it is refused at
+    /// construction instead.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn listen_tls_refuses_an_automatic_policy() {
+        let (cert, key) = crate::rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = crate::rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::default_auto(),
+            symbol_len: 64,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let Err(err) = UnifiedSensReceiver::listen_tls("127.0.0.1:0", cfg, scfg, 2) else {
+            panic!("an automatic policy must be refused at construction");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A listener provisioned for zero peers is a mistake, not a
+    /// configuration.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn listen_tls_refuses_zero_peers() {
+        let (cert, key) = crate::rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = crate::rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: 64,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let Err(err) = UnifiedSensReceiver::listen_tls("127.0.0.1:0", cfg, scfg, 0) else {
+            panic!("zero peers must be refused at construction");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A ClientHello past the pending cap is refused AND counted: a refused
+    /// peer otherwise reads exactly like one whose datagrams never arrived.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn listen_cap_refuses_a_clienthello_past_it_and_counts() {
+        let (cert, key) = crate::rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = crate::rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let ccfg = crate::rlc_crypto::client_config(&cert).expect("client cfg");
+        let tl = TlsListen::new(scfg, 2);
+
+        let hello = |ccfg: &std::sync::Arc<rustls::ClientConfig>| -> Vec<u8> {
+            let mut crypto = crate::rlc_crypto::CryptoState::new_client(
+                std::sync::Arc::clone(ccfg),
+            )
+            .expect("client");
+            let mut m = crate::sens_rlc::HandshakeMachine::new(&mut crypto, true);
+            m.due_flights().into_iter().next().expect("a client queues its opening flight")
+        };
+
+        let a: SocketAddr = "127.0.0.1:11001".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:11002".parse().unwrap();
+        let c: SocketAddr = "127.0.0.1:11003".parse().unwrap();
+        assert!(!tl.on_frame(&hello(&ccfg), a).is_empty(), "first hello is answered");
+        assert!(!tl.on_frame(&hello(&ccfg), b).is_empty(), "second hello is answered");
+        assert_eq!(tl.pending(), 2);
+
+        assert!(tl.on_frame(&hello(&ccfg), c).is_empty(), "third hello gets nothing back");
+        assert_eq!(tl.pending(), 2, "the refused peer holds no slot");
+        assert_eq!(
+            tl.refusals.load(Ordering::Relaxed),
+            1,
+            "the refusal is counted, not silent"
+        );
+    }
+
+    /// The peer table completes a full handshake with no sockets: the client
+    /// machine's flights are ferried into `on_frame` / out of `tick`, and the
+    /// table ends with the peer's keys published. Separates the table's own
+    /// protocol from everything socket-side.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn listen_table_completes_a_handshake_in_memory() {
+        let (cert, key) = crate::rlc_crypto::self_signed_cert().expect("cert");
+        let scfg = crate::rlc_crypto::server_config(&cert, &key).expect("server cfg");
+        let ccfg = crate::rlc_crypto::client_config(&cert).expect("client cfg");
+        let tl = TlsListen::new(scfg, 2);
+        let addr: SocketAddr = "127.0.0.1:12001".parse().unwrap();
+
+        let mut crypto = crate::rlc_crypto::CryptoState::new_client(ccfg).expect("client");
+        let mut m = crate::sens_rlc::HandshakeMachine::new(&mut crypto, true);
+        for round in 0..16 {
+            for pkt in m.due_flights() {
+                for reply in tl.on_frame(&pkt, addr) {
+                    m.on_datagram(&mut crypto, &reply).expect("client read");
+                }
+            }
+            for (dst, pkt) in tl.tick() {
+                assert_eq!(dst, addr);
+                for reply in m.on_datagram(&mut crypto, &pkt).expect("client read") {
+                    tl.on_frame(&reply, addr);
+                }
+            }
+            if m.is_complete(&crypto) && tl.completed_for(addr).is_some() {
+                break;
+            }
+            assert!(round < 15, "handshake did not converge in 16 rounds");
+        }
+        assert!(m.is_complete(&crypto), "the client must reach 1-RTT keys");
+        let server = tl.completed_for(addr).expect("the table must publish the peer's keys");
+
+        // The keys agree: what the client seals, the table's state opens.
+        let plaintext = b"across the table".to_vec();
+        let mut wire = plaintext.clone();
+        let pn = crypto.seal(&mut wire).expect("seal");
+        let n = server.open(pn, &mut wire).expect("open");
+        assert_eq!(&wire[..n], &plaintext[..]);
     }
 }

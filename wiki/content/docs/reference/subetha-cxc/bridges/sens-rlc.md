@@ -146,6 +146,10 @@ cleartext; the AEAD is per-packet with no extra round trips, so the
 encrypted path's latency matches the plaintext path's to within
 microseconds. This is what the head-to-head calls `rlctls`.
 
+A receiver serving several TLS senders at once - each with its own
+handshake, keys and packet numbers - is the unified endpoint's
+[`listen_tls`](../unified-code-switch/#a-tls-listener-serving-many-senders).
+
 ## Performance
 
 Measured on real wire between separate OS processes (an Ubuntu 24.04 and a

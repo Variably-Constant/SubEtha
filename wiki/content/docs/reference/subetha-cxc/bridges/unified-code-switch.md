@@ -99,6 +99,43 @@ to the receiver. `connect_tls` / `bind_tls` wrap the whole endpoint in one
 rustls TLS 1.3 handshake whose 1-RTT key seals every datagram of **both**
 codes, so the switch is crypto-transparent and adds no extra round trip.
 
+The sender's identity check is configurable: `connect_tls_named` asserts
+a server name of the caller's choosing where `connect_tls` asserts the
+fixed `rlc_crypto::SNI`, `rlc_crypto::client_config_trusting` accepts a
+CA root (or several leaves) where `client_config` trusts exactly one,
+and `rlc_crypto::self_signed_cert_for` issues a cert for chosen names.
+The server side needs no name parameter - its identity is its
+certificate.
+
+## A TLS listener serving many senders
+
+`listen_tls(local, cfg, tls, peers)` is the listening counterpart to
+`bind_tls`: up before any peer dials, serving any number of TLS senders
+at once. Each dialing peer runs its own handshake, driven on the demux
+thread as its flights arrive, and every delivered item is opened with
+that peer's keys and its own packet numbers, tagged with its session id
+- `poll_from()` attribution as the [per-peer
+contract](#one-window-per-peer) describes, carried down through the
+crypto.
+
+`peers` is the concurrent sender count the listener is provisioned for.
+Handshakes pending at once are capped at twice it
+(`set_pending_handshake_cap` adjusts), a ClientHello past the cap is
+refused and counted in `handshake_refusals()`, a handshake that fails
+or times out counts in `handshake_failures()`, and an incomplete one
+ages out at the 10 s handshake deadline. Data from a peer that has not
+completed its handshake is dropped before the decoders see it and
+counted in `tls_preauth_dropped()` - to the transport that is link
+loss, which its own FEC and ARQ recover once the peer completes - and
+an item that cannot be opened is counted in `tls_unopened()` rather
+than failing the poll, so one peer's bad frame cannot stall another's
+delivery.
+
+The policy must pin a code (`ForceRlc` / `ForceRs`): the switch
+boundary is per endpoint, so an automatic switch under several peers
+would misdeliver, and `CodePolicy::Auto` is refused at construction
+instead.
+
 ## A peer that leaves, on Windows
 
 The receiver sends feedback to every peer it has heard from, so a sender

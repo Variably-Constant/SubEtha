@@ -282,6 +282,142 @@ fn secure_unwrap(crypto: &crate::rlc_crypto::CryptoState, pkt: &[u8]) -> Option<
     Some(payload)
 }
 
+/// The reliability layer under one peer's TLS handshake: sequenced cleartext
+/// `PKT_RLC_CRYPTO` flights, retransmitted until acked, fed to the TLS state
+/// in order. The blocking single-peer [`drive_handshake`] steps one of these
+/// over its own recv loop; the multi-peer listen path holds one per dialing
+/// peer and steps each from the demux thread, so the wire reliability lives
+/// in one place. The `CryptoState` is borrowed per call rather than owned:
+/// the caller's state stays armed whatever happens to the handshake, and a
+/// state that is present but incomplete refuses to seal, where one consumed
+/// on an error path would leave the transport sending cleartext.
+#[cfg(feature = "tls")]
+pub(crate) struct HandshakeMachine {
+    next_send_seq: u32,
+    next_recv_seq: u32,
+    /// Unacked outbound flights, each `(seq, bytes)`; retransmitted until acked.
+    outbox: Vec<(u32, Vec<u8>)>,
+    start: Instant,
+    last_send: Option<Instant>,
+}
+
+#[cfg(feature = "tls")]
+impl HandshakeMachine {
+    /// A machine over `crypto`. A client queues its opening flight at once; a
+    /// server has nothing to send until the peer's ClientHello arrives.
+    pub(crate) fn new(crypto: &mut crate::rlc_crypto::CryptoState, is_client: bool) -> Self {
+        let mut m = Self {
+            next_send_seq: 0,
+            next_recv_seq: 0,
+            outbox: Vec::new(),
+            start: Instant::now(),
+            last_send: None,
+        };
+        if is_client {
+            m.queue_outgoing(crypto);
+        }
+        m
+    }
+
+    fn queue_outgoing(&mut self, crypto: &mut crate::rlc_crypto::CryptoState) {
+        for f in crypto.take_outgoing() {
+            self.outbox.push((self.next_send_seq, f));
+            self.next_send_seq += 1;
+        }
+        self.last_send = None; // send the new flights at once
+    }
+
+    /// Feed one inbound crypto datagram (first byte 15 or 16) and return the
+    /// frames to send in response: an ack, and nothing for an ack. A frame
+    /// ahead of the expected sequence is ignored (the peer retransmits it);
+    /// a flight the TLS state rejects is the handshake failing.
+    pub(crate) fn on_datagram(
+        &mut self,
+        crypto: &mut crate::rlc_crypto::CryptoState,
+        pkt: &[u8],
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let mut replies = Vec::new();
+        if pkt.len() < 5 {
+            return Ok(replies);
+        }
+        let seq = u32::from_le_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+        match pkt[0] {
+            PKT_RLC_CRYPTO if seq <= self.next_recv_seq => {
+                let mut ack = Vec::with_capacity(5);
+                ack.push(PKT_RLC_CRYPTO_ACK);
+                ack.extend_from_slice(&seq.to_le_bytes());
+                replies.push(ack);
+                if seq == self.next_recv_seq {
+                    crypto.read_handshake(&pkt[5..])?;
+                    self.next_recv_seq += 1;
+                    self.queue_outgoing(crypto);
+                }
+            }
+            PKT_RLC_CRYPTO_ACK => self.outbox.retain(|(s, _)| *s != seq),
+            _ => {}
+        }
+        Ok(replies)
+    }
+
+    /// The unacked flights to (re)transmit, or empty when the 100ms timer is
+    /// not due. Due immediately on construction and after each new flight.
+    pub(crate) fn due_flights(&mut self) -> Vec<Vec<u8>> {
+        let due = self.last_send.map(|t| t.elapsed() > Duration::from_millis(100)).unwrap_or(true);
+        if !due || self.outbox.is_empty() {
+            return Vec::new();
+        }
+        self.last_send = Some(Instant::now());
+        self.outbox
+            .iter()
+            .map(|(seq, f)| {
+                let mut pkt = Vec::with_capacity(5 + f.len());
+                pkt.push(PKT_RLC_CRYPTO);
+                pkt.extend_from_slice(&seq.to_le_bytes());
+                pkt.extend_from_slice(f);
+                pkt
+            })
+            .collect()
+    }
+
+    /// `crypto` has the 1-RTT keys and every flight this side sent is acked.
+    pub(crate) fn is_complete(&self, crypto: &crate::rlc_crypto::CryptoState) -> bool {
+        crypto.is_complete() && self.outbox.is_empty()
+    }
+
+    /// Past the 10s handshake deadline, so an abandoned peer is not held.
+    pub(crate) fn timed_out(&self) -> bool {
+        self.start.elapsed() > Duration::from_secs(10)
+    }
+
+    /// The ack for a peer's flight after this side has completed, or `None`
+    /// for anything else. This side completes once its keys derive and its
+    /// own flights are acked, which on a server is BEFORE the peer's final
+    /// flight arrives - so that flight lands here, at the expected sequence,
+    /// and is acked without being read, exactly as [`drive_handshake`]'s
+    /// grace loop acks it. It touches no TLS state, so it serves a machine
+    /// whose crypto has moved on to the data phase.
+    pub(crate) fn ack_replay(&self, pkt: &[u8]) -> Option<Vec<u8>> {
+        if pkt.len() < 5 || pkt[0] != PKT_RLC_CRYPTO {
+            return None;
+        }
+        let seq = u32::from_le_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
+        if seq > self.next_recv_seq {
+            return None;
+        }
+        let mut ack = Vec::with_capacity(5);
+        ack.push(PKT_RLC_CRYPTO_ACK);
+        ack.extend_from_slice(&seq.to_le_bytes());
+        Some(ack)
+    }
+
+    /// Flights this machine has consumed. A completed server has consumed at
+    /// least the ClientHello, so a crypto flight arriving at sequence 0
+    /// afterwards is a NEW handshake from the same address, not a replay.
+    pub(crate) fn recv_seq(&self) -> u32 {
+        self.next_recv_seq
+    }
+}
+
 /// Drive the TLS handshake to completion over `sock`, carrying each level's
 /// `write_hs` flight in a reliable (retransmitted, acked, in-order) cleartext
 /// `PKT_RLC_CRYPTO` exchange. The client sends first; the server (peer `None`
@@ -294,62 +430,26 @@ pub(crate) fn drive_handshake(
     crypto: &mut crate::rlc_crypto::CryptoState,
     is_client: bool,
 ) -> io::Result<SocketAddr> {
-    let mut next_send_seq = 0u32;
-    let mut next_recv_seq = 0u32;
-    let mut outbox: Vec<(u32, Vec<u8>)> = Vec::new();
-    if is_client {
-        for f in crypto.take_outgoing() {
-            outbox.push((next_send_seq, f));
-            next_send_seq += 1;
-        }
-    }
-    let start = Instant::now();
-    let mut last_send: Option<Instant> = None;
+    let mut m = HandshakeMachine::new(crypto, is_client);
     let mut buf = vec![0u8; 8192];
-    loop {
-        if start.elapsed() > Duration::from_secs(10) {
+    while !m.is_complete(crypto) {
+        if m.timed_out() {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "tls handshake timeout"));
         }
-        // (Re)transmit the unacked flights every 100ms (and immediately the
-        // first time / right after producing new ones).
-        if let Some(p) = peer
-            && last_send.map(|t| t.elapsed() > Duration::from_millis(100)).unwrap_or(true)
-        {
-            for (seq, f) in &outbox {
-                let mut pkt = Vec::with_capacity(5 + f.len());
-                pkt.push(PKT_RLC_CRYPTO);
-                pkt.extend_from_slice(&seq.to_le_bytes());
-                pkt.extend_from_slice(f);
+        // (Re)transmit the unacked flights on the machine's timer.
+        if let Some(p) = peer {
+            for pkt in m.due_flights() {
                 sock.send_to(&pkt, p)?;
             }
-            last_send = Some(Instant::now());
         }
         match sock.recv_from(&mut buf) {
             Ok((n, from)) if n >= 5 => {
                 peer.get_or_insert(from);
-                let seq = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                match buf[0] {
-                    PKT_RLC_CRYPTO if seq <= next_recv_seq => {
-                        let mut ack = Vec::with_capacity(5);
-                        ack.push(PKT_RLC_CRYPTO_ACK);
-                        ack.extend_from_slice(&seq.to_le_bytes());
-                        sock.send_to(&ack, from)?;
-                        if seq == next_recv_seq {
-                            crypto
-                                .read_handshake(&buf[5..n])
-                                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                            next_recv_seq += 1;
-                            for f in crypto.take_outgoing() {
-                                outbox.push((next_send_seq, f));
-                                next_send_seq += 1;
-                            }
-                            last_send = None; // send the new flights at once
-                        }
-                    }
-                    PKT_RLC_CRYPTO_ACK => {
-                        outbox.retain(|(s, _)| *s != seq);
-                    }
-                    _ => {}
+                let replies = m
+                    .on_datagram(crypto, &buf[..n])
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                for r in replies {
+                    sock.send_to(&r, from)?;
                 }
             }
             Ok(_) => {}
@@ -358,36 +458,34 @@ pub(crate) fn drive_handshake(
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => {}
             Err(e) => return Err(e),
         }
-        if crypto.is_complete() && outbox.is_empty() {
-            // Keep acking for a short grace so a peer retransmitting its final
-            // flight (because our ack was lost) still converges - but exit the
-            // instant the peer sends a non-handshake frame, since that proves it
-            // got our ack and moved to data (and avoids a long window where its
-            // early data frames would be dropped here).
-            let grace = Instant::now();
-            while grace.elapsed() < Duration::from_millis(200) {
-                match sock.recv_from(&mut buf) {
-                    Ok((n, from)) if n >= 5 && buf[0] == PKT_RLC_CRYPTO => {
-                        let seq = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                        let mut ack = Vec::with_capacity(5);
-                        ack.push(PKT_RLC_CRYPTO_ACK);
-                        ack.extend_from_slice(&seq.to_le_bytes());
-                        sock.send_to(&ack, from)?;
-                    }
-                    Ok((n, _)) if n >= 1 && buf[0] != PKT_RLC_CRYPTO_ACK => break,
-                    Ok(_) => {}
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {}
-                    Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            return peer.ok_or_else(|| io::Error::other("no peer"));
-        }
         std::thread::sleep(Duration::from_millis(2));
     }
+    // Keep acking for a short grace so a peer retransmitting its final
+    // flight (because our ack was lost) still converges - but exit the
+    // instant the peer sends a non-handshake frame, since that proves it
+    // got our ack and moved to data (and avoids a long window where its
+    // early data frames would be dropped here).
+    let grace = Instant::now();
+    while grace.elapsed() < Duration::from_millis(200) {
+        match sock.recv_from(&mut buf) {
+            Ok((n, from)) if n >= 5 && buf[0] == PKT_RLC_CRYPTO => {
+                let seq = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                let mut ack = Vec::with_capacity(5);
+                ack.push(PKT_RLC_CRYPTO_ACK);
+                ack.extend_from_slice(&seq.to_le_bytes());
+                sock.send_to(&ack, from)?;
+            }
+            Ok((n, _)) if n >= 1 && buf[0] != PKT_RLC_CRYPTO_ACK => break,
+            Ok(_) => {}
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {}
+            Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => {}
+            Err(e) => return Err(e),
+        }
+    }
+    peer.ok_or_else(|| io::Error::other("no peer"))
 }
 
 /// The connection id of a DATA / REPAIR inner frame (the `u64` after the type
