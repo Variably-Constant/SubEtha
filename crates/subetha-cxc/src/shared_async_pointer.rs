@@ -323,29 +323,35 @@ mod tests {
     }
 
     #[test]
-    fn speculative_first_finisher_wins() {
+    fn speculative_first_publisher_wins_and_the_loser_is_dropped() {
         let p = tmp("first-wins");
         let sap: SharedAsyncPointer<u64> = SharedAsyncPointer::create(&p).unwrap();
-        // Which closure finishes first is established by a flag, not by
-        // sleeping 2ms against 100ms: a 50x duration gap is still only
-        // a claim about the scheduler, and under load the short sleeper
-        // may not be scheduled until after the long one has returned.
-        let first_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let waiter = Arc::clone(&first_done);
+        // The contract is that the first PUBLISHER wins, so the loser
+        // waits on the cell being resolved rather than on a flag its
+        // rival sets before publishing. A flag only orders the flag
+        // store: the waiter can observe it, return, and reach the CAS
+        // ahead of the setter, which made this a coin flip.
+        let seen = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&seen);
+        let loser_path = p.clone();
         let result = sap.get_or_speculative_with([
             Box::new(move || {
+                let view: SharedAsyncPointer<u64> =
+                    SharedAsyncPointer::create(&loser_path).unwrap();
                 let deadline = std::time::Instant::now() + Duration::from_secs(10);
-                while !waiter.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                while !view.is_resolved() && std::time::Instant::now() < deadline {
                     std::hint::spin_loop();
                 }
                 999u64
             }) as Box<dyn FnOnce() -> u64 + Send>,
             Box::new(move || {
-                first_done.store(true, Ordering::Release);
+                counted.fetch_add(1, Ordering::AcqRel);
                 100u64
             }) as Box<dyn FnOnce() -> u64 + Send>,
         ]);
-        assert_eq!(result, 100, "the closure that finished first should win");
+        assert_eq!(seen.load(Ordering::Acquire), 1, "the winning closure must have run");
+        assert_eq!(result, 100, "the value published first wins");
+        assert_eq!(sap.try_get(), Some(100), "the loser's value must not overwrite it");
         std::fs::remove_file(&p).ok();
     }
 
