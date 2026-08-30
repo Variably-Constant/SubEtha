@@ -221,3 +221,6 @@ t.publish();
   pins.
 - Sibling primitive: [SHARED_VERSIONED_CHAIN.md](SHARED_VERSIONED_CHAIN.md) -
   MVCC per chain rather than per ordered map.
+- Composed over it: [LANED_VERSIONED_MAP.md](LANED_VERSIONED_MAP.md) -
+  n of these as single-writer lanes over one epoch table, so n
+  statements write one index at once.

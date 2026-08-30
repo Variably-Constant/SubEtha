@@ -117,6 +117,7 @@ Coordination across process boundaries.
 | [`SharedArc<T>`](ownership-types/shared-arc/) | Shared ownership of a value in shared memory | Several processes read one value and the last to let go releases it | [SHARED_ARC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARC.md) |
 | [`VersionedBTreeMap<K, V>`](maps/versioned-btree-map/) | Ordered map with epoch-stamped entries | A scan needs a fixed view of an ordered index while writers keep changing it | [VERSIONED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/VERSIONED_BTREE_MAP.md) |
 | [`SharedVersionedSlab<T, D>`](specialized/shared-versioned-slab/) | Slab with a chain of epoch-stamped versions per slot | The records an epoch-stamped index names must stay readable at the version a scan pinned | [SHARED_VERSIONED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_SLAB.md) |
+| [`LanedVersionedMap<K, V>`](maps/laned-versioned-map/) | One versioned index across n single-writer lanes, claimed per statement | Several statements must write one ordered index at once, where a single tree takes one writer at a time | [LANED_VERSIONED_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LANED_VERSIONED_MAP.md) |
 
 ## Work distribution
 

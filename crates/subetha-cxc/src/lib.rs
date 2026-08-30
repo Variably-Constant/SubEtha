@@ -205,6 +205,7 @@ pub mod peer_directory;
 pub mod protocol_pubsub;
 pub mod qos_policy;
 pub mod replay_positions;
+pub mod laned_versioned_map;
 pub mod shared_slab;
 pub mod shared_versioned_slab;
 pub mod shm_file;
@@ -494,6 +495,9 @@ pub use shared_slab::{
     SLAB_MAGIC, SLAB_SLOT_PREFIX,
 };
 pub use shared_versioned_slab::{SharedVersionedSlab, SlotVersion, VersionChain, VersionedSlabError};
+pub use laned_versioned_map::{
+    lanes_file_size, LaneGuard, LanedError, LanedVersionedMap, LanesHeader, LANES_MAGIC,
+};
 pub use shared_btree_map::{BTreeError, SharedBTreeMap};
 pub use versioned_btree_map::{
     Versioned, VersionedBTreeMap, VersionedError, DIED_LIVE,

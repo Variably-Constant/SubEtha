@@ -154,6 +154,38 @@ impl HolderTable {
         Some(i)
     }
 
+    /// Claim ONE named slot, or report that it is already held.
+    ///
+    /// [`reserve`](Self::reserve) takes whichever slot is free, which is
+    /// what a caller wants when the slots are interchangeable. A caller
+    /// for whom they are not - one that must hold the slot standing for
+    /// a particular thing, and would be wrong holding any other - names
+    /// it here instead. Returns whether the claim succeeded.
+    ///
+    /// # Panics
+    /// If `payload` is [`HOLDER_FREE`] or [`HOLDER_RESERVED`], as
+    /// [`publish`](Self::publish) does.
+    pub fn try_claim_slot(&self, i: usize, payload: u64) -> bool {
+        assert!(
+            payload != HOLDER_FREE && payload != HOLDER_RESERVED,
+            "payload {payload} collides with a reserved state"
+        );
+        let slot = self.slot(i);
+        if slot.state.load(Ordering::Acquire) != HOLDER_FREE {
+            return false;
+        }
+        if slot
+            .state
+            .compare_exchange(HOLDER_FREE, HOLDER_RESERVED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        slot.owner_pid.store(std::process::id(), Ordering::Release);
+        slot.state.store(payload, Ordering::Release);
+        true
+    }
+
     /// Return a slot to the table.
     pub fn release(&self, slot: usize) {
         let s = self.slot(slot);

@@ -52,6 +52,9 @@ links to.
 
 ## L
 
+- `LanedVersionedMap` -
+  [LANED_VERSIONED_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LANED_VERSIONED_MAP.md)
+  (see [maps/laned-versioned-map.md](maps/laned-versioned-map.md))
 - `LazyConfig` -
   [LAZY_CONFIG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LAZY_CONFIG.md)
   (see [ownership.md](ownership.md#lazyconfig))
