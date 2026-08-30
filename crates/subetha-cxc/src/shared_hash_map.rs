@@ -37,44 +37,46 @@
 //! # Protocol
 //!
 //! ## Insert
-//! 1. Hash key (FNV-1a).
+//! 1. Hash key (FNV-1a; a hash of 0 is remapped to 1, since 0 marks
+//!    a slot whose contents are not yet published).
 //! 2. Probe from `hash % capacity`, linearly.
 //! 3. At each slot:
 //!    - **Empty**: CAS state Empty → Occupied. On success, SeqLock-
-//!      write `(K, V)` and store hash; bump `count`. Return Inserted.
+//!      write `(K, V)`, THEN store the hash as the publish; bump
+//!      `count`. Return Inserted.
+//!    - **Occupied & hash 0**: a writer holds the slot and has not
+//!      published it. Spin until the hash lands, then compare.
 //!    - **Occupied & hash matches & key matches**: SeqLock-update V
 //!      (state unchanged). Return Updated.
 //!    - **Occupied & no match**: probe next slot.
-//!    - **Tombstone**: skip (linear probe continues; tombstones do
-//!      NOT terminate insert because we want to overwrite them
-//!      preferentially - track first tombstone and use it if no
-//!      Empty is found earlier than a definitive "not present"
-//!      conclusion).
-//!
-//! Actually the simpler insert: probe until first Empty (insert
-//! there) OR find key (update). The tombstone-reuse optimisation
-//! costs an extra bookkeeping pass; we skip it and reclaim
-//! tombstones via the `compact()` method (single-writer in-place
-//! rebuild) instead.
+//!    - **Tombstone**: track the first one and keep probing (a later
+//!      slot may hold the key). A probe ending at Empty claims the
+//!      tracked tombstone in preference to the Empty.
 //!
 //! ## Get
 //! 1. Hash key, probe linearly.
 //! 2. **Empty**: key absent (probe always terminates at Empty).
-//! 3. **Occupied & hash matches**: SeqLock-read; if K matches, return V.
-//! 4. **Tombstone or hash mismatch**: continue probing.
+//! 3. **Occupied & hash 0**: forming; spin until published.
+//! 4. **Occupied & hash matches**: SeqLock-read; if K matches, return V.
+//! 5. **Tombstone or hash mismatch**: continue probing.
 //!
 //! ## Remove
 //! 1. Find key (same probe).
-//! 2. CAS state Occupied → Tombstone. `count.fetch_sub(1)`.
+//! 2. CAS state Occupied → Tombstone, clear the hash to 0.
+//!    `count.fetch_sub(1)`.
 //!
 //! # Concurrency
 //!
-//! All slot writes are SeqLock-protected so readers never observe
-//! torn key+value. The state byte's CAS is the serialisation point
-//! for who "owns" a slot for write. Two writers racing on the same
-//! key both reach the same slot; one wins the Empty→Occupied CAS
-//! and writes; the loser falls through to "Occupied + key matches"
-//! and updates instead.
+//! A slot is published in two steps that readers observe in order:
+//! the payload lands under the SeqLock, then the hash lands as the
+//! Release. A prober that finds a slot Occupied with hash 0 has
+//! caught a writer between its claim and its publish, and waits
+//! rather than concluding the slot holds a different key - which is
+//! what keeps two racing writers from planting one key in two
+//! slots. The state byte's CAS decides who owns a slot for its
+//! claim; the SeqLock version is claimed by CAS even→odd for every
+//! write, so two writers updating one key take turns rather than
+//! overlapping. Readers never observe a torn key+value.
 //!
 //! # Capacity and load factor
 //!
@@ -147,8 +149,15 @@ pub enum MapError {
     Full,
     PayloadTooLarge,
     LayoutMismatch,
+    /// [`compare_exchange`](SharedHashMap::compare_exchange) found no
+    /// entry for the key.
+    KeyAbsent,
     IoError(std::io::ErrorKind),
 }
+
+/// A slot's hash word while its contents are not yet published: the
+/// claim has landed and the payload has not. Probers wait on it.
+pub const HASH_UNSET: u64 = 0;
 
 impl From<std::io::Error> for MapError {
     fn from(e: std::io::Error) -> Self { Self::IoError(e.kind()) }
@@ -158,6 +167,21 @@ impl From<std::io::Error> for MapError {
 pub enum InsertOutcome {
     Inserted,
     Updated,
+}
+
+/// Where a probe left the key: in a slot claimed by this call, or in a
+/// slot that already held it, whose value is carried out.
+enum Placed<V> {
+    New,
+    Existing(V),
+}
+
+/// One probe pass's verdict.
+enum Probe<V> {
+    Placed(Placed<V>),
+    /// A tombstone claim went to another writer; probe again.
+    Restart,
+    Full,
 }
 
 /// FNV-1a 64-bit over a byte slice. Deterministic across processes
@@ -324,36 +348,101 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         unsafe { &*(base.add(idx * size_of::<MapSlot>()) as *const MapSlot) }
     }
 
+    /// FNV-1a over the key bytes, with 0 remapped to 1: 0 is
+    /// [`HASH_UNSET`], the mark of a claimed slot not yet published.
     fn hash_key(k: &K) -> u64 {
         let bytes = unsafe {
             std::slice::from_raw_parts(k as *const K as *const u8, size_of::<K>())
         };
-        fnv1a_64(bytes)
+        match fnv1a_64(bytes) {
+            HASH_UNSET => 1,
+            h => h,
+        }
     }
 
-    /// SeqLock-write a (K, V) pair into a slot's payload region.
-    fn write_payload(&self, slot_idx: usize, k: &K, v: &V) {
-        let slot = self.slot(slot_idx);
-        slot.version.fetch_add(1, Ordering::AcqRel); // odd
-        let base = unsafe {
-            self.mmap.as_ptr()
+    /// Take a slot's SeqLock for writing: CAS the version from even to
+    /// odd, spinning while another writer holds it. Returns the odd
+    /// version to release with [`unlock_slot`](Self::unlock_slot).
+    #[inline]
+    fn lock_slot(&self, slot: &MapSlot) -> u32 {
+        loop {
+            let v = slot.version.load(Ordering::Acquire);
+            if v & 1 == 0
+                && slot
+                    .version
+                    .compare_exchange_weak(v, v + 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                return v + 1;
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    #[inline]
+    fn unlock_slot(&self, slot: &MapSlot, held: u32) {
+        slot.version.store(held + 1, Ordering::Release);
+    }
+
+    #[inline]
+    fn payload_ptr(&self, slot_idx: usize) -> *mut u8 {
+        unsafe {
+            self.mmap
+                .as_ptr()
                 .add(size_of::<MapHeader>())
                 .add(slot_idx * size_of::<MapSlot>())
-                .add(std::mem::offset_of!(MapSlot, payload))
-                as *mut u8
-        };
+                .add(std::mem::offset_of!(MapSlot, payload)) as *mut u8
+        }
+    }
+
+    /// Copy `(k, v)` into a slot's payload region; the caller holds the
+    /// slot's SeqLock.
+    unsafe fn copy_payload(&self, slot_idx: usize, k: &K, v: &V) {
+        let base = self.payload_ptr(slot_idx);
         unsafe {
             // Layout: key bytes then value bytes.
-            std::ptr::copy_nonoverlapping(
-                k as *const K as *const u8, base, size_of::<K>(),
-            );
+            std::ptr::copy_nonoverlapping(k as *const K as *const u8, base, size_of::<K>());
             std::ptr::copy_nonoverlapping(
                 v as *const V as *const u8,
                 base.add(size_of::<K>()),
                 size_of::<V>(),
             );
         }
-        slot.version.fetch_add(1, Ordering::AcqRel); // even
+    }
+
+    /// SeqLock-write a (K, V) pair into a slot's payload region. Writers
+    /// to one slot take turns on the lock rather than overlapping.
+    fn write_payload(&self, slot_idx: usize, k: &K, v: &V) {
+        let slot = self.slot(slot_idx);
+        let held = self.lock_slot(slot);
+        unsafe { self.copy_payload(slot_idx, k, v) };
+        self.unlock_slot(slot, held);
+    }
+
+    /// Publish a freshly claimed slot: the payload under the lock, then
+    /// the hash as the Release a prober waits on.
+    fn publish_claimed(&self, slot_idx: usize, h: u64, k: &K, v: &V) {
+        self.write_payload(slot_idx, k, v);
+        self.slot(slot_idx).hash.store(h, Ordering::Release);
+    }
+
+    /// A claimed slot's hash, waiting out a writer that has claimed the
+    /// slot and not yet published it. Every probe reads through this, so
+    /// no probe concludes "a different key" from a slot still forming.
+    #[inline]
+    fn published_hash(&self, slot: &MapSlot) -> u64 {
+        loop {
+            let h = slot.hash.load(Ordering::Acquire);
+            if h != HASH_UNSET {
+                return h;
+            }
+            // The claim may have been abandoned into a tombstone in the
+            // meantime; a tombstone is not a key either way.
+            if slot.state.load(Ordering::Acquire) != SLOT_OCCUPIED {
+                return HASH_UNSET;
+            }
+            std::hint::spin_loop();
+        }
     }
 
     /// SeqLock-read a (K, V) pair from a slot. Spins on odd version.
@@ -416,46 +505,62 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     }
 
     fn insert_inner(&self, key: K, value: V) -> Result<InsertOutcome, MapError> {
+        match self.place(key, value, true)? {
+            Placed::New => Ok(InsertOutcome::Inserted),
+            Placed::Existing(_) => Ok(InsertOutcome::Updated),
+        }
+    }
+
+    /// The one probe both inserts share: find `key`'s slot or claim one
+    /// for it. With `overwrite`, a present key takes `value`; without it,
+    /// a present key is left alone and its value returned. A tombstone
+    /// claim that another writer wins restarts the probe, because what
+    /// that writer placed may be this very key.
+    fn place(&self, key: K, value: V, overwrite: bool) -> Result<Placed<V>, MapError> {
         let h = Self::hash_key(&key);
         let start = self.wrap(h as usize);
-        // Track the first tombstone seen during the probe. If the
-        // probe terminates at an Empty without finding the key, we
-        // claim this tombstone slot rather than the Empty.
+        loop {
+            match self.probe_once(h, start, &key, &value, overwrite) {
+                Probe::Placed(p) => return Ok(p),
+                Probe::Restart => continue,
+                Probe::Full => return Err(MapError::Full),
+            }
+        }
+    }
+
+    /// One pass of the linear probe from `start`. Tracks the first
+    /// tombstone seen so a probe that ends at an Empty claims the
+    /// tombstone in preference to the Empty.
+    fn probe_once(&self, h: u64, start: usize, key: &K, value: &V, overwrite: bool) -> Probe<V> {
         let mut first_tombstone: Option<usize> = None;
         for i in 0..self.capacity {
             let idx = self.wrap(start + i);
             let slot = self.slot(idx);
             let state = slot.state.load(Ordering::Acquire);
             if state == SLOT_EMPTY {
-                // End of probe chain. Key is not present. Either
-                // claim the tracked tombstone (reuse path) or this
-                // Empty slot.
-                if let Some(tomb_idx) = first_tombstone
-                    && self.try_claim_tombstone(tomb_idx, h, &key, &value) {
-                        return Ok(InsertOutcome::Inserted);
-                    }
-                    // Tombstone was stolen by another writer; fall
-                    // through to claim the Empty slot.
-                if slot.state.compare_exchange(
-                    SLOT_EMPTY, SLOT_OCCUPIED,
-                    Ordering::AcqRel, Ordering::Acquire,
-                ).is_ok() {
-                    slot.hash.store(h, Ordering::Release);
-                    self.write_payload(idx, &key, &value);
-                    self.header().count.fetch_add(1, Ordering::AcqRel);
-                    return Ok(InsertOutcome::Inserted);
+                // End of the chain: the key is absent. Claim the tracked
+                // tombstone, else this Empty.
+                if let Some(tomb_idx) = first_tombstone {
+                    return if self.try_claim_tombstone(tomb_idx, h, key, value) {
+                        Probe::Placed(Placed::New)
+                    } else {
+                        Probe::Restart
+                    };
                 }
-                // CAS on the Empty slot lost; the slot transitioned
-                // to Occupied or Tombstone in between. Reread.
+                if slot
+                    .state
+                    .compare_exchange(SLOT_EMPTY, SLOT_OCCUPIED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    self.publish_claimed(idx, h, key, value);
+                    self.header().count.fetch_add(1, Ordering::AcqRel);
+                    return Probe::Placed(Placed::New);
+                }
+                // The Empty went to another writer; see what it became.
                 let now = slot.state.load(Ordering::Acquire);
                 if now == SLOT_OCCUPIED {
-                    let cached = slot.hash.load(Ordering::Acquire);
-                    if cached == h {
-                        let (k, _) = self.read_payload(idx);
-                        if k == key {
-                            self.write_payload(idx, &key, &value);
-                            return Ok(InsertOutcome::Updated);
-                        }
+                    if let Some(existing) = self.present(idx, h, key, value, overwrite) {
+                        return Probe::Placed(Placed::Existing(existing));
                     }
                 } else if now == SLOT_TOMBSTONE && first_tombstone.is_none() {
                     first_tombstone = Some(idx);
@@ -463,29 +568,43 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
                 continue;
             }
             if state == SLOT_OCCUPIED {
-                let cached = slot.hash.load(Ordering::Acquire);
-                if cached == h {
-                    let (k, _) = self.read_payload(idx);
-                    if k == key {
-                        self.write_payload(idx, &key, &value);
-                        return Ok(InsertOutcome::Updated);
-                    }
+                if let Some(existing) = self.present(idx, h, key, value, overwrite) {
+                    return Probe::Placed(Placed::Existing(existing));
                 }
                 continue;
             }
-            // SLOT_TOMBSTONE: track first one, keep probing
-            // (subsequent slots may hold the key).
+            // A tombstone: remember the first, keep probing, since a
+            // later slot may hold the key.
             if first_tombstone.is_none() {
                 first_tombstone = Some(idx);
             }
         }
-        // Walked every slot. Found no key, no Empty. If we saw a
-        // tombstone, try to reuse it; otherwise truly Full.
-        if let Some(tomb_idx) = first_tombstone
-            && self.try_claim_tombstone(tomb_idx, h, &key, &value) {
-                return Ok(InsertOutcome::Inserted);
+        // Every slot walked with no key and no Empty: the tracked
+        // tombstone is the last chance.
+        match first_tombstone {
+            Some(tomb_idx) if self.try_claim_tombstone(tomb_idx, h, key, value) => {
+                Probe::Placed(Placed::New)
             }
-        Err(MapError::Full)
+            Some(_) => Probe::Restart,
+            None => Probe::Full,
+        }
+    }
+
+    /// Whether the occupied slot `idx` holds `key`, waiting out a writer
+    /// still publishing it. On a match returns the value found there,
+    /// after replacing it when `overwrite` is set.
+    fn present(&self, idx: usize, h: u64, key: &K, value: &V, overwrite: bool) -> Option<V> {
+        if self.published_hash(self.slot(idx)) != h {
+            return None;
+        }
+        let (k, existing) = self.read_payload(idx);
+        if k != *key {
+            return None;
+        }
+        if overwrite {
+            self.write_payload(idx, key, value);
+        }
+        Some(existing)
     }
 
     /// Claim a tombstone slot for a new insert. Returns true on
@@ -504,8 +623,11 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         ).is_err() {
             return false;
         }
-        tomb_slot.hash.store(h, Ordering::Release);
-        self.write_payload(tomb_idx, key, value);
+        // A tombstone written by this code already carries HASH_UNSET;
+        // one left by an older map file still names the removed key,
+        // so it is cleared here before the payload lands.
+        tomb_slot.hash.store(HASH_UNSET, Ordering::Release);
+        self.publish_claimed(tomb_idx, h, key, value);
         self.header().count.fetch_add(1, Ordering::AcqRel);
         // Defensive saturating decrement: bounded retry loop that
         // never underflows past zero. Under the single-writer
@@ -547,18 +669,106 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             if state == SLOT_EMPTY {
                 return None;
             }
-            if state == SLOT_OCCUPIED {
-                let cached = slot.hash.load(Ordering::Acquire);
-                if cached == h {
-                    let (k, v) = self.read_payload(idx);
-                    if k == *key {
-                        return Some(v);
-                    }
+            if state == SLOT_OCCUPIED && self.published_hash(slot) == h {
+                let (k, v) = self.read_payload(idx);
+                if k == *key {
+                    return Some(v);
                 }
             }
             // Tombstone or mismatch: continue probing.
         }
         None
+    }
+
+    /// Insert `key` only if it is absent: `Ok(None)` when this call
+    /// placed it, `Ok(Some(existing))` when a value was already present
+    /// and nothing was written. Two callers racing on one absent key
+    /// resolve to exactly one `Ok(None)`; the other reads the winner's
+    /// value, because a slot claimed but not yet published is waited on
+    /// rather than mistaken for a different key.
+    pub fn insert_if_absent(&self, key: K, value: V) -> Result<Option<V>, MapError> {
+        let r = self.insert_if_absent_inner(key, value);
+        self.ring_sidecar.push_op(
+            crate::sidecar_ops::hash_map::OP_INSERT,
+            if matches!(r, Err(MapError::Full)) { 1 } else { 0 },
+        );
+        r
+    }
+
+    fn insert_if_absent_inner(&self, key: K, value: V) -> Result<Option<V>, MapError> {
+        match self.place(key, value, false)? {
+            Placed::New => Ok(None),
+            Placed::Existing(existing) => Ok(Some(existing)),
+        }
+    }
+
+    /// Replace `key`'s value with `new` only if its current value is
+    /// byte-for-byte `expected`: `Ok(Ok(()))` on the swap, `Ok(Err(current))`
+    /// when the value differed and nothing was written,
+    /// `Err(KeyAbsent)` when the key has no entry. The comparison and
+    /// the write happen under the slot's SeqLock, so no other writer
+    /// lands between them. Bytes, not `PartialEq`: a `V` with padding
+    /// or a NaN inside compares as its bits.
+    pub fn compare_exchange(&self, key: &K, expected: V, new: V) -> Result<Result<(), V>, MapError> {
+        let h = Self::hash_key(key);
+        let start = self.wrap(h as usize);
+        for i in 0..self.capacity {
+            let idx = self.wrap(start + i);
+            let slot = self.slot(idx);
+            let state = slot.state.load(Ordering::Acquire);
+            if state == SLOT_EMPTY {
+                return Err(MapError::KeyAbsent);
+            }
+            if state != SLOT_OCCUPIED || self.published_hash(slot) != h {
+                continue;
+            }
+            let held = self.lock_slot(slot);
+            // Under the lock the payload is stable: read it directly.
+            let (k, current) = unsafe { self.read_payload_locked(idx) };
+            if k != *key {
+                self.unlock_slot(slot, held);
+                continue;
+            }
+            // A remover may have tombstoned the slot between the state
+            // load and the lock; the entry is gone, not mismatched.
+            if slot.state.load(Ordering::Acquire) != SLOT_OCCUPIED {
+                self.unlock_slot(slot, held);
+                return Err(MapError::KeyAbsent);
+            }
+            let matches = unsafe {
+                let a = std::slice::from_raw_parts(&current as *const V as *const u8, size_of::<V>());
+                let b = std::slice::from_raw_parts(&expected as *const V as *const u8, size_of::<V>());
+                a == b
+            };
+            if matches {
+                unsafe { self.copy_payload(idx, key, &new) };
+                self.unlock_slot(slot, held);
+                return Ok(Ok(()));
+            }
+            self.unlock_slot(slot, held);
+            return Ok(Err(current));
+        }
+        Err(MapError::KeyAbsent)
+    }
+
+    /// Read a slot's payload while holding its SeqLock, so no validation
+    /// loop is needed.
+    ///
+    /// # Safety
+    /// The caller holds the slot's lock from [`lock_slot`](Self::lock_slot).
+    unsafe fn read_payload_locked(&self, slot_idx: usize) -> (K, V) {
+        let src = self.payload_ptr(slot_idx);
+        let mut k = std::mem::MaybeUninit::<K>::uninit();
+        let mut v = std::mem::MaybeUninit::<V>::uninit();
+        unsafe {
+            std::ptr::copy_nonoverlapping(src, k.as_mut_ptr() as *mut u8, size_of::<K>());
+            std::ptr::copy_nonoverlapping(
+                src.add(size_of::<K>()),
+                v.as_mut_ptr() as *mut u8,
+                size_of::<V>(),
+            );
+            (k.assume_init(), v.assume_init())
+        }
     }
 
     /// True if `key` is present.
@@ -589,22 +799,23 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             let slot = self.slot(idx);
             let state = slot.state.load(Ordering::Acquire);
             if state == SLOT_EMPTY { return None; }
-            if state == SLOT_OCCUPIED {
-                let cached = slot.hash.load(Ordering::Acquire);
-                if cached == h {
-                    let (k, v) = self.read_payload(idx);
-                    if k == *key {
-                        if slot.state.compare_exchange(
-                            SLOT_OCCUPIED, SLOT_TOMBSTONE,
-                            Ordering::AcqRel, Ordering::Acquire,
-                        ).is_ok() {
-                            self.header().count.fetch_sub(1, Ordering::AcqRel);
-                            self.header().tombstones.fetch_add(1, Ordering::AcqRel);
-                            return Some(v);
-                        }
-                        // Another remover won; key is gone.
-                        return None;
+            if state == SLOT_OCCUPIED && self.published_hash(slot) == h {
+                let (k, v) = self.read_payload(idx);
+                if k == *key {
+                    if slot.state.compare_exchange(
+                        SLOT_OCCUPIED, SLOT_TOMBSTONE,
+                        Ordering::AcqRel, Ordering::Acquire,
+                    ).is_ok() {
+                        // A tombstone names no key, so a later claim of
+                        // this slot is seen as forming from its first
+                        // instant rather than as the removed entry.
+                        slot.hash.store(HASH_UNSET, Ordering::Release);
+                        self.header().count.fetch_sub(1, Ordering::AcqRel);
+                        self.header().tombstones.fetch_add(1, Ordering::AcqRel);
+                        return Some(v);
                     }
+                    // Another remover won; key is gone.
+                    return None;
                 }
             }
         }
@@ -1188,6 +1399,151 @@ mod tests {
         for k in [0u32, 2, 4] {
             assert_eq!(m2.get(&k), None);
         }
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Many writers racing insert_if_absent on ONE absent key: exactly one
+    /// places it, every other reads the winner's value, and the table ends
+    /// with a single entry - a claimed slot not yet published is waited on,
+    /// never mistaken for a different key and planted a second time.
+    #[test]
+    fn racing_insert_if_absent_on_one_key_admits_exactly_one_writer() {
+        use std::sync::{Arc, Barrier};
+        let p = tmp("ifabsent-race");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 64).unwrap());
+        for round in 0..200u64 {
+            let key = 1_000_000 + round;
+            let writers = 8;
+            let barrier = Arc::new(Barrier::new(writers));
+            let handles: Vec<_> = (0..writers as u64)
+                .map(|w| {
+                    let m = Arc::clone(&m);
+                    let b = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        b.wait();
+                        m.insert_if_absent(key, w).unwrap()
+                    })
+                })
+                .collect();
+            let outcomes: Vec<Option<u64>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let placed: Vec<usize> = outcomes.iter().enumerate().filter(|(_, o)| o.is_none()).map(|(i, _)| i).collect();
+            assert_eq!(placed.len(), 1, "round {round}: exactly one writer places the key, got {outcomes:?}");
+            let winner = placed[0] as u64;
+            for o in outcomes.iter().flatten() {
+                assert_eq!(*o, winner, "round {round}: a loser reads the winner's value");
+            }
+            assert_eq!(m.get(&key), Some(winner));
+            assert_eq!(m.len(), 1, "round {round}: one key, one slot");
+            // Through a tombstone as well, which is the path that reads a
+            // stale hash unless it is cleared on remove.
+            assert_eq!(m.remove(&key), Some(winner));
+            assert_eq!(m.len(), 0);
+        }
+        drop(m);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn insert_if_absent_leaves_a_present_key_alone() {
+        let p = tmp("ifabsent-present");
+        let m: SharedHashMap<u32, u32> = SharedHashMap::create(&p, 16).unwrap();
+        assert_eq!(m.insert_if_absent(7, 70).unwrap(), None);
+        assert_eq!(m.insert_if_absent(7, 71).unwrap(), Some(70));
+        assert_eq!(m.get(&7), Some(70), "the present value is not overwritten");
+        assert_eq!(m.len(), 1);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn compare_exchange_swaps_only_on_the_expected_bytes() {
+        let p = tmp("cas");
+        let m: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 16).unwrap();
+        assert_eq!(m.compare_exchange(&1, 0, 5), Err(MapError::KeyAbsent));
+        m.insert(1, 10).unwrap();
+        assert_eq!(m.compare_exchange(&1, 99, 11), Ok(Err(10)), "a mismatch reports the current value");
+        assert_eq!(m.get(&1), Some(10), "and writes nothing");
+        assert_eq!(m.compare_exchange(&1, 10, 11), Ok(Ok(())));
+        assert_eq!(m.get(&1), Some(11));
+        m.remove(&1);
+        assert_eq!(m.compare_exchange(&1, 11, 12), Err(MapError::KeyAbsent));
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Writers contending on ONE key's value through compare_exchange
+    /// serialize through the slot lock: every successful swap saw the value
+    /// it replaced, so the final count of successes equals the increments
+    /// applied - a versioned publish with no lost update.
+    #[test]
+    fn concurrent_compare_exchange_loses_no_update() {
+        use std::sync::Arc;
+        let p = tmp("cas-race");
+        let m: Arc<SharedHashMap<u32, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        m.insert(1, 0).unwrap();
+        let per_thread = 2_000u64;
+        let threads = 6;
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let m = Arc::clone(&m);
+                std::thread::spawn(move || {
+                    for _ in 0..per_thread {
+                        loop {
+                            let cur = m.get(&1).unwrap();
+                            if m.compare_exchange(&1, cur, cur + 1).unwrap().is_ok() {
+                                break;
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(m.get(&1), Some(per_thread * threads as u64));
+        drop(m);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Two writers updating one key through insert take turns on the slot
+    /// lock, so a reader validating each value's two halves against each
+    /// other never sees them from different writes.
+    #[test]
+    fn concurrent_updates_of_one_key_never_tear() {
+        use std::sync::atomic::{AtomicBool, Ordering as O};
+        use std::sync::Arc;
+        let p = tmp("update-tear");
+        let m: Arc<SharedHashMap<u32, [u64; 4]>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        m.insert(1, [0, 0xAAAA, 0, !0]).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writers: Vec<_> = (0..3u64)
+            .map(|w| {
+                let m = Arc::clone(&m);
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut n = 0u64;
+                    while !stop.load(O::Relaxed) {
+                        let v = (w << 32) | n;
+                        m.insert(1, [v, v ^ 0xAAAA, v.rotate_left(7), !v]).unwrap();
+                        n += 1;
+                    }
+                })
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let mut reads = 0u64;
+        while start.elapsed() < std::time::Duration::from_millis(300) {
+            let [a, b, c, d] = m.get(&1).unwrap();
+            assert_eq!(b, a ^ 0xAAAA, "torn value");
+            assert_eq!(c, a.rotate_left(7), "torn value");
+            assert_eq!(d, !a, "torn value");
+            reads += 1;
+        }
+        stop.store(true, O::Relaxed);
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert!(reads > 0);
+        drop(m);
         std::fs::remove_file(&p).ok();
     }
 }

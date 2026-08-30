@@ -85,16 +85,27 @@ hash + payload (K + V serialised in 48 bytes).
 
 ### Insert
 
-1. Hash key (FNV-1a).
+1. Hash key (FNV-1a; a hash of 0 becomes 1, since 0 marks a slot
+   whose contents are not yet published).
 2. Probe linearly from `hash % capacity`.
 3. At each slot:
-   - **Empty**: CAS state Empty -> Occupied; SeqLock-write (K, V) +
-     hash; bump count. Return Inserted.
+   - **Empty**: CAS state Empty -> Occupied; SeqLock-write (K, V),
+     then store the hash as the publish; bump count. Return Inserted.
+   - **Occupied + hash 0**: a writer holds the slot and has not
+     published it. Wait for the hash, then compare.
    - **Occupied + hash matches + key matches**: SeqLock-update V.
      Return Updated.
    - **Occupied + no match**: probe next slot.
-   - **Tombstone**: track first tombstone; use it preferentially
-     if no live match found in the probe chain.
+   - **Tombstone**: track the first one and keep probing; a probe
+     ending at an Empty claims the tracked tombstone in preference to
+     the Empty. A tombstone claim another writer wins restarts the
+     probe, because what that writer placed may be this key.
+
+`insert_if_absent` runs the same probe and, on a present key, returns
+the value found without writing. `compare_exchange` finds the key's
+slot, takes its SeqLock, compares the stored value byte for byte with
+`expected`, and writes `new` only on a match; a differing value comes
+back as `Err(current)` and an absent key as `MapError::KeyAbsent`.
 
 ### Get
 
@@ -102,9 +113,27 @@ hash + payload (K + V serialised in 48 bytes).
 2. Linear-probe from `hash % capacity`.
 3. At each slot:
    - **Empty**: not found.
+   - **Occupied + hash 0**: forming; wait for the publish.
    - **Occupied + hash matches + key matches**: SeqLock-read V;
      return Some(V).
    - **Tombstone or no-match**: continue probing.
+
+### Remove
+
+Find the key, CAS state Occupied -> Tombstone, clear the hash to 0 so
+a later claim of the slot reads as forming from its first instant.
+
+### Why the hash is the publish
+
+A slot is claimed by one CAS on its state byte, and its contents land
+afterwards. A prober that read the hash before the payload landed
+would conclude a different key lived there, probe on, and plant the
+same key in a second slot - two writers racing `insert_if_absent` on
+one absent key would do exactly that. Publishing the hash last, and
+waiting on a hash of 0, is what makes the claim and the contents one
+event to every other prober. Every writer takes a slot's SeqLock by
+CAS even -> odd, so two writers updating one key take turns rather
+than overlapping.
 
 ---
 
@@ -225,9 +254,10 @@ The 16.78 ns get latency is competitive with in-process maps.
   via FNV-1a; types with internal padding or differing layouts
   across runs see hash mismatch.
 
-- **Tombstone buildup degrading probe chains.** A delete-heavy
-  workload accumulates tombstones until inserts probe through
-  them. There is no automatic compaction in the shipped primitive.
+- **Tombstone buildup degrading probe chains.** An insert reuses the
+  first tombstone its probe passes, so steady insert/remove churn
+  recycles them; a long insert-only stretch after heavy removes does
+  not, and `compact()` reclaims in bulk.
 
 - **Wrapping in a Mutex.** Pointless; the SeqLock + CAS protocol
   is already concurrency-safe.
