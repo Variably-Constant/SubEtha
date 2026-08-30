@@ -174,3 +174,6 @@ segments[seg].get(slot)?
   one-cache-line slot and append-plus-index semantics.
 - Sibling: [SHARED_REGION.md](SHARED_REGION.md) - records of any size
   with an allocator and a free list, read and written plainly.
+- Composed over it: [SHARED_VERSIONED_SLAB.md](SHARED_VERSIONED_SLAB.md) -
+  the same slab holding a chain of epoch-stamped versions per slot, so
+  a pinned scan reads the version it pinned.

@@ -214,3 +214,7 @@ lock and without write access to the file.
 - Sibling primitive: [Shared Region](../arenas/shared-region/) -
   records of any size with an allocator and a free list, read and
   written plainly.
+- Composed over it:
+  [Shared Versioned Slab](../shared-versioned-slab/) - the same slab
+  holding a chain of epoch-stamped versions per slot, so a pinned scan
+  reads the version it pinned.

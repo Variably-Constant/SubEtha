@@ -39,6 +39,7 @@ Keyed lookup and ordered storage.
 | [`SharedLinkedList<T>`](shared-hash-map/#sharedlinkedlist) | Cross-process doubly-linked list | Need stable iterator positions across mutations; not random access | [SHARED_LINKED_LIST.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LINKED_LIST.md) |
 | `SharedVec<T>` | Cross-process bounded indexable sequence | Push/index/pop with a known capacity ceiling | [SHARED_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VEC.md) |
 | [`SharedSlab<T>`](specialized/shared-slab/) | Cross-process slab of caller-indexed records, one SeqLock per slot | Records past 52 bytes read concurrently with the writer; the caller owns the index | [SHARED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SLAB.md) |
+| [`SharedVersionedSlab<T, D>`](specialized/shared-versioned-slab/) | Caller-indexed records, each slot a chain of `D` epoch-stamped versions | A scan needs the record version it pinned while the writer keeps overwriting the slot | [SHARED_VERSIONED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_SLAB.md) |
 
 ## Atomics and cells
 
@@ -115,6 +116,7 @@ Coordination across process boundaries.
 | [`HolderTable`](coordination-types/holder-table/) | Claimable slots stamped with the holding process | Something must be held across processes and a holder that dies has to be told from one that is busy; a bare refcount cannot be asked | [HOLDER_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HOLDER_TABLE.md) |
 | [`SharedArc<T>`](ownership-types/shared-arc/) | Shared ownership of a value in shared memory | Several processes read one value and the last to let go releases it | [SHARED_ARC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARC.md) |
 | [`VersionedBTreeMap<K, V>`](maps/versioned-btree-map/) | Ordered map with epoch-stamped entries | A scan needs a fixed view of an ordered index while writers keep changing it | [VERSIONED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/VERSIONED_BTREE_MAP.md) |
+| [`SharedVersionedSlab<T, D>`](specialized/shared-versioned-slab/) | Slab with a chain of epoch-stamped versions per slot | The records an epoch-stamped index names must stay readable at the version a scan pinned | [SHARED_VERSIONED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_SLAB.md) |
 
 ## Work distribution
 

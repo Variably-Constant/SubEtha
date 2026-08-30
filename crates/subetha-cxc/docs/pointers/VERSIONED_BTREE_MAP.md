@@ -30,8 +30,9 @@ plain tree is untouched and no existing user pays for versioning.
   `insert` over a live key overwrites its version, so a pin taken
   before the update sees neither value for that key. A store that
   needs the old value visible to an older pin keeps versions in the
-  record (a versioned slab) and uses this map for keys that are born
-  and die but do not change, such as a composite of key and record id.
+  record ([SHARED_VERSIONED_SLAB.md](SHARED_VERSIONED_SLAB.md)) and
+  uses this map for keys that are born and die but do not change, such
+  as a composite of key and record id.
 - **Reinserting a key a live pin can still reach is refused** with
   `VersionedError::RebornUnderPin`. See below.
 - **Reclamation runs on the insert path.** An insert that exhausts the

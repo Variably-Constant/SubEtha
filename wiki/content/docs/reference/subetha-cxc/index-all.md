@@ -193,6 +193,9 @@ links to.
 - `SharedVersionedChain` -
   [SHARED_VERSIONED_CHAIN.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_CHAIN.md)
   (see [coordination.md](coordination.md#sharedversionedchain))
+- `SharedVersionedSlab` -
+  [SHARED_VERSIONED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_SLAB.md)
+  (see [specialized/shared-versioned-slab.md](specialized/shared-versioned-slab.md))
 
 ## T
 

@@ -463,6 +463,10 @@ name = "versioned_btree_map"
 harness = false
 
 [[bench]]
+name = "shared_versioned_slab"
+harness = false
+
+[[bench]]
 name = "shared_broadcast_ring"
 harness = false
 

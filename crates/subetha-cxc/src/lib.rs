@@ -206,6 +206,7 @@ pub mod protocol_pubsub;
 pub mod qos_policy;
 pub mod replay_positions;
 pub mod shared_slab;
+pub mod shared_versioned_slab;
 pub mod shm_file;
 pub mod virtual_endpoint;
 #[cfg(target_os = "linux")]
@@ -492,6 +493,7 @@ pub use shared_slab::{
     slab_file_size, slab_slot_size, SharedSlab, SlabError, SlabHeader,
     SLAB_MAGIC, SLAB_SLOT_PREFIX,
 };
+pub use shared_versioned_slab::{SharedVersionedSlab, SlotVersion, VersionChain, VersionedSlabError};
 pub use shared_btree_map::{BTreeError, SharedBTreeMap};
 pub use versioned_btree_map::{
     Versioned, VersionedBTreeMap, VersionedError, DIED_LIVE,

@@ -193,8 +193,8 @@ pinned while the ticket is open lands below that epoch and sees none of
 the write; a scan pinned after `publish` sees all of it. A writer that
 dies mid-compound leaves its ticket held: `dead_tickets` names the
 epoch, each structure voids what it holds there (`void_epoch` on the
-versioned map), and `free_dead_ticket` releases the slot last - a
-half-written epoch is never published.
+versioned map and on the versioned slab), and `free_dead_ticket`
+releases the slot last - a half-written epoch is never published.
 
 ```rust
 let t = epochs.begin()?;

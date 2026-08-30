@@ -13,6 +13,7 @@ Specific shapes for workloads that don't fit a single broader category.
 |---|---|
 | [Shared Vec](shared-vec/) | Bounded indexable sequence |
 | [Shared Slab](shared-slab/) | Caller-indexed records of any size, one SeqLock per slot |
+| [Shared Versioned Slab](shared-versioned-slab/) | A slab whose slots each hold a chain of epoch-stamped versions; a pinned scan reads the version it pinned |
 | [Shared Graph](shared-graph/) | Directed graph; nodes and edges in one MMF |
 | [Shared NaN Value](shared-nan-value/) | 64-bit NaN-boxed heterogeneous value cell |
 | [Shared NaN-Tagged Value](shared-nan-tagged-value/) | NaN-boxed with the payload type encoded in the pointer bits |
