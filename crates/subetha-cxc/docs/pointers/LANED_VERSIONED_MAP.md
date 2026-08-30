@@ -106,15 +106,35 @@ chosen by key.
   driven through the merge machinery, which would flatter every lane
   arm by charging the baseline for scaffolding it does not use.
 
+### The write side, which is what pays for the scan
+
+Four writers, each rewriting its own 500-key range fifty times, against
+the same four writers sharing one tree behind a mutex - the
+coordination lanes exist to replace.
+
+| Arm | Time | relative |
+|---|---:|---|
+| 4 lanes, one writer each | **6.32 ms** | **5.18x faster** |
+| one tree under a mutex | 32.76 ms | 1.00x |
+
+**The serialization does not merely move.** Every lane shares one epoch
+table, so `advance` is contended where the trees are not - but it is a
+single atomic against a mutex held around a whole B-tree insert. Four
+writers come out 5.18x ahead rather than the 4x perfect scaling would
+give; the surplus is the lock traffic the mutex arm pays on top of
+serializing.
+
 ### What the numbers do NOT show
 
-- **The write side.** These are single-threaded on purpose so the read
-  regression is measured on its own. What justifies it - `n` writers
-  where there was one - is not in this table.
-- **Where the serialization goes instead.** Every lane shares one epoch
-  table, so `advance` and `pin` become the contended point. A bench of
-  `n` concurrent writers against a mutex-serialized single tree is what
-  would settle that, and it has not been run.
+- **Scans and writes measured apart.** A store doing both at once pays
+  the interaction, which neither table prices: a live pin holds the
+  horizon, so sweeping frees nothing while a long scan runs.
+- **More writers than lanes.** Every arm gives each writer its own
+  lane. A fifth writer against four lanes waits on `NoFreeLane` and is
+  not measured here.
+- **Contention on one lane.** Writers here touch disjoint key ranges.
+  Two statements needing the same key's lane serialize on that lane, as
+  `LaneBusy` says they will.
 
 ---
 
@@ -269,7 +289,8 @@ before the ticket is freed.
   lane, and a second handle sharing the lanes and the claims).
 - Bench: `crates/subetha-cxc/benches/laned_versioned_map.rs` (whole-store
   ordered drain at 1, 4, 8 and 16 lanes against a single tree drained
-  plainly).
+  plainly, and four concurrent writers across four lanes against the
+  same four sharing one tree behind a mutex).
 - Substrate: [VERSIONED_BTREE_MAP.md](VERSIONED_BTREE_MAP.md) - the map
   a lane is, unchanged.
 - Substrate: [SHARED_EPOCHS.md](SHARED_EPOCHS.md) - the counter, the

@@ -32,32 +32,40 @@
 //! asked for. A lane whose cursor is `None` walked to the end of the
 //! range and bounds nothing.
 //!
-//! What the numbers do NOT show: the write side, and what the write
-//! side is actually being compared against.
+//! What the scan numbers do NOT show is the write side, and what the
+//! write side is actually being compared against.
 //!
 //! `SharedBTreeMap` is single-writer - its own docs state that
 //! concurrent `insert` / `remove` need external coordination and that
 //! two simultaneous writers corrupt the node structure - and
-//! `VersionedBTreeMap` inherits that. So lanes are not an optimisation
+//! `VersionedBTreeMap` inherits that. So lanes are not an optimization
 //! over a tree that already takes concurrent writers. They are the
-//! alternative to serialising every writing statement behind one
+//! alternative to serializing every writing statement behind one
 //! global mutex over the whole index. That is the trade these numbers
 //! price: an ordered scan costs more, and writers stop queueing.
 //!
-//! The one unmeasured risk is where the serialisation goes instead.
-//! Every lane shares one epoch table, so `advance` and `pin` become the
-//! contended point. A bench of `k` concurrent writers against a
-//! mutex-serialized single tree is what would settle that, and it is
-//! not in this file.
+//! Where the serialization goes instead is measured here too. Every
+//! lane shares one epoch table, so `advance` and `pin` are contended
+//! where the trees are not, and lanes are only worth having if that
+//! costs less than the mutex they replace. The write arms put `k`
+//! concurrent writers against a mutex-serialized single tree.
+//!
+//! Both write arms spawn the same threads and perform the same number
+//! of inserts inside the timed region, so thread startup is charged to
+//! both equally. The mutex arm takes the lock per insert, which is the
+//! finest granularity a caller could use; holding it for a whole
+//! statement would serialize harder still.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::hint::black_box;
 use std::ops::Bound;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use subetha_cxc::{PinGuard, VersionedBTreeMap};
+use subetha_cxc::{LanedVersionedMap, PinGuard, VersionedBTreeMap};
 
 const NODES: usize = 1 << 14;
 const ENTRIES: u64 = 4_000;
@@ -205,5 +213,82 @@ fn whole_store_scan(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, whole_store_scan);
+/// `k` writers against `k` lanes, and the same `k` writers against one
+/// tree behind a mutex - the coordination lanes replace.
+///
+/// Each writer rewrites its OWN key range every pass, so a key is
+/// updated in place rather than added: the arenas stay bounded and the
+/// measurement is steady-state write throughput, not arena growth.
+///
+/// The per-writer work is deliberately large. Spawning four OS threads
+/// costs a few hundred microseconds, and at a few hundred inserts per
+/// writer that swamps the write work entirely - both arms then measure
+/// thread startup and report a tie whatever the contention is. At
+/// `PASSES * KEYS` inserts each the startup is a small fraction and the
+/// arms can actually differ.
+fn concurrent_writes(c: &mut Criterion) {
+    const WRITERS: usize = 4;
+    const KEYS: u64 = 500;
+    const PASSES: u64 = 50;
+
+    let d = dir("wr-lanes");
+    let laned: LanedVersionedMap<u64, u64> =
+        LanedVersionedMap::create(&d, WRITERS, NODES / WRITERS, 16).unwrap();
+    c.bench_function("lanes.concurrent_write/lanes_4", |b| {
+        b.iter_custom(|iters| {
+            let start = Instant::now();
+            for _ in 0..iters {
+                std::thread::scope(|s| {
+                    for w in 0..WRITERS {
+                        let map = &laned;
+                        s.spawn(move || {
+                            let lane = map.claim_lane().expect("a writer per lane");
+                            let base = (w as u64) * 10_000;
+                            for p in 0..PASSES {
+                                for k in 0..KEYS {
+                                    lane.insert(black_box(base + k), p).unwrap();
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+            start.elapsed()
+        });
+    });
+    drop(laned);
+    std::fs::remove_dir_all(&d).ok();
+
+    // Empty, and the same total node capacity the lanes get between
+    // them, so the two arms start in the same state.
+    let d = dir("wr-mutex");
+    let tree: Lane =
+        VersionedBTreeMap::create(d.join("t.bin"), NODES, d.join("e.bin"), 16).unwrap();
+    let guarded = Mutex::new(tree);
+    c.bench_function("lanes.concurrent_write/one_tree_under_mutex", |b| {
+        b.iter_custom(|iters| {
+            let start = Instant::now();
+            for _ in 0..iters {
+                std::thread::scope(|s| {
+                    for w in 0..WRITERS {
+                        let m = &guarded;
+                        s.spawn(move || {
+                            let base = (w as u64) * 10_000;
+                            for p in 0..PASSES {
+                                for k in 0..KEYS {
+                                    m.lock().unwrap().insert(black_box(base + k), p).unwrap();
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+            start.elapsed()
+        });
+    });
+    drop(guarded);
+    std::fs::remove_dir_all(&d).ok();
+}
+
+criterion_group!(benches, whole_store_scan, concurrent_writes);
 criterion_main!(benches);
