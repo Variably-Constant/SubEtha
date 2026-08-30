@@ -225,6 +225,15 @@ where
     /// nowhere to put the new version without destroying a row that
     /// scan must still see.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, VersionedError> {
+        let born = self.epochs.advance();
+        self.insert_at(key, value, born)
+    }
+
+    /// Make `key` current with `value`, stamped as born at `born` - the
+    /// epoch of an [`EpochTicket`](crate::shared_epochs::EpochTicket)
+    /// shared by every entry of one compound write, so a scan sees them
+    /// all or none. The refusal is [`insert`](Self::insert)'s.
+    pub fn insert_at(&self, key: K, value: V, born: Epoch) -> Result<Option<V>, VersionedError> {
         let existing = self.tree.get(&key);
         // Reclaimable is `died <= horizon`, because the horizon is the
         // newest epoch no reader holds. A tombstone above it is one a
@@ -235,7 +244,6 @@ where
         {
             return Err(VersionedError::RebornUnderPin);
         }
-        let born = self.epochs.advance();
         let entry = Versioned { born, died: DIED_LIVE, value };
         let displaced = match self.tree.insert(key, entry) {
             Ok(d) => d,
@@ -261,6 +269,24 @@ where
             return Ok(None);
         }
         let died = self.epochs.advance();
+        self.stamp_dead(key, prev, died)
+    }
+
+    /// Stamp `key` as superseded at `died`, an
+    /// [`EpochTicket`](crate::shared_epochs::EpochTicket)'s epoch shared
+    /// by every entry of one compound write. Otherwise as
+    /// [`remove`](Self::remove).
+    pub fn remove_at(&self, key: &K, died: Epoch) -> Result<Option<V>, VersionedError> {
+        let Some(prev) = self.tree.get(key) else {
+            return Ok(None);
+        };
+        if !prev.is_live() {
+            return Ok(None);
+        }
+        self.stamp_dead(key, prev, died)
+    }
+
+    fn stamp_dead(&self, key: &K, prev: Versioned<V>, died: Epoch) -> Result<Option<V>, VersionedError> {
         let stamped = Versioned { died, ..prev };
         match self.tree.insert(*key, stamped) {
             Ok(_) => Ok(Some(prev.value)),
@@ -319,6 +345,43 @@ where
     /// available to a caller that would rather reclaim on its own
     /// schedule. Under a live pin the horizon does not move, so a sweep
     /// during a scan frees only what died before that scan started.
+    /// Undo every stamp this map holds at `epoch`: an entry born there is
+    /// removed, and an entry superseded there is made current again.
+    /// For an epoch whose ticket holder died mid-compound, as
+    /// [`SharedEpochs::dead_tickets`] reports; once every structure
+    /// sharing the table has voided the epoch, the caller frees the
+    /// ticket with [`SharedEpochs::free_dead_ticket`]. Returns the
+    /// entries touched.
+    ///
+    /// Safe to run while the ticket is still held, which is the point:
+    /// nothing stamped with an unpublished epoch is visible to any pin,
+    /// so undoing it races no reader.
+    pub fn void_epoch(&self, epoch: Epoch) -> Result<usize, VersionedError> {
+        let mut touched = 0usize;
+        let mut cursor: Option<K> = None;
+        loop {
+            let low = match &cursor {
+                Some(k) => Bound::Excluded(k),
+                None => Bound::Unbounded,
+            };
+            let chunk = self.tree.range(low, Bound::Unbounded, SWEEP_CHUNK);
+            if chunk.is_empty() {
+                break;
+            }
+            cursor = chunk.last().map(|(k, _)| *k);
+            for (k, e) in chunk {
+                if e.born == epoch {
+                    self.tree.remove(&k)?;
+                    touched += 1;
+                } else if e.died == epoch {
+                    self.tree.insert(k, Versioned { died: DIED_LIVE, ..e })?;
+                    touched += 1;
+                }
+            }
+        }
+        Ok(touched)
+    }
+
     pub fn sweep(&self) -> Result<usize, VersionedError> {
         let horizon = self.epochs.reclaim_horizon();
         let mut freed = 0usize;
@@ -416,8 +479,10 @@ mod tests {
         );
     }
 
+    /// One entry per key: an update replaces the entry in place, so a
+    /// pin taken before it sees neither the old value nor the new.
     #[test]
-    fn an_update_is_the_new_value_now_and_the_old_one_at_an_earlier_pin() {
+    fn an_update_replaces_the_entry_so_an_earlier_pin_sees_neither_value() {
         let f = fixture("update", 256);
         f.map.insert(1, 10).unwrap();
         let pin = f.map.pin().unwrap();
@@ -574,5 +639,74 @@ mod tests {
             }
         }
         assert_eq!(chunked, whole, "resuming past filtered tombstones loses nothing");
+    }
+
+    /// Entries stamped from one ticket are seen all or none: a pin taken
+    /// while the ticket is open sees none of them (and still sees what
+    /// they superseded); a pin taken after publish sees them all.
+    #[test]
+    fn a_compound_write_is_all_or_none_to_a_scan() {
+        let f = fixture("compound", 256);
+        f.map.insert(1, 10).unwrap();
+        f.map.insert(2, 20).unwrap();
+
+        let t = f.map.epochs().begin().unwrap();
+        f.map.insert_at(3, 30, t.epoch()).unwrap();
+        f.map.insert_at(4, 40, t.epoch()).unwrap();
+        f.map.remove_at(&1, t.epoch()).unwrap();
+
+        let mid = f.map.pin().unwrap();
+        assert_eq!(
+            f.map.range_at(Bound::Unbounded, Bound::Unbounded, 64, &mid),
+            vec![(1, 10), (2, 20)],
+            "mid-write: nothing the compound did is visible, and what it removed still is"
+        );
+        t.publish();
+        let after = f.map.pin().unwrap();
+        assert_eq!(
+            f.map.range_at(Bound::Unbounded, Bound::Unbounded, 64, &after),
+            vec![(2, 20), (3, 30), (4, 40)],
+            "after publish: all of it, at once"
+        );
+        assert_eq!(
+            f.map.range_at(Bound::Unbounded, Bound::Unbounded, 64, &mid),
+            vec![(1, 10), (2, 20)],
+            "the earlier pin keeps its view"
+        );
+    }
+
+    /// A compound write whose ticket is never published - its writer
+    /// died - is undone by void_epoch: what it inserted goes, what it
+    /// removed is current again, and the map reads as before it began.
+    #[test]
+    fn voiding_an_epoch_undoes_a_dead_compound_write() {
+        let f = fixture("void", 256);
+        f.map.insert(1, 10).unwrap();
+        f.map.insert(2, 20).unwrap();
+        let before = f.map.pin().unwrap();
+        let base = f.map.range_at(Bound::Unbounded, Bound::Unbounded, 64, &before);
+        drop(before);
+
+        let t = f.map.epochs().begin().unwrap();
+        let e = t.epoch();
+        f.map.insert_at(3, 30, e).unwrap();
+        f.map.insert_at(2, 21, e).unwrap();
+        f.map.remove_at(&1, e).unwrap();
+        // The writer dies here: the ticket is neither published nor
+        // dropped through its guard.
+        std::mem::forget(t);
+
+        assert_eq!(f.map.void_epoch(e).unwrap(), 3, "two inserts and one removal undone");
+        assert_eq!(f.map.get(&3), None);
+        assert_eq!(f.map.get(&1), Some(10), "the removal is undone");
+        // An update stamped at e replaced key 2's live entry; voiding
+        // removes the version born at e, and the key reads as absent
+        // until the caller restores it from its own record - which is
+        // why every structure sharing the table voids, not just this one.
+        assert_eq!(f.map.get(&2), None);
+        let now = f.map.pin().unwrap();
+        let after = f.map.range_at(Bound::Unbounded, Bound::Unbounded, 64, &now);
+        assert_eq!(after, vec![(1, 10)]);
+        assert_ne!(after, base, "the overwritten value is the caller's to restore");
     }
 }

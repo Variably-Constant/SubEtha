@@ -45,6 +45,29 @@
 //! so the ordinary path recovers without the caller arranging anything.
 //! The horizon itself reads only atomics, so it costs no liveness
 //! probe.
+//!
+//! # Tickets: one epoch for a compound write
+//!
+//! A write that touches several entries - or several structures sharing
+//! one table - stamps them all with ONE epoch, taken from a
+//! [`EpochTicket`] returned by [`begin`](SharedEpochs::begin). While the
+//! ticket is open its epoch is reserved and not yet published:
+//! [`now`](SharedEpochs::now), which is what a pin takes, stays at the
+//! highest epoch every lower ticket has published, so a scan started
+//! mid-compound pins below it and sees all-old; a scan started after
+//! [`publish`](EpochTicket::publish) sees all-new. The reclaim horizon
+//! is bounded by the same value, so a reclaimer never frees a version an
+//! open compound is about to supersede.
+//!
+//! Tickets are a second [`HolderTable`] beside the pins, stamped with
+//! the holder's process. A ticket whose process died mid-compound is
+//! not simply freed - freeing it would publish a half-written epoch.
+//! [`dead_tickets`](SharedEpochs::dead_tickets) names such epochs so
+//! each structure sharing the table can void what it holds at them
+//! (the versioned map's `void_epoch`), and
+//! [`free_dead_ticket`](SharedEpochs::free_dead_ticket) releases the
+//! slot once every structure has. Dropping a ticket publishes it: a
+//! caller abandoning a compound removes what it wrote first.
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
@@ -55,7 +78,10 @@ use memmap2::{MmapMut, MmapOptions};
 
 use crate::holder_table::{holder_table_size, HolderTable};
 
-pub const EPOCH_MAGIC: u64 = 0x4550_4F43_4853_5F31; // "EPOCHS_1"
+/// "EPOCHS_2": a header followed by the pin table and the ticket table.
+/// A table laid out before tickets existed carries a different magic
+/// and is refused as a [`EpochError::LayoutMismatch`].
+pub const EPOCH_MAGIC: u64 = 0x4550_4F43_4853_5F32;
 
 /// A monotonic point in the store's history.
 pub type Epoch = u64;
@@ -78,7 +104,7 @@ const RESERVATION_SPINS: u32 = 64;
 pub struct EpochHeader {
     pub magic: u64,
     pub capacity: u64,
-    /// The epoch a write happening now would stamp.
+    /// The highest epoch handed out, to a ticket or an advance.
     pub now: AtomicU64,
     _pad: [u8; 40],
 }
@@ -87,14 +113,17 @@ const _: () = {
     assert!(size_of::<EpochHeader>() == 64);
 };
 
+/// Bytes a table of `capacity` pins and `capacity` tickets needs.
 pub const fn epoch_file_size(capacity: usize) -> usize {
-    size_of::<EpochHeader>() + holder_table_size(capacity)
+    size_of::<EpochHeader>() + 2 * holder_table_size(capacity)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpochError {
     /// Every pin slot is held by a live process.
     PinsExhausted,
+    /// Every ticket slot is held by a live process.
+    TicketsExhausted,
     LayoutMismatch,
     IoError(std::io::ErrorKind),
 }
@@ -109,6 +138,7 @@ impl std::fmt::Display for EpochError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EpochError::PinsExhausted => write!(f, "every pin slot is held"),
+            EpochError::TicketsExhausted => write!(f, "every ticket slot is held"),
             EpochError::LayoutMismatch => write!(f, "epoch table layout mismatch"),
             EpochError::IoError(k) => write!(f, "epoch table io error: {k:?}"),
         }
@@ -124,6 +154,8 @@ pub struct SharedEpochs {
     mmap: MmapMut,
     capacity: usize,
     pins: HolderTable,
+    /// Open compound writes, each holding `epoch + 1` as its payload.
+    tickets: HolderTable,
 }
 
 unsafe impl Send for SharedEpochs {}
@@ -167,12 +199,15 @@ impl SharedEpochs {
         Ok(Self::attach(None, mmap, capacity))
     }
 
-    /// Build the view over the slots behind the header.
+    /// Build the views over the two tables behind the header: pins first,
+    /// tickets after them.
     fn attach(_file: Option<File>, mmap: MmapMut, capacity: usize) -> Self {
-        let pins = unsafe {
-            HolderTable::from_ptr(mmap.as_ptr().add(size_of::<EpochHeader>()), capacity)
+        let pins_base = unsafe { mmap.as_ptr().add(size_of::<EpochHeader>()) };
+        let pins = unsafe { HolderTable::from_ptr(pins_base, capacity) };
+        let tickets = unsafe {
+            HolderTable::from_ptr(pins_base.add(holder_table_size(capacity)), capacity)
         };
-        Self { _file, mmap, capacity, pins }
+        Self { _file, mmap, capacity, pins, tickets }
     }
 
     /// Lay out an empty table: sizes first, magic last, because
@@ -209,25 +244,133 @@ impl SharedEpochs {
         &self.pins
     }
 
-    /// Pins that may be held at once.
+    /// The ticket slots, for a caller that wants the table directly.
+    #[inline]
+    pub fn tickets(&self) -> &HolderTable {
+        &self.tickets
+    }
+
+    /// Pins that may be held at once, and tickets likewise.
     #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// The epoch a write happening now would stamp.
+    /// The highest epoch handed out so far, published or not.
     #[inline]
-    pub fn now(&self) -> Epoch {
+    fn counter(&self) -> Epoch {
         self.header().now.load(Ordering::Acquire)
     }
 
-    /// Advance to the next epoch and return it.
+    /// The published epoch: what a pin takes, and the newest epoch a
+    /// reader is shown. With no ticket open it is the counter; with
+    /// tickets open it is one below the oldest of them, so nothing a
+    /// compound write has stamped is visible before that write publishes.
+    ///
+    /// A ticket mid-reservation restarts the read, as
+    /// [`reclaim_horizon`](Self::reclaim_horizon) restarts on a pin: its
+    /// epoch is being decided right now and reading past it would report
+    /// an epoch that ticket is about to hold.
+    pub fn now(&self) -> Epoch {
+        let mut restarts = 0u32;
+        loop {
+            let counter = self.counter();
+            if let Some(p) = self.tickets.try_fold(counter, |acc, payload| acc.min(payload - 2)) {
+                return p;
+            }
+            restarts += 1;
+            if restarts.is_multiple_of(RESERVATION_SPINS) {
+                self.tickets.reap_dead();
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Advance to the next epoch and return it, for a single-entry write
+    /// that stamps as it goes.
     ///
     /// Called by a writer that supersedes a version, so the old one
-    /// carries the epoch at which it stopped being current.
+    /// carries the epoch at which it stopped being current. The epoch is
+    /// published the instant it is stamped, unless an older ticket is
+    /// still open, in which case [`now`](Self::now) holds below both
+    /// until that ticket publishes.
     #[inline]
     pub fn advance(&self) -> Epoch {
         self.header().now.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Reserve the next epoch for a compound write. Every entry the write
+    /// stamps carries [`EpochTicket::epoch`]; nothing stamped with it is
+    /// visible to a pin until [`publish`](EpochTicket::publish).
+    ///
+    /// Returns [`EpochError::TicketsExhausted`] when every ticket slot is
+    /// held by a live process; a slot left by a dead process is reported
+    /// by [`dead_tickets`](Self::dead_tickets) rather than reused here,
+    /// since its epoch may be half-written.
+    pub fn begin(&self) -> Result<EpochTicket<'_>, EpochError> {
+        // Reserve first, then take the epoch: the reservation is what
+        // holds `now` and the horizon below the epoch about to be taken.
+        let slot = self.tickets.reserve().ok_or(EpochError::TicketsExhausted)?;
+        let epoch = self.advance();
+        // Biased by one so epoch 0 is a payload and not the free state;
+        // `now` and the horizon read it back as `payload - 2`, one below
+        // the ticket's own epoch.
+        self.tickets.publish(slot, epoch + 1);
+        Ok(EpochTicket { epochs: self, epoch, slot })
+    }
+
+    /// Epochs whose ticket is held by a process that is gone: compound
+    /// writes that will never publish. Each structure sharing this table
+    /// voids what it holds at those epochs, then
+    /// [`free_dead_ticket`](Self::free_dead_ticket) releases the slot.
+    pub fn dead_tickets(&self) -> Vec<Epoch> {
+        let mut out = Vec::new();
+        for i in 0..self.capacity {
+            let slot = self.tickets.slot(i);
+            let state = slot.state.load(Ordering::Acquire);
+            if state == crate::holder_table::HOLDER_FREE
+                || state == crate::holder_table::HOLDER_RESERVED
+            {
+                continue;
+            }
+            let pid = slot.owner_pid.load(Ordering::Acquire);
+            if pid != 0 && !crate::peer_directory::process_alive(pid) {
+                out.push(state - 1);
+            }
+        }
+        out
+    }
+
+    /// Release the ticket for `epoch`, once every structure has voided
+    /// what it holds there. Releases only a ticket whose process is gone;
+    /// a live writer's ticket is left alone and `false` is returned, as it
+    /// is for an epoch no ticket holds.
+    pub fn free_dead_ticket(&self, epoch: Epoch) -> bool {
+        for i in 0..self.capacity {
+            let slot = self.tickets.slot(i);
+            if slot.state.load(Ordering::Acquire) != epoch + 1 {
+                continue;
+            }
+            let pid = slot.owner_pid.load(Ordering::Acquire);
+            if pid == 0 || crate::peer_directory::process_alive(pid) {
+                return false;
+            }
+            return slot
+                .state
+                .compare_exchange(
+                    epoch + 1,
+                    crate::holder_table::HOLDER_FREE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok();
+        }
+        false
+    }
+
+    /// Tickets open right now.
+    pub fn open_tickets(&self) -> usize {
+        self.tickets.live()
     }
 
     /// Pin the current epoch. The returned guard holds it until dropped;
@@ -271,9 +414,11 @@ impl SharedEpochs {
     pub fn reclaim_horizon(&self) -> Epoch {
         let mut restarts = 0u32;
         loop {
-            // Sample the counter BEFORE the slots. A pin that reserves
-            // after this load reads its epoch after reserving, so it
-            // lands at or above the value returned.
+            // Sample the published epoch BEFORE the pins. A pin that
+            // reserves after this load reads its epoch after reserving,
+            // so it lands at or above the value returned; and an open
+            // ticket holds the published epoch below its own, so nothing
+            // a compound is about to supersede is reclaimable.
             let now = self.now();
             if let Some(h) = self.pins.try_fold(now, |acc, payload| acc.min(payload - 1)) {
                 return h;
@@ -351,6 +496,41 @@ impl std::fmt::Debug for SharedEpochs {
 impl std::fmt::Debug for PinGuard<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PinGuard").field("at", &self.at).field("slot", &self.slot).finish()
+    }
+}
+
+/// A reserved epoch for one compound write: everything the write stamps
+/// carries [`epoch`](Self::epoch), and none of it is visible to a pin
+/// until [`publish`](Self::publish). Dropping the ticket publishes it.
+pub struct EpochTicket<'a> {
+    epochs: &'a SharedEpochs,
+    epoch: Epoch,
+    slot: usize,
+}
+
+impl EpochTicket<'_> {
+    /// The epoch every entry of this write is stamped with.
+    #[inline]
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// Make the write visible: every entry stamped with this epoch is
+    /// seen by every pin taken from now on, all at once.
+    pub fn publish(self) {
+        drop(self);
+    }
+}
+
+impl std::fmt::Debug for EpochTicket<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpochTicket").field("epoch", &self.epoch).field("slot", &self.slot).finish()
+    }
+}
+
+impl Drop for EpochTicket<'_> {
+    fn drop(&mut self) {
+        self.epochs.tickets.release(self.slot);
     }
 }
 
@@ -640,6 +820,85 @@ mod tests {
         drop(a);
         drop(b);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    /// The property tickets exist for: a pin taken while a compound write
+    /// is open lands below its epoch and sees none of it; a pin taken
+    /// after it publishes sees all of it.
+    fn a_pin_during_an_open_ticket_sees_all_old_and_after_publish_all_new() {
+        let e = table(8);
+        e.advance();
+        assert_eq!(e.now(), 1);
+        let ticket = e.begin().unwrap();
+        assert_eq!(ticket.epoch(), 2);
+        assert_eq!(e.now(), 1, "the published epoch stays below the open ticket");
+        let mid = e.pin().unwrap();
+        assert_eq!(mid.epoch(), 1);
+        assert!(
+            mid.sees(Some(2)),
+            "the version the compound supersedes at 2 was current at 1, so the pin sees it"
+        );
+        // A single-entry write after the ticket opens is also held back:
+        // published stays below the OLDEST open ticket.
+        let single = e.advance();
+        assert_eq!(single, 3);
+        assert_eq!(e.now(), 1);
+        ticket.publish();
+        assert_eq!(e.now(), 3, "publishing releases everything up to the counter");
+        let after = e.pin().unwrap();
+        assert_eq!(after.epoch(), 3);
+    }
+
+    /// The horizon cannot pass an open ticket either, or a reclaimer
+    /// frees what the compound is about to supersede.
+    #[test]
+    fn the_horizon_holds_below_an_open_ticket() {
+        let e = table(8);
+        for _ in 0..5 {
+            e.advance();
+        }
+        let t = e.begin().unwrap();
+        assert_eq!(t.epoch(), 6);
+        for _ in 0..4 {
+            e.advance();
+        }
+        assert_eq!(e.reclaim_horizon(), 5, "one below the open ticket, with no pins");
+        drop(t);
+        assert_eq!(e.reclaim_horizon(), 10);
+    }
+
+    #[test]
+    fn a_full_ticket_table_refuses() {
+        let e = table(2);
+        let _a = e.begin().unwrap();
+        let _b = e.begin().unwrap();
+        assert_eq!(e.begin().err(), Some(EpochError::TicketsExhausted));
+        assert_eq!(e.open_tickets(), 2);
+    }
+
+    /// A ticket whose process died is reported, not silently freed: its
+    /// epoch is held back until the structures void it and the caller
+    /// frees it.
+    #[test]
+    fn a_dead_ticket_is_reported_and_freed_only_on_request() {
+        let e = table(2);
+        e.advance();
+        // Stand in for a writer that died mid-compound at epoch 2.
+        let dead = e.tickets.slot(0);
+        dead.state.store(2 + 1, Ordering::Release);
+        dead.owner_pid.store(u32::MAX - 1, Ordering::Release);
+        e.header().now.store(2, Ordering::Release);
+        assert_eq!(e.now(), 1, "the dead ticket still holds the published epoch down");
+        assert_eq!(e.dead_tickets(), vec![2]);
+        assert!(!e.free_dead_ticket(7), "no ticket holds epoch 7");
+        assert!(e.free_dead_ticket(2));
+        assert_eq!(e.now(), 2);
+        assert!(e.dead_tickets().is_empty());
+        // A live writer's ticket is never freed by request.
+        let live = e.begin().unwrap();
+        assert!(!e.free_dead_ticket(live.epoch()));
+        assert_eq!(e.open_tickets(), 1);
     }
 
     #[test]

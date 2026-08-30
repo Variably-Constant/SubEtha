@@ -107,17 +107,23 @@ only, `first()` as the horizon.
 | `SharedEpochs::create(path, capacity)` | Obtain the table: initialize when the path does not yet exist, else attach with the counter and every live pin intact. |
 | `SharedEpochs::open(path, expected_capacity)` | Attach to an existing table. A different capacity is a `LayoutMismatch`. |
 | `SharedEpochs::create_anon(capacity)` | A table private to this process. |
-| `epochs.now()` | The epoch a write happening now would stamp. |
-| `epochs.advance() -> Epoch` | Advance and return the new epoch. Called by a writer superseding a version. |
-| `epochs.pin() -> Result<PinGuard, EpochError>` | Pin the current epoch until the guard drops. |
-| `epochs.reclaim_horizon() -> Epoch` | Epochs at or below this have no reader. |
-| `epochs.live_pins()` / `epochs.capacity()` | Pins outstanding; pins that may be held at once. |
-| `epochs.reap_dead_pins() -> usize` | Free every slot whose owning process is gone; returns how many. |
+| `epochs.now()` | The published epoch: what a pin takes. The counter when no ticket is open, else one below the oldest open ticket. |
+| `epochs.advance() -> Epoch` | Advance and return the new epoch, for a single-entry write that stamps as it goes. |
+| `epochs.begin() -> Result<EpochTicket, EpochError>` | Reserve the next epoch for a compound write; nothing stamped with it is visible until the ticket publishes. |
+| `ticket.epoch()` / `ticket.publish()` | The epoch every entry of the write carries; make them all visible at once. Dropping the ticket publishes it. |
+| `epochs.pin() -> Result<PinGuard, EpochError>` | Pin the published epoch until the guard drops. |
+| `epochs.reclaim_horizon() -> Epoch` | Epochs at or below this have no reader and no open ticket. |
+| `epochs.live_pins()` / `epochs.open_tickets()` / `epochs.capacity()` | Pins outstanding; tickets outstanding; each table's slots. |
+| `epochs.reap_dead_pins() -> usize` | Free every pin slot whose owning process is gone; returns how many. |
+| `epochs.dead_tickets() -> Vec<Epoch>` | Epochs whose ticket holder died mid-write, for each structure to void. |
+| `epochs.free_dead_ticket(epoch) -> bool` | Release a dead holder's ticket once every structure has voided the epoch. Never frees a live writer's. |
 | `guard.epoch()` | The pinned epoch. |
 | `guard.sees(superseded_at: Option<Epoch>) -> bool` | Whether a version superseded then is visible to this reader. |
 | `epoch_file_size(capacity)` | Bytes the file needs. |
 
-`EpochError` is `PinsExhausted` / `LayoutMismatch` / `IoError`.
+`EpochError` is `PinsExhausted` / `TicketsExhausted` / `LayoutMismatch`
+/ `IoError`. `capacity` sizes both tables: that many pins and that many
+tickets may be held at once.
 
 ---
 
@@ -178,6 +184,24 @@ never blocked by it.
 A store whose records and whose index both carry epoch stamps
 reclaims both under one horizon, so an index entry can never outlive
 the record it names or be dropped while a scan still needs it.
+
+### Pattern: a compound write published once
+
+A write that touches several entries, or several structures on one
+table, takes a ticket and stamps everything with its epoch. A scan
+pinned while the ticket is open lands below that epoch and sees none of
+the write; a scan pinned after `publish` sees all of it. A writer that
+dies mid-compound leaves its ticket held: `dead_tickets` names the
+epoch, each structure voids what it holds there (`void_epoch` on the
+versioned map), and `free_dead_ticket` releases the slot last - a
+half-written epoch is never published.
+
+```rust
+let t = epochs.begin()?;
+index.insert_at(key, value, t.epoch())?;
+pairings.insert_at(pair, id, t.epoch())?;
+t.publish();
+```
 
 ---
 

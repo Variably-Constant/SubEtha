@@ -32,6 +32,12 @@ tree is untouched and no existing user pays for versioning.
   an entry count. `max_pins` is how many scans may hold a pin at once.
 - **`len()` counts tombstones too.** It is entries the tree holds, live
   and superseded alike.
+- **An update replaces the entry in place.** One entry per key means
+  `insert` over a live key overwrites its version, so a pin taken
+  before the update sees neither value for that key. A store that
+  needs the old value visible to an older pin keeps versions in the
+  record (a versioned slab) and uses this map for keys that are born
+  and die but do not change, such as a composite of key and record id.
 - **Reinserting a key a live pin can still reach is refused** with
   `VersionedError::RebornUnderPin`. See below.
 - **Reclamation runs on the insert path.** An insert that exhausts the
@@ -116,6 +122,8 @@ a default.
 | `map.get_at(&k, &pin) -> Option<V>` | The value current at the pin. |
 | `map.insert(k, v) -> Result<Option<V>, VersionedError>` | Make `k` current; returns what it replaced if the key was live. |
 | `map.remove(&k) -> Result<Option<V>, VersionedError>` | Stamp `k` superseded; the entry stays until no pin can reach it. |
+| `map.insert_at(k, v, born)` / `map.remove_at(&k, died)` | The same, stamped with a ticket's epoch instead of a fresh one, so every entry of one compound write is seen all or none. |
+| `map.void_epoch(epoch) -> Result<usize, VersionedError>` | Undo every stamp at `epoch`: entries born there go, entries superseded there are current again. For an epoch whose ticket holder died. |
 | `map.range_at(low, high, limit, &pin) -> Vec<(K, V)>` | Entries current at the pin, in key order. |
 | `map.range_at_with_cursor(..)` | The same, and the last key the walk examined, to resume past filtered tombstones. |
 | `map.sweep() -> Result<usize, VersionedError>` | Drop every entry superseded below the horizon. |
@@ -177,6 +185,15 @@ cost is the tombstones created during the walk.
 A store whose records and whose ordered index both carry epoch stamps
 reclaims both under one horizon, so an index entry can never outlive
 the record it names or be dropped while a scan still needs it.
+
+### Pattern: a compound write published once
+
+One record insert touches the record, the coordinate index and every
+pairing view. A ticket from the shared epoch table stamps them all
+with one epoch through `insert_at` / `remove_at`; a scan pinned
+mid-write sees none of them and a scan pinned after `publish` sees them
+all. If the writer dies first, `void_epoch` on each map undoes its
+stamps before the ticket is freed.
 
 ---
 
