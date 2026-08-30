@@ -2414,6 +2414,12 @@ impl UnifiedSensReceiver {
                 let raw = self.rs.poll_from()?;
                 let mut d = Vec::with_capacity(raw.len());
                 for (epoch, payload) in raw {
+                    // A listening receiver carries no handover overlap to drop:
+                    // `listen_tls` refuses `CodePolicy::Auto`, and a forced
+                    // policy never switches, so RS here is RS from the first
+                    // item and its global index never trails the frontier.
+                    // Admitting Auto to a listener would make the frontier
+                    // guard below load-bearing on this path too.
                     #[cfg(feature = "tls")]
                     if self.tls_listen.is_some() {
                         self.delivered_total += 1;
