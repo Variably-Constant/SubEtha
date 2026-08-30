@@ -467,6 +467,10 @@ name = "shared_versioned_slab"
 harness = false
 
 [[bench]]
+name = "laned_versioned_map"
+harness = false
+
+[[bench]]
 name = "shared_broadcast_ring"
 harness = false
 
