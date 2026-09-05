@@ -65,8 +65,43 @@ where
     }
 }
 
+/// Whether `e` is the error [`create_or_attach`] returns for a region that
+/// exists at a different size than the one requested. A caller with a
+/// layout-mismatch error of its own reports that instead of an I/O error.
+pub(crate) fn is_size_mismatch(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::InvalidData && e.get_ref().is_some_and(|inner| inner.is::<SizeMismatch>())
+}
+
+/// The region on disk is a different size than the caller requested.
+#[derive(Debug)]
+struct SizeMismatch {
+    path: std::path::PathBuf,
+    on_disk: u64,
+    requested: usize,
+}
+
+impl std::fmt::Display for SizeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the region at {} is {} bytes on disk, a different size than the {} requested; it was created at another capacity",
+            self.path.display(),
+            self.on_disk,
+            self.requested
+        )
+    }
+}
+
+impl std::error::Error for SizeMismatch {}
+
 /// One attach attempt. `Ok(None)` means the file exists but the creator has not
 /// published yet, which is a state to wait through rather than an error.
+///
+/// The creator's `set_len` is what takes the file from zero bytes to
+/// `total`, so a zero-length file is a creator between election and
+/// `set_len`, and a file shorter than `total` but not empty is a region
+/// that exists at another size: its creator finished long ago, at a
+/// different capacity, and waiting on it would never end in an attach.
 fn try_attach<R>(path: &Path, total: usize, ready: &R) -> io::Result<Option<(File, MmapMut)>>
 where
     R: Fn(*const u8) -> bool,
@@ -76,8 +111,15 @@ where
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    if (file.metadata()?.len() as usize) < total {
+    let on_disk = file.metadata()?.len();
+    if on_disk == 0 {
         return Ok(None);
+    }
+    if (on_disk as usize) < total {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            SizeMismatch { path: path.to_path_buf(), on_disk, requested: total },
+        ));
     }
     let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
     if !ready(mmap.as_ptr()) {
@@ -182,6 +224,44 @@ mod tests {
         let seen = unsafe { std::ptr::read_unaligned(second.as_ptr().add(8) as *const u64) };
         assert_eq!(seen, 0xDEAD_BEEF, "attaching cleared state the first caller owned");
         std::fs::remove_file(&p).ok();
+    }
+
+    /// A region that exists at a smaller size is refused at once, as a size
+    /// mismatch, rather than waited on as a creator still initialising.
+    #[test]
+    fn a_smaller_published_region_is_a_size_mismatch_not_a_wait() {
+        let p = tmp("smaller");
+        let (file, mapping) =
+            create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
+        let started = Instant::now();
+        let err = create_or_attach(&p, 128, |_| panic!("must not re-initialize"), has_magic)
+            .expect_err("a smaller region must not attach at a larger size");
+        assert!(is_size_mismatch(&err), "not a size mismatch: {err}");
+        assert!(
+            started.elapsed() < INIT_WAIT / 2,
+            "refused only after waiting {:?} for a creator that finished long ago",
+            started.elapsed()
+        );
+        let text = err.to_string();
+        assert!(text.contains("64 bytes") && text.contains("128 requested"), "{text}");
+        drop(mapping);
+        drop(file);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
+    }
+
+    /// An empty file is a creator between its election and its set_len, and
+    /// is still waited on; one that never grows surfaces as the timeout.
+    #[test]
+    fn an_empty_file_is_waited_on_until_the_creator_deadline() {
+        let p = tmp("empty");
+        File::create(&p).expect("an empty file at the region path");
+        let started = Instant::now();
+        let err = create_or_attach(&p, 64, |_| panic!("must not re-initialize"), has_magic)
+            .expect_err("an empty file has no region to attach to");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        assert!(!is_size_mismatch(&err));
+        assert!(started.elapsed() >= INIT_WAIT, "gave up early after {:?}", started.elapsed());
+        std::fs::remove_file(&p).expect("the empty file is removable");
     }
 
     /// reset deliberately discards it, which is the case truncation was for.

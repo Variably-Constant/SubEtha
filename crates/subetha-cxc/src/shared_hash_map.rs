@@ -248,7 +248,14 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             total,
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const MapHeader)).magic == MAP_MAGIC },
-        )?;
+        )
+        .map_err(|e| {
+            if crate::mmf_attach::is_size_mismatch(&e) {
+                MapError::LayoutMismatch
+            } else {
+                MapError::from(e)
+            }
+        })?;
         Self::from_region(file, mmap, capacity)
     }
 
@@ -1009,7 +1016,9 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
-    /// Attaching with a different capacity or key type is refused.
+    /// Attaching with a different capacity or key type is refused, and a
+    /// LARGER capacity than the region on disk is refused at once rather
+    /// than waited on as a creator still initializing.
     #[test]
     fn create_refuses_a_mismatched_region() {
         let p = tmp("mismatch");
@@ -1023,6 +1032,16 @@ mod tests {
             SharedHashMap::<u64, u64>::create(&p, 32),
             Err(MapError::LayoutMismatch),
         ));
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            SharedHashMap::<u32, u64>::create(&p, 64),
+            Err(MapError::LayoutMismatch),
+        ));
+        assert!(
+            started.elapsed() < crate::mmf_attach::INIT_WAIT / 2,
+            "a region published at a smaller capacity was waited on for {:?}",
+            started.elapsed()
+        );
         drop(m);
         std::fs::remove_file(&p).ok();
     }
