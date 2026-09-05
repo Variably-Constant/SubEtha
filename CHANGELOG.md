@@ -43,7 +43,7 @@ Each version heading links to the commit that cut it.
 - `mmf_attach::create_or_attach` refuses a non-empty file shorter than the
   requested size at once, with `SizeMismatch` naming the path and both
   sizes; it used to wait five seconds for a creator that would never
-  finish. An empty file is still waited on. Reported from PrismLQL.
+  finish. An empty file is still waited on.
 - The RLC receiver handed any frame without a connection id to the most
   recently admitted session, which rebound its peer address to the
   frame's source without validation, so a one-byte datagram from anyone
@@ -415,8 +415,7 @@ layout is refused. A `^0.1` requirement does not resolve to this line.
 
 - A unified receiver's block-RS half served one peer, because
   `with_multi_peer` was unreachable through the unified constructor; a
-  demux socket routes by session epoch on its own. Found by a consumer's
-  four-node quorum gate crossing to RS.
+  demux socket routes by session epoch on its own.
 
 ## [0.1.6] - 2026-08-22
 
