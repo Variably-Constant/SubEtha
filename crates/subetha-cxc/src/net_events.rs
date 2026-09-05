@@ -550,7 +550,7 @@ mod unix_watch {
     ) -> Option<JoinHandle<()>> {
         // SAFETY: open_event_socket returns an owned fd; the thread closes it.
         let fd = unsafe { open_event_socket() }?;
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("net-events".into())
             .spawn(move || {
                 let mut buf = vec![0u8; 8192];

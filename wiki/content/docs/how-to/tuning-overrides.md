@@ -36,7 +36,7 @@ above.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `SUBETHA_DGRAM=iouring\|udp\|wire` | Forces the datagram backend instead of auto-detecting. `iouring` forces the io_uring ring (warns if unavailable rather than silently degrading); `wire` forces the AF_XDP / netmap Wire backend regardless of the link-speed gate. | auto: io_uring on Linux, plain UDP fallback |
+| `SUBETHA_DGRAM=iouring\|udp\|wire` | Forces the datagram backend instead of auto-detecting. `iouring` forces the io_uring ring (warns if unavailable rather than silently degrading); `wire` forces the AF_XDP / netmap Wire backend regardless of the link-speed gate. On the io_uring backend a receive that failed and could not be re-armed because the submission queue was full leaves a slot the ring no longer fills; `DgramSock::rearm_failures()` counts those, zero on every other backend. | auto: io_uring on Linux, plain UDP fallback |
 | `SUBETHA_USO=0` | Disables the UDP segmentation-offload (USO) send path, forcing the per-datagram baseline. | on (Linux) |
 | `SUBETHA_GRO=0` | Disables the GRO receive-coalescing path, keeping the per-datagram `recvmmsg` path. | on (Linux) |
 | `SUBETHA_REORDER_GUARD=0` | Disables the D-SACK reorder-guard subtraction in the reliable-UDP loss estimate. | on |

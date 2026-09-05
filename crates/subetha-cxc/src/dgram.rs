@@ -295,6 +295,23 @@ impl DgramSock {
     /// Connect the socket to `addr` so [`send`](Self::send) can omit it. Udp
     /// connects the kernel socket; Demux records the peer for its forwarded
     /// send. io_uring / wire are not used by the connected-send transport.
+    /// Receive slots the io_uring backend could not re-arm after a failed
+    /// receive: each is a slot the ring no longer fills, so a count that
+    /// reaches the receive depth is a socket that has stopped receiving.
+    /// Zero on every other backend, which have no ring to re-arm.
+    pub fn rearm_failures(&self) -> u64 {
+        match &self.inner {
+            #[cfg(target_os = "linux")]
+            Inner::IoUring(u) => u.rearm_failures(),
+            #[cfg(all(
+                feature = "wire-locale",
+                any(target_os = "linux", target_os = "freebsd", target_os = "macos")
+            ))]
+            Inner::Wire(_) => 0,
+            Inner::Udp(_) | Inner::Demux(_) => 0,
+        }
+    }
+
     pub fn connect(&self, addr: SocketAddr) -> io::Result<()> {
         match &self.inner {
             Inner::Udp(s) => s.connect(addr),
