@@ -6,7 +6,7 @@ crates (`subetha`, `subetha-core`, `subetha-cxc`, `subetha-pointers`,
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each version heading links to the commit that cut it.
 
-## [0.2.8] - Unreleased
+## [0.2.8] - 2026-09-05
 
 ### Added
 
