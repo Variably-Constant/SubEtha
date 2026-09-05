@@ -189,7 +189,8 @@ impl<T: ShmValue> SharedArc<T> {
             arc_file_size::<T>(max_holders),
             |ptr| unsafe { Self::init_region(ptr, value, max_holders) },
             |ptr| unsafe { (*(ptr as *const ArcHeader)).magic == ARC_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, ArcError::LayoutMismatch))?;
         Self::attach(file, mmap, path, max_holders, on_last)
     }
 

@@ -178,7 +178,8 @@ where
             lanes_file_size(lanes),
             |ptr| unsafe { Self::init_region(ptr, lanes) },
             |ptr| unsafe { (*(ptr as *const LanesHeader)).magic == LANES_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, LanedError::LayoutMismatch))?;
         Self::attach(trees, Some(file), mmap, lanes)
     }
 

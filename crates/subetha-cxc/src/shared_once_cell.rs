@@ -83,7 +83,8 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
             ONCE_FILE_SIZE,
             |ptr| unsafe { Self::init_region(ptr) },
             |ptr| unsafe { (*(ptr as *const OnceHeader)).magic == ONCE_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, SharedOnceError::LayoutMismatch))?;
         Self::from_region(file, mmap)
     }
 

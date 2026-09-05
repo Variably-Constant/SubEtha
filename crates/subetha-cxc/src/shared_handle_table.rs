@@ -166,7 +166,8 @@ impl<T: Copy + 'static> SharedHandleTable<T> {
             total,
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const HandleHeader)).magic == HANDLE_TABLE_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, HandleTableError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

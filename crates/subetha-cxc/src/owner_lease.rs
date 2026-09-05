@@ -113,7 +113,8 @@ impl<T: Copy + 'static> OwnerLease<T> {
             LEASE_FILE_SIZE,
             |ptr| unsafe { Self::init_region(ptr, initial) },
             |ptr| unsafe { (*(ptr as *const LeaseHeader)).magic == LEASE_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, LeaseError::LayoutMismatch))?;
         let hdr = unsafe { &*(mmap.as_ptr() as *const LeaseHeader) };
         if hdr.payload_size as usize != size_of::<T>() {
             return Err(LeaseError::LayoutMismatch);

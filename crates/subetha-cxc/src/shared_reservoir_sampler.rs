@@ -137,7 +137,8 @@ impl<T: Copy + 'static> SharedReservoirSampler<T> {
             reservoir_file_size(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const ReservoirHeader)).magic == RESERVOIR_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, ReservoirError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

@@ -217,7 +217,8 @@ impl SharedBroadcastRing {
             total,
             |ptr| unsafe { init_broadcast_attach_raw(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const BroadcastHeader)).magic == BROADCAST_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BroadcastError::LayoutMismatch))?;
         let raw_ptr = mmap.as_mut_ptr();
         let hdr = unsafe { &*(raw_ptr as *const BroadcastHeader) };
         if hdr.capacity != capacity as u32 {

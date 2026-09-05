@@ -180,7 +180,8 @@ impl<T: Copy + 'static> SharedVec<T> {
             vec_file_size(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const VecHeader)).magic == VEC_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, VecError::LayoutMismatch))?;
         let this = Self {
             _file: file, mmap: Mapping::Writable(mmap), capacity, _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),

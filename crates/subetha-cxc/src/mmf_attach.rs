@@ -65,6 +65,13 @@ where
     }
 }
 
+/// Convert an attach error for a caller with a layout-mismatch error of
+/// its own: a size mismatch becomes `mismatch`, anything else converts
+/// as the I/O error it is.
+pub(crate) fn attach_error<E: From<io::Error>>(e: io::Error, mismatch: E) -> E {
+    if is_size_mismatch(&e) { mismatch } else { E::from(e) }
+}
+
 /// Whether `e` is the error [`create_or_attach`] returns for a region that
 /// exists at a different size than the one requested. A caller with a
 /// layout-mismatch error of its own reports that instead of an I/O error.

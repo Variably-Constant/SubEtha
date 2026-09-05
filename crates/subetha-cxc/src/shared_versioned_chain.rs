@@ -123,7 +123,8 @@ impl<T: Copy + 'static> SharedVersionedChain<T> {
             versioned_chain_file_size(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const ChainHeader)).magic == VERSIONED_CHAIN_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, ChainError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

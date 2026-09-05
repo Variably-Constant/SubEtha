@@ -166,7 +166,8 @@ impl SharedFenceClock {
             total,
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const HlcHeader)).magic == FENCE_CLOCK_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, FenceClockError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

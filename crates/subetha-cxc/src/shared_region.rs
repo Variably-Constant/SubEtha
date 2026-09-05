@@ -188,7 +188,8 @@ impl<T: Copy + 'static> SharedRegion<T> {
             region_file_size(capacity, size_of::<T>()),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const RegionHeader)).magic == REGION_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, RegionError::LayoutMismatch))?;
         crate::mmf_warm::warm_mmap(&mut mmap);
         Self::from_region(file, mmap, capacity)
     }

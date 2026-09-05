@@ -75,7 +75,10 @@ macro_rules! shared_atomic_impl {
                     ATOMIC_FILE_SIZE,
                     |ptr| unsafe { Self::init_region(ptr, init) },
                     |ptr| unsafe { (*(ptr as *const AtomicHeader)).magic == ATOMIC_MAGIC },
-                )?;
+                )
+                .map_err(|e| {
+                    crate::mmf_attach::attach_error(e, SharedAtomicError::LayoutMismatch)
+                })?;
                 Self::from_region(file, mmap)
             }
 
@@ -263,7 +266,8 @@ impl SharedAtomicBool {
             ATOMIC_FILE_SIZE,
             |ptr| unsafe { Self::init_region(ptr, init) },
             |ptr| unsafe { (*(ptr as *const AtomicHeader)).magic == ATOMIC_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, SharedAtomicError::LayoutMismatch))?;
         Self::from_region(file, mmap)
     }
 

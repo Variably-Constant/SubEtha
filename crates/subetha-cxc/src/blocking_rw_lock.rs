@@ -91,7 +91,8 @@ impl WakeupAtom {
                 std::ptr::write_volatile(base as *mut u64, WAKEUP_MAGIC);
             },
             |base| unsafe { (base as *const u64).read() == WAKEUP_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BlockingRWLockError::LayoutMismatch))?;
         let base = mmap.as_mut_ptr();
         let ptr = unsafe { base.add(WAKEUP_OFFSET) as *const AtomicU64 };
         Ok(Self { backing: WakeupBacking::File(file, mmap), ptr })

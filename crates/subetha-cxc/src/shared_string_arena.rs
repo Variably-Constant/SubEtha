@@ -231,7 +231,8 @@ impl SharedStringArena {
             arena_file_size(capacity_bytes),
             |ptr| unsafe { Self::init_region(ptr, capacity_bytes) },
             |ptr| unsafe { (*(ptr as *const ArenaHeader)).magic == ARENA_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, ArenaError::LayoutMismatch))?;
         let this = Self {
             _file: file, mmap: Mapping::Writable(mmap), capacity_bytes,
             header_sidecar: subetha_core::HandshakeHeader::new(),

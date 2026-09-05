@@ -134,7 +134,8 @@ impl SharedRateLimiter {
             size_of::<RateLimiterHeader>(),
             |ptr| unsafe { Self::init_region(ptr, capacity, refill_rate_per_sec) },
             |ptr| unsafe { (*(ptr as *const RateLimiterHeader)).magic == RATE_LIMITER_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, RateLimiterError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity, refill_rate_per_sec)
     }
 

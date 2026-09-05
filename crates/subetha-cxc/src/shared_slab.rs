@@ -171,7 +171,8 @@ impl<T: Copy + 'static> SharedSlab<T> {
             slab_file_size::<T>(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity, slab_slot_size::<T>()) },
             |ptr| unsafe { (*(ptr as *const SlabHeader)).magic == SLAB_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, SlabError::LayoutMismatch))?;
         let this = Self {
             _file: file,
             mmap: Mapping::Writable(mmap),

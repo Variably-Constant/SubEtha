@@ -301,7 +301,8 @@ impl CrossProcessWaker {
             total,
             |ptr| unsafe { init_waker_layout_raw(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const WakerHeader)).magic == WAKER_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, WakerError::LayoutMismatch))?;
         let raw_ptr = mmap.as_mut_ptr();
         let hdr = unsafe { &*(raw_ptr as *const WakerHeader) };
         if hdr.capacity as usize != capacity {

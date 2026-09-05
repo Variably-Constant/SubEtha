@@ -95,7 +95,8 @@ impl<T: Copy + 'static> SharedCell<T> {
             CELL_FILE_SIZE,
             |ptr| unsafe { Self::init_region(ptr) },
             |ptr| unsafe { (*(ptr as *const CellHeader)).magic == CELL_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, SharedCellError::LayoutMismatch))?;
         Self::from_region(file, mmap)
     }
 

@@ -97,7 +97,8 @@ impl SharedLeaderElection {
             LEADER_FILE_SIZE,
             |ptr| unsafe { Self::init_region(ptr) },
             |ptr| unsafe { (*(ptr as *const LeaderHeader)).magic == LEADER_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, LeaderError::LayoutMismatch))?;
         Ok(Self {
             _file: file, mmap,
             header_sidecar: subetha_core::HandshakeHeader::new(),

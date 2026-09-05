@@ -133,7 +133,8 @@ impl<T: Copy + 'static> SharedTreiberStack<T> {
             stack_file_size(capacity, size_of::<T>()),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const StackHeader)).magic == STACK_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, StackError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

@@ -224,7 +224,8 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             size_of::<UniversalHeader>(),
             |ptr| unsafe { Self::init_state(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const UniversalHeader)).magic == UNIVERSAL_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, UniversalError::LayoutMismatch))?;
         let hdr = unsafe { &*(mmap.as_ptr() as *const UniversalHeader) };
         if hdr.magic != UNIVERSAL_MAGIC || hdr.capacity != capacity as u32 {
             return Err(UniversalError::LayoutMismatch);

@@ -182,7 +182,8 @@ impl SharedTopologyMap {
                 Self::init_region(ptr, n_nodes, fan_out_threshold, fan_in_threshold)
             },
             |ptr| unsafe { (*(ptr as *const TopologyHeader)).magic == TOPOLOGY_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, TopologyError::LayoutMismatch))?;
         Self::from_region(file, mmap, n_nodes)
     }
 

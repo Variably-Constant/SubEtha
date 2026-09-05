@@ -125,7 +125,8 @@ impl SharedHistogram {
             histogram_file_size(boundaries.len()),
             |ptr| unsafe { Self::init_region(ptr, boundaries) },
             |ptr| unsafe { (*(ptr as *const HistogramHeader)).magic == HISTOGRAM_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, HistogramError::LayoutMismatch))?;
         Self::from_region(file, mmap, boundaries)
     }
 

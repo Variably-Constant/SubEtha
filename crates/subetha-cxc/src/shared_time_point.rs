@@ -102,7 +102,8 @@ impl<T: Copy + 'static> SharedTimePointTile<T> {
             tile_file_size(),
             |ptr| unsafe { Self::init_region(ptr) },
             |ptr| unsafe { (*(ptr as *const TileHeader)).magic == TIME_POINT_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, TileError::LayoutMismatch))?;
         Self::from_region(file, mmap)
     }
 

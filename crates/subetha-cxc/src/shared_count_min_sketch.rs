@@ -136,7 +136,8 @@ impl SharedCountMinSketch {
             cms_file_size(d, w),
             |ptr| unsafe { Self::init_region(ptr, d, w) },
             |ptr| unsafe { (*(ptr as *const CMSHeader)).magic == CMS_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, CMSError::LayoutMismatch))?;
         Self::from_region(file, mmap, d, w)
     }
 

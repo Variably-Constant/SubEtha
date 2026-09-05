@@ -139,7 +139,8 @@ impl SharedHyperLogLog {
             hll_file_size(precision),
             |ptr| unsafe { Self::init_region(ptr, precision) },
             |ptr| unsafe { (*(ptr as *const HLLHeader)).magic == HLL_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, HLLError::LayoutMismatch))?;
         Self::from_region(file, mmap, precision)
     }
 

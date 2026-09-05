@@ -225,7 +225,8 @@ impl FrameRing {
             total,
             |ptr| unsafe { init_frame_layout_raw(ptr, capacity, slot_size, region_bytes) },
             |ptr| unsafe { (*(ptr as *const FrameHeader)).magic == FRAME_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, RingError::LayoutMismatch))?;
         Self::check_header(mmap.as_ptr(), capacity, slot_size, region_bytes)?;
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self::from_parts(

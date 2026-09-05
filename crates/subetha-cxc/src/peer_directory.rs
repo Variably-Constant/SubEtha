@@ -160,7 +160,7 @@ impl PeerDirectory {
                 header.magic.load(AtomOrd::Acquire) == DIR_MAGIC
             },
         )
-        .map_err(|e| RingError::IoError(e.kind()))?;
+        .map_err(|e| crate::mmf_attach::attach_error(e, RingError::LayoutMismatch))?;
         let raw_ptr = mmap.as_mut_ptr();
         Ok(Self { _backing: DirBacking::File(file, mmap), raw_ptr })
     }

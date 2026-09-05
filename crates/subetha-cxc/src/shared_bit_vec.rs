@@ -110,7 +110,8 @@ impl SharedBitVec {
             bit_vec_file_size(capacity_bits),
             |ptr| unsafe { Self::init_region(ptr, capacity_bits) },
             |ptr| unsafe { (*(ptr as *const BitVecHeader)).magic == BITVEC_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BitVecError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity_bits)
     }
 

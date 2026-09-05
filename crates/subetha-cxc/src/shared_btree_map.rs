@@ -139,7 +139,8 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
             btree_file_size::<K, V>(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const BTreeHeader)).magic == BTREE_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BTreeError::LayoutMismatch))?;
         Self::from_region(file, mmap, capacity)
     }
 

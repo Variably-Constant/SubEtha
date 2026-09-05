@@ -209,7 +209,8 @@ impl SpscRingCore {
             total,
             |ptr| unsafe { init_spsc_layout_raw(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const SpscHeader)).magic == SPSC_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, RingError::LayoutMismatch))?;
         let header = unsafe { &*(mmap.as_ptr() as *const SpscHeader) };
         if header.magic != SPSC_MAGIC
             || header.capacity != capacity as u64

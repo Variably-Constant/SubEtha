@@ -172,7 +172,8 @@ impl SharedEpochs {
             epoch_file_size(capacity),
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const EpochHeader)).magic == EPOCH_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, EpochError::LayoutMismatch))?;
         let this = Self::attach(Some(file), mmap, capacity);
         this.validate(capacity)?;
         Ok(this)

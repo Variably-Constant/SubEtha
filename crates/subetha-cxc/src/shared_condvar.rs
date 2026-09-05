@@ -145,7 +145,8 @@ impl GenAtom {
                 std::ptr::write_volatile(base as *mut u64, CONDVAR_GEN_MAGIC);
             },
             |base| unsafe { (base as *const u64).read() == CONDVAR_GEN_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, CondvarError::LayoutMismatch))?;
         let base = mmap.as_mut_ptr();
         let ptr = unsafe { base.add(GEN_OFFSET) as *const AtomicU64 };
         Ok(Self { backing: GenBacking::File(file, mmap), ptr })

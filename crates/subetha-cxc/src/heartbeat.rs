@@ -117,7 +117,8 @@ impl HeartbeatTable {
             total,
             |ptr| unsafe { Self::init_region(ptr, capacity) },
             |ptr| unsafe { (*(ptr as *const HeartbeatHeader)).magic == HEARTBEAT_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, HeartbeatError::LayoutMismatch))?;
         let hdr = unsafe { &*(mmap.as_ptr() as *const HeartbeatHeader) };
         if hdr.capacity != capacity as u64 {
             return Err(HeartbeatError::LayoutMismatch);

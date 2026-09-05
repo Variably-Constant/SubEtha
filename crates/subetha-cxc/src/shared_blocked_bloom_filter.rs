@@ -140,7 +140,8 @@ impl SharedBlockedBloomFilter {
             blocked_bloom_file_size(n_blocks),
             |ptr| unsafe { Self::init_region(ptr, n_blocks, n_hashes) },
             |ptr| unsafe { (*(ptr as *const BlockedBloomHeader)).magic == BLOCKED_BLOOM_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BlockedBloomError::LayoutMismatch))?;
         Self::from_region(file, mmap, n_blocks, n_hashes)
     }
 

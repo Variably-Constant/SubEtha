@@ -158,7 +158,8 @@ impl SharedBloomFilter {
             std::mem::size_of::<BloomHeader>(),
             |ptr| unsafe { Self::init_region(ptr, n_bits, n_hashes) },
             |ptr| unsafe { (*(ptr as *const BloomHeader)).magic == BLOOM_MAGIC },
-        )?;
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, BloomError::LayoutMismatch))?;
         Self::check_header(&mmap, n_bits, n_hashes)?;
         let bits = SharedBitVec::create(bits_path(base), n_bits)?;
         Ok(Self::assemble(file, mmap, bits, n_bits, n_hashes))
