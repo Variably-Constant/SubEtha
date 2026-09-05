@@ -417,12 +417,14 @@ mod tests {
         c: u8,
     }
 
-    fn tmp(tag: &str) -> std::path::PathBuf {
+    /// A file for one test, removed when the test ends; declared before the
+    /// slab that maps it so it drops after it.
+    fn tmp(tag: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("subetha_slab_{tag}_{}_{nonce}.bin", std::process::id()))
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subetha_slab_{tag}_{}_{nonce}.bin", std::process::id()))
     }
 
     /// The record SharedVec cannot hold is the case this exists for.
@@ -446,7 +448,6 @@ mod tests {
         // Untouched slots read as the zero pattern.
         assert_eq!(s.get(6).unwrap(), Big::default());
         drop(s);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A slot spans three cache lines at this size, and the stride keeps
@@ -473,7 +474,6 @@ mod tests {
         assert_eq!(b.slot_version(9).unwrap(), 2, "one write leaves an even version");
         drop(a);
         drop(b);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A reader racing a writer on one slot never observes a mixture of
@@ -525,7 +525,6 @@ mod tests {
         stop.store(true, AtomOrd::Release);
         w.join().unwrap();
         drop(s);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -535,7 +534,6 @@ mod tests {
         assert_eq!(s.get(4), Err(SlabError::OutOfBounds));
         assert_eq!(s.set(4, Big::default()), Err(SlabError::OutOfBounds));
         drop(s);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A record of a different size derives a different stride, so the
@@ -550,7 +548,6 @@ mod tests {
             SharedSlab::<u64>::open(&p, 8).err(),
             Some(SlabError::LayoutMismatch),
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -566,6 +563,5 @@ mod tests {
         assert_eq!(r.set(1, Big::default()), Err(SlabError::ReadOnly));
         drop(w);
         drop(r);
-        std::fs::remove_file(&p).ok();
     }
 }

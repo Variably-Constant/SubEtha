@@ -652,15 +652,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::thread;
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn temp_path(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_urd_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subetha_urd_{}_{nonce}_{name}.bin", std::process::id()))
     }
 
     fn u32_item(id: u32) -> LineItem {
@@ -678,7 +677,6 @@ mod tests {
         let o = SharedDequeUrd::open(&path).expect("open");
         assert_eq!(o.n_mailboxes(), 4);
         assert_eq!(o.owner_pid(), std::process::id() as u64);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -691,7 +689,6 @@ mod tests {
         } else {
             assert_eq!(s, WaitStrategy::PauseSpin);
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -704,7 +701,6 @@ mod tests {
         } else {
             assert_eq!(s, PublishStrategy::Scalar);
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -734,7 +730,6 @@ mod tests {
             }
             Drain::Empty => panic!("expected items, got Empty"),
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -755,7 +750,6 @@ mod tests {
         }
         // After drain, mailbox is EMPTY.
         assert!(matches!(u.drain_mailbox(0), Drain::Empty));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -775,7 +769,6 @@ mod tests {
         let mut targets = [t0, t1, t2, t3];
         targets.sort();
         assert_eq!(targets, [0, 1, 2, 3]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -785,7 +778,6 @@ mod tests {
         let items: Vec<LineItem> = (0..(MAILBOX_ITEMS + 1) as u32).map(u32_item).collect();
         let err = u.publish_to(0, &items).expect_err("too many");
         assert_eq!(err, PublishError::TooManyItems);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -794,7 +786,6 @@ mod tests {
         let u = SharedDequeUrd::create(&path, 2).expect("create");
         let err = u.publish_to(99, &[u32_item(1)]).expect_err("bad target");
         assert_eq!(err, PublishError::BadTarget(99));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -803,7 +794,6 @@ mod tests {
         let u = SharedDequeUrd::create(&path, 2).expect("create");
         assert_eq!(u.publish_to(0, &[]).expect("publish"), 0);
         assert!(matches!(u.drain_mailbox(0), Drain::Empty));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -814,7 +804,6 @@ mod tests {
         u.close_owner();
         assert_eq!(u.owner_pid(), 0);
         assert_eq!(u.header().epoch.load(O::Acquire), before + 1);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -871,6 +860,5 @@ mod tests {
             expected,
             "stress sum mismatch (expected every item consumed exactly once)"
         );
-        std::fs::remove_file(&path).ok();
     }
 }

@@ -891,15 +891,17 @@ mod tests {
     use super::*;
     use crate::dispatch_deque::WorkloadShape;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_api_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!(
+            "subetha_api_{}_{nonce}_{name}.bin",
+            std::process::id()
+        ))
     }
 
     // A tiny Marshal type for the channel tests.
@@ -934,7 +936,6 @@ mod tests {
         chan.send(&U32Item(42)).expect("send");
         let v = chan.recv().expect("recv");
         assert_eq!(v, U32Item(42));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -953,7 +954,6 @@ mod tests {
             Err(other) => panic!("expected WrongFamily, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -969,7 +969,6 @@ mod tests {
         assert_eq!(q.pop(), Some(200));
         // steal is FIFO end (thief) -> 100 next.
         assert_eq!(q.steal(), Some(100));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -987,7 +986,6 @@ mod tests {
             assert_eq!(map.get(&k), Some(k * k));
         }
         assert_eq!(map.len(), 10);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1044,7 +1042,6 @@ mod tests {
         chan.send(&U32Item(123)).expect("send");
         let v = chan.recv().expect("recv");
         assert_eq!(v, U32Item(123));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1060,7 +1057,6 @@ mod tests {
             .expect("100 rounds to 128");
         chan.send(&U32Item(5)).expect("send");
         assert_eq!(chan.recv().expect("recv"), U32Item(5));
-        std::fs::remove_file(&ch_path).ok();
 
         let q_path = tmp("auto_cap_wsq");
         let q: WorkStealQueue<u64> = AutoIpc::new(&q_path)
@@ -1070,7 +1066,6 @@ mod tests {
             .expect("100 rounds to 128");
         q.push(&1).expect("push");
         assert_eq!(q.pop(), Some(1));
-        std::fs::remove_file(&q_path).ok();
 
         // The >= 2 clamp survives the rounding: 0 and 1 are both
         // illegal capacities downstream.
@@ -1081,7 +1076,6 @@ mod tests {
             .expect("0 clamps to 2");
         zero.send(&U32Item(9)).expect("send");
         assert_eq!(zero.recv().expect("recv"), U32Item(9));
-        std::fs::remove_file(&z_path).ok();
     }
 
     #[test]
@@ -1096,7 +1090,6 @@ mod tests {
         q.push(&20).expect("push");
         assert_eq!(q.pop(), Some(20));
         assert_eq!(q.steal(), Some(10));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1108,7 +1101,6 @@ mod tests {
             .expect("build");
         map.insert(7, 49).expect("insert");
         assert_eq!(map.get(&7), Some(49));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1136,7 +1128,6 @@ mod tests {
             .build_work_steal_queue::<u64>();
         assert!(matches!(result, Err(ApiError::WrongFamily { .. })),
                 "GlobalFifo + work-stealing must be rejected, got Ok or wrong error");
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1184,6 +1175,5 @@ mod tests {
             Err(other) => panic!("expected WrongFamily, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
-        std::fs::remove_file(&path).ok();
     }
 }

@@ -1883,8 +1883,11 @@ mod tests {
             let batch: Vec<u64> = (0..16).collect();
             ipc.send_batch(&batch).expect("batch");
         }
-        // Drain a few items so the deque path stays usable.
-        for _ in 0..16 { ipc.recv().ok(); }
+        // Drain a few items so the deque path stays usable; an empty
+        // queue is Ok(None), so only a transport error can fail this.
+        for _ in 0..16 {
+            ipc.recv().expect("a receive on a live endpoint");
+        }
 
         // Wait for the sidecar to scan and promote. The bound is wide
         // so that a loaded scheduler cannot spend it before the sidecar

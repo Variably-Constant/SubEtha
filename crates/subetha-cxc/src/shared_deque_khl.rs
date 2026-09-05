@@ -759,15 +759,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::thread;
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn temp_path(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_khl_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subetha_khl_{}_{nonce}_{name}.bin", std::process::id()))
     }
 
     fn u32_item(id: u32) -> LineItem {
@@ -788,7 +787,6 @@ mod tests {
         } else {
             assert_eq!(r, PublishRadius::Local);
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -803,7 +801,6 @@ mod tests {
         } else {
             assert_eq!(d.publish_radius(), PublishRadius::Local);
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -828,7 +825,6 @@ mod tests {
             }
         }
         assert_eq!(drained, vec![1, 2, 3, 4, 5, 6]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -838,7 +834,6 @@ mod tests {
         let o = SharedDequeKhl::open(&path).expect("open");
         assert_eq!(o.capacity(), 8);
         assert_eq!(o.owner_pid(), std::process::id() as u64);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -846,7 +841,6 @@ mod tests {
         let path = temp_path("bad_magic");
         std::fs::write(&path, vec![0xCDu8; 8192]).expect("seed");
         assert!(SharedDequeKhl::open(&path).is_err());
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -860,7 +854,6 @@ mod tests {
         // 7 items = ceil(7/3) = 3 slots.
         assert_eq!(tail, 3);
         assert_eq!(sz, 3);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -871,7 +864,6 @@ mod tests {
         let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 0);
         assert_eq!(sz, 0);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -886,7 +878,6 @@ mod tests {
             .publish_batch(&[u32_item(99)])
             .expect_err("publish past capacity");
         assert_eq!(err, PushError::Full);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -909,7 +900,6 @@ mod tests {
             }
         }
         assert_eq!(drained, vec![1, 2, 3, 4, 5, 6, 7]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -920,7 +910,6 @@ mod tests {
         d.close_owner();
         assert_eq!(d.owner_pid(), 0);
         assert_eq!(d.header().epoch.load(O::Acquire), before + 1);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -975,6 +964,5 @@ mod tests {
         }
         let expected: usize = (0..n).sum();
         assert_eq!(sum.load(O::Relaxed), expected, "every item consumed once");
-        std::fs::remove_file(&path).ok();
     }
 }

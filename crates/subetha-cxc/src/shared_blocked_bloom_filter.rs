@@ -307,10 +307,10 @@ impl SharedBlockedBloomFilter {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("blocked_bloom_{name}_{}.bin", std::process::id()));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("blocked_bloom_{name}_{}.bin", std::process::id()))
     }
 
     /// A second create attaches with inserted members in place; reset
@@ -318,7 +318,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_members() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let bf = SharedBlockedBloomFilter::create(&p, 4096, 4).unwrap();
         bf.insert(b"member");
 
@@ -336,7 +335,6 @@ mod tests {
         let fresh = SharedBlockedBloomFilter::reset(&p, 4096, 4).unwrap();
         assert!(!fresh.contains(b"member"), "reset kept a member");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -351,7 +349,6 @@ mod tests {
         for i in 0..10_000u64 {
             assert!(bf.contains(&i.to_le_bytes()), "false negative at {i}");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -375,7 +372,6 @@ mod tests {
         let rate = fp as f64 / trials as f64;
         // Blocked filters inflate FPR modestly; allow up to 4x target.
         assert!(rate < target * 4.0, "blocked FPR {rate} exceeded {} (4x target)", target * 4.0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -386,6 +382,5 @@ mod tests {
         a.insert(b"shared-key");
         let b = SharedBlockedBloomFilter::open(&p, nb, nh).unwrap();
         assert!(b.contains(b"shared-key"));
-        std::fs::remove_file(&p).ok();
     }
 }

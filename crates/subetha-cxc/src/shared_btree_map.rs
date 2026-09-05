@@ -942,10 +942,10 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("btree_{name}_{}.bin", std::process::id()));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("btree_{name}_{}.bin", std::process::id()))
     }
 
     /// A second create attaches with the live tree in place; reset is
@@ -953,7 +953,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_tree() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let m: SharedBTreeMap<u64, u64> = SharedBTreeMap::create(&p, 64).unwrap();
         m.insert(7, 777).unwrap();
 
@@ -972,7 +971,6 @@ mod tests {
         assert_eq!(fresh.get(&7), None, "reset kept an entry");
         assert_eq!(fresh.len(), 0);
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Ordered semantics come from `std::collections::BTreeMap::range`,
@@ -1027,7 +1025,6 @@ mod tests {
             }
         }
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A scan longer than one call reassembles the whole ordered range,
@@ -1059,7 +1056,6 @@ mod tests {
             assert_eq!(seen, want, "chunked scan at limit {limit}");
         }
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A range walked while a writer inserts must never return keys out
@@ -1085,7 +1081,13 @@ mod tests {
             std::thread::spawn(move || {
                 let mut k = 1000u64;
                 while !stop.load(AtomOrd::Acquire) {
-                    m.insert(k, k).ok();
+                    // A full arena ends the writer; anything else is a
+                    // defect the join surfaces.
+                    match m.insert(k, k) {
+                        Ok(_) => {}
+                        Err(BTreeError::Full) => break,
+                        Err(e) => panic!("concurrent writer insert: {e:?}"),
+                    }
                     k += 1;
                 }
             })
@@ -1105,7 +1107,6 @@ mod tests {
         stop.store(true, AtomOrd::Release);
         w.join().unwrap();
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1120,7 +1121,6 @@ mod tests {
         }
         assert_eq!(m.get(&1000), None);
         assert_eq!(m.len(), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1131,7 +1131,6 @@ mod tests {
         assert_eq!(m.insert(5, 55).unwrap(), Some(50));
         assert_eq!(m.get(&5), Some(55));
         assert_eq!(m.len(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1158,7 +1157,6 @@ mod tests {
             assert!(w[0].0 < w[1].0, "order broken: {} >= {}", w[0].0, w[1].0);
         }
         assert_eq!(asc.len(), inserted.len());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1168,7 +1166,6 @@ mod tests {
         for i in 0..50u64 { a.insert(i, i).unwrap(); }
         let b: SharedBTreeMap<u64, u64> = SharedBTreeMap::open(&p, 64).unwrap();
         for i in 0..50u64 { assert_eq!(b.get(&i), Some(i)); }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1200,7 +1197,6 @@ mod tests {
         let asc = m.iter_ascending();
         let oref: Vec<(u64, u64)> = oracle.iter().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(asc, oref, "iteration order / contents mismatch");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1214,7 +1210,6 @@ mod tests {
         assert_eq!(m.first(), Some((0, 0)));
         m.remove(&0).unwrap();
         assert_eq!(m.first(), Some((1, 7)));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1252,6 +1247,5 @@ mod tests {
         for r in readers {
             r.join().unwrap();
         }
-        std::fs::remove_file(&p).ok();
     }
 }

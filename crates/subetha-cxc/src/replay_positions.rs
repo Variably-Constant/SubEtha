@@ -117,15 +117,14 @@ impl SubscriberPosition {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subpos_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subpos_{}_{nonce}_{name}.bin", std::process::id()))
     }
 
     #[test]
@@ -133,7 +132,6 @@ mod tests {
         let path = tmp("init");
         let pos = SubscriberPosition::create(&path, 42).expect("create");
         assert_eq!(pos.get(), 42);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -143,7 +141,6 @@ mod tests {
         assert_eq!(pos.advance(5), 5);
         assert_eq!(pos.advance(7), 12);
         assert_eq!(pos.get(), 12);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -152,7 +149,6 @@ mod tests {
         let pos = SubscriberPosition::create(&path, 100).expect("create");
         pos.set(9999);
         assert_eq!(pos.get(), 9999);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -161,7 +157,6 @@ mod tests {
         let pos = SubscriberPosition::create(&path, 0).expect("create");
         assert_eq!(pos.compare_and_set(0, 10), Ok(10));
         assert_eq!(pos.get(), 10);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -170,7 +165,6 @@ mod tests {
         let pos = SubscriberPosition::create(&path, 5).expect("create");
         assert_eq!(pos.compare_and_set(0, 999), Err(5));
         assert_eq!(pos.get(), 5);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -182,7 +176,6 @@ mod tests {
         assert_eq!(b.get(), 150);
         b.advance(25);
         assert_eq!(a.get(), 175);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -195,6 +188,5 @@ mod tests {
         }
         let b = SubscriberPosition::open(&path).expect("reopen after drop");
         assert_eq!(b.get(), 42);
-        std::fs::remove_file(&path).ok();
     }
 }

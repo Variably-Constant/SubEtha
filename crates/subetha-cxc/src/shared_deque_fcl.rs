@@ -187,15 +187,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_fcl_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subetha_fcl_{}_{nonce}_{name}.bin", std::process::id()))
     }
 
     fn u32_item(id: u32) -> LineItem {
@@ -215,7 +214,6 @@ mod tests {
         assert_eq!(n, 7);
         // 7 items = ceil(7/3) = 3 slots.
         assert_eq!(d.approx_len_slots(), 3);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -224,7 +222,6 @@ mod tests {
         let d = SharedDequeFcl::create(&path, 4).expect("create");
         assert_eq!(d.publish_batch(&[]).expect("noop"), 0);
         assert_eq!(d.approx_len_slots(), 0);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -238,7 +235,6 @@ mod tests {
             .publish_batch(&[u32_item(99)])
             .expect_err("publish past capacity");
         assert_eq!(err, DequeError::Full);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -254,7 +250,6 @@ mod tests {
             }
         }
         assert_eq!(drained, vec![1, 2, 3, 4, 5, 6, 7]);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -310,6 +305,5 @@ mod tests {
             expected,
             "every item consumed exactly once"
         );
-        std::fs::remove_file(&path).ok();
     }
 }

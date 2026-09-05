@@ -598,15 +598,17 @@ impl DispatcherBuilder {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_dispatch_deque_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!(
+            "subetha_dispatch_deque_{}_{nonce}_{name}.bin",
+            std::process::id()
+        ))
     }
 
     fn u32_item(id: u32) -> LineItem {
@@ -745,7 +747,6 @@ mod tests {
             dispatcher.pick_with_fallback(shape),
             Some(DequeVariant::ChaseLev)
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -763,7 +764,6 @@ mod tests {
         let cl = dispatcher.chase_lev().expect("cl");
         let got = cl.steal().expect("steal");
         assert_eq!(got, u32_item(42));
-        std::fs::remove_file(&cl_path).ok();
     }
 
     #[test]
@@ -782,7 +782,6 @@ mod tests {
         let khl = dispatcher.khl().expect("khl");
         let (_, tail, _) = khl.snapshot_size();
         assert_eq!(tail, 22);
-        std::fs::remove_file(&khl_path).ok();
     }
 
     #[test]
@@ -801,7 +800,6 @@ mod tests {
         let khpd = dispatcher.khpd().expect("khpd");
         let (_, tail, _, _) = khpd.snapshot_size();
         assert_eq!(tail, 2);
-        std::fs::remove_file(&khpd_path).ok();
     }
 
     #[test]
@@ -820,7 +818,6 @@ mod tests {
         let loh = dispatcher.loh().expect("loh");
         let (_, tail, _, _) = loh.snapshot_size();
         assert_eq!(tail, 200);
-        std::fs::remove_file(&loh_path).ok();
     }
 
     #[test]
@@ -835,7 +832,6 @@ mod tests {
             .dispatch_batch(WorkloadShape::fan_out(2, 6), &items)
             .expect("dispatch_batch");
         assert_eq!(chosen, DequeVariant::Urd);
-        std::fs::remove_file(&urd_path).ok();
     }
 
     #[test]
@@ -896,7 +892,5 @@ mod tests {
             assert_eq!(*item, u32_item(100 + i as u32));
         }
 
-        std::fs::remove_file(&cl_path).ok();
-        std::fs::remove_file(&khl_path).ok();
     }
 }

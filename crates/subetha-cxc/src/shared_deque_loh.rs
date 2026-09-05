@@ -684,15 +684,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as O};
     use std::thread;
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn temp_path(name: &str) -> crate::test_paths::TmpFile {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        p.push(format!("subetha_loh_{pid}_{nonce}_{name}.bin"));
-        p
+            .expect("the wall clock is after the epoch")
+            .as_nanos();
+        crate::test_paths::TmpFile::new(format!("subetha_loh_{}_{nonce}_{name}.bin", std::process::id()))
     }
 
     fn u32_item(id: u32) -> LineItem {
@@ -710,7 +709,6 @@ mod tests {
         let o = SharedDequeLoh::open(&path, 4).expect("open");
         assert_eq!(o.capacity(), 8);
         assert_eq!(o.owner_pid(), std::process::id() as u64);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -719,7 +717,6 @@ mod tests {
         std::fs::write(&path, vec![0xCDu8; 8192]).expect("seed");
         let r = SharedDequeLoh::open(&path, 4);
         assert!(r.is_err());
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -744,7 +741,6 @@ mod tests {
         assert_eq!(tail, 3);
         assert_eq!(sz, 3);
         assert_eq!(lifo_len, 0);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -759,7 +755,6 @@ mod tests {
         assert_eq!(tail, 4);
         assert_eq!(sz, 4);
         assert_eq!(lifo_len, 0);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -786,7 +781,6 @@ mod tests {
             }
         }
         assert!(matches!(d.steal(), Steal::Empty));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -798,7 +792,6 @@ mod tests {
         let (_, tail, sz, _) = d.snapshot_size();
         assert_eq!(tail, 0);
         assert_eq!(sz, 0);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -812,7 +805,6 @@ mod tests {
             .publish_batch(&[u32_item(99)])
             .expect_err("publish past capacity");
         assert_eq!(err, PushError::Full);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -835,7 +827,6 @@ mod tests {
             }
         }
         assert!(matches!(d.steal(), Steal::Empty));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -851,7 +842,6 @@ mod tests {
             assert_eq!(item_id(&e), expected);
         }
         assert!(d.pop_local().is_none());
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -866,7 +856,6 @@ mod tests {
         d.push(u32_item(3)).expect("push to lifo");
         let err = d.flush().expect_err("flush past capacity");
         assert_eq!(err, PushError::Full);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -879,7 +868,6 @@ mod tests {
         d.close_owner();
         assert_eq!(d.owner_pid(), 0);
         assert_eq!(h.epoch.load(O::Acquire), before + 1);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -919,8 +907,11 @@ mod tests {
                         std::thread::yield_now();
                         // Opportunistic: a Full flush here just means
                         // the ring is congested; the outer loop keeps
-                        // retrying the push.
-                        d.flush().ok();
+                        // retrying the push. Anything else is a defect.
+                        match d.flush() {
+                            Ok(_) | Err(PushError::Full) => {}
+                            Err(e) => panic!("opportunistic flush: {e:?}"),
+                        }
                     }
                 }
             }
@@ -947,7 +938,6 @@ mod tests {
             expected,
             "every slot consumed once"
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1007,6 +997,5 @@ mod tests {
             expected,
             "publish_batch stress: every item consumed once"
         );
-        std::fs::remove_file(&path).ok();
     }
 }
