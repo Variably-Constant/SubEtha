@@ -115,6 +115,7 @@ leaves them as a gap ARQ recovers.
 | `session_admissions_for(cid)` | the address that id answered from, or `None` if it holds no window |
 | `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
 | `session_refusals()` | peers turned away by a declared ceiling, or by TLS already holding its one handshake |
+| `sens_rlc::socket_buffer_refusals()` | a free function: sockets whose kernel refused the 4 MiB send or receive buffer, summed over the process; the socket keeps the kernel default, where a burst can overflow the queue and read as link loss (FreeBSD's default `kern.ipc.maxsockbuf` refuses it) |
 | `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap |
 | `session_control(cid)` | one window's `(naks_sent, acks_sent, sends_skipped, peer_validated)`; `sends_skipped` counts control frames dropped for a missing peer address or an exhausted anti-amplification budget |
 | `path_validations()` / `path_validation_failures()` | address validations completed and challenges that timed out, summed over every session |

@@ -136,6 +136,29 @@ boundary is per endpoint, so an automatic switch under several peers
 would misdeliver, and `CodePolicy::Auto` is refused at construction
 instead.
 
+## What the endpoint's own threads could not send
+
+The receiver's reader thread answers path challenges, sends raw-loss
+feedback to every peer it has heard from and retransmits handshake
+flights; the sender's reader sends feedback the same way. A datagram
+the socket refuses on any of those paths is counted - `send_failures()`
+on the receiver, `demux_send_failures()` on the sender - because each
+one is a peer left without an answer it was owed, and a count rising
+on a quiet link is this socket, not the network. `handshake_failures()`
+also covers the single-peer server of `from_shared_tls`, whose
+handshake runs on its own thread: a server state that could not be
+built, a flight exchange that failed or timed out, or keys that could
+not be published each count once, since `poll` withholds delivery
+until the keys land and an uncounted failure would read as a peer that
+never sends.
+
+Every socket the transports bind asks the kernel for 4 MiB send and
+receive buffers. A kernel that refuses - FreeBSD's default
+`kern.ipc.maxsockbuf` does - leaves the socket at its default size,
+where a send burst can overflow the queue and read as link loss;
+`sens_rlc::socket_buffer_refusals()` counts those refusals across the
+process.
+
 ## A peer that leaves, on Windows
 
 The receiver sends feedback to every peer it has heard from, so a sender

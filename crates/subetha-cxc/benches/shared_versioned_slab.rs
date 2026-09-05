@@ -48,9 +48,19 @@ fn record(id: u64) -> Record {
 fn dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir()
         .join(format!("subetha-bench-vslab-{name}-{}", std::process::id()));
-    std::fs::remove_dir_all(&d).ok();
+    match std::fs::remove_dir_all(&d) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("stale bench directory {} not removed: {e}", d.display()),
+    }
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// Remove an arm's directory once its slab is dropped; a refusal is a bench
+/// bug (a mapping still alive), not something to leave behind quietly.
+fn remove(d: &std::path::Path) {
+    std::fs::remove_dir_all(d).expect("the arm's slab is dropped and its directory removable");
 }
 
 fn versioned(name: &str) -> (std::path::PathBuf, SharedVersionedSlab<Record, DEPTH>) {
@@ -78,7 +88,7 @@ fn set(c: &mut Criterion) {
         });
     });
     drop(s);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 
     // The unmeasured setup sweeps the slot, so every measured push
     // finds room and pays no sweep.
@@ -97,7 +107,7 @@ fn set(c: &mut Criterion) {
         );
     });
     drop(s);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 
     let (d, p) = plain("set");
     let mut n = 0u64;
@@ -108,7 +118,7 @@ fn set(c: &mut Criterion) {
         });
     });
     drop(p);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 }
 
 fn get(c: &mut Criterion) {
@@ -133,7 +143,7 @@ fn get(c: &mut Criterion) {
     drop(head_pin);
     drop(pin);
     drop(s);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 
     let (d, p) = plain("get");
     p.set(PROBE, record(1)).unwrap();
@@ -141,7 +151,7 @@ fn get(c: &mut Criterion) {
         b.iter(|| black_box(p.get(black_box(PROBE)).unwrap().id));
     });
     drop(p);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 }
 
 criterion_group!(benches, set, get);

@@ -181,11 +181,30 @@ fn derive_conn_id(local_port: u16) -> u64 {
 /// and manufacture loss on a fast link.
 const SOCK_BUF: usize = 4 * 1024 * 1024;
 
-/// Best-effort enlarge a socket's send / receive buffers.
-fn set_buffers(sock: &UdpSocket) {
+/// Sockets whose kernel refused the [`SOCK_BUF`] enlargement of a send or
+/// receive buffer, summed over the process. A refusal leaves the socket at
+/// the kernel's default size, where a send burst can overflow the queue and
+/// read as link loss; a FreeBSD default `kern.ipc.maxsockbuf` refuses 4 MiB.
+static SOCKET_BUFFER_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many socket buffer enlargements the kernel has refused in this
+/// process. A count above zero on a host that then reports loss on a quiet
+/// link is the buffer, not the network.
+pub fn socket_buffer_refusals() -> u64 {
+    SOCKET_BUFFER_REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Enlarge a socket's send / receive buffers to [`SOCK_BUF`]. A refusal is
+/// counted in [`socket_buffer_refusals`] and the socket keeps the kernel
+/// default: the transport still runs, with less headroom for bursts.
+pub(crate) fn set_buffers(sock: &UdpSocket) {
     let s = socket2::SockRef::from(sock);
-    s.set_recv_buffer_size(SOCK_BUF).ok();
-    s.set_send_buffer_size(SOCK_BUF).ok();
+    if s.set_recv_buffer_size(SOCK_BUF).is_err() {
+        SOCKET_BUFFER_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if s.set_send_buffer_size(SOCK_BUF).is_err() {
+        SOCKET_BUFFER_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     // A peer that closes its socket makes this one's next recv fail
     // with WSAECONNRESET on Windows, costing a recv attempt for every
     // ICMP the departure draws.

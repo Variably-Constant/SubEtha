@@ -1043,7 +1043,7 @@ mod tests {
             started.elapsed()
         );
         drop(m);
-        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(&p).expect("the map file is unmapped and removable");
     }
 
     #[test]

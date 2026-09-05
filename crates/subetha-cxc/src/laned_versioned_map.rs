@@ -498,13 +498,26 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.dir).ok();
+            // The map is a field and drops after this body runs, so its
+            // mappings are still live here; a removal that the OS refuses for
+            // that reason is reported, and a panic during an unwinding test
+            // would abort the run in place of its own failure message.
+            if let Err(e) = std::fs::remove_dir_all(&self.dir) {
+                eprintln!("fixture directory {} not removed: {e}", self.dir.display());
+            }
         }
     }
 
+    /// A fresh directory for one test: whatever an earlier run left there is
+    /// removed, and a removal refused for any reason but absence fails the
+    /// test rather than gating it on stale files.
     fn fixture(name: &str, lanes: usize) -> Fixture {
         let dir = std::env::temp_dir().join(format!("subetha_lanes_{name}_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("stale directory {} not removed: {e}", dir.display()),
+        }
         let map = LanedVersionedMap::create(&dir, lanes, 1 << 10, 16).unwrap();
         Fixture { dir, map }
     }

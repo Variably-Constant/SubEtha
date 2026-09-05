@@ -181,7 +181,13 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
                 cell.set(v);
             }));
         }
-        for h in handles { h.join().ok(); }
+        // A worker that panicked is a closure that panicked; this variant
+        // does not tolerate that, so the panic continues on this thread.
+        for h in handles {
+            if let Err(payload) = h.join() {
+                std::panic::resume_unwind(payload);
+            }
+        }
         self.cell.get().expect("at least one worker should publish")
     }
 
@@ -202,7 +208,13 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
             }));
         }
         assert!(!handles.is_empty(), "speculative race needs at least 1 closure");
-        for h in handles { h.join().ok(); }
+        // As in get_or_speculative: a worker's panic is the closure's panic
+        // and continues on this thread.
+        for h in handles {
+            if let Err(payload) = h.join() {
+                std::panic::resume_unwind(payload);
+            }
+        }
         self.cell.get().expect("at least one worker should publish")
     }
 
@@ -226,9 +238,22 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
                 cell.set(v);
             }));
         }
-        // Wait for all; ignore panics.
-        for h in handles { h.join().ok(); }
-        self.cell.get().ok_or(SharedAsyncError::AllWorkersDied)
+        // A worker whose closure panicked is counted and the race goes on
+        // among the survivors, which is this variant's contract; the count
+        // is what tells "every worker died" from "no worker published".
+        let mut died = 0usize;
+        for h in handles {
+            if h.join().is_err() {
+                died += 1;
+            }
+        }
+        match self.cell.get() {
+            Some(v) => Ok(v),
+            None => {
+                debug_assert_eq!(died, n, "no value published and a worker survived");
+                Err(SharedAsyncError::AllWorkersDied)
+            }
+        }
     }
 
     /// Sync the underlying cell to disk.
@@ -265,7 +290,8 @@ mod tests {
         sap.set_resolved(42);
         assert!(sap.is_resolved());
         assert_eq!(sap.try_get(), Some(42));
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     #[test]
@@ -299,7 +325,8 @@ mod tests {
         // closure could run multiple times (if all check is_init
         // before any has filled), but at most once per thread. The
         // CAS publish ensures only one value is canonical.
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("every thread's handle is dropped and the file removable");
     }
 
     #[test]
@@ -319,7 +346,8 @@ mod tests {
                 "at least one worker must run");
         // is_resolved must be true after race
         assert!(sap.is_resolved());
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     #[test]
@@ -352,7 +380,8 @@ mod tests {
         assert_eq!(seen.load(Ordering::Acquire), 1, "the winning closure must have run");
         assert_eq!(result, 100, "the value published first wins");
         assert_eq!(sap.try_get(), Some(100), "the loser's value must not overwrite it");
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("both handles are dropped and the file removable");
     }
 
     #[test]
@@ -370,7 +399,8 @@ mod tests {
             42u64
         }).expect("at least one survivor publishes");
         assert_eq!(result, 42);
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     #[test]
@@ -382,7 +412,8 @@ mod tests {
         // the closure body would change the value.
         let r2 = sap.get_or_lazy(|| panic!("must not run after resolution"));
         assert_eq!(r2, 5);
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     #[test]
@@ -396,7 +427,9 @@ mod tests {
         // Process B sees the same value without running anything.
         let r_b = sap_b.get_or_lazy(|| panic!("must not run on already-resolved cell"));
         assert_eq!(r_b, 9999);
-        std::fs::remove_file(&p).ok();
+        drop(sap_a);
+        drop(sap_b);
+        std::fs::remove_file(&p).expect("both handles are dropped and the file removable");
     }
 
     #[test]
@@ -407,7 +440,8 @@ mod tests {
         assert!(!sap.is_resolved());
         sap.set_resolved(100);
         assert_eq!(sap.try_get(), Some(100));
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     #[test]
@@ -422,7 +456,8 @@ mod tests {
         });
         assert_eq!(r, 17);
         assert_eq!(runs.load(Ordering::Acquire), 1);
-        std::fs::remove_file(&p).ok();
+        drop(sap);
+        std::fs::remove_file(&p).expect("the cell is unmapped and its file removable");
     }
 
     /// The signature catalog lets `MmfDispatcher` route by

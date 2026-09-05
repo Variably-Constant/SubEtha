@@ -30,10 +30,20 @@ const ALPN: &[u8] = b"subetha-rlc";
 /// pair serves both transports.
 pub const SNI: &str = "subetha-lan";
 
-/// Install the ring crypto provider as the process default (idempotent), so the
-/// rustls config builders have a provider. Safe to call repeatedly.
+/// Install the ring crypto provider as the process default, so the rustls
+/// config builders have a provider. Safe to call repeatedly: a second call
+/// finds a provider already installed, which is the state this call exists to
+/// establish.
 pub fn install_provider() {
-    rustls::crypto::ring::default_provider().install_default().ok();
+    match rustls::crypto::ring::default_provider().install_default() {
+        Ok(()) => {}
+        // The Err carries the provider that is already the process default,
+        // installed by an earlier call here or by the embedding program.
+        Err(already_installed) => debug_assert!(
+            !already_installed.cipher_suites.is_empty(),
+            "a provider with no cipher suites is the process default"
+        ),
+    }
 }
 
 /// Generate a self-signed cert + PKCS#8 key (DER), issued for [`SNI`].

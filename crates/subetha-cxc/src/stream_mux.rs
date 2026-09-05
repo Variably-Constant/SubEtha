@@ -103,10 +103,10 @@ fn derive_conn_id(local_port: u16) -> u64 {
     x ^ (x >> 31)
 }
 
+/// The RLC transport's buffer sizing, so a refusal is counted in
+/// [`crate::sens_rlc::socket_buffer_refusals`] here as it is there.
 fn set_buffers(sock: &UdpSocket) {
-    let s = socket2::SockRef::from(sock);
-    s.set_recv_buffer_size(4 * 1024 * 1024).ok();
-    s.set_send_buffer_size(4 * 1024 * 1024).ok();
+    crate::sens_rlc::set_buffers(sock);
 }
 
 // ---------------------------------------------------------------------------
@@ -882,7 +882,7 @@ mod tests {
                 }
             }
             for _ in 0..50 {
-                recv.poll().ok();
+                recv.poll().expect("a drain poll on a live receiver");
                 std::thread::sleep(Duration::from_millis(2));
             }
             (got1, got2, fin1, fin2, recv.fec_recovered())
@@ -954,7 +954,7 @@ mod tests {
                 }
             }
             for _ in 0..50 {
-                recv.poll().ok();
+                recv.poll().expect("a drain poll on a live receiver");
                 std::thread::sleep(Duration::from_millis(2));
             }
             (got2, fin2)

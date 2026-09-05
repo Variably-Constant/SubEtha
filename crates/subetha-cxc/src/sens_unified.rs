@@ -620,6 +620,7 @@ fn spawn_demux(
     #[cfg_attr(not(feature = "tls"), allow(unused_variables))] tls_listen: Option<
         Arc<TlsListen>,
     >,
+    send_failures: Arc<AtomicU64>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let stop_report = Arc::clone(&stop);
@@ -681,7 +682,9 @@ fn spawn_demux(
                         let mut resp = Vec::with_capacity(crate::sens_rlc::PATH_FRAME_LEN);
                         resp.push(crate::sens_rlc::PKT_RLC_PATH_RESPONSE);
                         resp.extend_from_slice(&buf[1..crate::sens_rlc::PATH_FRAME_LEN]);
-                        sock.send_to(&resp, from).ok();
+                        if sock.send_to(&resp, from).is_err() {
+                            send_failures.fetch_add(1, Ordering::Relaxed);
+                        }
                         continue;
                     }
                     // A multi-peer TLS listener drives its handshakes HERE, on
@@ -697,7 +700,9 @@ fn spawn_demux(
                     if let Some(tl) = &tls_listen {
                         if b0 == 15 || b0 == 16 {
                             for r in tl.on_frame(&buf[..n], from) {
-                                sock.send_to(&r, from).ok();
+                                if sock.send_to(&r, from).is_err() {
+                                    send_failures.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                             continue;
                         }
@@ -784,7 +789,9 @@ fn spawn_demux(
                 peers.retain(|(_, seen)| seen.elapsed() < FB_PEER_RETENTION);
                 let frame = encode_unified_fb(c.load(Ordering::Relaxed));
                 for (dst, _) in &peers {
-                    sock.send_to(&frame, *dst).ok();
+                    if sock.send_to(&frame, *dst).is_err() {
+                        send_failures.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             // Retransmit due handshake flights and drop abandoned peers.
@@ -794,7 +801,9 @@ fn spawn_demux(
             {
                 last_tls_tick = Instant::now();
                 for (dst, pkt) in tl.tick() {
-                    sock.send_to(&pkt, dst).ok();
+                    if sock.send_to(&pkt, dst).is_err() {
+                        send_failures.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -883,13 +892,16 @@ fn spawn_fb_reporter(
     recv_counter: Arc<AtomicU64>,
     peer: Arc<Mutex<Option<SocketAddr>>>,
     stop: Arc<AtomicBool>,
+    send_failures: Arc<AtomicU64>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(UNIFIED_FB_PERIOD);
             if let Some(dst) = *peer.lock().unwrap() {
                 let frame = encode_unified_fb(recv_counter.load(Ordering::Relaxed));
-                sock.send_to(&frame, dst).ok();
+                if sock.send_to(&frame, dst).is_err() {
+                    send_failures.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     })
@@ -974,6 +986,10 @@ pub struct UnifiedSensSender {
     demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]>,
     /// The reader's clock origin, so `last_iter_nanos` reads as an age.
     demux_start: Instant,
+    /// Datagrams the sender's reader thread could not send: path responses
+    /// and raw-loss feedback the socket refused. Each one is a peer left
+    /// without an answer it was owed.
+    demux_send_failures: Arc<AtomicU64>,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -1112,7 +1128,7 @@ impl UnifiedSensSender {
             Arc::clone(&rlc_q),
             Arc::clone(&sent_counter),
         );
-        rlc_sock.connect(peer).ok();
+        rlc_sock.connect(peer)?;
         rlc.set_sock(rlc_sock);
 
         let mut rs = ReliableUdpSender::bind("0.0.0.0:0", peer, cfg.k, cfg.r, wire_sym)?;
@@ -1121,13 +1137,14 @@ impl UnifiedSensSender {
             Arc::clone(&rs_q),
             Arc::clone(&sent_counter),
         );
-        rs_sock.connect(peer).ok();
+        rs_sock.connect(peer)?;
         rs.set_sock(rs_sock);
 
         let stop = Arc::new(AtomicBool::new(false));
         let demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]> =
             Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux_start = Instant::now();
+        let demux_send_failures = Arc::new(AtomicU64::new(0));
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -1141,6 +1158,7 @@ impl UnifiedSensSender {
             Some(Arc::clone(&demux_stats)),
             demux_start,
             None,
+            Arc::clone(&demux_send_failures),
         );
 
         Ok(Self {
@@ -1150,6 +1168,7 @@ impl UnifiedSensSender {
             rs,
             demux_stats,
             demux_start,
+            demux_send_failures,
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
@@ -1249,6 +1268,14 @@ impl UnifiedSensSender {
     /// so the two ends disagree about which code is live.
     pub fn code_switch_announce_failures(&self) -> u64 {
         self.code_switch_announce_failures
+    }
+
+    /// Datagrams the sender's reader thread could not send: path responses
+    /// and raw-loss feedback the socket refused. Each one is a peer left
+    /// without an answer it was owed; a rising count with no loss on the
+    /// link is this socket, not the network.
+    pub fn demux_send_failures(&self) -> u64 {
+        self.demux_send_failures.load(Ordering::Relaxed)
     }
 
     /// `(last NAK received, last block id stamped on a retransmit)` for the
@@ -1541,7 +1568,14 @@ impl UnifiedSensSender {
     /// decode cliff). Shared by the RS steady state and the RLC escape handover.
     fn send_via_rs(&mut self, item: &[u8]) -> io::Result<()> {
         while self.rs.flow_blocked() {
-            self.rs.pump_feedback().ok();
+            // The feedback socket is non-blocking: no datagram waiting is
+            // the ordinary case here, and anything else is the socket's
+            // real error, which ends the send rather than the wait.
+            match self.rs.pump_feedback() {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e),
+            }
             if self.rs.flow_blocked() {
                 std::thread::sleep(Duration::from_micros(50));
             }
@@ -1703,8 +1737,14 @@ impl UnifiedSensSender {
 impl Drop for UnifiedSensSender {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.demux.take() {
-            h.join().ok();
+        if let Some(h) = self.demux.take()
+            && h.join().is_err()
+        {
+            // The reader catches its own panics and reports them, so a join
+            // that still fails is a panic past that catch; a Drop has no
+            // caller to hand it to, and stderr is where the reader's own
+            // reports already go.
+            eprintln!("subetha: the reader thread ended by a panic its catch did not cover");
         }
     }
 }
@@ -1768,6 +1808,17 @@ pub struct UnifiedSensReceiver {
     /// When the tag maps were last pruned against the live sessions.
     #[cfg(feature = "tls")]
     last_tag_prune: Instant,
+    /// Handshakes a single-peer TLS receiver ([`from_shared_tls`](Self::from_shared_tls))
+    /// could not complete: the server state could not be built, the flight
+    /// exchange failed or timed out, or the keys could not be published.
+    /// Counted because `poll` withholds delivery until the keys land, so an
+    /// uncounted failure reads as a peer that never sends.
+    #[cfg(feature = "tls")]
+    single_handshake_failures: Arc<AtomicU64>,
+    /// Datagrams the receiver's own threads could not send: feedback
+    /// frames, path responses and handshake flights the socket refused.
+    /// Each one is a peer left without an answer it was owed.
+    send_failures: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     demux: Option<JoinHandle<()>>,
     /// Same slots the sender's reader publishes; a receiver whose reader
@@ -1804,7 +1855,11 @@ impl UnifiedSensReceiver {
         let hs = DgramSock::from_udp(udp.try_clone()?);
         crate::sens_rlc::drive_handshake(&hs, None, &mut cs, false)?;
         let mut s = Self::assemble(udp, cfg, crate::rlc_crypto::TAG_LEN, None)?;
-        s.crypto.set(cs).ok();
+        if s.crypto.set(cs).is_err() {
+            return Err(io::Error::other(
+                "the receiver's crypto cell was already set before its handshake published",
+            ));
+        }
         s.expect_tls = true;
         Ok(s)
     }
@@ -1893,6 +1948,7 @@ impl UnifiedSensReceiver {
         let demux_stats: Arc<[AtomicU64; DEMUX_STAT_SLOTS]> =
             Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux_start = Instant::now();
+        let send_failures = Arc::new(AtomicU64::new(0));
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -1906,6 +1962,7 @@ impl UnifiedSensReceiver {
             Some(Arc::clone(&demux_stats)),
             demux_start,
             tls_listen.clone(),
+            Arc::clone(&send_failures),
         );
 
         Ok(Self {
@@ -1932,6 +1989,9 @@ impl UnifiedSensReceiver {
             tls_unopened: 0,
             #[cfg(feature = "tls")]
             last_tag_prune: Instant::now(),
+            #[cfg(feature = "tls")]
+            single_handshake_failures: Arc::new(AtomicU64::new(0)),
+            send_failures,
             stop,
             demux: Some(demux),
             demux_stats: Some(demux_stats),
@@ -1964,7 +2024,14 @@ impl UnifiedSensReceiver {
         let mut rs = ReliableUdpReceiver::bind("0.0.0.0:0")?;
         rs.set_sock(DgramSock::demux(Arc::clone(&send_sock), rs_q));
         let stop = Arc::new(AtomicBool::new(false));
-        let demux = spawn_fb_reporter(Arc::clone(&send_sock), recv_counter, sens_peer, Arc::clone(&stop));
+        let send_failures = Arc::new(AtomicU64::new(0));
+        let demux = spawn_fb_reporter(
+            Arc::clone(&send_sock),
+            recv_counter,
+            sens_peer,
+            Arc::clone(&stop),
+            Arc::clone(&send_failures),
+        );
         Ok(Self {
             real: send_sock,
             rlc,
@@ -1989,6 +2056,9 @@ impl UnifiedSensReceiver {
             tls_unopened: 0,
             #[cfg(feature = "tls")]
             last_tag_prune: Instant::now(),
+            #[cfg(feature = "tls")]
+            single_handshake_failures: Arc::new(AtomicU64::new(0)),
+            send_failures,
             stop,
             demux: Some(demux),
             // The QUIC endpoint owns the reader; this receiver has no
@@ -2031,18 +2101,35 @@ impl UnifiedSensReceiver {
         s.expect_tls = true;
         let crypto = Arc::clone(&s.crypto);
         let stop = Arc::clone(&s.stop);
+        let failures = Arc::clone(&s.single_handshake_failures);
         let hs_sock = DgramSock::demux(send_sock, hs_q);
         std::thread::spawn(move || {
+            // Every way this thread can end without publishing keys is
+            // counted in handshake_failures: `poll` withholds delivery until
+            // the keys land, so an uncounted failure would read as a peer
+            // that never sends.
             let mut cs = match crate::rlc_crypto::CryptoState::new_server(tls) {
                 Ok(c) => c,
-                Err(_) => return,
+                Err(e) => {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("subetha: the TLS server state could not be built: {e}");
+                    return;
+                }
             };
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
             // Drive the server handshake over the demux'd queue (peer learned from
             // the first flight); publish the keys once the 1-RTT secrets derive.
-            if !stop.load(Ordering::Relaxed)
-                && crate::sens_rlc::drive_handshake(&hs_sock, None, &mut cs, false).is_ok()
-            {
-                crypto.set(cs).ok();
+            match crate::sens_rlc::drive_handshake(&hs_sock, None, &mut cs, false) {
+                Ok(_peer) => {
+                    if crypto.set(cs).is_err() {
+                        failures.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Err(_timed_out_or_refused) => {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                }
             }
         });
         Ok(s)
@@ -2231,6 +2318,15 @@ impl UnifiedSensReceiver {
     #[cfg(feature = "tls")]
     pub fn handshake_failures(&self) -> u64 {
         self.tls_listen.as_ref().map_or(0, |tl| tl.failures.load(Ordering::Relaxed))
+            + self.single_handshake_failures.load(Ordering::Relaxed)
+    }
+
+    /// Datagrams this receiver's own threads could not send: raw-loss
+    /// feedback, path responses and handshake flights the socket refused.
+    /// Each one is a peer left without an answer it was owed; a rising
+    /// count with no loss on the link is this socket, not the network.
+    pub fn send_failures(&self) -> u64 {
+        self.send_failures.load(Ordering::Relaxed)
     }
 
     /// Handshakes in flight on a listening receiver right now.
@@ -2473,8 +2569,14 @@ impl UnifiedSensReceiver {
 impl Drop for UnifiedSensReceiver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.demux.take() {
-            h.join().ok();
+        if let Some(h) = self.demux.take()
+            && h.join().is_err()
+        {
+            // The reader catches its own panics and reports them, so a join
+            // that still fails is a panic past that catch; a Drop has no
+            // caller to hand it to, and stderr is where the reader's own
+            // reports already go.
+            eprintln!("subetha: the reader thread ended by a panic its catch did not cover");
         }
     }
 }

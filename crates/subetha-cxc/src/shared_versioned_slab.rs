@@ -347,14 +347,32 @@ mod tests {
 
     impl<const D: usize> Drop for Fixture<D> {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.dir).ok();
+            // The slab is a field and drops after this body runs, so its
+            // mapping is still live here; a removal that the OS refuses for
+            // that reason is reported, and a panic during an unwinding test
+            // would abort the run in place of its own failure message.
+            if let Err(e) = std::fs::remove_dir_all(&self.dir) {
+                eprintln!("fixture directory {} not removed: {e}", self.dir.display());
+            }
         }
     }
 
-    fn fixture<const D: usize>(name: &str, capacity: usize) -> Fixture<D> {
+    /// A fresh directory for one test: whatever an earlier run left there is
+    /// removed, and a removal refused for any reason but absence fails the
+    /// test rather than gating it on stale files.
+    fn fresh_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("subetha_vslab_{name}_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("stale directory {} not removed: {e}", dir.display()),
+        }
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fixture<const D: usize>(name: &str, capacity: usize) -> Fixture<D> {
+        let dir = fresh_dir(name);
         let slab = SharedVersionedSlab::create(dir.join("slab.bin"), capacity, dir.join("epochs.bin"), 16)
             .unwrap();
         Fixture { dir, slab }
@@ -483,9 +501,7 @@ mod tests {
     fn a_reader_never_sees_a_half_written_chain() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
-        let dir = std::env::temp_dir().join(format!("subetha_vslab_torn_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fresh_dir("torn");
         let slab: Arc<SharedVersionedSlab<u64, 4>> = Arc::new(
             SharedVersionedSlab::create(dir.join("slab.bin"), 4, dir.join("epochs.bin"), 16).unwrap(),
         );
@@ -518,6 +534,6 @@ mod tests {
         let writes = writer.join().unwrap();
         assert!(reads > 0 && writes > 0);
         drop(slab);
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("the slab is unmapped and its directory removable");
     }
 }

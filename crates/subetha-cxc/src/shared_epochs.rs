@@ -652,9 +652,10 @@ mod tests {
                 let e = std::sync::Arc::clone(&e);
                 s.spawn(move || {
                     for _ in 0..200 {
-                        if let Ok(p) = e.pin() {
-                            std::hint::black_box(p.epoch());
-                        }
+                        // Four readers hold at most one pin each against 64
+                        // slots, so a refusal here is a table defect.
+                        let p = e.pin().expect("a pin slot for each of four readers");
+                        std::hint::black_box(p.epoch());
                     }
                 });
             }
@@ -689,14 +690,15 @@ mod tests {
                 let r = std::sync::Arc::clone(&e);
                 s.spawn(move || {
                     for _ in 0..2_000 {
-                        if let Ok(p) = r.pin() {
-                            assert!(
-                                r.reclaim_horizon() <= p.epoch(),
-                                "horizon {} passed a live pin at {}",
-                                r.reclaim_horizon(),
-                                p.epoch()
-                            );
-                        }
+                        // Three readers hold at most one pin each against 64
+                        // slots, so a refusal here is a table defect.
+                        let p = r.pin().expect("a pin slot for each of three readers");
+                        assert!(
+                            r.reclaim_horizon() <= p.epoch(),
+                            "horizon {} passed a live pin at {}",
+                            r.reclaim_horizon(),
+                            p.epoch()
+                        );
                     }
                 });
             }
@@ -820,7 +822,7 @@ mod tests {
 
         drop(a);
         drop(b);
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("both handles are dropped and the directory removable");
     }
 
     #[test]
@@ -910,6 +912,6 @@ mod tests {
         let a = SharedEpochs::create(&path, 8).unwrap();
         assert_eq!(SharedEpochs::open(&path, 16).unwrap_err(), EpochError::LayoutMismatch);
         drop(a);
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("the table is unmapped and the directory removable");
     }
 }

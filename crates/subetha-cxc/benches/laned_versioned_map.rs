@@ -76,9 +76,19 @@ type Lane = VersionedBTreeMap<u64, u64>;
 fn dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir()
         .join(format!("subetha-bench-lanes-{name}-{}", std::process::id()));
-    std::fs::remove_dir_all(&d).ok();
+    match std::fs::remove_dir_all(&d) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("stale bench directory {} not removed: {e}", d.display()),
+    }
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// Remove an arm's directory once its maps are dropped; a refusal is a bench
+/// bug (a mapping still alive), not something to leave behind quietly.
+fn remove(d: &std::path::Path) {
+    std::fs::remove_dir_all(d).expect("the arm's maps are dropped and its directory removable");
 }
 
 /// `k` lanes over one shared epoch table, holding `ENTRIES` round-robin.
@@ -194,7 +204,7 @@ fn whole_store_scan(c: &mut Criterion) {
     });
     drop(pin);
     drop(lanes);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 
     for k in [1usize, 4, 8, 16] {
         let (d, lanes) = build(&format!("k{k}"), k);
@@ -209,7 +219,7 @@ fn whole_store_scan(c: &mut Criterion) {
         });
         drop(pin);
         drop(lanes);
-        std::fs::remove_dir_all(&d).ok();
+        remove(&d);
     }
 }
 
@@ -257,7 +267,7 @@ fn concurrent_writes(c: &mut Criterion) {
         });
     });
     drop(laned);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 
     // Empty, and the same total node capacity the lanes get between
     // them, so the two arms start in the same state.
@@ -287,7 +297,7 @@ fn concurrent_writes(c: &mut Criterion) {
         });
     });
     drop(guarded);
-    std::fs::remove_dir_all(&d).ok();
+    remove(&d);
 }
 
 criterion_group!(benches, whole_store_scan, concurrent_writes);

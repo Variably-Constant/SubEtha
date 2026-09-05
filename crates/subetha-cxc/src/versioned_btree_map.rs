@@ -426,14 +426,27 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.dir).ok();
+            // The map is a field and drops after this body runs, so its
+            // mappings are still live here; a removal that the OS refuses for
+            // that reason is reported, and a panic during an unwinding test
+            // would abort the run in place of its own failure message.
+            if let Err(e) = std::fs::remove_dir_all(&self.dir) {
+                eprintln!("fixture directory {} not removed: {e}", self.dir.display());
+            }
         }
     }
 
+    /// A fresh directory for one test: whatever an earlier run left there is
+    /// removed, and a removal refused for any reason but absence fails the
+    /// test rather than gating it on stale files.
     fn fixture(name: &str, capacity: usize) -> Fixture {
         let dir = std::env::temp_dir()
             .join(format!("subetha_vbt_{name}_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("stale directory {} not removed: {e}", dir.display()),
+        }
         std::fs::create_dir_all(&dir).unwrap();
         let map = VersionedBTreeMap::create(
             dir.join("tree.bin"),
@@ -602,8 +615,10 @@ mod tests {
         for i in 200..260u64 {
             f.map.insert(i * 3 + 7, i).unwrap();
         }
+        // Each of these was inserted live above (k = 3i + 7 for i = 1, 31,
+        // 81), so a remove that finds nothing is a defect, not a no-op.
         for k in [10u64, 100, 250] {
-            f.map.remove(&k).ok();
+            assert!(f.map.remove(&k).unwrap().is_some(), "key {k} was live and must be removed");
         }
 
         let got = f.map.range_at(Bound::Unbounded, Bound::Unbounded, 4096, &pin);

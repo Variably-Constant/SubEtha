@@ -168,9 +168,17 @@ mod tests {
 
     const MAGIC: u64 = 0x4D4D_4641_5454_4143;
 
+    /// A fresh path for one test: whatever an earlier run left there is
+    /// removed, and a removal refused for any reason but absence fails the
+    /// test rather than gating it on a stale region.
     fn tmp(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("subetha-mmf-attach-{name}-{}.bin", std::process::id()));
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => panic!("stale region {} not removed: {e}", p.display()),
+        }
         p
     }
 
@@ -186,8 +194,6 @@ mod tests {
     #[test]
     fn exactly_one_caller_initialises() {
         let p = tmp("elect");
-        std::fs::remove_file(&p).ok();
-
         let inits = Arc::new(AtomicU32::new(0));
         let gate = Arc::new(Barrier::new(8));
         let mut hs = Vec::new();
@@ -212,14 +218,13 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(inits.load(Ordering::Relaxed), 1, "more than one caller initialized");
-        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(&p).expect("every thread's mapping is dropped and the file removable");
     }
 
     /// A second call attaches to the live region rather than zeroing it.
     #[test]
     fn attach_does_not_clear_existing_state() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
 
         let (_f, mut first) =
             create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
@@ -230,11 +235,15 @@ mod tests {
             create_or_attach(&p, 64, |_| panic!("must not re-initialize"), has_magic).unwrap();
         let seen = unsafe { std::ptr::read_unaligned(second.as_ptr().add(8) as *const u64) };
         assert_eq!(seen, 0xDEAD_BEEF, "attaching cleared state the first caller owned");
-        std::fs::remove_file(&p).ok();
+        drop(second);
+        drop(first);
+        drop(_f2);
+        drop(_f);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
     }
 
     /// A region that exists at a smaller size is refused at once, as a size
-    /// mismatch, rather than waited on as a creator still initialising.
+    /// mismatch, rather than waited on as a creator still initializing.
     #[test]
     fn a_smaller_published_region_is_a_size_mismatch_not_a_wait() {
         let p = tmp("smaller");
@@ -275,7 +284,6 @@ mod tests {
     #[test]
     fn reset_clears_the_region() {
         let p = tmp("reset");
-        std::fs::remove_file(&p).ok();
 
         let (_f, mut m) =
             create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
@@ -285,6 +293,9 @@ mod tests {
         let (_f2, fresh) = reset(&p, 64, |ptr| unsafe { write_magic(ptr) }).unwrap();
         let seen = unsafe { std::ptr::read_unaligned(fresh.as_ptr().add(8) as *const u64) };
         assert_eq!(seen, 0, "reset left prior state behind");
-        std::fs::remove_file(&p).ok();
+        drop(fresh);
+        drop(_f2);
+        drop(_f);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
     }
 }
