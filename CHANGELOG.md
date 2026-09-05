@@ -6,7 +6,72 @@ crates (`subetha`, `subetha-core`, `subetha-cxc`, `subetha-pointers`,
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each version heading links to the commit that cut it.
 
-## [0.2.8] - 2026-09-05
+## [0.2.9] - Unreleased
+
+### Added
+
+- Counters for every failure the production paths used to discard:
+  `send_failures()`, `demux_send_failures()` and `handshake_failures()` on
+  the unified endpoint; `sens_rlc::socket_buffer_refusals()` for kernels
+  that refuse the 4 MiB socket buffers; `results_dropped()` on the
+  scheduler; `permit_release_overflows()` on the semaphore;
+  `morph_refusals()` and `mode_refusals()` on the adaptive ring;
+  `session_service_errors()` and `trace_sends_skipped()` on the RS bridge;
+  `DgramSock::rearm_failures()`; `unattributed_frames()` and
+  `malformed_frames()` on the RLC receiver, forwarded by the unified
+  receiver as `rlc_unattributed_frames()` / `rlc_malformed_frames()`.
+
+### Changed
+
+- `ShardedUdpSender::send_item` returns `io::Result<()>` and reports
+  `BrokenPipe` naming a shard whose thread has ended, where it used to
+  drop the item. Callers handle the result.
+- Every file-backed `create` reports a region that exists at a smaller
+  size as its own `LayoutMismatch`, the answer `open` already gave for the
+  same file (36 call sites across 35 types).
+- The cached clock's readers take the clock directly when its updater
+  thread could not be spawned, and the refusal is reported.
+- Drain loops in the TCP and QUIC bridges, the locale migration, the
+  capacity rings and the event log match `Empty` by name and return or
+  record any other pop error; waker waits match their timeout by name and
+  propagate the rest; the TCP bridge's closing barrier treats reset,
+  abort, broken pipe and unexpected EOF as the receiver's close and
+  returns any other read error.
+
+### Fixed
+
+- `mmf_attach::create_or_attach` refuses a non-empty file shorter than the
+  requested size at once, with `SizeMismatch` naming the path and both
+  sizes; it used to wait five seconds for a creator that would never
+  finish. An empty file is still waited on. Reported from PrismLQL.
+- The RLC receiver handed any frame without a connection id to the most
+  recently admitted session, which rebound its peer address to the
+  frame's source without validation, so a one-byte datagram from anyone
+  re-pointed that session's control traffic. Such frames are counted and
+  reach no session. A `PATH_RESPONSE` answering a migration challenge is
+  routed to the window whose id it carries, so an older peer's migration
+  validates while a newer peer is live.
+- The scheduler dropped a computed result on a full ring with no trace;
+  the LRU cache could lose an entry between its list and its map on a
+  refused re-insert; a graph edge or list node whose slot the region
+  refused to free was leaked; the RS receiver discarded a session's
+  service and feedback errors; an io_uring receive slot that failed to
+  re-arm vanished; the net-events watcher could fail to spawn and read as
+  a stable path. Each now reports or counts.
+- `SharedAsyncPointer`'s speculative races no longer swallow a worker's
+  panic: the plain variants continue it on the caller's thread, and the
+  resilient variant counts the dead so `AllWorkersDied` is a measured
+  statement.
+- A listening receiver's RS index never trails its delivery frontier
+  (`listen_tls` refuses `CodePolicy::Auto`); that invariant is a debug
+  assertion at the branch that relies on it.
+
+### Documentation
+
+- Every new counter on its primitive's page; the listener's send-failure
+  accounting; the RLC routing rule for frames that name no window.
+
+## [0.2.8] - 2026-08-29
 
 ### Added
 
@@ -34,78 +99,27 @@ Each version heading links to the commit that cut it.
   held by another lane reports `KeyInAnotherLane`, and an ordered read
   merges the lanes with a heap trusted up to the smallest lane cursor.
   `HolderTable::try_claim_slot` claims one named slot.
-- Counters for every failure the production paths used to discard:
-  `send_failures()`, `demux_send_failures()` and `handshake_failures()` on
-  the unified endpoint; `sens_rlc::socket_buffer_refusals()` for kernels
-  that refuse the 4 MiB socket buffers; `results_dropped()` on the
-  scheduler; `permit_release_overflows()` on the semaphore;
-  `morph_refusals()` and `mode_refusals()` on the adaptive ring;
-  `session_service_errors()` and `trace_sends_skipped()` on the RS bridge;
-  `DgramSock::rearm_failures()`; `unattributed_frames()` and
-  `malformed_frames()` on the RLC receiver, forwarded by the unified
-  receiver as `rlc_unattributed_frames()` / `rlc_malformed_frames()`.
 - Benches: a whole-store scan across writer lanes, four writers across
   four lanes against the same four behind a mutex (5.18x ahead), and the
   versioned slab's push and pinned read.
 
 ### Changed
 
-- `ShardedUdpSender::send_item` returns `io::Result<()>` and reports
-  `BrokenPipe` naming a shard whose thread has ended, where it used to
-  drop the item. Callers handle the result.
 - The `SharedEpochs` table layout carries a new magic for the ticket
   region; a table laid out by 0.2.7 or earlier is refused rather than read
   with the region missing.
-- Every file-backed `create` reports a region that exists at a smaller
-  size as its own `LayoutMismatch`, the answer `open` already gave for the
-  same file (36 call sites across 35 types).
-- The cached clock's readers take the clock directly when its updater
-  thread could not be spawned, and the refusal is reported.
-- Drain loops in the TCP and QUIC bridges, the locale migration, the
-  capacity rings and the event log match `Empty` by name and return or
-  record any other pop error; waker waits match their timeout by name and
-  propagate the rest; the TCP bridge's closing barrier treats reset,
-  abort, broken pipe and unexpected EOF as the receiver's close and
-  returns any other read error.
 
 ### Fixed
 
-- `mmf_attach::create_or_attach` refuses a non-empty file shorter than the
-  requested size at once, with `SizeMismatch` naming the path and both
-  sizes; it used to wait five seconds for a creator that would never
-  finish. An empty file is still waited on. Reported from PrismLQL.
-- The RLC receiver handed any frame without a connection id to the most
-  recently admitted session, which rebound its peer address to the
-  frame's source without validation, so a one-byte datagram from anyone
-  re-pointed that session's control traffic. Such frames are counted and
-  reach no session. A `PATH_RESPONSE` answering a migration challenge is
-  routed to the window whose id it carries, so an older peer's migration
-  validates while a newer peer is live.
 - `SharedHashMap` published a claimed slot's hash before its payload,
   letting a prober plant the same key in a second slot; the payload lands
   first and hash 0 marks a slot still forming. A writer whose tombstone
   claim was stolen re-probes instead of claiming the empty slot beyond it,
   and concurrent updates to one key take the seqlock by CAS.
-- The scheduler dropped a computed result on a full ring with no trace;
-  the LRU cache could lose an entry between its list and its map on a
-  refused re-insert; a graph edge or list node whose slot the region
-  refused to free was leaked; the RS receiver discarded a session's
-  service and feedback errors; an io_uring receive slot that failed to
-  re-arm vanished; the net-events watcher could fail to spawn and read as
-  a stable path. Each now reports or counts.
-- `SharedAsyncPointer`'s speculative races no longer swallow a worker's
-  panic: the plain variants continue it on the caller's thread, and the
-  resilient variant counts the dead so `AllWorkersDied` is a measured
-  statement.
-- A listening receiver's RS index never trails its delivery frontier
-  (`listen_tls` refuses `CodePolicy::Auto`); that invariant is a debug
-  assertion at the branch that relies on it.
 
 ### Documentation
 
-- Pages for the versioned slab and the laned map; every new counter on
-  its primitive's page; the listener's send-failure accounting; the RLC
-  routing rule for frames that name no window.
+- Pages for the versioned slab and the laned map.
 
 ## [0.2.7] - 2026-08-29
 
@@ -537,6 +551,7 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
+[0.2.9]: https://github.com/Variably-Constant/SubEtha/compare/e5478d8...main
 [0.2.8]: https://github.com/Variably-Constant/SubEtha/commit/e5478d8
 [0.2.7]: https://github.com/Variably-Constant/SubEtha/commit/91ce2b5
 [0.2.6]: https://github.com/Variably-Constant/SubEtha/commit/b38f33a
