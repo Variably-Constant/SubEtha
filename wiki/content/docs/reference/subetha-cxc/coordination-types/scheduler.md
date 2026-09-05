@@ -121,8 +121,10 @@ work-stealing transport. Three constructors pick the transport:
 `MmfFamily::SharedHashMap` is rejected with
 `SchedError::UnsupportedTransportFamily` because the scheduler's wire format is
 push/pop, not key/value. Accessors: `submitter()`, `collector()`,
-`heartbeat() -> Arc<HeartbeatTable>`, `slot_idx() -> usize`, and
-`watchdog_scan() -> ReclaimReport`. `SchedError` has six variants:
+`heartbeat() -> Arc<HeartbeatTable>`, `slot_idx() -> usize`,
+`watchdog_scan() -> ReclaimReport`, and `results_dropped() -> u64`, the
+results the worker computed and could not push because the result ring
+was full. `SchedError` has six variants:
 `Ring(RingError)`, `Transport(TransportError)`, `Heartbeat(HeartbeatError)`,
 `ArgsTooLarge` (a submit whose args exceed 46 bytes), `UnsupportedTransportFamily`,
 and `ResultTooLarge` - which is **reserved and never returned**: an oversized
@@ -379,8 +381,9 @@ token in the payload so correlation is direct.
 
 - **Not draining the result ring.** The worker drops results
   when the result-ring is full; submissions still produce work
-  but their results are lost. The collector must drain
-  steadily.
+  but their results are lost, and `results_dropped()` counts
+  each one. The collector must drain steadily; a count that
+  climbs is the collector falling behind the submit rate.
 
 - **Treating `result_token` as a sequence number.** It is a
   correlation ID picked monotonically per submitter; different

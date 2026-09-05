@@ -73,7 +73,16 @@ pub(crate) async fn ship_stream<S: AsyncRead + AsyncWrite + Unpin>(
             let dst = &mut batch[filled * SLOT..(filled + 1) * SLOT];
             match producer_ring.try_recv(0, dst) {
                 Ok(_) => filled += 1,
-                Err(_) => break,
+                // Nothing queued right now: ship what is filled.
+                Err(crate::shared_ring::RingError::Empty) => break,
+                // The ring itself refused the pop; the bridge cannot
+                // continue past it and says which error ended it.
+                Err(e) => {
+                    return Err(std::io::Error::other(format!(
+                        "the producer ring refused a pop: {e:?}"
+                    ))
+                    .into());
+                }
             }
         }
         if filled == 0 {
@@ -94,11 +103,25 @@ pub(crate) async fn ship_stream<S: AsyncRead + AsyncWrite + Unpin>(
     // this, the client process can exit and RST the socket while the
     // receiver - slower for TLS, which must decrypt - is still draining
     // the last records, surfacing as a spurious connection-reset error.
+    // Any other read error is the socket failing before the receiver
+    // finished, and is the caller's to hear.
     let mut sink = [0u8; 64];
     loop {
         match stream.read(&mut sink).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(_) => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                break;
+            }
+            Err(e) => return Err(e.into()),
         }
     }
     Ok(())

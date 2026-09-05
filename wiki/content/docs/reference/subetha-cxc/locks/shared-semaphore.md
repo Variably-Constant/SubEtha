@@ -147,7 +147,9 @@ Acquire-only-when-N-released for batch fan-out / fan-in.
 
 - **Releasing more than acquired.** `release` rolls back if it
   exceeds `max_permits`; the permit count stays bounded but
-  the caller's logic is broken.
+  the caller's logic is broken. A `Permit` whose drop hits that
+  rollback counts it in `permit_release_overflows()`, so the
+  broken logic can be asked about rather than inferred.
 
 - **Wrapping in a Mutex.** Pointless; the CAS protocol IS the
   synchronization.

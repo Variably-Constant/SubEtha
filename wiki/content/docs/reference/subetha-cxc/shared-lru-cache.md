@@ -36,7 +36,11 @@ Op kinds use the `lru_cache` module: `OP_GET = 1`, `OP_PUT = 2`,
 `OP_TOUCH = 3`, `OP_REMOVE = 4`, `OP_EVICT = 5`. The `OP_EVICT`
 op is what a custom policy reads to detect a cache that is
 running hot - high eviction rate means the cache is too small
-for the workload.
+for the workload. An `OP_TOUCH` observation carries flag `0` for
+a promotion, `2` for a key that was absent, and `3` for an entry
+that was unlinked from the list and could not be put back in front
+or in the map, after which the list and the map disagree about
+it; `touch` returns `false` for both `2` and `3`.
 
 The shipped sidecar policy is `NoMigrationPolicy` because the
 byte layout is the strategy and the byte layout does not

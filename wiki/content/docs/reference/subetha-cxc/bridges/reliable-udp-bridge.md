@@ -123,6 +123,9 @@ discarded by the kernel before the transport sees it.
 | `session_epoch()` | the epoch of the most recently opened window - a peer's block-RS identity, the counterpart to the RLC connection id |
 | `live_sessions()` | the epochs holding a window, in first-seen order |
 | `session_refusals()` | peers turned away by a declared ceiling |
+| `session_service_errors()` | service rounds a session could not complete - a send toward its own peer the socket refused, so that peer has not been told what the receiver is missing; the first is reported to stderr as well, and the other sessions are still serviced |
+| `nudge_feedback()` | one feedback round to every live session; every session gets its round, and the first send that failed is the error returned |
+| sender `trace_sends_skipped()` | trace probes the socket refused, each a hop unprobed for its round; a probe's send surfacing an earlier probe's latched ICMP error is the usual cause and is the trace working |
 
 ## One window per peer
 

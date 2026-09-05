@@ -370,7 +370,14 @@ tracks counts); spawn it for custom policies or the QoS axes.
   the gate and fire immediately. `spawn_with_qos_gated(.., GateConfig)`
   overrides both gates.
 - `morphs_triggered()` / `ordering_flips()` are telemetry counters;
-  `shutdown()` stops and joins the thread (also done on `Drop`).
+  `shutdown()` stops and joins the thread (also done on `Drop`), and a
+  scanner that panicked panics again on the thread that called
+  `shutdown()` while a `Drop` reports it. The ring itself counts, in
+  `morph_refusals()` and `mode_refusals()`, the morphs and mode flips it
+  refused on paths that had no result to hand back - a resumed
+  auto-shape, a deferred morph landing, the sidecar's policy, the exact
+  consumer's mode - so a ring left in a shape or mode nobody asked for
+  is a count, not a mystery.
 
 Policies are pluggable via two traits:
 
