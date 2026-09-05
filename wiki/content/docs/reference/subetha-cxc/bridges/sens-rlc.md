@@ -96,6 +96,16 @@ decode window with a single packet. What the answer proves is
 return-routability - the responder echoes the challenge without
 inspecting the id - which is what an off-path attacker cannot supply.
 
+A frame that names no window goes nowhere. Only DATA and REPAIR carry a
+connection id, and a PATH_RESPONSE carries the id of the window it
+answers, which is where it is routed. Anything else - an unknown type
+byte, a TLS sender's handshake frames arriving at a cleartext receiver,
+an answer for an id that holds no window and is under no admission
+challenge - is counted in `unattributed_frames()` with its type byte and
+reaches no session, so no window's address moves on the word of a frame
+that could have come from anyone. A DATA or REPAIR frame too short for
+its header is counted in `malformed_frames()` by the window it named.
+
 There is no ceiling on windows unless one is declared.
 `with_session_ceiling(max)` bounds the live windows and the candidates
 under challenge, and `session_refusals()` counts every peer turned away
@@ -120,6 +130,8 @@ leaves them as a gap ARQ recovers.
 | `session_control(cid)` | one window's `(naks_sent, acks_sent, sends_skipped, peer_validated)`; `sends_skipped` counts control frames dropped for a missing peer address or an exhausted anti-amplification budget |
 | `path_validations()` / `path_validation_failures()` | address validations completed and challenges that timed out, summed over every session |
 | `session_service_errors()` | sessions that could not be serviced; each is a peer left without the feedback that tick would have sent |
+| `unattributed_frames()` | `(frames, last_type_byte)` for frames that named no window - no connection id and not a PATH_RESPONSE, or a PATH_RESPONSE for an id with no window that answered no admission challenge; none reached a session or moved an address; the byte is 0 for an empty datagram |
+| `malformed_frames()` | DATA / REPAIR frames too short for their header, summed over every window; each was dropped without a decode |
 
 A session's control-plane send failure stays with that session: every
 window is serviced each poll, and a tick's delivered items reach the

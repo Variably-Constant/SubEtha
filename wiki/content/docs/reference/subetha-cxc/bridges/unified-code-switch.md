@@ -200,9 +200,12 @@ Per-peer reads are forwarded too: `live_rlc_sessions()` and
 `rlc_session_frontier(cid)` reports one RLC window's
 `(delivered_through, highest_seen)`, `rlc_session_control(cid)` its
 `(naks_sent, acks_sent, sends_skipped, peer_validated)`,
-`rlc_session_peer(cid)` the address its control sends target, and
+`rlc_session_peer(cid)` the address its control sends target,
 `rlc_path_validations()` / `rlc_path_validation_failures()` sum the
-validation outcomes.
+validation outcomes, `rlc_unattributed_frames()` gives `(frames,
+last_type_byte)` for RLC frames that named no window and moved no
+address, and `rlc_malformed_frames()` counts DATA / REPAIR frames too
+short for their header.
 
 The sender carries a telemetry ladder over its own pipeline:
 `raw_sent_recv()` (forward datagrams sent vs the receiver's fed-back

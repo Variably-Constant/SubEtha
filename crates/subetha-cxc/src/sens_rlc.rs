@@ -513,6 +513,18 @@ pub(crate) fn drive_handshake(
     peer.ok_or_else(|| io::Error::other("no peer"))
 }
 
+/// The connection id a PATH_RESPONSE carries (the `u64` after the type byte),
+/// or `None` for any other frame or a truncated one. A migration answer names
+/// the window it validates, so it is routed to that window and no other.
+fn path_response_conn_id(inner: &[u8]) -> Option<u64> {
+    if inner.len() < PATH_FRAME_LEN || inner[0] != PKT_RLC_PATH_RESPONSE {
+        return None;
+    }
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&inner[1..9]);
+    Some(u64::from_le_bytes(id))
+}
+
 /// The connection id of a DATA / REPAIR inner frame (the `u64` after the type
 /// byte), or `None` for any other frame. Used to route a session by id rather
 /// than 4-tuple, so it survives a peer address change.
@@ -2030,6 +2042,9 @@ struct RlcSession {
     /// Successful path validations and validation timeouts (reverts). Telemetry.
     path_validations: u64,
     path_validation_failures: u64,
+    /// DATA / REPAIR frames too short for their header, dropped without a
+    /// decode. Telemetry.
+    malformed_frames: u64,
     /// The 1-RTT keys for this peer, shared with the receiver when the session
     /// opens: the receiver opens inbound datagrams with them, this session
     /// seals its control sends. There is one handshake per receiver, so a TLS
@@ -2072,6 +2087,13 @@ pub struct SensOMaticRlcReceiver {
     /// missing. One session's failure must not abort the others, which is
     /// why it does not propagate, but it is counted rather than discarded.
     session_service_errors: u64,
+    /// Frames that named no session and were attributed to none: a frame
+    /// without a connection id that is not a PATH_RESPONSE, or a PATH_RESPONSE
+    /// whose id holds no live window and answers no admission challenge.
+    /// Counted with the last such type byte (0 for an empty datagram); never
+    /// routed, so no session's address moves on their account.
+    unattributed_frames: u64,
+    last_unattributed_byte: u8,
     /// First kernel RX timestamp (nanoseconds, `SO_TIMESTAMPNS`) seen, so the
     /// per-packet arrival the congestion detectors read is a small offset from
     /// it. `None` until the first stamped datagram (or always, where the kernel
@@ -2170,6 +2192,7 @@ impl RlcSession {
             unval_sent_bytes: 0,
             path_validations: 0,
             path_validation_failures: 0,
+            malformed_frames: 0,
             #[cfg(feature = "tls")]
             crypto: None,
         }
@@ -2191,6 +2214,12 @@ impl RlcSession {
     /// `CHALLENGE_TIMEOUT` and were reverted (a spoofed move). Telemetry.
     pub fn path_validation_failures(&self) -> u64 {
         self.path_validation_failures
+    }
+
+    /// DATA / REPAIR frames too short for their header; each was dropped
+    /// without a decode.
+    pub fn malformed_frames(&self) -> u64 {
+        self.malformed_frames
     }
 
     /// The peer address the receiver is currently routing the session to.
@@ -2385,9 +2414,9 @@ impl RlcSession {
             // restart. A restarted peer arrives with a new id and is challenged
             // by the receiver, which opens a session for it on the answer.
             Some(_) => return false,
-            None => {
-                self.peer = Some(from);
-            }
+            // A frame without an id proves nothing about which session sent
+            // it, so it neither binds nor moves this session's address.
+            None => return false,
         }
         // Anti-amplification: count bytes received from an as-yet-unvalidated
         // peer, so our reply budget tracks what the address actually sent us.
@@ -2591,7 +2620,7 @@ impl RlcSession {
                     payload,
                 });
             }
-            _ => {}
+            _ => self.malformed_frames += 1,
         }
     }
 
@@ -2860,6 +2889,8 @@ impl SensOMaticRlcReceiver {
             session_ceiling: None,
             session_refusals: 0,
             session_service_errors: 0,
+            unattributed_frames: 0,
+            last_unattributed_byte: 0,
             challenge_seq: 0,
             session_changed: false,
             session_admissions: 0,
@@ -3098,6 +3129,12 @@ impl SensOMaticRlcReceiver {
     /// point-to-point case. Every id after that is challenged before a decode
     /// window is opened for it, so an off-path attacker cannot make a receiver
     /// allocate state by spraying connection ids it cannot receive answers for.
+    ///
+    /// Only DATA and REPAIR carry a connection id, and a PATH_RESPONSE carries
+    /// the id of the window it answers. Nothing else has an owner here: such a
+    /// frame is counted in [`unattributed_frames`](Self::unattributed_frames)
+    /// and reaches no session, so no session's address moves on the word of a
+    /// frame that could have come from anyone.
     fn route_datagram(&mut self, inner: &[u8], from: SocketAddr, arrival_us: f64) -> bool {
         // An answer to an outstanding admission challenge opens a window. It is
         // checked before the id is resolved: the candidate has no session yet,
@@ -3107,11 +3144,18 @@ impl SensOMaticRlcReceiver {
         }
         let cid = match frame_conn_id(inner) {
             Some(cid) => cid,
-            // No id in the frame: it belongs to the session that most recently
-            // spoke, which is the single-peer case.
-            None => match self.order.last() {
-                Some(cid) => *cid,
-                None => return false,
+            None => match path_response_conn_id(inner) {
+                // A migration answer for a live window goes to that window;
+                // one for an unknown id is not a request to open one.
+                Some(cid) if self.sessions.contains_key(&cid) => cid,
+                _ => {
+                    self.unattributed_frames += 1;
+                    self.last_unattributed_byte = match inner.first() {
+                        Some(byte) => *byte,
+                        None => 0,
+                    };
+                    return false;
+                }
             },
         };
         if !self.sessions.contains_key(&cid) && !self.sessions.is_empty() {
@@ -3166,10 +3210,6 @@ impl SensOMaticRlcReceiver {
         std::mem::replace(&mut self.session_changed, false)
     }
 
-    /// `(sessions admitted, challenges that went unanswered)`. The second
-    /// rising without the first is what a forged connection id looks like from
-    /// here. Use [`session_admissions_for`](Self::session_admissions_for) to
-    /// attribute an admission to one connection id.
     /// Per-session service errors. Non-zero means a peer was not told what
     /// this receiver is missing, which from its side is indistinguishable
     /// from a receiver that stopped asking.
@@ -3177,6 +3217,26 @@ impl SensOMaticRlcReceiver {
         self.session_service_errors
     }
 
+    /// `(frames, last type byte)` for frames that named no session: a frame
+    /// without a connection id that is not a PATH_RESPONSE, or a PATH_RESPONSE
+    /// for an id with no live window that answered no admission challenge.
+    /// Non-zero under a stray or misconfigured sender (a TLS sender at a
+    /// cleartext receiver sends only id-less frames); none of them moved any
+    /// session's address. The byte is 0 for an empty datagram.
+    pub fn unattributed_frames(&self) -> (u64, u8) {
+        (self.unattributed_frames, self.last_unattributed_byte)
+    }
+
+    /// DATA / REPAIR frames too short for their header, summed over every
+    /// session; each was dropped without a decode.
+    pub fn malformed_frames(&self) -> u64 {
+        self.sessions.values().map(|s| s.malformed_frames()).sum()
+    }
+
+    /// `(sessions admitted, challenges that went unanswered)`. The second
+    /// rising without the first is what a forged connection id looks like from
+    /// here. Use [`session_admissions_for`](Self::session_admissions_for) to
+    /// attribute an admission to one connection id.
     pub fn session_adoption_counts(&self) -> (u64, u64) {
         (self.session_admissions, self.session_admission_failures)
     }
@@ -3882,6 +3942,164 @@ mod tests {
         assert!(validations >= 1, "the new path was validated by challenge / response");
         assert_eq!(failures, 0, "a genuine migration must not fail validation");
         assert!(proactive >= 1, "the path event must have driven a proactive migration");
+    }
+
+    /// A datagram that names no session - a bare type byte, or a PATH_RESPONSE
+    /// for an id that holds no window - is counted and reaches no session, so
+    /// the bound peer's address does not move and its stream keeps flowing.
+    #[test]
+    fn stray_datagrams_move_no_session_and_are_counted() {
+        let symbol_len = 64usize;
+        let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+        let recv_addr = recv.local_addr().unwrap();
+        let mut send = SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len).unwrap();
+        let real_peer = send.local_addr().unwrap();
+        let cid = send.conn_id();
+
+        for i in 0u64..20 {
+            let mut item = vec![0u8; 16];
+            item[..8].copy_from_slice(&i.to_le_bytes());
+            send.send_item(&item).unwrap();
+        }
+        let start = Instant::now();
+        let mut got = 0u64;
+        while got < 20 && start.elapsed() < Duration::from_secs(5) {
+            got += recv.poll().unwrap().len() as u64;
+        }
+        assert_eq!(got, 20, "the first batch must be delivered");
+        assert_eq!(recv.peer_of(cid), Some(real_peer), "bound to the real peer first");
+
+        // A stray socket sends a frame of an unknown type, then a PATH_RESPONSE
+        // for a connection id no window holds.
+        let stray = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let stray_addr = stray.local_addr().unwrap();
+        stray.send_to(&[0xEE], recv_addr).unwrap();
+        let mut answer = Vec::with_capacity(PATH_FRAME_LEN);
+        answer.push(PKT_RLC_PATH_RESPONSE);
+        answer.extend_from_slice(&(cid ^ 0x5555_5555_5555_5555).to_le_bytes());
+        answer.extend_from_slice(&7u64.to_le_bytes());
+        stray.send_to(&answer, recv_addr).unwrap();
+        let start = Instant::now();
+        while recv.unattributed_frames().0 < 2 && start.elapsed() < Duration::from_secs(5) {
+            recv.poll().unwrap();
+        }
+        assert_eq!(
+            recv.unattributed_frames(),
+            (2, PKT_RLC_PATH_RESPONSE),
+            "both stray frames counted, the last type byte kept"
+        );
+        assert_eq!(recv.peer_of(cid), Some(real_peer), "the session's address did not move");
+        assert_ne!(recv.peer_of(cid), Some(stray_addr));
+        assert_eq!(recv.migrations(), 0, "a stray frame is not a migration");
+        assert_eq!(recv.live_sessions(), vec![cid], "no window was opened for the stray id");
+        assert_eq!(recv.session_adoption_counts().0, 0, "no admission was begun for the stray id");
+
+        // The stream continues to the real peer: its control traffic still
+        // reaches it, so the second batch is acked.
+        for i in 20u64..40 {
+            let mut item = vec![0u8; 16];
+            item[..8].copy_from_slice(&i.to_le_bytes());
+            send.send_item(&item).unwrap();
+        }
+        let start = Instant::now();
+        let mut got = 0u64;
+        while got < 20 && start.elapsed() < Duration::from_secs(5) {
+            got += recv.poll().unwrap().len() as u64;
+        }
+        assert_eq!(got, 20, "the second batch must be delivered after the stray frames");
+        assert!(
+            send.drain_until_acked(40, Duration::from_secs(5)).is_ok(),
+            "the real peer must still be acked"
+        );
+        assert_eq!(recv.malformed_frames(), 0);
+    }
+
+    /// With two peers live, the OLDER one migrates: its PATH_RESPONSE names its
+    /// own window and validates it, whichever peer was admitted last.
+    #[test]
+    fn an_older_peer_validates_its_migration_while_a_newer_peer_is_live() {
+        let (item_len, symbol_len, n) = (32usize, 64usize, 300u64);
+        let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+        let recv_addr = recv.local_addr().unwrap();
+        let mut a = SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len).unwrap();
+        let mut b = SensOMaticRlcSender::bind("127.0.0.1:0", recv_addr, 16, 2, 15, symbol_len).unwrap();
+        let (cid_a, cid_b) = (a.conn_id(), b.conn_id());
+        let a_old = a.local_addr().unwrap();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+
+        let rx = std::thread::spawn(move || {
+            let mut got_a = 0u64;
+            let mut got_b = 0u64;
+            while stop_rx.try_recv().is_err() {
+                for (cid, _) in recv.poll_from().unwrap() {
+                    if cid == cid_a {
+                        got_a += 1;
+                    } else if cid == cid_b {
+                        got_b += 1;
+                    }
+                }
+            }
+            // Drain what the senders' final acks left, then report.
+            for _ in 0..50 {
+                for (cid, _) in recv.poll_from().unwrap() {
+                    if cid == cid_a {
+                        got_a += 1;
+                    } else if cid == cid_b {
+                        got_b += 1;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            (
+                got_a,
+                got_b,
+                recv.live_sessions(),
+                recv.peer_of(cid_a),
+                recv.path_validations(),
+                recv.path_validation_failures(),
+                recv.unattributed_frames(),
+            )
+        });
+
+        let item = |i: u64| {
+            let mut item = vec![0u8; item_len];
+            item[..8].copy_from_slice(&i.to_le_bytes());
+            item
+        };
+        // A first, then B, so B is the most recently admitted window.
+        for i in 0..n {
+            a.send_item(&item(i)).unwrap();
+        }
+        a.drain_until_acked(n as u32, Duration::from_secs(15)).unwrap();
+        for i in 0..n {
+            b.send_item(&item(i)).unwrap();
+        }
+        b.drain_until_acked(n as u32, Duration::from_secs(15)).unwrap();
+        // The older peer rebinds and keeps sending; the receiver challenges the
+        // new address and A's answer must reach A's window, not B's.
+        a.migrate().unwrap();
+        // The migrated socket is bound unspecified, so only its port names it;
+        // the receiver sees it from the loopback address.
+        let a_new_port = a.local_addr().unwrap().port();
+        for i in n..2 * n {
+            a.send_item(&item(i)).unwrap();
+        }
+        a.drain_until_acked((2 * n) as u32, Duration::from_secs(15)).unwrap();
+        stop_tx.send(()).unwrap();
+
+        let (got_a, got_b, live, peer_a, validations, failures, unattributed) = rx.join().unwrap();
+        assert_eq!(got_a, 2 * n, "every item from the migrating peer delivered");
+        assert_eq!(got_b, n, "every item from the newer peer delivered");
+        assert_eq!(live, vec![cid_a, cid_b], "A admitted first, B last");
+        assert_ne!(peer_a, Some(a_old), "A's window left A's old address");
+        assert_eq!(
+            peer_a.map(|p| p.port()),
+            Some(a_new_port),
+            "A's window follows A to its new port"
+        );
+        assert!(validations >= 1, "A's PATH_RESPONSE validated A's window");
+        assert_eq!(failures, 0, "a genuine migration must not time out");
+        assert_eq!(unattributed, (0, 0), "every frame named its window");
     }
 
     /// Slice 4 security property: a forged DATA frame from an unrelated address

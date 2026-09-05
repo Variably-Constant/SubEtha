@@ -2262,6 +2262,18 @@ impl UnifiedSensReceiver {
         self.rlc.session_frontier(cid)
     }
 
+    /// `(frames, last type byte)` for RLC frames that named no window and
+    /// were attributed to none; none of them moved any session's address.
+    pub fn rlc_unattributed_frames(&self) -> (u64, u8) {
+        self.rlc.unattributed_frames()
+    }
+
+    /// RLC DATA / REPAIR frames too short for their header, summed over
+    /// every window; each was dropped without a decode.
+    pub fn rlc_malformed_frames(&self) -> u64 {
+        self.rlc.malformed_frames()
+    }
+
     /// One RLC session's control plane: `(naks_sent, acks_sent,
     /// sends_skipped, peer_validated)`, or `None` for an id with no
     /// window.

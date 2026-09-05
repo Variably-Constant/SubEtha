@@ -173,10 +173,10 @@ fn client(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
             cbuf.clear();
             tpl.encode(s, &mut cbuf);
             wire += cbuf.len() as u64;
-            send.send_item(&cbuf);
+            send.send_item(&cbuf)?;
         } else {
             wire += 64;
-            send.send_item(s);
+            send.send_item(s)?;
         }
     }
     let acked = send.finish();
