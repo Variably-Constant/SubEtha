@@ -512,11 +512,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-arena-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-arena-{name}-{}.bin", std::process::id()))
     }
 
     /// A second create attaches with interned strings in place; reset
@@ -524,7 +523,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_strings() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let a = SharedStringArena::create(&p, 4096).unwrap();
         let r = a.intern("held").unwrap();
 
@@ -542,7 +540,6 @@ mod tests {
         let fresh = SharedStringArena::reset(&p, 4096).unwrap();
         assert_eq!(fresh.used_bytes(), 0, "reset kept interned bytes");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -564,7 +561,6 @@ mod tests {
         ro.clear();
         assert_eq!(ro.used_bytes(), 11, "clear on a read-only arena is inert");
         ro.flush().unwrap();
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -579,7 +575,6 @@ mod tests {
             SharedStringArena::open_read_only(&p, 2048).err(),
             Some(ArenaError::LayoutMismatch)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -589,7 +584,6 @@ mod tests {
         assert_eq!(a.capacity_bytes(), 1024);
         assert_eq!(a.used_bytes(), 0);
         assert_eq!(a.remaining_bytes(), 1024);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -601,7 +595,6 @@ mod tests {
         assert_eq!(a.get(r1).unwrap(), "hello");
         assert_eq!(a.get(r2).unwrap(), "world");
         assert_eq!(a.used_bytes(), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -612,7 +605,6 @@ mod tests {
         assert_eq!(r.len, 0);
         assert_eq!(a.get(r).unwrap(), "");
         assert_eq!(a.used_bytes(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -624,7 +616,6 @@ mod tests {
         assert_eq!(a.intern("more").err(), Some(ArenaError::Full));
         // Used bytes rolled back, not 14.
         assert_eq!(a.used_bytes(), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -634,7 +625,6 @@ mod tests {
         let big = "x".repeat(100);
         assert_eq!(a.intern(&big).err(), Some(ArenaError::Full));
         assert_eq!(a.used_bytes(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -652,7 +642,6 @@ mod tests {
         let reader = SharedStringArena::open(&p, 1024).unwrap();
         let r = writer.intern("cross-process").unwrap();
         assert_eq!(reader.get(r).unwrap(), "cross-process");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -662,7 +651,6 @@ mod tests {
         a.intern("hi").unwrap();  // used = 2
         let bad = StringRef { offset: 100, len: 5 };
         assert_eq!(a.get(bad).err(), Some(ArenaError::InvalidRef));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -702,7 +690,6 @@ mod tests {
             assert!(r1_end <= w[1].offset,
                 "ref {:?} overlaps with ref {:?}", w[0], w[1]);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -712,7 +699,6 @@ mod tests {
         let (r, s) = a.intern_and_get("composite").unwrap();
         assert_eq!(s, "composite");
         assert_eq!(a.get(r).unwrap(), "composite");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -728,7 +714,6 @@ mod tests {
         let r2 = a.intern_bytes(&[0xFF, 0xFE, 0xFD]).unwrap();
         assert_eq!(a.get(r2).err(), Some(ArenaError::InvalidUtf8));
         assert_eq!(a.get_bytes(r2).unwrap(), &[0xFF, 0xFE, 0xFD]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -744,7 +729,6 @@ mod tests {
         let r = a.intern("after-clear").unwrap();
         assert_eq!(a.get(r).unwrap(), "after-clear");
         assert_eq!(r.offset, 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -761,7 +745,6 @@ mod tests {
         // And it can keep interning.
         let r2 = a2.intern("more-after-reopen").unwrap();
         assert_eq!(a2.get(r2).unwrap(), "more-after-reopen");
-        std::fs::remove_file(&p).ok();
     }
 
     /// A StringRef addresses its bytes with an OFFSET_BITS offset, so a
@@ -829,7 +812,6 @@ mod tests {
     #[test]
     fn an_old_format_region_is_refused() {
         let p = tmp("old-format");
-        std::fs::remove_file(&p).ok();
         {
             let a = SharedStringArena::create(&p, 1024).unwrap();
             a.intern("written-under-the-new-layout").unwrap();
@@ -864,7 +846,6 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(1),
             "create should refuse immediately, not wait out the attach deadline"
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -904,7 +885,5 @@ mod tests {
         assert_eq!(arena.used_bytes(), used_after_first,
             "second intern should not consume more bytes");
 
-        std::fs::remove_file(&p_arena).ok();
-        std::fs::remove_file(&p_index).ok();
     }
 }

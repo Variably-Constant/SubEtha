@@ -436,11 +436,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-region-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-region-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -451,7 +450,6 @@ mod tests {
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());
         assert_eq!(r.free_count(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with allocated slots in place; reset
@@ -459,7 +457,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_allocations() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let r: SharedRegion<u64> = SharedRegion::create(&p, 16).unwrap();
         let ptr = r.allocate(777).unwrap();
 
@@ -477,7 +474,6 @@ mod tests {
         let fresh: SharedRegion<u64> = SharedRegion::reset(&p, 16).unwrap();
         assert!(fresh.is_empty(), "reset kept an allocation");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -494,7 +490,6 @@ mod tests {
         assert_eq!(r.get(p2).unwrap(), 200);
         assert_eq!(r.get(p3).unwrap(), 300);
         assert_eq!(r.len(), 3);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -504,7 +499,6 @@ mod tests {
         for i in 0..4u32 { r.allocate(i).unwrap(); }
         assert_eq!(r.allocate(99).err(), Some(RegionError::Full));
         assert_eq!(r.len(), 4);  // rolled back
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -520,7 +514,6 @@ mod tests {
         assert_eq!(r.free_count(), 1);
         // ptr2 still valid.
         assert_eq!(r.get(ptr2).unwrap(), 222);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -534,7 +527,6 @@ mod tests {
         let p3 = r.allocate(999).unwrap();
         assert_eq!(p3.index, p1.index, "free list should have returned slot 0");
         assert_eq!(r.get(p3).unwrap(), 999);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -544,7 +536,6 @@ mod tests {
         assert_eq!(r.free(OffsetPtr::NIL).err(), Some(RegionError::InvalidPtr));
         let oob = OffsetPtr::<u64>::new(100);
         assert_eq!(r.free(oob).err(), Some(RegionError::InvalidPtr));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -554,7 +545,6 @@ mod tests {
         let ptr = r.allocate(42).unwrap();
         r.set(ptr, 999).unwrap();
         assert_eq!(r.get(ptr).unwrap(), 999);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -566,7 +556,6 @@ mod tests {
         assert_eq!(reader.get(ptr).unwrap(), 7777);
         writer.set(ptr, 8888).unwrap();
         assert_eq!(reader.get(ptr).unwrap(), 8888);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -601,7 +590,6 @@ mod tests {
         for (expected, ptr) in &all {
             assert_eq!(r.get(*ptr).unwrap(), *expected);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -616,7 +604,7 @@ mod tests {
         // Worker A: free even-indexed slots.
         let freer = thread::spawn(move || {
             for (i, ptr) in _init.iter().enumerate() {
-                if i % 2 == 0 { r_a.free(*ptr).ok(); }
+                if i % 2 == 0 { r_a.free(*ptr).expect("a live allocation frees"); }
             }
         });
         // Worker B: allocate new slots.
@@ -634,7 +622,6 @@ mod tests {
         for (val, ptr) in new_ptrs {
             assert_eq!(r.get(ptr).unwrap(), val);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -648,7 +635,6 @@ mod tests {
         // Verify the ptr's raw index field (u32) is the same in both.
         let same_ptr = OffsetPtr::<u64>::new(ptr.index);
         assert_eq!(reader.get(same_ptr).unwrap(), 0xCAFE_BABE);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -661,7 +647,6 @@ mod tests {
         let n = Node { left: 1, right: 2, key: 42 };
         let ptr = r.allocate(n).unwrap();
         assert_eq!(r.get(ptr).unwrap(), n);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -703,6 +688,5 @@ mod tests {
         let p3 = r2.allocate(3333).unwrap();
         assert_eq!(p3.index, 2);
         assert_eq!(r2.get(p3).unwrap(), 3333);
-        std::fs::remove_file(&p).ok();
     }
 }

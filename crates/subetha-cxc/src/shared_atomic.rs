@@ -371,11 +371,10 @@ impl SharedAtomicBool {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-atomic-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-atomic-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -385,7 +384,6 @@ mod tests {
         assert_eq!(a.load(Ordering::Acquire), 42);
         a.store(99, Ordering::Release);
         assert_eq!(a.load(Ordering::Acquire), 99);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -394,7 +392,6 @@ mod tests {
         let a = SharedAtomicU32::create(&p, 0).unwrap();
         for _ in 0..100 { a.fetch_add(1, Ordering::AcqRel); }
         assert_eq!(a.load(Ordering::Acquire), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the live value in place, ignoring
@@ -402,7 +399,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_value() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let a = SharedAtomicU64::create(&p, 42).unwrap();
         a.store(777, Ordering::Release);
 
@@ -416,21 +412,18 @@ mod tests {
         let fresh = SharedAtomicU64::reset(&p, 5).unwrap();
         assert_eq!(fresh.load(Ordering::Acquire), 5, "reset did not re-seed");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Attaching with a different width is refused.
     #[test]
     fn create_refuses_a_mismatched_width() {
         let p = tmp("mismatch");
-        std::fs::remove_file(&p).ok();
         let a = SharedAtomicU64::create(&p, 1).unwrap();
         assert!(matches!(
             SharedAtomicU32::create(&p, 1),
             Err(SharedAtomicError::LayoutMismatch),
         ));
         drop(a);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches to the live flag rather than resetting
@@ -439,7 +432,6 @@ mod tests {
     #[test]
     fn bool_second_create_attaches_and_keeps_the_value() {
         let p = tmp("bool-attach");
-        std::fs::remove_file(&p).ok();
 
         let first = SharedAtomicBool::create(&p, false).unwrap();
         first.store(true, Ordering::Release);
@@ -457,7 +449,6 @@ mod tests {
         let fresh = SharedAtomicBool::reset(&p, false).unwrap();
         assert!(!fresh.load(Ordering::Acquire), "reset kept the old value");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -467,7 +458,6 @@ mod tests {
         let reader = SharedAtomicU64::open(&p).unwrap();
         writer.store(7777, Ordering::Release);
         assert_eq!(reader.load(Ordering::Acquire), 7777);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -485,7 +475,6 @@ mod tests {
         }
         for h in handles { h.join().unwrap(); }
         assert_eq!(a.load(Ordering::Acquire), 8000);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -497,7 +486,6 @@ mod tests {
         assert_eq!(r1, Ok(5));
         assert_eq!(r2, Err(10));
         assert_eq!(a.load(Ordering::Acquire), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -510,7 +498,6 @@ mod tests {
         let prev = b.swap(false, Ordering::AcqRel);
         assert!(prev);
         assert!(!b.load(Ordering::Acquire));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -522,7 +509,6 @@ mod tests {
         }
         let a2 = SharedAtomicU64::open(&p).unwrap();
         assert_eq!(a2.load(Ordering::Acquire), 12345);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -533,6 +519,5 @@ mod tests {
             Err(SharedAtomicError::LayoutMismatch) => {}
             other => panic!("expected LayoutMismatch, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 }

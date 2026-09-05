@@ -479,11 +479,10 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-linkedlist-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-linkedlist-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -495,7 +494,6 @@ mod tests {
         assert_eq!(l.first(), None);
         assert_eq!(l.last(), None);
         assert_eq!(l.iter_forward(), Vec::<u32>::new());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -508,7 +506,6 @@ mod tests {
         assert_eq!(l.iter_backward(), vec![50, 40, 30, 20, 10]);
         assert_eq!(l.first(), Some(10));
         assert_eq!(l.last(), Some(50));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -517,7 +514,6 @@ mod tests {
         let l: SharedLinkedList<u32> = SharedLinkedList::create(&p, 32).unwrap();
         for i in [10u32, 20, 30] { l.push_front(i).unwrap(); }
         assert_eq!(l.iter_forward(), vec![30, 20, 10]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -533,7 +529,6 @@ mod tests {
         assert!(l.is_empty());
         assert_eq!(l.pop_front(), None);
         assert_eq!(l.pop_back(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -560,7 +555,6 @@ mod tests {
         assert_eq!(l.remove(h2), Some(20));
         assert_eq!(l.remove(h4), Some(40));
         assert!(l.is_empty());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -570,7 +564,6 @@ mod tests {
         l.push_back(1).unwrap();
         assert_eq!(l.remove(NodeHandle::NIL), None);
         assert_eq!(l.remove(NodeHandle::new(HEAD_INDEX)), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -586,7 +579,6 @@ mod tests {
         assert_eq!(l.get(NodeHandle::NIL), None);
         // set on NIL.
         assert!(l.set(NodeHandle::NIL, 0).is_err());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -602,7 +594,6 @@ mod tests {
         l.pop_front().unwrap();
         l.push_back(4).unwrap();
         assert_eq!(l.iter_forward(), vec![2, 3, 4]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -617,7 +608,6 @@ mod tests {
         assert_eq!(pairs[0], (h1, 10));
         assert_eq!(pairs[1], (h2, 20));
         assert_eq!(pairs[2], (h3, 30));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -632,7 +622,6 @@ mod tests {
         assert_eq!(reader.iter_forward(), vec![100, 200, 300]);
         writer.remove(h);
         assert_eq!(reader.iter_forward(), vec![100, 200]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -647,7 +636,6 @@ mod tests {
         assert_eq!(l.get(h1), Some(Event { ts_us: 100, code: 1 }));
         let items = l.iter_forward();
         assert_eq!(items.len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -660,7 +648,6 @@ mod tests {
         }
         let l2: SharedLinkedList<u32> = SharedLinkedList::open(&p, 16).unwrap();
         assert_eq!(l2.iter_forward(), vec![10, 20, 30, 40]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -682,7 +669,6 @@ mod tests {
         // After move-to-front, A is now MRU. Pop_back evicts
         // the LRU.
         assert_eq!(l.pop_back(), Some(3));  // wait, last was 3
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -702,6 +688,5 @@ mod tests {
         }
         assert_eq!(l.len(), 5);
         assert_eq!(l.iter_forward(), vec![1, 3, 5, 7, 9]);
-        std::fs::remove_file(&p).ok();
     }
 }

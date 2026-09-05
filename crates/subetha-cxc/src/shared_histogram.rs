@@ -333,11 +333,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-histogram-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-histogram-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -349,7 +348,6 @@ mod tests {
         for i in 0..h.n_buckets() {
             assert_eq!(h.count(i).unwrap(), 0);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with live counts in place; the
@@ -357,7 +355,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_counts() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let h = SharedHistogram::create(&p, &[10, 100]).unwrap();
         h.record(50);
         h.record(5);
@@ -373,7 +370,6 @@ mod tests {
         assert_eq!(h.total_count(), 0, "reset did not zero for every handle");
         drop(h);
         drop(h2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -383,7 +379,6 @@ mod tests {
             SharedHistogram::create(&p, &[]).err(),
             Some(HistogramError::EmptyBoundaries)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -397,7 +392,6 @@ mod tests {
             SharedHistogram::create(&p, &[10, 10]).err(),
             Some(HistogramError::NonMonotonicBoundaries)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -417,7 +411,6 @@ mod tests {
         assert_eq!(h.bucket_for(999), 2);
         assert_eq!(h.bucket_for(1000), 3);
         assert_eq!(h.bucket_for(u64::MAX), 3);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -437,7 +430,6 @@ mod tests {
         assert_eq!(h.count(2).unwrap(), 1);
         assert_eq!(h.count(3).unwrap(), 2);
         assert_eq!(h.total_count(), 6);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -447,7 +439,6 @@ mod tests {
         assert_eq!(h.record(5), 0);
         assert_eq!(h.record(50), 1);
         assert_eq!(h.record(500), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -462,7 +453,6 @@ mod tests {
         h.record(500);
         let counts = h.counts();
         assert_eq!(counts, vec![1, 2, 3]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -474,7 +464,6 @@ mod tests {
         // p50 should be ~5 (within bucket 0 interpolation).
         let p50 = h.percentile(0.5);
         assert!(p50 <= 10, "p50 {p50} should be in bucket 0 (<10)");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -483,7 +472,6 @@ mod tests {
         let h = SharedHistogram::create(&p, &[10]).unwrap();
         assert_eq!(h.percentile(0.5), 0);
         assert_eq!(h.percentile(0.99), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -497,7 +485,6 @@ mod tests {
         for i in 0..h.n_buckets() {
             assert_eq!(h.count(i).unwrap(), 0);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -510,7 +497,6 @@ mod tests {
         assert_eq!(reader.count(1).unwrap(), 1);
         assert_eq!(reader.count(2).unwrap(), 1);
         assert_eq!(reader.total_count(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -521,7 +507,6 @@ mod tests {
             SharedHistogram::open(&p, &[10, 200]),
             Err(HistogramError::LayoutMismatch)
         ));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -557,7 +542,6 @@ mod tests {
             assert_eq!(c, expected_per,
                 "bucket {i} count {c} should be {expected_per}");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -578,7 +562,6 @@ mod tests {
         assert_eq!(h2.count(2).unwrap(), 0);
         assert_eq!(h2.count(3).unwrap(), 1);
         assert_eq!(h2.total_count(), 4);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -602,7 +585,6 @@ mod tests {
         // p99 should be much higher (in the tail).
         let p99 = h.percentile(0.99);
         assert!(p99 > 100, "p99 {p99} should be over 100us");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -611,6 +593,5 @@ mod tests {
         let h = SharedHistogram::create(&p, &[10]).unwrap();
         // 2 buckets total (indices 0 and 1).
         assert_eq!(h.count(2).err(), Some(HistogramError::OutOfBounds));
-        std::fs::remove_file(&p).ok();
     }
 }

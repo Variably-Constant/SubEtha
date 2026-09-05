@@ -268,11 +268,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-hll-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-hll-{name}-{}.bin", std::process::id()))
     }
 
     /// A second create attaches with live registers in place; the
@@ -280,7 +279,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_registers() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let h = SharedHyperLogLog::create(&p, 12).unwrap();
         h.insert(b"one");
 
@@ -295,7 +293,6 @@ mod tests {
         assert_eq!(h.estimate(), 0, "reset did not zero for every handle");
         drop(h);
         drop(h2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -305,7 +302,6 @@ mod tests {
         assert_eq!(h.precision(), 12);
         assert_eq!(h.n_registers(), 4096);
         assert_eq!(h.estimate(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -319,7 +315,6 @@ mod tests {
             SharedHyperLogLog::create(&p, 17).err(),
             Some(HLLError::InvalidPrecision)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -331,7 +326,6 @@ mod tests {
         // Linear-counting small-range correction handles single
         // insert; estimate should be exactly 1.
         assert_eq!(est, 1, "single insert should estimate 1, got {est}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -341,7 +335,6 @@ mod tests {
         for _ in 0..100 { h.insert(b"same-item"); }
         let est = h.estimate();
         assert_eq!(est, 1, "100 inserts of same item should estimate 1, got {est}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -358,7 +351,6 @@ mod tests {
             (900..=1100).contains(&est),
             "estimate {est} should be within 10% of 1000 (got {est})",
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -375,7 +367,6 @@ mod tests {
             (9600..=10400).contains(&est),
             "estimate {est} should be within 4% of 10000",
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -386,7 +377,6 @@ mod tests {
         assert!(h.estimate() > 0);
         h.reset();
         assert_eq!(h.estimate(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -400,7 +390,6 @@ mod tests {
         assert_eq!(est_w, est_r);
         // Roughly 50.
         assert!((40..=60).contains(&est_r), "estimate {est_r} should be near 50");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -411,7 +400,6 @@ mod tests {
             SharedHyperLogLog::open(&p, 12),
             Err(HLLError::LayoutMismatch)
         ));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -436,7 +424,6 @@ mod tests {
             (3700..=4300).contains(&est),
             "concurrent inserts: estimate {est} should be within ~7% of 4000",
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -451,6 +438,5 @@ mod tests {
         let est = h2.estimate();
         assert!((80..=120).contains(&est),
             "reopened estimate {est} should be near 100");
-        std::fs::remove_file(&p).ok();
     }
 }

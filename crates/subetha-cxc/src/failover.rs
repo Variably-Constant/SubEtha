@@ -103,11 +103,10 @@ mod tests {
     use super::*;
     use crate::heartbeat::HeartbeatTable;
 
-    fn tmp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-failover-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp_path(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-failover-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -125,7 +124,6 @@ mod tests {
         let r = w.scan();
         assert!(r.is_empty(),
                 "no dead processes expected; got {} dead", r.dead_slots.len());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -156,7 +154,6 @@ mod tests {
         assert_eq!(*idx, s_dead);
         assert_eq!(snap.pid, 2);
         assert_eq!(snap.in_flight_bitmap, 1u64 << 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -181,6 +178,5 @@ mod tests {
         w.clear_dead_bitmap(s);
         let r2 = w.scan();
         assert!(r2.is_empty(), "after clear, no dead slots reported");
-        std::fs::remove_file(&p).ok();
     }
 }

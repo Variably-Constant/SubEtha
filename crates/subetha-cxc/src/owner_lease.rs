@@ -373,11 +373,10 @@ impl<T: Copy + 'static> OwnerLease<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-lease-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-lease-{name}-{}.bin", std::process::id()))
     }
 
     /// A second `create` on the same path attaches: the holder keeps its
@@ -386,7 +385,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_holder() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
 
         let holder: OwnerLease<u64> = OwnerLease::create(&p, 42).unwrap();
         assert!(holder.try_acquire(100, 3));
@@ -403,7 +401,6 @@ mod tests {
         drop(holder);
         let fresh: OwnerLease<u64> = OwnerLease::reset(&p, 42).unwrap();
         assert_eq!(fresh.current_owner(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -416,7 +413,6 @@ mod tests {
         assert!(l.am_i_owner(100));
         assert!(l.release(100));
         assert_eq!(l.current_owner(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -427,7 +423,6 @@ mod tests {
         assert!(l.try_acquire(100, 3));
         assert_eq!(l.current_owner(), Some(100));
         assert!(!l.try_acquire(500, 3));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -444,7 +439,6 @@ mod tests {
         assert_eq!(l.read_as_owner(50), Some(999));
         // Non-owner reads fail even after another's acquire.
         assert_eq!(l.read_as_owner(999), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -460,7 +454,6 @@ mod tests {
         // Verify persistence.
         assert!(l.try_acquire(100, 3));
         assert_eq!(l.read_as_owner(100), Some(15));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -474,7 +467,6 @@ mod tests {
         // Higher PID 500 can now preempt because 100's heartbeat is stale.
         assert!(l.try_acquire(500, 1));
         assert_eq!(l.current_owner(), Some(500));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -486,7 +478,6 @@ mod tests {
         assert!(l.beat(100));
         // 500 cannot preempt while 100 beats.
         assert!(!l.try_acquire(500, 1));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -502,7 +493,6 @@ mod tests {
         assert_eq!(t2, t1 + 1);
         l.try_acquire(100, 3);  // idempotent
         assert_eq!(l.lease_term(), t2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -521,7 +511,6 @@ mod tests {
         a.release(100);
         assert!(b.try_acquire(200, 3));
         assert_eq!(b.read_as_owner(200), Some(88));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -536,7 +525,6 @@ mod tests {
         let l2: OwnerLease<u64> = OwnerLease::open(&p).unwrap();
         assert_eq!(l2.current_owner(), Some(42));
         assert_eq!(l2.read_as_owner(42), Some(5678));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -547,7 +535,6 @@ mod tests {
         l.try_acquire(100, 3);  // 100 preempts
         assert!(!l.beat(500));
         assert!(l.beat(100));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -567,6 +554,5 @@ mod tests {
         l.try_acquire(7, 3);
         let s = l.read_as_owner(7).unwrap();
         assert_eq!(s, State { active: 1, count: 42, score: 2.5 });
-        std::fs::remove_file(&p).ok();
     }
 }

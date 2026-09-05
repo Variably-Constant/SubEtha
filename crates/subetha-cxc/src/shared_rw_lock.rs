@@ -403,11 +403,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-rwlock-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-rwlock-{name}-{}.bin", std::process::id()))
     }
 
     /// Racing callers on one path must all reach the same lock, and a caller
@@ -419,14 +418,13 @@ mod tests {
     #[test]
     fn create_or_open_racing_callers_do_not_clear_a_held_writer() {
         let p = tmp("race");
-        std::fs::remove_file(&p).ok();
 
         let holder = SharedRWLock::create_or_open(&p).unwrap();
         let guard = holder.try_write_lock().expect("uncontended write lock");
         assert!(holder.has_writer());
 
         // Eight peers arrive on the same path while the write lock is held.
-        let path = Arc::new(p.clone());
+        let path = Arc::new(p.to_path_buf());
         let cleared = Arc::new(AtomicU32::new(0));
         let mut hs = Vec::new();
         for _ in 0..8 {
@@ -450,7 +448,6 @@ mod tests {
         );
         assert!(holder.has_writer(), "the holder lost its own write lock");
         drop(guard);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -460,7 +457,6 @@ mod tests {
         assert_eq!(l.reader_count(), 0);
         assert!(!l.has_writer());
         assert_eq!(l.waiting_writers(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -471,7 +467,6 @@ mod tests {
         assert_eq!(l.reader_count(), 1);
         drop(g);
         assert_eq!(l.reader_count(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -482,7 +477,6 @@ mod tests {
         assert!(l.has_writer());
         drop(g);
         assert!(!l.has_writer());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -495,7 +489,6 @@ mod tests {
         assert_eq!(l.reader_count(), 3);
         drop(g1); drop(g2); drop(g3);
         assert_eq!(l.reader_count(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -504,7 +497,6 @@ mod tests {
         let l = SharedRWLock::create(&p).unwrap();
         let _w = l.try_write_lock().unwrap();
         assert_eq!(l.try_read_lock().err(), Some(RWLockError::WouldBlock));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -513,7 +505,6 @@ mod tests {
         let l = SharedRWLock::create(&p).unwrap();
         let _r = l.try_read_lock().unwrap();
         assert_eq!(l.try_write_lock().err(), Some(RWLockError::WouldBlock));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -522,7 +513,6 @@ mod tests {
         let l = SharedRWLock::create(&p).unwrap();
         let _w = l.try_write_lock().unwrap();
         assert_eq!(l.try_write_lock().err(), Some(RWLockError::WouldBlock));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -581,7 +571,6 @@ mod tests {
         reader.join().unwrap();
         assert_eq!(writer_got_it.load(O::Acquire), 1, "writer never took the lock");
         assert_eq!(reader_done.load(O::Acquire), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -596,7 +585,6 @@ mod tests {
         assert_eq!(l.try_read_lock().err(), Some(RWLockError::WouldBlock));
         // Clean up the bumped count for the file teardown.
         l.state().fetch_sub(1u64 << WAITING_SHIFT, Ordering::AcqRel);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -617,7 +605,6 @@ mod tests {
         }
         for h in handles { h.join().unwrap(); }
         assert_eq!(count.load(O::Acquire), n);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -629,7 +616,6 @@ mod tests {
         // Reader handle sees the same state.
         assert_eq!(r.reader_count(), 1);
         assert_eq!(r.try_write_lock().err(), Some(RWLockError::WouldBlock));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -641,6 +627,5 @@ mod tests {
         }
         // After writer drops, reader can acquire.
         let _r = l.try_read_lock().unwrap();
-        std::fs::remove_file(&p).ok();
     }
 }

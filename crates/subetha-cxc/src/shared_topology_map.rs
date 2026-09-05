@@ -475,11 +475,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-topology-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-topology-{name}-{}.bin", std::process::id()))
     }
 
     /// A second create attaches with observed edges in place; reset is
@@ -487,7 +486,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_edges() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let t = SharedTopologyMap::create(&p, 4).unwrap();
         t.record_send(0, 1).unwrap();
 
@@ -507,7 +505,6 @@ mod tests {
         ).unwrap();
         assert_eq!(fresh.total_msgs(), 0, "reset kept an edge");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -519,7 +516,6 @@ mod tests {
         assert_eq!(t.max_fan_out(), (0, 0));
         assert_eq!(t.max_fan_in(), (0, 0));
         assert_eq!(t.recommend(), TopologyKind::PointToPoint);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -531,7 +527,6 @@ mod tests {
         assert_eq!(t.total_msgs(), 1);
         t.record_send(0, 1).unwrap();
         assert_eq!(t.total_msgs(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -550,7 +545,6 @@ mod tests {
         assert_eq!(t.fan_out(0), 3);
         // Node 2 receives from no one yet... wait, node 0 sent to 2.
         assert_eq!(t.fan_in(2), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -559,7 +553,6 @@ mod tests {
         let t = SharedTopologyMap::create(&p, 4).unwrap();
         assert_eq!(t.record_send(4, 0).err(), Some(TopologyError::NodeIndexOutOfBounds));
         assert_eq!(t.record_send(0, 99).err(), Some(TopologyError::NodeIndexOutOfBounds));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -569,7 +562,6 @@ mod tests {
         // 1:1 flow: node 0 → node 1.
         for _ in 0..100 { t.record_send(0, 1).unwrap(); }
         assert_eq!(t.recommend(), TopologyKind::PointToPoint);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -581,7 +573,6 @@ mod tests {
         assert_eq!(t.fan_out(0), 4);
         assert_eq!(t.max_fan_in(), (1, 1));  // each receives 1 from one source
         assert_eq!(t.recommend(), TopologyKind::BroadcastTree);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -597,7 +588,6 @@ mod tests {
         assert_eq!(t.max_fan_out().0, 4);
         assert_eq!(t.max_fan_in().0, 4);
         assert_eq!(t.recommend(), TopologyKind::AllToAllMesh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -612,7 +602,6 @@ mod tests {
         assert_eq!(t.recommendation_epoch(), 1);
         // Broadcast root is the highest-fan-out source.
         assert_eq!(t.broadcast_root(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -626,7 +615,6 @@ mod tests {
         assert_eq!(observer.fan_out(0), 3);
         writer.publish_recommendation();
         assert_eq!(observer.read_recommendation(), TopologyKind::BroadcastTree);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -643,7 +631,6 @@ mod tests {
         assert_eq!(t.total_msgs(), 0);
         assert_eq!(t.fan_out(0), 0);
         assert_eq!(t.fan_in(0), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -672,7 +659,6 @@ mod tests {
         }
         // The full N-to-N pattern triggers AllToAllMesh.
         assert_eq!(t.recommend(), TopologyKind::AllToAllMesh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -686,7 +672,6 @@ mod tests {
         // Lower fan_out threshold to 2 → now BroadcastTree applies.
         t.set_thresholds(2, 3);
         assert_eq!(t.recommend(), TopologyKind::BroadcastTree);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -702,7 +687,6 @@ mod tests {
         assert_eq!(s.max_fan_in, 1);
         assert_eq!(s.current_recommendation, TopologyKind::BroadcastTree);
         assert_eq!(s.recommendation_epoch, 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -727,7 +711,6 @@ mod tests {
         assert_eq!(t2.total_msgs(), 3);
         assert_eq!(t2.fan_out(0), 3);
         assert_eq!(t2.read_recommendation(), TopologyKind::BroadcastTree);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -741,6 +724,5 @@ mod tests {
         t.reset_observations();
         for _ in 0..10 { t.record_send(0, 1).unwrap(); }
         assert_eq!(t.recommend(), TopologyKind::PointToPoint);
-        std::fs::remove_file(&p).ok();
     }
 }

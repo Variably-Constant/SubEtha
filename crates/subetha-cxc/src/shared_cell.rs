@@ -237,11 +237,10 @@ impl<T: Copy + 'static> SharedCell<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-cell-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-cell-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -252,7 +251,6 @@ mod tests {
         assert_eq!(c.get(), 42);
         c.set(99);
         assert_eq!(c.get(), 99);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the current value in place; reset
@@ -260,7 +258,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_value() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let c: SharedCell<u64> = SharedCell::create(&p).unwrap();
         c.set(777);
 
@@ -274,21 +271,18 @@ mod tests {
         let fresh: SharedCell<u64> = SharedCell::reset(&p).unwrap();
         assert_eq!(fresh.get(), 0, "reset left a value behind");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Attaching with a different payload type is refused.
     #[test]
     fn create_refuses_a_mismatched_region() {
         let p = tmp("mismatch");
-        std::fs::remove_file(&p).ok();
         let c: SharedCell<u64> = SharedCell::create(&p).unwrap();
         assert!(matches!(
             SharedCell::<u32>::create(&p),
             Err(SharedCellError::LayoutMismatch),
         ));
         drop(c);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -298,7 +292,6 @@ mod tests {
         let reader: SharedCell<u64> = SharedCell::open(&p).unwrap();
         writer.set(0xDEAD_BEEF);
         assert_eq!(reader.get(), 0xDEAD_BEEF);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -313,7 +306,6 @@ mod tests {
         // Each set advances by 2 (odd-then-even).
         assert_eq!(v1, v0 + 2);
         assert_eq!(v2, v0 + 4);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -326,7 +318,6 @@ mod tests {
         }
         let c2: SharedCell<u64> = SharedCell::open(&p).unwrap();
         assert_eq!(c2.get(), 7777);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -337,7 +328,6 @@ mod tests {
             Err(SharedCellError::LayoutMismatch) => {}
             other => panic!("expected LayoutMismatch, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -350,7 +340,6 @@ mod tests {
         let pt = Point { x: 1.0, y: 2.0, z: 3.0 };
         c.set(pt);
         assert_eq!(c.get(), pt);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -383,7 +372,6 @@ mod tests {
         let final_w = writer.join().unwrap();
         for h in handles { h.join().unwrap(); }
         assert!(c.get() >= final_w);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -397,6 +385,5 @@ mod tests {
             Err(SharedCellError::PayloadTooLarge) => {}
             other => panic!("expected PayloadTooLarge, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 }

@@ -328,11 +328,10 @@ const _: () = {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-umbra-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-umbra-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -383,7 +382,6 @@ mod tests {
         assert_eq!(u.prefix, 0x0000_BEEF);
         assert_eq!(u.resolve(&region).unwrap(), value);
         drop(region);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -400,7 +398,6 @@ mod tests {
         // Different value → different prefix (with overwhelming probability).
         assert_ne!(a.prefix, c.prefix);
         drop(region);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -413,7 +410,6 @@ mod tests {
         assert_eq!(u.prefix, 0x1234_5678);
         assert_eq!(u.resolve(&region).unwrap(), 12345);
         drop(region);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -439,7 +435,6 @@ mod tests {
             .expect("prefix 42 should exist (i=41)");
         assert_eq!(hit.resolve(&region).unwrap(), 41 * 1000);
         drop(region);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -483,7 +478,6 @@ mod tests {
         assert_eq!(recovered.resolve(&reader_region).unwrap(), 7777);
         drop(writer_region);
         drop(reader_region);
-        std::fs::remove_file(&p).ok();
     }
 
     // ============== Extension API tests ==============
@@ -622,8 +616,6 @@ mod tests {
         }
         drop(region);
         drop(pointers);
-        std::fs::remove_file(&p_region).ok();
-        std::fs::remove_file(&p_vec).ok();
     }
 
     /// The signature catalog lets `MmfDispatcher` route by

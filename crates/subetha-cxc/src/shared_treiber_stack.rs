@@ -368,11 +368,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-stack-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-stack-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -382,7 +381,6 @@ mod tests {
         assert!(s.is_empty());
         assert_eq!(s.pop(), None);
         assert_eq!(s.peek(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with pushed entries in place; reset is
@@ -390,7 +388,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_entries() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let s: SharedTreiberStack<u64> = SharedTreiberStack::create(&p, 16).unwrap();
         s.push(777).unwrap();
 
@@ -408,7 +405,6 @@ mod tests {
         let fresh: SharedTreiberStack<u64> = SharedTreiberStack::reset(&p, 16).unwrap();
         assert!(fresh.is_empty(), "reset kept an entry");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -422,7 +418,6 @@ mod tests {
         assert_eq!(s.pop(), Some(20));
         assert_eq!(s.pop(), Some(10));
         assert_eq!(s.pop(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -434,7 +429,6 @@ mod tests {
         assert_eq!(s.peek(), Some(42));
         assert_eq!(s.pop(), Some(42));
         assert_eq!(s.peek(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -446,7 +440,6 @@ mod tests {
         // After popping, can push again.
         s.pop();
         s.push(99).unwrap();
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -459,7 +452,6 @@ mod tests {
         for i in 100..104 { s.push(i).unwrap(); }
         assert_eq!(s.pop(), Some(103));
         assert_eq!(s.pop(), Some(102));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -473,7 +465,6 @@ mod tests {
         assert_eq!(s.approx_len(), 3);
         s.pop();
         assert_eq!(s.approx_len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -487,7 +478,6 @@ mod tests {
         assert_eq!(r.pop(), Some(7));
         assert_eq!(w.pop(), Some(42));
         assert!(r.is_empty());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -501,7 +491,6 @@ mod tests {
         s.push(Frame { pc: 0x2000, sp: 0xFE00 }).unwrap();
         assert_eq!(s.pop(), Some(Frame { pc: 0x2000, sp: 0xFE00 }));
         assert_eq!(s.pop(), Some(Frame { pc: 0x1000, sp: 0xFF00 }));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -532,7 +521,6 @@ mod tests {
             .collect();
         expected.sort();
         assert_eq!(all, expected);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -559,7 +547,6 @@ mod tests {
         total.sort();
         let expected: Vec<u32> = (0..500u32).collect();
         assert_eq!(total, expected, "no items should be lost or duplicated");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -576,6 +563,5 @@ mod tests {
         assert_eq!(s2.pop(), Some(3));
         assert_eq!(s2.pop(), Some(2));
         assert_eq!(s2.pop(), Some(1));
-        std::fs::remove_file(&p).ok();
     }
 }

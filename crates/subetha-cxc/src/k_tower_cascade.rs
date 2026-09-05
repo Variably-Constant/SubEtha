@@ -444,11 +444,10 @@ impl<T: Copy + Default + 'static, const DEPTH: usize> CascadeResolverN<T, DEPTH>
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-cascade-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-cascade-{name}-{}.bin", std::process::id()))
     }
 
     // ===== Pointer-type tests =====
@@ -529,8 +528,6 @@ mod tests {
         assert_eq!(r.get(c1).unwrap(), 100);
         assert_eq!(r.get(c2).unwrap(), 200);
         assert_eq!(r.get(c3).unwrap(), 300);
-        std::fs::remove_file(&op).ok();
-        std::fs::remove_file(&ip).ok();
     }
 
     #[test]
@@ -546,8 +543,6 @@ mod tests {
         let c_reconstructed: KTowerCascade<u64, 2>
             = KTowerCascade::from_raw(raw);
         assert_eq!(reader.get(c_reconstructed).unwrap(), 7777);
-        std::fs::remove_file(&op).ok();
-        std::fs::remove_file(&ip).ok();
     }
 
     // ===== Generic CascadeResolverN tests =====
@@ -560,7 +555,7 @@ mod tests {
         let i2 = tmp("rn-i2");
         let r: CascadeResolverN<u64, 4> = CascadeResolverN::create(
             &lp, 64,
-            vec![(i0.clone(), 16), (i1.clone(), 16), (i2.clone(), 16)],
+            vec![(i0.to_path_buf(), 16), (i1.to_path_buf(), 16), (i2.to_path_buf(), 16)],
         ).unwrap();
         // Each insert picks a distinct top slot via append().
         let c1 = r.append(1111).unwrap();
@@ -569,7 +564,6 @@ mod tests {
         assert_eq!(r.get(c1).unwrap(), 1111);
         assert_eq!(r.get(c2).unwrap(), 2222);
         assert_eq!(r.get(c3).unwrap(), 3333);
-        for p in [&lp, &i0, &i1, &i2] { std::fs::remove_file(p).ok(); }
     }
 
     #[test]
@@ -577,11 +571,10 @@ mod tests {
         let lp = tmp("rn-nil-leaf");
         let i0 = tmp("rn-nil-i0");
         let r: CascadeResolverN<u64, 2> = CascadeResolverN::create(
-            &lp, 8, vec![(i0.clone(), 8)],
+            &lp, 8, vec![(i0.to_path_buf(), 8)],
         ).unwrap();
         let nil = KTowerCascade::<u64, 2>::NIL;
         assert!(matches!(r.get(nil), Err(CascadeError::NilAtLevel(0))));
-        for p in [&lp, &i0] { std::fs::remove_file(p).ok(); }
     }
 
     #[test]
@@ -592,12 +585,11 @@ mod tests {
         let lp = tmp("rn-struct-leaf");
         let i0 = tmp("rn-struct-i0");
         let r: CascadeResolverN<Entry, 2> = CascadeResolverN::create(
-            &lp, 8, vec![(i0.clone(), 8)],
+            &lp, 8, vec![(i0.to_path_buf(), 8)],
         ).unwrap();
         let entry = Entry { key: 42, payload: 999 };
         let c = r.append(entry).unwrap();
         assert_eq!(r.get(c).unwrap(), entry);
-        for p in [&lp, &i0] { std::fs::remove_file(p).ok(); }
     }
 
     #[test]
@@ -607,16 +599,15 @@ mod tests {
         let lp = tmp("pi-leaf");
         let i0 = tmp("pi-i0");
         let r_a: CascadeResolverN<u64, 2> = CascadeResolverN::create(
-            &lp, 8, vec![(i0.clone(), 8)],
+            &lp, 8, vec![(i0.to_path_buf(), 8)],
         ).unwrap();
         let c = r_a.append(0xCAFE_BABE).unwrap();
         let raw = c.raw();
         let r_b: CascadeResolverN<u64, 2> = CascadeResolverN::open(
-            &lp, 8, vec![(i0.clone(), 8)],
+            &lp, 8, vec![(i0.to_path_buf(), 8)],
         ).unwrap();
         let c_b = KTowerCascade::<u64, 2>::from_raw(raw);
         assert_eq!(r_b.get(c_b).unwrap(), 0xCAFE_BABE);
-        for p in [&lp, &i0] { std::fs::remove_file(p).ok(); }
     }
 
     #[test]
@@ -627,18 +618,17 @@ mod tests {
         let c_raw;
         {
             let r: CascadeResolverN<u64, 3> = CascadeResolverN::create(
-                &lp, 8, vec![(i0.clone(), 8), (i1.clone(), 8)],
+                &lp, 8, vec![(i0.to_path_buf(), 8), (i1.to_path_buf(), 8)],
             ).unwrap();
             let c = r.append(5555).unwrap();
             c_raw = c.raw();
             r.flush().unwrap();
         }
         let r2: CascadeResolverN<u64, 3> = CascadeResolverN::open(
-            &lp, 8, vec![(i0.clone(), 8), (i1.clone(), 8)],
+            &lp, 8, vec![(i0.to_path_buf(), 8), (i1.to_path_buf(), 8)],
         ).unwrap();
         let c_restored = KTowerCascade::<u64, 3>::from_raw(c_raw);
         assert_eq!(r2.get(c_restored).unwrap(), 5555);
-        for p in [&lp, &i0, &i1] { std::fs::remove_file(p).ok(); }
     }
 
     #[test]

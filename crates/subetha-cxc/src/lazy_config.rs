@@ -145,11 +145,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-lazyconf-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-lazyconf-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -158,7 +157,6 @@ mod tests {
         let c: LazyConfig<u64> = LazyConfig::create(&p).unwrap();
         assert_eq!(c.try_get(), None);
         assert!(!c.is_loaded());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -169,7 +167,6 @@ mod tests {
         assert_eq!(v, 12345);
         assert!(c.is_loaded());
         assert_eq!(c.try_get(), Some(12345));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -181,7 +178,6 @@ mod tests {
         // Second fetcher must not run; if it ran, the panic fires.
         let v = c.get_or_fetch(|| panic!("must not run on loaded config"));
         assert_eq!(v, 100);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -207,7 +203,6 @@ mod tests {
         assert!(results.iter().all(|v| *v == 9999));
         assert_eq!(runs.load(Ordering::Acquire), 1,
                    "fetcher must run EXACTLY once across 16 concurrent callers");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -221,7 +216,6 @@ mod tests {
         assert_eq!(v_a, 7777);
         assert_eq!(v_b, 7777);
         assert!(b.is_loaded());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -231,7 +225,6 @@ mod tests {
         assert!(c.force_set(42));
         assert!(!c.force_set(99));
         assert_eq!(c.try_get(), Some(42));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -248,7 +241,6 @@ mod tests {
         // Subsequent fetch returns cached value.
         let v = c2.get_or_fetch(|| panic!("must not run on already-loaded config"));
         assert_eq!(v, 8888);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -264,6 +256,5 @@ mod tests {
             debug: 1,
         });
         assert_eq!(loaded, ConfigBytes { max_conns: 256, ttl_ms: 60_000, debug: 1 });
-        std::fs::remove_file(&p).ok();
     }
 }

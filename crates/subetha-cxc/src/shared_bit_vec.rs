@@ -386,11 +386,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-bitvec-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-bitvec-{name}-{}.bin", std::process::id()))
     }
 
     /// A second create attaches with set bits in place; reset is what
@@ -398,7 +397,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_bits() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let b = SharedBitVec::create(&p, 100).unwrap();
         b.set(42).unwrap();
 
@@ -416,7 +414,6 @@ mod tests {
         let fresh = SharedBitVec::reset(&p, 100).unwrap();
         assert!(fresh.is_all_clear(), "reset left a bit set");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -429,7 +426,6 @@ mod tests {
         for i in 0..100 {
             assert!(!b.get(i).unwrap(), "bit {i} should start clear");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -448,7 +444,6 @@ mod tests {
         assert!(!b.get(0).unwrap());
         // Setting again returns the previous value (now true).
         assert!(b.set(5).unwrap());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -462,7 +457,6 @@ mod tests {
         assert!(b.get(20).unwrap());
         // Clearing already-clear bit returns false.
         assert!(!b.clear(0).unwrap());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -473,7 +467,6 @@ mod tests {
         assert!(b.get(3).unwrap());
         assert!(!b.toggle(3).unwrap());  // was 1, now 0
         assert!(!b.get(3).unwrap());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -485,7 +478,6 @@ mod tests {
         }
         assert_eq!(b.count_ones(), 7);
         assert_eq!(b.count_zeros(), 200 - 7);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -497,7 +489,6 @@ mod tests {
             let expected = (10..20).contains(&i);
             assert_eq!(b.get(i).unwrap(), expected, "bit {i}");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -510,7 +501,6 @@ mod tests {
             assert_eq!(b.get(i).unwrap(), expected, "bit {i}");
         }
         assert_eq!(b.count_ones(), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -524,7 +514,6 @@ mod tests {
             let expected = !(70..130).contains(&i);
             assert_eq!(b.get(i).unwrap(), expected, "bit {i}");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -535,7 +524,6 @@ mod tests {
         assert_eq!(b.set(999).err(), Some(BitVecError::OutOfBounds));
         assert_eq!(b.get(8).err(), Some(BitVecError::OutOfBounds));
         assert_eq!(b.set_range(0, 9).err(), Some(BitVecError::OutOfBounds));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -548,7 +536,6 @@ mod tests {
         b.clear_all();
         assert!(b.is_all_clear());
         for i in 0..130 { assert!(!b.get(i).unwrap()); }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -563,7 +550,6 @@ mod tests {
         assert!(!reader.get(0).unwrap());
         reader.clear(42).unwrap();
         assert!(!writer.get(42).unwrap());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -590,7 +576,6 @@ mod tests {
                 assert!(b.get(t * per_thread + i).unwrap());
             }
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -608,7 +593,6 @@ mod tests {
         }
         for h in handles { h.join().unwrap(); }
         assert!(b.is_all_set(), "every bit in the word should be set");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -630,7 +614,6 @@ mod tests {
         assert_eq!(true_count, 15);
         assert!(b.get(42).unwrap());
         assert_eq!(b.count_ones(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -645,7 +628,6 @@ mod tests {
         assert_eq!(b2.count_ones(), 5);
         for i in [5, 50, 100, 150, 199] { assert!(b2.get(i).unwrap()); }
         for i in [0, 4, 6, 49, 51] { assert!(!b2.get(i).unwrap()); }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -654,19 +636,16 @@ mod tests {
         let b1 = SharedBitVec::create(&p, 64).unwrap();
         assert_eq!(b1.capacity_words(), 1);
         drop(b1);
-        std::fs::remove_file(&p).ok();
 
         let p2 = tmp("words2");
         let b2 = SharedBitVec::create(&p2, 65).unwrap();
         assert_eq!(b2.capacity_words(), 2);
         drop(b2);
-        std::fs::remove_file(&p2).ok();
 
         let p3 = tmp("words3");
         let b3 = SharedBitVec::create(&p3, 1000).unwrap();
         assert_eq!(b3.capacity_words(), 16);  // ceil(1000/64) = 16
         drop(b3);
-        std::fs::remove_file(&p3).ok();
     }
 
     #[test]
@@ -685,6 +664,5 @@ mod tests {
         // Re-claim slot 5.
         assert!(!b.set(5).unwrap());
         assert_eq!(b.count_ones(), 10);
-        std::fs::remove_file(&p).ok();
     }
 }

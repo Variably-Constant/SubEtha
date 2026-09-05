@@ -567,7 +567,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_elements() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let v = SharedVec::<u64>::create(&p, 16).unwrap();
         v.push_back(777).unwrap();
 
@@ -586,7 +585,6 @@ mod tests {
         let fresh = SharedVec::<u64>::reset(&p, 16).unwrap();
         assert_eq!(fresh.len(), 0, "reset kept an element");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -600,7 +598,6 @@ mod tests {
         v.for_each(|i, x| seen.push((i, *x)));
         assert_eq!(seen.len(), 100, "capacity beyond len is not visited");
         assert!(seen.iter().enumerate().all(|(n, (i, x))| *i == n && *x == n as u64 * 3));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -621,7 +618,6 @@ mod tests {
         let mut over = Vec::new();
         v.for_each_range(30, 9999, |_, x| over.push(*x));
         assert_eq!(over.len(), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -634,7 +630,6 @@ mod tests {
         let mut walked = Vec::new();
         v.for_each(|_, x| walked.push(*x));
         assert_eq!(walked, v.snapshot());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -658,7 +653,6 @@ mod tests {
         r.clear();
         assert_eq!(r.len(), 10, "clear on a read-only vec changes nothing");
         r.flush().unwrap();
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -673,14 +667,12 @@ mod tests {
             SharedVec::<u64>::open_read_only(&p, 32).err(),
             Some(VecError::LayoutMismatch)
         );
-        std::fs::remove_file(&p).ok();
     }
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-vec-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-vec-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -691,7 +683,6 @@ mod tests {
         assert_eq!(v.len(), 0);
         assert!(v.is_empty());
         assert_eq!(v.get(0), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -707,7 +698,6 @@ mod tests {
             assert_eq!(v.get(i), Some((i as u32) * 10));
         }
         assert_eq!(v.get(5), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -717,7 +707,6 @@ mod tests {
         for i in 0..4u32 { v.push_back(i).unwrap(); }
         assert_eq!(v.push_back(99).err(), Some(VecError::Full));
         assert_eq!(v.len(), 4);  // rolled back
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -732,7 +721,6 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v.pop_back(), Some(10));
         assert_eq!(v.pop_back(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -745,7 +733,6 @@ mod tests {
         assert_eq!(v.get(0), Some(100));
         assert_eq!(v.get(1), Some(2));
         assert_eq!(v.set(2, 200).err(), Some(VecError::OutOfBounds));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -760,7 +747,6 @@ mod tests {
         // After clear, push works fresh.
         v.push_back(42).unwrap();
         assert_eq!(v.get(0), Some(42));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -770,7 +756,6 @@ mod tests {
         for i in 0..7u32 { v.push_back(i + 100).unwrap(); }
         let snap = v.snapshot();
         assert_eq!(snap, vec![100, 101, 102, 103, 104, 105, 106]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -783,7 +768,6 @@ mod tests {
         reader.push_back(888).unwrap();
         assert_eq!(writer.get(1), Some(888));
         assert_eq!(writer.len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -814,7 +798,6 @@ mod tests {
                 "indices must form a contiguous 0..N sequence");
         }
         assert_eq!(v.len(), (n_threads * per_thread as usize));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -826,7 +809,6 @@ mod tests {
         let p = tmp("too-large");
         let r = SharedVec::<Big>::create(&p, 4);
         assert_eq!(r.err(), Some(VecError::PayloadTooLarge));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -840,7 +822,6 @@ mod tests {
         v.push_back(Point { x: -1.5, y: 0.0, z: 7.25 }).unwrap();
         assert_eq!(v.get(0), Some(Point { x: 1.0, y: 2.0, z: 3.0 }));
         assert_eq!(v.get(1), Some(Point { x: -1.5, y: 0.0, z: 7.25 }));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -856,7 +837,6 @@ mod tests {
         for i in 0..4 {
             assert_eq!(v2.get(i), Some((i as u32) * 100));
         }
-        std::fs::remove_file(&p).ok();
     }
 
     /// `len` covers only committed slots. Many pushers race readers
@@ -868,7 +848,6 @@ mod tests {
     #[test]
     fn length_never_covers_a_slot_still_being_written() {
         let p = tmp("commit-order");
-        std::fs::remove_file(&p).ok();
         let v: Arc<SharedVec<u32>> = Arc::new(SharedVec::create(&p, 4096).unwrap());
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -916,7 +895,6 @@ mod tests {
         for r in readers {
             r.join().unwrap();
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -947,6 +925,5 @@ mod tests {
         });
         writer.join().unwrap();
         reader.join().unwrap();
-        std::fs::remove_file(&p).ok();
     }
 }

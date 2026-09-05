@@ -298,11 +298,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-cms-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-cms-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -313,7 +312,6 @@ mod tests {
         assert_eq!(cms.w(), 256);
         assert_eq!(cms.total_inserts(), 0);
         assert_eq!(cms.estimate_count(b"anything"), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with live counts in place; the
@@ -321,7 +319,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_counts() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let cms = SharedCountMinSketch::create(&p, 4, 256).unwrap();
         cms.insert(b"key");
         cms.insert(b"key");
@@ -337,7 +334,6 @@ mod tests {
         assert_eq!(cms.estimate_count(b"key"), 0, "reset did not zero for every handle");
         drop(cms);
         drop(cms2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -351,7 +347,6 @@ mod tests {
             SharedCountMinSketch::create(&p, 4, 0).err(),
             Some(CMSError::InvalidConfig)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -364,7 +359,6 @@ mod tests {
         assert!(cms.estimate_count(b"foo") >= 5);
         assert!(cms.estimate_count(b"bar") >= 3);
         assert_eq!(cms.total_inserts(), 8);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -377,8 +371,6 @@ mod tests {
         assert_eq!(a.estimate_count(b"item"), b.estimate_count(b"item"));
         assert_eq!(a.total_inserts(), b.total_inserts());
         let _p = p;
-        std::fs::remove_file(tmp("insert-n-a")).ok();
-        std::fs::remove_file(tmp("insert-n-b")).ok();
     }
 
     #[test]
@@ -400,7 +392,6 @@ mod tests {
         }
         // Allow up to 10% (well above theoretical bound).
         assert!(fp < 10, "expected < 10 false positives, got {fp}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -423,7 +414,6 @@ mod tests {
             let light = cms.estimate_count(format!("light-{i}").as_bytes());
             assert!(light < 20, "light item {i} estimate {light} should be small");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -435,7 +425,6 @@ mod tests {
         cms.reset();
         assert_eq!(cms.estimate_count(b"x"), 0);
         assert_eq!(cms.total_inserts(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -447,7 +436,6 @@ mod tests {
         w.insert(b"shared");
         assert!(r.estimate_count(b"shared") >= 2);
         assert_eq!(r.total_inserts(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -462,7 +450,6 @@ mod tests {
             SharedCountMinSketch::open(&p, 4, 512),
             Err(CMSError::LayoutMismatch)
         ));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -490,7 +477,6 @@ mod tests {
         let est = cms.estimate_count(b"shared-item");
         assert!(est >= 4000, "concurrent estimate {est} should be >= 4000");
         assert_eq!(cms.total_inserts(), 4000);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -504,6 +490,5 @@ mod tests {
         let cms2 = SharedCountMinSketch::open(&p, 4, 256).unwrap();
         assert!(cms2.estimate_count(b"persisted") >= 50);
         assert_eq!(cms2.total_inserts(), 50);
-        std::fs::remove_file(&p).ok();
     }
 }

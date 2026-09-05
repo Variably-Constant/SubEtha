@@ -471,11 +471,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-deque-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-deque-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -488,7 +487,6 @@ mod tests {
         assert_eq!(popped, (0..10).rev().collect::<Vec<_>>(),
                    "Chase-Lev owner pop is LIFO");
         drop(dq);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -498,7 +496,6 @@ mod tests {
         assert_eq!(dq.pop(), None);
         assert_eq!(dq.approx_len(), 0);
         drop(dq);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -508,7 +505,6 @@ mod tests {
         for i in 0..4u64 { dq.push(&i).unwrap(); }
         assert!(matches!(dq.push(&999), Err(DequeError::Full)));
         drop(dq);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -532,7 +528,6 @@ mod tests {
         while let Some(v) = thief.steal() { stolen.push(v); }
         assert_eq!(stolen, (0..5).collect::<Vec<_>>());
         drop(thief); drop(owner);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -560,7 +555,6 @@ mod tests {
         let sum = consumer.join().unwrap();
         assert_eq!(sum, (0..n).sum::<u64>());
         drop(owner);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -578,7 +572,7 @@ mod tests {
         });
         let mut thieves = Vec::new();
         for _ in 0..4 {
-            let path_t = path.clone();
+            let path_t = path.to_path_buf();
             let total_t = total.clone();
             thieves.push(thread::spawn(move || {
                 let h = SharedDeque::<u64>::open_as_thief(&path_t).unwrap();
@@ -610,7 +604,6 @@ mod tests {
         let actual = total.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(actual, expected, "all pushed values must be accounted for");
         drop(drain); drop(owner);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -620,6 +613,5 @@ mod tests {
         let result = SharedDeque::<u128>::open_as_thief(&path);
         assert!(matches!(result, Err(DequeError::SlotBytesMismatch { .. })));
         drop(_o);
-        std::fs::remove_file(&path).ok();
     }
 }

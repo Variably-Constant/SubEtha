@@ -279,11 +279,10 @@ impl SharedLeaderElection {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-leader-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-leader-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -295,7 +294,6 @@ mod tests {
         assert_eq!(e.current_leader(), Some(42));
         assert!(e.am_i_leader(42));
         assert!(!e.am_i_leader(99));
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the sitting leader in place;
@@ -303,7 +301,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_leader() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let e = SharedLeaderElection::create(&p).unwrap();
         assert!(e.try_claim_leadership(42, 3));
 
@@ -317,7 +314,6 @@ mod tests {
         let fresh = SharedLeaderElection::reset(&p).unwrap();
         assert_eq!(fresh.current_leader(), None, "reset left a leader seated");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -332,7 +328,6 @@ mod tests {
         // Higher PID cannot reclaim while 100 is alive (in the same epoch).
         assert!(!e.try_claim_leadership(500, 3));
         assert_eq!(e.current_leader(), Some(100));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -342,7 +337,6 @@ mod tests {
         assert!(e.try_claim_leadership(42, 3));
         // Same PID claiming again is a no-op success.
         assert!(e.try_claim_leadership(42, 3));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -356,7 +350,6 @@ mod tests {
         // Higher PID can now claim because heartbeat is stale.
         assert!(e.try_claim_leadership(500, 1));
         assert_eq!(e.current_leader(), Some(500));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -370,7 +363,6 @@ mod tests {
         assert!(e.beat_as_leader(100));
         // Higher PID still can't preempt (heartbeat fresh).
         assert!(!e.try_claim_leadership(500, 1));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -388,7 +380,6 @@ mod tests {
         // Same-PID re-claim is a no-op; term stays.
         assert!(e.try_claim_leadership(100, 3));
         assert_eq!(e.election_term(), t2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -400,7 +391,6 @@ mod tests {
         assert_eq!(e.current_leader(), None);
         // Non-leader step_down is a no-op.
         assert!(!e.step_down(99));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -412,7 +402,6 @@ mod tests {
         assert_eq!(e_b.current_leader(), Some(100));
         assert!(e_b.am_i_leader(100));
         assert!(!e_b.am_i_leader(200));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -425,7 +414,6 @@ mod tests {
         // 500's beat now returns false.
         assert!(!e.beat_as_leader(500));
         assert!(e.beat_as_leader(100));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -438,6 +426,5 @@ mod tests {
         }
         let e2 = SharedLeaderElection::open(&p).unwrap();
         assert_eq!(e2.current_leader(), Some(42));
-        std::fs::remove_file(&p).ok();
     }
 }

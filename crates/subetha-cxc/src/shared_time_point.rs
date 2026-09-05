@@ -427,11 +427,10 @@ impl<T: Copy + 'static> SharedTimePointTile<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-tile-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-tile-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -440,7 +439,6 @@ mod tests {
         let t: SharedTimePointTile<u64> = SharedTimePointTile::create(&p).unwrap();
         assert_eq!(t.visible_mask(u64::MAX), 0);
         assert!(t.is_empty());
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with occupied slots in place; reset is
@@ -448,7 +446,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_slots() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let t: SharedTimePointTile<u64> = SharedTimePointTile::create(&p).unwrap();
         t.insert(10, 777).unwrap();
 
@@ -466,7 +463,6 @@ mod tests {
         let fresh: SharedTimePointTile<u64> = SharedTimePointTile::reset(&p).unwrap();
         assert!(fresh.is_empty(), "reset left a slot occupied");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -483,7 +479,6 @@ mod tests {
         // Snapshot u64::MAX sees all three.
         let m_all = t.visible_mask(u64::MAX);
         assert_eq!(m_all.count_ones(), 3);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -495,7 +490,6 @@ mod tests {
         }
         assert!(t.is_full());
         assert_eq!(t.insert(99, 999).unwrap_err(), TileError::Full);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -510,7 +504,6 @@ mod tests {
         assert_eq!(l2, l0, "freed lane reused");
         assert_eq!(t.at(l1), Some((2, 200)));
         assert_eq!(t.at(l2), Some((3, 300)));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -522,7 +515,6 @@ mod tests {
         let m = t.visible_mask(0);
         assert_eq!(m, 0b1);
         assert_eq!(m.count_ones(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -542,7 +534,6 @@ mod tests {
             }
             assert_eq!(simd, scalar, "snap={snap}: simd={simd:#b} scalar={scalar:#b}");
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -555,7 +546,6 @@ mod tests {
         assert_eq!(reader.visible_count(u64::MAX), 2);
         let m = reader.visible_mask(15);
         assert_eq!(m.count_ones(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -572,6 +562,5 @@ mod tests {
         assert_eq!(t2.visible_count(u64::MAX), 2);
         assert_eq!(t2.at(0), Some((7, 70)));
         assert_eq!(t2.at(1), Some((8, 80)));
-        std::fs::remove_file(&p).ok();
     }
 }

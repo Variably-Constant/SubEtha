@@ -248,11 +248,10 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-once-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-once-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -261,7 +260,6 @@ mod tests {
         let c: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
         assert!(!c.is_initialized());
         assert_eq!(c.get(), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -271,7 +269,6 @@ mod tests {
         assert!(c.set(42));
         assert!(!c.set(99));
         assert_eq!(c.get(), Some(42));
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the initialized value in place -
@@ -280,7 +277,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_value() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let c: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
         assert!(c.set(42));
 
@@ -296,21 +292,18 @@ mod tests {
         assert_eq!(fresh.get(), None, "reset left a value behind");
         assert!(fresh.set(7));
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Attaching with a different payload type is refused.
     #[test]
     fn create_refuses_a_mismatched_region() {
         let p = tmp("mismatch");
-        std::fs::remove_file(&p).ok();
         let c: SharedOnceCell<u64> = SharedOnceCell::create(&p).unwrap();
         assert!(matches!(
             SharedOnceCell::<u32>::create(&p),
             Err(SharedOnceError::LayoutMismatch),
         ));
         drop(c);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -322,7 +315,6 @@ mod tests {
         writer.set(7777);
         assert!(reader.is_initialized());
         assert_eq!(reader.get(), Some(7777));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -348,7 +340,6 @@ mod tests {
         assert!(results.iter().all(|v| *v == 1234));
         assert_eq!(runs.load(Ordering::Acquire), 1,
                    "init closure must run exactly once across 8 threads");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -365,7 +356,6 @@ mod tests {
         // Set must fail on reopen because the cell is already init.
         assert!(!c2.set(9999));
         assert_eq!(c2.get(), Some(8888));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -379,7 +369,6 @@ mod tests {
             Err(SharedOnceError::PayloadTooLarge) => {}
             other => panic!("expected PayloadTooLarge, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -390,6 +379,5 @@ mod tests {
             Err(SharedOnceError::LayoutMismatch) => {}
             other => panic!("expected LayoutMismatch, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 }

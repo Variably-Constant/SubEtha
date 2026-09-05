@@ -35,6 +35,14 @@ impl AsRef<Path> for TmpFile {
     }
 }
 
+/// `PathBuf: From<&T>` needs this, for constructors that take
+/// `impl Into<PathBuf>`.
+impl AsRef<std::ffi::OsStr> for TmpFile {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
 impl Deref for TmpFile {
     type Target = Path;
     fn deref(&self) -> &Path {

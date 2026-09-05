@@ -448,11 +448,10 @@ mod tests {
     use std::thread;
     use std::sync::Arc;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-handle-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-handle-{name}-{}.bin", std::process::id()))
     }
 
     /// A second create attaches with live handles in place; reset is
@@ -460,7 +459,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_handles() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let t: SharedHandleTable<u64> = SharedHandleTable::create(&p, 16).unwrap();
         let h = t.insert(777).unwrap();
 
@@ -479,7 +477,6 @@ mod tests {
         assert_eq!(fresh.get(h), None, "reset left a handle live");
         assert_eq!(fresh.len(), 0);
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -495,7 +492,6 @@ mod tests {
         assert!(!t.contains(h));
         assert_eq!(t.get(h), None);
         assert_eq!(t.len(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -510,7 +506,6 @@ mod tests {
         assert_ne!(h2.generation(), h1.generation(), "generation differs");
         assert_eq!(t.get(h1), None, "stale h1 must not see h2's value");
         assert_eq!(t.get(h2), Some(200));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -520,7 +515,6 @@ mod tests {
         let _val = t.insert(1).unwrap();
         let _val = t.insert(2).unwrap();
         assert_eq!(t.insert(3), Err(HandleTableError::Full));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -534,7 +528,6 @@ mod tests {
         // Confirm remove returns the just-inserted value.
         assert_eq!(writer.remove(h), Some(777));
         assert_eq!(reader.get(h), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -573,7 +566,6 @@ mod tests {
         }
         for h in handles { h.join().unwrap(); }
         assert_eq!(t.len(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -591,7 +583,6 @@ mod tests {
         assert_eq!(t2.get(h1), Some(11));
         assert_eq!(t2.get(h2), Some(22));
         assert_eq!(t2.len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -601,7 +592,6 @@ mod tests {
         assert_eq!(t.get(Handle::NULL), None);
         assert!(!t.contains(Handle::NULL));
         assert_eq!(t.remove(Handle::NULL), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -625,7 +615,6 @@ mod tests {
         let item = Item { id: 42, weight: 1.5, flags: 0xFF };
         let h = t.insert(item).unwrap();
         assert_eq!(t.get(h), Some(item));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -639,6 +628,5 @@ mod tests {
             Err(HandleTableError::PayloadTooLarge) => {}
             other => panic!("expected PayloadTooLarge, got {:?}", other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 }

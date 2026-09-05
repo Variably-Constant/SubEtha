@@ -1025,11 +1025,10 @@ mod tests {
     use super::*;
     use std::thread;
 
-    fn tmp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-test-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp_path(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-test-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -1041,7 +1040,6 @@ mod tests {
         // Reopen with same capacity.
         let r2 = SharedRing::open(&p, 16).unwrap();
         assert_eq!(r2.capacity(), 16);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Simulate a producer crashing between claim and publish: take
@@ -1257,7 +1255,6 @@ mod tests {
         let n = lazy.try_pop(&mut out).unwrap();
         assert_eq!(n, PAYLOAD_BYTES);
         assert_eq!(&out[..1], &[1u8]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1278,7 +1275,6 @@ mod tests {
         let r2 = lazy.get().unwrap() as *const SharedRing;
         // Second .get() must return the same materialised instance.
         assert_eq!(r1, r2, "OnceLock returned different instances across calls");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1290,7 +1286,6 @@ mod tests {
             other => panic!("expected LayoutMismatch, got {:?}",
                             other.as_ref().err()),
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1312,7 +1307,6 @@ mod tests {
         }
         // Now empty.
         assert_eq!(r.try_pop(&mut buf).unwrap_err(), RingError::Empty);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1356,7 +1350,6 @@ mod tests {
         }
         for h in handles { h.join().unwrap(); }
         assert_eq!(consumed.load(std::sync::atomic::Ordering::Acquire), total);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1375,7 +1368,6 @@ mod tests {
         assert_eq!(&buf[..4], &[1, 2, 3, 4]);
         let _val = r2.try_pop(&mut buf).unwrap();
         assert_eq!(&buf[..4], &[5, 6, 7, 8]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1389,7 +1381,6 @@ mod tests {
         let mut buf = [0u8; PAYLOAD_BYTES];
         let _val = consumer.try_pop(&mut buf).unwrap();
         assert_eq!(&buf[..3], b"abc");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1404,7 +1395,6 @@ mod tests {
         let mut buf = [0u8; PAYLOAD_BYTES];
         let _val = r.try_pop(&mut buf).unwrap();
         assert_eq!(r.approx_len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1413,7 +1403,6 @@ mod tests {
         let r = SharedRing::create(&p, 4).unwrap();
         let oversized = vec![0u8; PAYLOAD_BYTES + 1];
         assert_eq!(r.try_push(&oversized).unwrap_err(), RingError::PayloadTooLarge);
-        std::fs::remove_file(&p).ok();
     }
 
     /// 64-byte-aligned heap region for exercising the Vyukov

@@ -346,11 +346,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-ratelim-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-ratelim-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -360,7 +359,6 @@ mod tests {
         assert_eq!(r.capacity(), 100);
         assert_eq!(r.refill_rate_per_sec(), 10);
         assert_eq!(r.available(), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the live token count in place;
@@ -368,7 +366,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_the_bucket() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let r = SharedRateLimiter::create(&p, 100, 1).unwrap();
         r.try_acquire(40).unwrap();
 
@@ -390,7 +387,6 @@ mod tests {
         assert_eq!(r.available(), 100, "reset did not refill for every handle");
         drop(r);
         drop(r2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -404,7 +400,6 @@ mod tests {
             SharedRateLimiter::create(&p, 10, 0).err(),
             Some(RateLimiterError::InvalidConfig)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -416,7 +411,6 @@ mod tests {
         // available may include a few refilled tokens (microsecond
         // elapsed at rate=1/s gives < 1 token). Should be near 70.
         assert!((70..=71).contains(&avail), "after 30-token acquire from cap 100, available={avail} should be ~70");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -432,7 +426,6 @@ mod tests {
             }
             other => panic!("expected InsufficientTokens, got {other:?}"),
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -456,7 +449,6 @@ mod tests {
             after + 5 >= lo && after <= hi + 5,
             "over {lo}..{hi}ms at 1000/s, available={after} should track elapsed"
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -468,7 +460,6 @@ mod tests {
         // Wait long enough that uncapped refill exceeds capacity.
         thread::sleep(Duration::from_millis(100));  // refills 1000 uncapped
         assert_eq!(r.available(), 50, "available should clamp to capacity");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -487,7 +478,6 @@ mod tests {
         // fast the scheduler is rather than what the limiter does.
         assert!(elapsed >= Duration::from_millis(5),
             "should have waited some time, got {elapsed:?}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -501,7 +491,6 @@ mod tests {
         assert!(matches!(result, Err(RateLimiterError::Timeout)));
         assert!(elapsed >= Duration::from_millis(40),
             "should have waited ~50ms, got {elapsed:?}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -511,7 +500,6 @@ mod tests {
         // Requesting more than capacity can never be satisfied.
         let result = r.acquire_or_wait(100, Duration::from_secs(10));
         assert!(matches!(result, Err(RateLimiterError::InsufficientTokens { .. })));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -539,7 +527,6 @@ mod tests {
         assert!(total <= 101, "total acquired {total} should not exceed capacity {} + tiny refill", 100);
         // We should have acquired exactly the capacity (or very close).
         assert!(total >= 95, "total acquired {total} should be near capacity 100");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -561,7 +548,6 @@ mod tests {
             "the reading handle must see the writer's acquire: available={avail} \
              after {elapsed_ms}ms, which allows {refilled} refilled",
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -576,7 +562,6 @@ mod tests {
             SharedRateLimiter::open(&p, 100, 20),
             Err(RateLimiterError::LayoutMismatch)
         ));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -587,7 +572,6 @@ mod tests {
         assert!(r.available() < 2);
         r.reset();
         assert_eq!(r.available(), 50);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -603,7 +587,6 @@ mod tests {
         // Should be ~30 plus any time elapsed at rate 1/s (likely 0-1).
         assert!((30..=31).contains(&avail),
             "after reopen available={avail} should be ~30");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -616,6 +599,5 @@ mod tests {
         // available may have incremented by 0-1 due to elapsed time,
         // but shouldn't have decreased.
         assert!(after >= before);
-        std::fs::remove_file(&p).ok();
     }
 }

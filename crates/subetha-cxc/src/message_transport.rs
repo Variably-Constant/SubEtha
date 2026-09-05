@@ -159,11 +159,10 @@ fn map_deque_err(e: DequeError) -> TransportError {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha_transport_{name}_{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha_transport_{name}_{}.bin", std::process::id()))
     }
 
     #[test]
@@ -181,7 +180,6 @@ mod tests {
             .expect("pop");
         assert_eq!(n, PAYLOAD_BYTES);
         assert_eq!(out, payload);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -204,7 +202,6 @@ mod tests {
             .expect("pop");
         assert_eq!(n, PAYLOAD_BYTES);
         assert_eq!(out, payload);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -220,7 +217,6 @@ mod tests {
         let n = ring.try_pop(&mut out).expect("pop");
         assert_eq!(n, PAYLOAD_BYTES);
         assert_eq!(out, payload);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -232,7 +228,6 @@ mod tests {
             .try_push(&oversized)
             .expect_err("oversize");
         assert_eq!(err, TransportError::PayloadTooLarge);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -244,6 +239,5 @@ mod tests {
             .try_pop(&mut out)
             .expect_err("empty");
         assert_eq!(err, TransportError::Empty);
-        std::fs::remove_file(&path).ok();
     }
 }

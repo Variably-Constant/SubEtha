@@ -567,11 +567,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-broadcast-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-broadcast-{name}-{}.bin", std::process::id()))
     }
 
     fn payload_of(v: u32) -> [u8; BROADCAST_PAYLOAD_BYTES] {
@@ -590,7 +589,6 @@ mod tests {
         assert_eq!(r.capacity(), 8);
         assert_eq!(r.producer_position(), 0);
         assert_eq!(r.active_consumer_count(), 0);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with published slots in place; reset
@@ -598,7 +596,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_slots() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let r = SharedBroadcastRing::create(&p, 8).unwrap();
         r.try_push(&payload_of(42)).unwrap();
 
@@ -616,7 +613,6 @@ mod tests {
         let fresh = SharedBroadcastRing::reset(&p, 8).unwrap();
         assert_eq!(fresh.producer_position(), 0, "reset kept a published slot");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -630,7 +626,6 @@ mod tests {
         assert_eq!(n, BROADCAST_PAYLOAD_BYTES);
         assert_eq!(unpack(&buf), 42);
         assert_eq!(r.try_recv(c, &mut buf).err(), Some(BroadcastError::Empty));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -650,7 +645,6 @@ mod tests {
             }
             assert_eq!(r.try_recv(c, &mut buf).err(), Some(BroadcastError::Empty));
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -663,7 +657,6 @@ mod tests {
         for i in 0..4u32 { r.try_push(&payload_of(i)).unwrap(); }
         // Consumer hasn't read anything; next push should fail Full.
         assert_eq!(r.try_push(&payload_of(99)).err(), Some(BroadcastError::Full));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -676,7 +669,6 @@ mod tests {
         r.unregister_consumer(c);
         // With no active consumers, producer can push freely.
         r.try_push(&payload_of(99)).unwrap();
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -692,7 +684,6 @@ mod tests {
         r.try_push(&payload_of(100)).unwrap();
         r.try_recv(c, &mut buf).unwrap();
         assert_eq!(unpack(&buf), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -705,7 +696,6 @@ mod tests {
         let mut buf = [0u8; BROADCAST_PAYLOAD_BYTES];
         r.try_recv(c, &mut buf).unwrap();
         assert_eq!(r.lag(c), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -716,7 +706,6 @@ mod tests {
             r.register_consumer().unwrap();
         }
         assert_eq!(r.register_consumer().err(), Some(BroadcastError::NoConsumerSlot));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -729,7 +718,6 @@ mod tests {
         let mut buf = [0u8; BROADCAST_PAYLOAD_BYTES];
         sub_handle.try_recv(c, &mut buf).unwrap();
         assert_eq!(unpack(&buf), 7777);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -739,7 +727,6 @@ mod tests {
         let _c = r.register_consumer().unwrap();
         let big = vec![0u8; BROADCAST_PAYLOAD_BYTES + 1];
         assert_eq!(r.try_push(&big).err(), Some(BroadcastError::PayloadTooLarge));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -783,7 +770,6 @@ mod tests {
                 assert_eq!(*v, i as u32, "message order must be preserved");
             }
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -808,7 +794,6 @@ mod tests {
             pushed += 1;
         }
         assert!(pushed <= 4, "should be bounded by slow consumer; pushed {pushed}");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -835,7 +820,6 @@ mod tests {
         });
         pusher.join().unwrap();
         assert_eq!(consumer.join().unwrap(), 555);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -857,6 +841,5 @@ mod tests {
         assert_eq!(unpack(&buf), 1234);
         r2.try_recv(0, &mut buf).unwrap();
         assert_eq!(unpack(&buf), 5678);
-        std::fs::remove_file(&p).ok();
     }
 }

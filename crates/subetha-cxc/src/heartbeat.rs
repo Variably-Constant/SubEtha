@@ -321,11 +321,10 @@ pub fn __slot_for_watchdog(table: &HeartbeatTable, idx: usize) -> &HeartbeatSlot
 mod tests {
     use super::*;
 
-    fn tmp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-hb-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp_path(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-hb-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -335,7 +334,6 @@ mod tests {
         let s0 = t.register(1001).unwrap();
         let s1 = t.register(1002).unwrap();
         assert_ne!(s0, s1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -345,7 +343,6 @@ mod tests {
         let _val = t.register(1).unwrap();
         let _val = t.register(2).unwrap();
         assert_eq!(t.register(3).unwrap_err(), HeartbeatError::TableFull);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -360,7 +357,6 @@ mod tests {
         let snap_after = t.snapshot(s).unwrap();
         assert!(snap_after.last_seen_epoch > snap_before.last_seen_epoch);
         assert_eq!(snap_after.last_seen_epoch, global_after_tick);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -373,7 +369,6 @@ mod tests {
         // Now there should be a free slot.
         let new = t.register(33).unwrap();
         assert_eq!(new, s0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -388,7 +383,6 @@ mod tests {
         t.clear_in_flight(s, 3);
         let snap = t.snapshot(s).unwrap();
         assert_eq!(snap.in_flight_bitmap, 1u64 << 5);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -401,6 +395,5 @@ mod tests {
         let snap = t.snapshot(s).unwrap();
         assert_eq!(snap.pid, 42);
         assert!(snap.last_seen_epoch >= 1);
-        std::fs::remove_file(&p).ok();
     }
 }

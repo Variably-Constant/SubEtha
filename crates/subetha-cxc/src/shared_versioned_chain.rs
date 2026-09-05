@@ -382,11 +382,10 @@ impl<T: Copy + 'static> SharedVersionedChain<T> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-chain-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-chain-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -404,7 +403,6 @@ mod tests {
         assert_eq!(c.read_at(100), Some(30));
         assert_eq!(c.current(), Some((3, 30)));
         assert_eq!(c.len(), 3);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with live nodes in place; reset is
@@ -412,7 +410,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_nodes() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let c: SharedVersionedChain<u64> = SharedVersionedChain::create(&p, 8).unwrap();
         c.push(1, 10).unwrap();
         c.push(2, 20).unwrap();
@@ -440,7 +437,6 @@ mod tests {
         fresh.push(1, 11).unwrap();
         assert_eq!(fresh.current(), Some((1, 11)));
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -450,7 +446,6 @@ mod tests {
         c.push(10, 100).unwrap();
         assert_eq!(c.push(5, 50).unwrap_err(), ChainError::NonMonotonicVersion);
         assert_eq!(c.push(10, 100).unwrap_err(), ChainError::NonMonotonicVersion);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -460,7 +455,6 @@ mod tests {
         c.push(1, 10).unwrap();
         c.push(2, 20).unwrap();
         assert_eq!(c.push(3, 30).unwrap_err(), ChainError::Full);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -472,7 +466,6 @@ mod tests {
         writer.push(2, 200).unwrap();
         assert_eq!(reader.read_at(2), Some(200));
         assert_eq!(reader.current(), Some((2, 200)));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -488,7 +481,6 @@ mod tests {
         assert_eq!(c2.read_at(20), Some(2000));
         assert_eq!(c2.read_at(10), Some(1000));
         assert_eq!(c2.len(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -499,6 +491,5 @@ mod tests {
         assert_eq!(c.read_at(0), None);
         assert_eq!(c.read_at(u64::MAX), None);
         assert_eq!(c.current(), None);
-        std::fs::remove_file(&p).ok();
     }
 }

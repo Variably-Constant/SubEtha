@@ -444,11 +444,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-fenceclock-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-fenceclock-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -458,7 +457,6 @@ mod tests {
         assert_eq!(c.capacity(), 4);
         assert_eq!(c.compute_global_fence(), Hlc { physical_us: 0, logical: 0 });
         for i in 0..4 { assert!(c.slot_snapshot(i).is_none()); }
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the registered slots in place;
@@ -466,7 +464,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_registrations() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let c = SharedFenceClock::create(&p, 4).unwrap();
         let s0 = c.register(1001).unwrap();
 
@@ -488,7 +485,6 @@ mod tests {
         let fresh = SharedFenceClock::reset(&p, 4).unwrap();
         assert!(fresh.slot_snapshot(s0).is_none(), "reset left a slot registered");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -498,7 +494,6 @@ mod tests {
         let s0 = c.register(1001).unwrap();
         let s1 = c.register(1002).unwrap();
         assert_ne!(s0, s1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -508,7 +503,6 @@ mod tests {
         c.register(1).unwrap();
         c.register(2).unwrap();
         assert_eq!(c.register(3).err(), Some(FenceClockError::Full));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -520,7 +514,6 @@ mod tests {
         thread::sleep(std::time::Duration::from_millis(2));
         let h2 = c.tick(idx);
         assert!(h2 > h1, "second tick should be strictly greater");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -538,7 +531,6 @@ mod tests {
         let h1 = c.tick(idx);
         assert_eq!(h0.physical_us, h1.physical_us);
         assert_eq!(h1.logical, h0.logical + 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -562,7 +554,6 @@ mod tests {
         // (the older merge is not observable here; the local
         // dropped <- u64::MAX/2 / 8 was the test signal.)
         let _remote = remote;
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -581,7 +572,6 @@ mod tests {
         c.slot(d).logical.store(9, Ordering::Release);
         let fence = c.compute_global_fence();
         assert_eq!(fence, Hlc { physical_us: 200, logical: 0 });
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -596,7 +586,6 @@ mod tests {
         assert_eq!(read, published);
         assert_eq!(read, Hlc { physical_us: 7777, logical: 3 });
         assert_eq!(c.fence_epoch(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -612,7 +601,6 @@ mod tests {
         assert_eq!(owner_fence, observer_fence);
         // Observer can also recompute directly.
         assert_eq!(observer.compute_global_fence(), Hlc { physical_us: 5555, logical: 1 });
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -635,7 +623,6 @@ mod tests {
         for h in handles { h.join().unwrap(); }
         let fence = c.compute_global_fence();
         assert!(fence.physical_us > 0);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -650,7 +637,6 @@ mod tests {
         // Slot can be re-claimed.
         let idx2 = c.register(1000).unwrap();
         assert_eq!(idx, idx2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -666,7 +652,6 @@ mod tests {
         }
         let c2 = SharedFenceClock::open(&p, 4).unwrap();
         assert_eq!(c2.read_global_fence(), Hlc { physical_us: 1234, logical: 7 });
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]

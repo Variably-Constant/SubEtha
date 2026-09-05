@@ -319,11 +319,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-reservoir-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// primitive that maps it so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-reservoir-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -333,7 +332,6 @@ mod tests {
         assert_eq!(r.capacity(), 10);
         assert_eq!(r.total_seen(), 0);
         assert_eq!(r.snapshot(), Vec::<u32>::new());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -347,7 +345,6 @@ mod tests {
         let snap = r.snapshot();
         assert_eq!(snap, vec![0, 1, 2, 3, 4]);
         assert_eq!(r.total_seen(), 5);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches with the live sample set in place; the
@@ -355,7 +352,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_samples() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let r: SharedReservoirSampler<u32> = SharedReservoirSampler::create(&p, 5).unwrap();
         for i in 0..3u32 { r.record(i); }
 
@@ -371,7 +367,6 @@ mod tests {
         assert_eq!(r.total_seen(), 0, "reset did not restart for every handle");
         drop(r);
         drop(r2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -389,7 +384,6 @@ mod tests {
         // ~5%. Allow generous bounds for randomness.
         assert!(rejected > 50, "expected mostly rejections; got {accepted} accepted, {rejected} rejected");
         assert_eq!(r.total_seen(), 100);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -402,7 +396,6 @@ mod tests {
         // After 100 records, snapshot has 10 (capacity).
         for i in 3..100u32 { r.record(i); }
         assert_eq!(r.snapshot().len(), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -426,7 +419,6 @@ mod tests {
             let kept = snap[0];
             let bucket = (kept * 10 / n_items) as usize;
             counts[bucket.min(9)] += 1;
-            std::fs::remove_file(&path).ok();
         }
         // Each bucket should be ~100. Allow [50, 200] for stochastic noise.
         for (i, &c) in counts.iter().enumerate() {
@@ -445,7 +437,6 @@ mod tests {
         r.reset();
         assert_eq!(r.total_seen(), 0);
         assert_eq!(r.snapshot(), Vec::<u32>::new());
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -457,7 +448,6 @@ mod tests {
         let snap = rdr.snapshot();
         assert_eq!(snap, vec![0, 1, 2, 3, 4]);
         assert_eq!(rdr.total_seen(), 5);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -471,7 +461,6 @@ mod tests {
             SharedReservoirSampler::<Big>::create(&p, 4).err(),
             Some(ReservoirError::PayloadTooLarge)
         );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -494,7 +483,6 @@ mod tests {
         assert_eq!(r.total_seen() as usize, n_threads * per_thread);
         let snap = r.snapshot();
         assert_eq!(snap.len(), 10);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -513,7 +501,6 @@ mod tests {
         r.record(e3);
         let snap = r.snapshot();
         assert_eq!(snap, vec![e1, e2, e3]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -527,6 +514,5 @@ mod tests {
         let r2: SharedReservoirSampler<u32> = SharedReservoirSampler::open(&p, 5).unwrap();
         assert_eq!(r2.total_seen(), 5);
         assert_eq!(r2.snapshot(), vec![0, 1, 2, 3, 4]);
-        std::fs::remove_file(&p).ok();
     }
 }
