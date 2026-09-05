@@ -196,31 +196,36 @@ impl<
     /// Promote `key` to MRU position. Writer-side. Returns true if
     /// the key was present and was promoted.
     pub fn touch(&self, key: &K) -> bool {
-        let promoted = (|| {
-            let idx = self.map.get(key)?;
-            let (k, v) = self.list.remove(NodeHandle::new(idx))?;
-            // Push to front; get the new handle; update the map.
-            match self.list.push_front((k, v)) {
-                Ok(new_handle) => {
-                    // Map insert may collide; map and list updates are
-                    // separate writes so the lock-free LRU pattern
-                    // already tolerates ordering anomalies here.
-                    self.map.insert(k, new_handle.index).ok();
-                    Some(true)
-                }
-                Err(_) => {
-                    // Shouldn't happen since we just freed a slot, but
-                    // be defensive: re-insert at the back.
-                    self.list.push_back((k, v)).ok();
-                    Some(false)
-                }
+        // 0 = promoted, 2 = key absent, 3 = the entry was unlinked from
+        // the list and could not be put back in front or in the map, so
+        // the list and the map disagree about it from here on.
+        let status = self.touch_status(key);
+        self.ring_sidecar.push_op(crate::sidecar_ops::lru_cache::OP_TOUCH, status);
+        status == 0
+    }
+
+    fn touch_status(&self, key: &K) -> u16 {
+        let Some(idx) = self.map.get(key) else {
+            return 2;
+        };
+        let Some((k, v)) = self.list.remove(NodeHandle::new(idx)) else {
+            return 2;
+        };
+        // Push to front; get the new handle; update the map. The map and
+        // list updates are separate writes: a map insert refused here
+        // leaves the map naming the old, freed slot for this key.
+        match self.list.push_front((k, v)) {
+            Ok(new_handle) => {
+                if self.map.insert(k, new_handle.index).is_ok() { 0 } else { 3 }
             }
-        })().unwrap_or(false);
-        self.ring_sidecar.push_op(
-            crate::sidecar_ops::lru_cache::OP_TOUCH,
-            if promoted { 0 } else { 2 }, // 2 = key absent
-        );
-        promoted
+            Err(refused) => {
+                // The slot just freed should have taken it. Put it back at
+                // the tail; if even that is refused the entry is gone from
+                // the list while the map still names it.
+                debug_assert!(false, "push_front refused right after a remove: {refused:?}");
+                if self.list.push_back((k, v)).is_ok() { 2 } else { 3 }
+            }
+        }
     }
 
     /// Look up and promote in one call. Writer-side.

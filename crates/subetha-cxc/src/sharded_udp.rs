@@ -63,7 +63,18 @@ impl ShardedSender {
                 // the end-of-stream signal.
                 while let Ok(item) = rx.recv() {
                     while sender.flow_blocked() {
-                        sender.pump_feedback().ok();
+                        // The feedback socket is non-blocking: nothing
+                        // waiting is the ordinary case, anything else is
+                        // the socket's real error and ends the shard, which
+                        // `finish` then reports as not fully acked.
+                        match sender.pump_feedback() {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                            Err(e) => {
+                                debug_assert!(e.kind() != io::ErrorKind::WouldBlock);
+                                return false;
+                            }
+                        }
                         if sender.flow_blocked() {
                             thread::sleep(Duration::from_micros(50));
                         }
@@ -72,10 +83,12 @@ impl ShardedSender {
                         return false;
                     }
                 }
-                sender.flush().ok();
-                sender
-                    .drain_until_acked(SHARD_DEADLINE)
-                    .unwrap_or(false)
+                if sender.flush().is_err() {
+                    return false;
+                }
+                // Not confirmed acked, whether the deadline passed or the
+                // socket failed while waiting, reads the same to `finish`.
+                sender.drain_until_acked(SHARD_DEADLINE).is_ok_and(|acked| acked)
             });
             txs.push(tx);
             handles.push(handle);
@@ -93,13 +106,19 @@ impl ShardedSender {
     }
 
     /// Hand `item` to its shard (round-robin). Blocks if that shard's
-    /// queue is full, pacing the producer to the slowest shard.
-    pub fn send_item(&mut self, item: &[u8]) {
+    /// queue is full, pacing the producer to the slowest shard. A shard
+    /// whose stream thread has already ended cannot take the item, and
+    /// says so: `BrokenPipe` naming the shard, the item not sent.
+    pub fn send_item(&mut self, item: &[u8]) -> io::Result<()> {
         let shard = (self.next % self.txs.len() as u64) as usize;
         self.next += 1;
-        // A send error means the shard thread already exited; the join in
-        // `finish` surfaces it as not-fully-acked.
-        self.txs[shard].send(item.to_vec()).ok();
+        if self.txs[shard].send(item.to_vec()).is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("shard {shard}'s stream thread has ended; the item was not sent"),
+            ));
+        }
+        Ok(())
     }
 
     /// Close every shard's queue, join the stream threads, and report
@@ -112,7 +131,16 @@ impl ShardedSender {
         // then report whether all acked.
         let acked: Vec<bool> = handles
             .into_iter()
-            .map(|h| h.join().unwrap_or(false))
+            .enumerate()
+            .map(|(shard, h)| match h.join() {
+                Ok(acked) => acked,
+                // A shard whose thread panicked confirmed nothing, which
+                // is what its result then says.
+                Err(_panic) => {
+                    eprintln!("subetha: sharded sender's shard {shard} ended by panic");
+                    false
+                }
+            })
             .collect();
         acked.into_iter().all(|x| x)
     }
@@ -156,11 +184,22 @@ impl ShardedReceiver {
             let handle = thread::spawn(move || {
                 let started = Instant::now();
                 let mut delivered = 0u64;
+                // The thread ending early closes this shard's channel, and
+                // `recv_item` then reports the stream ended short of its
+                // count; that is how the deadline, a receiver error and a
+                // reader that went away all reach the caller.
                 while delivered < expected {
                     if started.elapsed() > SHARD_DEADLINE {
                         return;
                     }
-                    for item in receiver.poll().unwrap_or_default() {
+                    let items = match receiver.poll() {
+                        Ok(items) => items,
+                        Err(e) => {
+                            eprintln!("subetha: sharded receiver's shard stopped, its socket refused a poll: {e}");
+                            return;
+                        }
+                    };
+                    for item in items {
                         if tx.send(item).is_err() {
                             return;
                         }
@@ -168,9 +207,12 @@ impl ShardedReceiver {
                     }
                 }
                 // Grace: keep feeding feedback so the sender learns the
-                // final ack on this shard.
+                // final ack on this shard; a socket that refuses a feedback
+                // send has nothing more to tell the sender.
                 for _ in 0..100 {
-                    receiver.nudge_feedback().ok();
+                    if receiver.nudge_feedback().is_err() {
+                        return;
+                    }
                     thread::sleep(Duration::from_millis(2));
                 }
             });
@@ -199,12 +241,15 @@ impl ShardedReceiver {
         self.rxs[shard].recv().ok()
     }
 
-    /// Join the shard threads (after the caller has read every item).
+    /// Join the shard threads (after the caller has read every item). A
+    /// shard thread that panicked panics here, on the caller's thread.
     pub fn finish(self) {
         let Self { rxs, handles, .. } = self;
         drop(rxs);
         for handle in handles {
-            handle.join().ok();
+            if let Err(payload) = handle.join() {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }
@@ -238,7 +283,7 @@ mod tests {
         let mut buf = [0u8; 64];
         for i in 0..total {
             buf[..8].copy_from_slice(&i.to_le_bytes());
-            send.send_item(&buf);
+            send.send_item(&buf).expect("the shard takes the item");
         }
         assert!(send.finish(), "all shards fully acked");
         let got = rx.join().expect("rx thread");

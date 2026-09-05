@@ -425,7 +425,12 @@ impl BlockingSpscRing {
                     self.consumer_waker.release(token);
                     return Ok(Some(n));
                 }
-                self.consumer_waker.wait(token, Some(budget)).ok();
+                // The budget elapsing is the predicted arrival, not an
+                // error; anything else the waker reports is.
+                match self.consumer_waker.wait(token, Some(budget)) {
+                    Ok(()) | Err(WakerError::Timeout) => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
         let spin_end = predicted + self.phase.guard_band;
@@ -600,8 +605,12 @@ impl BlockingSpscRing {
                     }
                     stats.predictive_parks += 1;
                     // Woken by the doorbell or the budget elapsed -
-                    // either way, spin the guard band next.
-                    self.consumer_waker.wait(token, Some(budget)).ok();
+                    // either way, spin the guard band next; anything else
+                    // the waker reports is an error.
+                    match self.consumer_waker.wait(token, Some(budget)) {
+                        Ok(()) | Err(WakerError::Timeout) => {}
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
 

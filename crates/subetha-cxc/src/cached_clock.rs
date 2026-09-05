@@ -16,11 +16,16 @@
 //! is one background thread per process, spawned lazily on first use.
 
 use std::sync::Once;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static CACHED_US: AtomicU64 = AtomicU64::new(0);
 static INIT: Once = Once::new();
+/// Set once the updater thread is running. While it is not - before
+/// [`start`], or after a spawn the OS refused - [`now_us`] reads the clock
+/// directly, so a reader never takes a value the updater is not keeping.
+static UPDATER_LIVE: AtomicBool = AtomicBool::new(false);
+static BEFORE_EPOCH_REPORTED: Once = Once::new();
 
 /// Maximum staleness of the cached clock: the cached value lags real wall
 /// time by at most this much. 250 us keeps the updater's wake rate modest
@@ -29,39 +34,59 @@ const REFRESH_INTERVAL: Duration = Duration::from_micros(250);
 
 #[inline]
 fn real_now_us() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since_epoch) => since_epoch.as_micros() as u64,
+        // A wall clock set before 1970 has no microsecond count to give;
+        // 0 is the value every reader then agrees on, said once.
+        Err(before_epoch) => {
+            BEFORE_EPOCH_REPORTED.call_once(|| {
+                eprintln!("subetha: the wall clock reads before the Unix epoch: {before_epoch}")
+            });
+            0
+        }
+    }
 }
 
 /// Start the background updater thread (once per process). Idempotent;
 /// call from a consumer's `create` / `open`. The cache is seeded
 /// synchronously here so the very first [`now_us`] is valid even before
-/// the thread's first refresh.
+/// the thread's first refresh. A spawn the OS refuses is reported, and
+/// readers then take the clock directly rather than a value nothing
+/// keeps fresh.
 pub fn start() {
     INIT.call_once(|| {
         CACHED_US.store(real_now_us(), Ordering::Relaxed);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("subetha-cached-clock".into())
             .spawn(|| {
                 loop {
                     CACHED_US.store(real_now_us(), Ordering::Relaxed);
                     std::thread::sleep(REFRESH_INTERVAL);
                 }
-            })
-            .ok(); // detached; the JoinHandle is intentionally dropped
+            });
+        match spawned {
+            // Detached: the handle is dropped and the thread runs for the
+            // process's life.
+            Ok(_detached) => UPDATER_LIVE.store(true, Ordering::Release),
+            Err(e) => eprintln!(
+                "subetha: the cached-clock updater was not spawned ({e}); readers take the clock directly"
+            ),
+        }
     });
 }
 
-/// Cached wall-clock microseconds - one relaxed atomic load. Callers must
-/// have invoked [`start`] (e.g. at handle create) so the updater is
-/// running; before the first refresh this returns the seed taken in
-/// `start`. Monotonic to the precision of the underlying clock; a brief
-/// backward NTP step is absorbed by HLC-style `max(prev, now)` callers.
+/// Cached wall-clock microseconds - one relaxed atomic load while the
+/// updater runs. Before [`start`], or if its thread could not be spawned,
+/// this reads the clock directly instead, at that call's cost. Monotonic
+/// to the precision of the underlying clock; a brief backward NTP step is
+/// absorbed by HLC-style `max(prev, now)` callers.
 #[inline]
 pub fn now_us() -> u64 {
-    CACHED_US.load(Ordering::Relaxed)
+    if UPDATER_LIVE.load(Ordering::Acquire) {
+        CACHED_US.load(Ordering::Relaxed)
+    } else {
+        real_now_us()
+    }
 }
 
 #[cfg(test)]

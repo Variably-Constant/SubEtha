@@ -339,11 +339,23 @@ impl<T: ShmValue> Drop for SharedArc<T> {
         // attached before this or gets NotFound; neither sees a torn
         // region.
         let path = std::mem::take(&mut self.path);
-        let empty = MmapOptions::new().len(1).map_anon();
-        if let Ok(m) = empty {
-            drop(std::mem::replace(&mut self.mmap, m));
+        match MmapOptions::new().len(1).map_anon() {
+            Ok(m) => drop(std::mem::replace(&mut self.mmap, m)),
+            // The mapping stays live, so on Windows the removal below is
+            // refused and the backing file is left behind; both are said.
+            Err(e) => eprintln!(
+                "subetha: the last holder of {} could not release its mapping: {e}",
+                path.display()
+            ),
         }
-        std::fs::remove_file(&path).ok();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "subetha: the last holder of {} left its backing file behind: {e}",
+                path.display()
+            ),
+        }
     }
 }
 

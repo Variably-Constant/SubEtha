@@ -281,12 +281,15 @@ impl CapacityBroadcastRing {
             loop {
                 match ring.try_recv(consumer_idx, out) {
                     Ok(n) => return Ok(n),
-                    Err(_) => {
+                    // Empty is the wait for an in-flight claim to commit;
+                    // no lag left for this consumer ends it.
+                    Err(BroadcastError::Empty) => {
                         if ring.lag(consumer_idx) == 0 {
                             break;
                         }
                         std::hint::spin_loop();
                     }
+                    Err(e) => return Err(e),
                 }
             }
         }

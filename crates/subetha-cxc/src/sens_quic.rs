@@ -323,11 +323,7 @@ fn build_endpoint(
     // sharing the port) cannot overflow the receive queue and manufacture loss on
     // top of the channel's own - extra loss would push RLC past its repair budget
     // and deadlock its window. Matches the standalone Sens transport's 4 MiB.
-    {
-        let s = socket2::SockRef::from(&sock);
-        s.set_recv_buffer_size(4 * 1024 * 1024).ok();
-        s.set_send_buffer_size(4 * 1024 * 1024).ok();
-    }
+    crate::sens_rlc::set_buffers(&sock);
     let send_clone = sock.try_clone()?;
     send_clone.set_nonblocking(true)?;
     let demux = Arc::new(SensDemux::new(cfg.debug_loss, cfg.seed));

@@ -728,6 +728,11 @@ mod linux_iou {
         ready: VecDeque<usize>,
         ready_len: Vec<usize>,
         free_send: Vec<usize>,
+        /// Receives that completed with an error and could not be
+        /// re-armed because the submission queue was full. Each one is
+        /// a receive slot the ring no longer fills, so a count that
+        /// reaches `RECV_DEPTH` is a socket that has stopped receiving.
+        rearm_failures: u64,
     }
 
     pub struct IoUringDgram {
@@ -760,6 +765,7 @@ mod linux_iou {
                 ready: VecDeque::new(),
                 ready_len: vec![0usize; RECV_DEPTH],
                 free_send: (0..SEND_DEPTH).collect(),
+                rearm_failures: 0,
             };
             let me = Self { sock, fd, st: Mutex::new(st) };
             if let Err(e) = me.submit_all_recv() {
@@ -777,6 +783,14 @@ mod linux_iou {
         /// path) is independent of the ring's recv SQEs.
         pub fn raw_fd(&self) -> i32 {
             self.fd
+        }
+
+        /// Receive slots that completed with an error and could not be
+        /// re-armed because the submission queue was full. Each is a slot
+        /// the ring no longer fills; at `RECV_DEPTH` the socket has
+        /// stopped receiving.
+        pub fn rearm_failures(&self) -> u64 {
+            self.st.lock().rearm_failures
         }
 
         pub fn set_nonblocking(&self, nb: bool) -> io::Result<()> {
@@ -822,8 +836,10 @@ mod linux_iou {
                     if res >= 0 {
                         st.ready_len[idx] = res as usize;
                         st.ready.push_back(idx);
-                    } else {
-                        self.push_recv(st, idx).ok();
+                    } else if self.push_recv(st, idx).is_err() {
+                        // The slot's receive failed and the ring could not
+                        // take a fresh one; the slot stays unarmed.
+                        st.rearm_failures += 1;
                     }
                 }
             }

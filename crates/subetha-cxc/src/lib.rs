@@ -208,6 +208,8 @@ pub mod replay_positions;
 pub mod laned_versioned_map;
 pub mod shared_slab;
 pub mod shared_versioned_slab;
+#[cfg(test)]
+pub(crate) mod test_paths;
 pub mod shm_file;
 pub mod virtual_endpoint;
 #[cfg(target_os = "linux")]

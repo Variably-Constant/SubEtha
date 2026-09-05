@@ -57,6 +57,21 @@ use std::fs::OpenOptions;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+
+/// Remove the file of a migration that did not complete. The caller is
+/// already returning the error that stopped it, so a removal refused
+/// here is reported rather than replacing that error; a file already
+/// gone reads as absent and is fine.
+fn discard_half_built(p: &Path) {
+    match std::fs::remove_file(p) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "subetha: the half-built backing {} of a failed migration was not removed: {e}",
+            p.display()
+        ),
+    }
+}
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
@@ -561,7 +576,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
         let new_backing = match build_result {
             Ok(b) => b,
             Err(e) => {
-                std::fs::remove_file(&new_p).ok();
+                discard_half_built(&new_p);
                 return Err(e);
             }
         };
@@ -573,9 +588,9 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
                 *g = (new_v, new_g, new_backing);
                 Ok(())
             }
-            Err(_) => {
+            Err(_lost_race) => {
                 drop(new_backing);
-                std::fs::remove_file(&new_p).ok();
+                discard_half_built(&new_p);
                 Err(UniversalError::VecError)
             }
         }

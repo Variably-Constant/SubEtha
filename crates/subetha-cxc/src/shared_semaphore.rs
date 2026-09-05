@@ -87,6 +87,11 @@ pub struct SharedSemaphore {
     wakeup: Arc<SharedAtomicU64>,
     waiters: Arc<SharedAtomicU32>,
     max_permits: u32,
+    /// Releases a dropped [`Permit`] could not perform because the count
+    /// was already at `max_permits`: a caller released more permits by
+    /// another path than it acquired. The count stays bounded; this says
+    /// how often it had to be.
+    permit_release_overflows: std::sync::atomic::AtomicU64,
     header_sidecar: subetha_core::HandshakeHeader,
     ring_sidecar: Box<subetha_core::ObservationRing>,
 }
@@ -115,6 +120,7 @@ impl SharedSemaphore {
         let waiters = Arc::new(SharedAtomicU32::create(waiters_path(base), 0)?);
         Ok(Self {
             count, wakeup, waiters, max_permits,
+            permit_release_overflows: std::sync::atomic::AtomicU64::new(0),
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
@@ -134,9 +140,17 @@ impl SharedSemaphore {
         let waiters = Arc::new(SharedAtomicU32::open(waiters_path(base))?);
         Ok(Self {
             count, wakeup, waiters, max_permits,
+            permit_release_overflows: std::sync::atomic::AtomicU64::new(0),
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
         })
+    }
+
+    /// Releases a dropped [`Permit`] could not perform because the count
+    /// was already at `max_permits`: the caller released more permits by
+    /// another path than it acquired. The count stayed bounded each time.
+    pub fn permit_release_overflows(&self) -> u64 {
+        self.permit_release_overflows.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Non-blocking acquire. Returns `Err(WouldBlock)` immediately
@@ -370,11 +384,15 @@ pub struct Permit<'a> {
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
-        // Ignore overflow on drop: that indicates the user has
-        // released more permits than they acquired via a separate
-        // path; the rollback inside `release` keeps the count
-        // bounded by max_permits anyway.
-        self.sem.release().ok();
+        // A release refused here is an overflow: the caller released
+        // more permits by another path than it acquired. The rollback
+        // inside `release` keeps the count bounded by max_permits; the
+        // overflow is counted so it can be asked about.
+        if self.sem.release().is_err() {
+            self.sem
+                .permit_release_overflows
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 

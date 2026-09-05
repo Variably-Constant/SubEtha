@@ -151,6 +151,10 @@ impl<Event: Copy + 'static, State: Copy + 'static> EventStateLog<Event, State> {
         let mut state = self.state.get();
         let mut count = 0;
         let mut buf = [0u8; RING_PAYLOAD];
+        // A pop the ring refuses for any reason but emptiness ends the
+        // drain with events still queued; the sidecar records that as
+        // status 3 against the drain, where a clean drain records 0.
+        let mut refusal: Option<RingError> = None;
         loop {
             match self.ring.try_pop(&mut buf) {
                 Ok(_) => {
@@ -163,14 +167,24 @@ impl<Event: Copy + 'static, State: Copy + 'static> EventStateLog<Event, State> {
                     count += 1;
                 }
                 Err(RingError::Empty) => break,
-                Err(_) => break,
+                Err(e) => {
+                    refusal = Some(e);
+                    break;
+                }
             }
         }
         if count > 0 {
             self.state.set(state);
         }
+        let status = match refusal {
+            None => 0,
+            Some(e) => {
+                debug_assert!(false, "the event log ring refused a pop: {e:?}");
+                3
+            }
+        };
         self.ring_sidecar
-            .push_op(crate::sidecar_ops::event_log::OP_DRAIN_FOLD, 0);
+            .push_op(crate::sidecar_ops::event_log::OP_DRAIN_FOLD, status);
         count
     }
 

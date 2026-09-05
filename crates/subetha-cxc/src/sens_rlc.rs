@@ -198,11 +198,17 @@ pub fn socket_buffer_refusals() -> u64 {
 /// counted in [`socket_buffer_refusals`] and the socket keeps the kernel
 /// default: the transport still runs, with less headroom for bursts.
 pub(crate) fn set_buffers(sock: &UdpSocket) {
+    set_buffers_to(sock, SOCK_BUF);
+}
+
+/// [`set_buffers`] at a caller's size, for the transports that ask for
+/// more than [`SOCK_BUF`]; refusals count in the same tally.
+pub(crate) fn set_buffers_to(sock: &UdpSocket, bytes: usize) {
     let s = socket2::SockRef::from(sock);
-    if s.set_recv_buffer_size(SOCK_BUF).is_err() {
+    if s.set_recv_buffer_size(bytes).is_err() {
         SOCKET_BUFFER_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if s.set_send_buffer_size(SOCK_BUF).is_err() {
+    if s.set_send_buffer_size(bytes).is_err() {
         SOCKET_BUFFER_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     // A peer that closes its socket makes this one's next recv fail

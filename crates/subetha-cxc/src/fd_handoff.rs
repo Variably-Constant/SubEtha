@@ -129,7 +129,13 @@ mod scm_rights {
     /// Bind a UDS, accept one connection, return the connected stream.
     pub fn accept_one(uds_path: impl AsRef<Path>) -> io::Result<UnixStream> {
         let path = uds_path.as_ref();
-        std::fs::remove_file(path).ok();
+        // A socket file an earlier listener left behind would refuse the
+        // bind; one that is absent is the ordinary case.
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         let listener = std::os::unix::net::UnixListener::bind(path)?;
         let (stream, _) = listener.accept()?;
         Ok(stream)

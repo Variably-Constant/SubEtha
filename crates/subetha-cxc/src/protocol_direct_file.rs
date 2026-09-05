@@ -379,12 +379,23 @@ impl DirectFileRing {
 
 impl Drop for DirectFileRing {
     fn drop(&mut self) {
-        let data_path = with_suffix(&self.base_path, ".directfile.data.bin");
-        let head_path = with_suffix(&self.base_path, ".directfile.head.bin");
-        let tail_path = with_suffix(&self.base_path, ".directfile.tail.bin");
-        std::fs::remove_file(&data_path).ok();
-        std::fs::remove_file(&head_path).ok();
-        std::fs::remove_file(&tail_path).ok();
+        for path in [
+            with_suffix(&self.base_path, ".directfile.data.bin"),
+            with_suffix(&self.base_path, ".directfile.head.bin"),
+            with_suffix(&self.base_path, ".directfile.tail.bin"),
+        ] {
+            // A peer that dropped first already removed it; anything
+            // else is a file left behind, reported because a Drop has no
+            // caller to hand it to.
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => eprintln!(
+                    "subetha: direct-file ring file {} not removed: {e}",
+                    path.display()
+                ),
+            }
+        }
     }
 }
 

@@ -422,10 +422,13 @@ mod unix_watch {
     impl Drop for Watcher {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
-            if let Some(j) = self.join.take() {
+            if let Some(j) = self.join.take()
+                && j.join().is_err()
+            {
                 // The thread polls the stop flag on a sub-second receive
-                // timeout, so the join completes within one timeout window.
-                j.join().ok();
+                // timeout, so the join completes within one timeout
+                // window; a Drop has no caller to hand its panic to.
+                eprintln!("subetha: the net-events watcher ended by panic");
             }
         }
     }
@@ -580,8 +583,22 @@ mod unix_watch {
                 unsafe {
                     libc::close(fd);
                 }
-            })
-            .ok()
+            });
+        match spawned {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                // The observer then never fires, which its callers treat
+                // as "no path events" - a quiet that must not pass for a
+                // stable path without this line.
+                eprintln!("subetha: the net-events watcher thread was not spawned: {e}");
+                // SAFETY: the thread that would have owned `fd` never
+                // started, so this is the one close.
+                unsafe {
+                    libc::close(fd);
+                }
+                None
+            }
+        }
     }
 }
 

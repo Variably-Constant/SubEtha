@@ -345,17 +345,24 @@ impl<'a> AdaptiveOrderedReceiver<'a> {
     /// construction hint still gets the provably-exact window.
     pub fn new(ring: &'a AdaptiveRing, consumer_id: usize) -> Self {
         let producers = ring.published_producers().max(ring.max_producers());
+        // A mode flip the ring refuses is counted by the ring in
+        // mode_refusals(): the consumer runs in the mode it chose while
+        // the ring stays in the one it had, which that count names.
         let mode = match ring.stamp_kind() {
             Some(StampKind::SharedCounter) => {
                 if producers <= REORDER_PRODUCER_CAP {
-                    ring.set_ordering_mode(OrderingMode::MergeByStamp).ok();
+                    if ring.set_ordering_mode(OrderingMode::MergeByStamp).is_err() {
+                        ring.note_mode_refusal();
+                    }
                     let window = producers.max(DEFAULT_FLOOR);
                     ExactMode::Reorder(ReorderBuffer::with_window(
                         window,
                         window.max(DEFAULT_CAP),
                     ))
                 } else {
-                    ring.set_ordering_mode(OrderingMode::MergeStrict).ok();
+                    if ring.set_ordering_mode(OrderingMode::MergeStrict).is_err() {
+                        ring.note_mode_refusal();
+                    }
                     ExactMode::Strict
                 }
             }
@@ -380,10 +387,13 @@ impl<'a> AdaptiveOrderedReceiver<'a> {
                 // and delivery stays exact.
                 let producers = self.ring.published_producers();
                 if producers > rb.window() {
-                    if producers > REORDER_PRODUCER_CAP {
-                        self.ring
+                    if producers > REORDER_PRODUCER_CAP
+                        && self
+                            .ring
                             .set_ordering_mode(OrderingMode::MergeStrict)
-                            .ok();
+                            .is_err()
+                    {
+                        self.ring.note_mode_refusal();
                     }
                     rb.widen_to(producers.min(REORDER_PRODUCER_CAP));
                 }

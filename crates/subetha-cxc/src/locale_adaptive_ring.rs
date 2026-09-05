@@ -366,31 +366,41 @@ impl LocaleAdaptiveRing {
                     };
                     push?;
                 }
-                Err(_) => return Ok(()),
+                // The old locale is drained: the migration is complete.
+                Err(RingError::Empty) => return Ok(()),
+                // The old locale refused the pop for another reason; the
+                // items still there would be left behind, so the caller
+                // hears why.
+                Err(e) => return Err(e),
             }
         }
     }
 }
 
+/// Remove one of the files the ring laid out. A file a peer already
+/// removed reads as absent and is fine; any other refusal is a file left
+/// behind, reported because a Drop has no caller to hand it to.
+fn remove_laid_out(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("subetha: locale ring file {} not removed: {e}", path.display()),
+    }
+}
+
 impl Drop for LocaleAdaptiveRing {
     fn drop(&mut self) {
-        let tag_path = with_suffix(&self.base_path, ".locale.tag.bin");
-        let gen_path = with_suffix(&self.base_path, ".locale.gen.bin");
         let file_prefix = with_suffix(&self.base_path, ".locale.file.ring");
         let max_p = self.file.max_producers();
 
-        std::fs::remove_file(&tag_path).ok();
-        std::fs::remove_file(&gen_path).ok();
-        std::fs::remove_file(with_suffix(&file_prefix, ".spsc.bin")).ok();
-        std::fs::remove_file(with_suffix(&file_prefix, ".vyukov.bin")).ok();
-        std::fs::remove_file(with_suffix(&file_prefix, ".ordering.bin")).ok();
+        remove_laid_out(&with_suffix(&self.base_path, ".locale.tag.bin"));
+        remove_laid_out(&with_suffix(&self.base_path, ".locale.gen.bin"));
+        remove_laid_out(&with_suffix(&file_prefix, ".spsc.bin"));
+        remove_laid_out(&with_suffix(&file_prefix, ".vyukov.bin"));
+        remove_laid_out(&with_suffix(&file_prefix, ".ordering.bin"));
         for i in 0..max_p {
-            std::fs::remove_file(
-                with_suffix(&file_prefix, &format!(".mpsc.{i}.bin")),
-            ).ok();
-            std::fs::remove_file(
-                with_suffix(&file_prefix, &format!(".mpmc.{i}.bin")),
-            ).ok();
+            remove_laid_out(&with_suffix(&file_prefix, &format!(".mpsc.{i}.bin")));
+            remove_laid_out(&with_suffix(&file_prefix, &format!(".mpmc.{i}.bin")));
         }
     }
 }

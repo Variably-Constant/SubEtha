@@ -265,9 +265,19 @@ impl SharedHugepageRegion {
 impl Drop for SharedHugepageRegion {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
-        // The creator unlinks the backing file; an opener leaves it.
+        // The creator unlinks the backing file; an opener leaves it. A
+        // Drop has no caller to hand a refusal to, and a hugetlbfs file
+        // left behind holds its pages until someone removes it, so the
+        // refusal is reported rather than dropped.
         if self.owner {
-            std::fs::remove_file(&self.path).ok();
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => eprintln!(
+                    "subetha: hugepage region {} not unlinked by its creator: {e}",
+                    self.path.display()
+                ),
+            }
         }
     }
 }

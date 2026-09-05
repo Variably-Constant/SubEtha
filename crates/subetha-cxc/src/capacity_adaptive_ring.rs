@@ -603,12 +603,15 @@ impl CapacityAdaptiveRing {
                         self.stale_pops.fetch_add(1, Ordering::Relaxed);
                         return Ok(n);
                     }
-                    Err(_) => {
+                    // Empty is the wait for an in-flight claim to commit;
+                    // the ring reporting itself drained ends it.
+                    Err(RingError::Empty) => {
                         if ring.is_empty() {
                             break;
                         }
                         std::hint::spin_loop();
                     }
+                    Err(e) => return Err(e),
                 }
             }
         }

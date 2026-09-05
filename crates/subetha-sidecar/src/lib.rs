@@ -557,8 +557,12 @@ impl Drop for Sidecar {
         self.shutdown.store(true, Ordering::Release);
         let handles: Vec<JoinHandle<()>> = std::mem::take(&mut *self.join_handles.lock());
         for h in handles {
-            // Worker panic on shutdown is non-fatal.
-            h.join().ok();
+            // A scan worker that panicked is reported: a Drop has no
+            // caller to hand it to, and a panic here would abort an
+            // unwind already in progress.
+            if h.join().is_err() {
+                eprintln!("subetha-sidecar: a scan worker ended by panic before shutdown");
+            }
         }
     }
 }
@@ -607,7 +611,11 @@ extern "C" fn sidecar_atexit_shutdown() {
             &mut *sidecar.join_handles.lock(),
         );
         for h in handles {
-            h.join().ok();
+            // A scan worker that panicked is reported; process teardown
+            // has no caller to hand it to.
+            if h.join().is_err() {
+                eprintln!("subetha-sidecar: a scan worker ended by panic before process exit");
+            }
         }
         // After joining the scan threads, also clear the registry so
         // that any other static drop chain that touches Sidecar sees

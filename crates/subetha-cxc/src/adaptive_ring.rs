@@ -234,6 +234,16 @@ pub struct AdaptiveRing {
     /// these to the sidecar's drain).
     header_sidecar: subetha_core::HandshakeHeader,
     ring_sidecar: Box<subetha_core::ObservationRing>,
+
+    /// Shape morphs the ring refused where the caller had no result to
+    /// hand back - a resumed auto-shape, a deferred morph landing, a
+    /// sidecar's policy - so the ring stayed in a shape the caller did
+    /// not ask for.
+    morph_refusals: AtomicU64,
+
+    /// Ordering-mode flips the ring refused on the same kind of path,
+    /// so the ring stayed in a mode the caller did not ask for.
+    mode_refusals: AtomicU64,
 }
 
 unsafe impl Send for AdaptiveRing {}
@@ -421,6 +431,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -503,6 +515,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -576,6 +590,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -659,6 +675,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -802,6 +820,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -947,6 +967,8 @@ impl AdaptiveRing {
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
             grow_lock: parking_lot::Mutex::new(()),
+            morph_refusals: AtomicU64::new(0),
+            mode_refusals: AtomicU64::new(0),
             contract: None,
             shape_auto: AtomicBool::new(true),
             ordering: None,
@@ -1260,8 +1282,12 @@ impl AdaptiveRing {
         self.shape_auto.store(true, Ordering::Relaxed);
         let p = self.directory.active_producers();
         let c = self.directory.active_consumers();
-        if let Some(target) = DefaultRingShapePolicy::target_shape(p, c) {
-            self.morph_shape(self.contract_filtered_shape(target)).ok();
+        if let Some(target) = DefaultRingShapePolicy::target_shape(p, c)
+            && self.morph_shape(self.contract_filtered_shape(target)).is_err()
+        {
+            // The resume has no result to return; the refused morph is
+            // counted in morph_refusals().
+            self.note_morph_refusal();
         }
     }
 
@@ -1635,6 +1661,31 @@ impl AdaptiveRing {
         let ord = self.ordering.as_ref().ok_or(RingError::NotStamped)?;
         ord.region.set_mode(mode);
         Ok(())
+    }
+
+    /// Shape morphs the ring refused on a path that had no result to
+    /// hand back - a resumed auto-shape, a deferred morph landing, a
+    /// sidecar's policy - so the ring stayed in a shape the caller did
+    /// not ask for.
+    pub fn morph_refusals(&self) -> u64 {
+        self.morph_refusals.load(Ordering::Relaxed)
+    }
+
+    /// Ordering-mode flips the ring refused on the same kind of path, so
+    /// the ring stayed in a mode the caller did not ask for.
+    pub fn mode_refusals(&self) -> u64 {
+        self.mode_refusals.load(Ordering::Relaxed)
+    }
+
+    /// Record a refused morph on a path with nowhere to return it.
+    pub(crate) fn note_morph_refusal(&self) {
+        self.morph_refusals.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a refused ordering-mode flip on a path with nowhere to
+    /// return it.
+    pub(crate) fn note_mode_refusal(&self) {
+        self.mode_refusals.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Cross-producer inversions observed at pop since the ordering
@@ -2460,7 +2511,12 @@ impl AdaptiveRing {
                     RingShape::from_u8(want)
                 ));
             }
-            self.morph_shape(RingShape::from_u8(want)).ok();
+            if self.morph_shape(RingShape::from_u8(want)).is_err() {
+                // The pop path has no result to return; the morph that
+                // was waiting and still could not land is counted in
+                // morph_refusals().
+                self.note_morph_refusal();
+            }
         }
     }
 
@@ -3134,7 +3190,12 @@ impl AdaptiveRingSidecar {
                 }
 
                 if let Some(current_mode) = ring.ordering_mode() {
-                    ring.tick_drainer_epoch().ok();
+                    // The mode is Some, so the ordering region exists and
+                    // the tick, which only fails for a ring without one,
+                    // cannot be refused here.
+                    if ring.tick_drainer_epoch().is_err() {
+                        ring.note_mode_refusal();
+                    }
 
                     let now_inversions = ring.inversions();
                     let elapsed = last_scan.elapsed().as_secs_f64().max(1e-9);
@@ -3202,11 +3263,14 @@ impl AdaptiveRingSidecar {
         self.ordering_flips.load(Ordering::Acquire)
     }
 
-    /// Stop the scanner thread and join it.
+    /// Stop the scanner thread and join it. A scanner that panicked
+    /// panics here, on the thread that asked for the shutdown.
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(h) = self.handle.take() {
-            h.join().ok();
+        if let Some(h) = self.handle.take()
+            && let Err(payload) = h.join()
+        {
+            std::panic::resume_unwind(payload);
         }
     }
 }
@@ -3214,8 +3278,12 @@ impl AdaptiveRingSidecar {
 impl Drop for AdaptiveRingSidecar {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(h) = self.handle.take() {
-            h.join().ok();
+        if let Some(h) = self.handle.take()
+            && h.join().is_err()
+        {
+            // A Drop has no caller to hand the scanner's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the adaptive ring sidecar's scanner ended by panic");
         }
     }
 }

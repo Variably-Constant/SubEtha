@@ -354,7 +354,13 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
         } else {
             self.set_prev(node_next, node_prev);
         }
-        self.region.free(OffsetPtr::new(idx)).ok();
+        // The node is unlinked either way; a free the region refuses
+        // leaves its slot unreclaimable, which the sidecar records as
+        // status 3 against the remove.
+        if self.region.free(OffsetPtr::new(idx)).is_err() {
+            self.ring_sidecar
+                .push_op(crate::sidecar_ops::linked_list::OP_REMOVE, 3);
+        }
         Some(node_value)
     }
 

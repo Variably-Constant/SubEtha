@@ -959,11 +959,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let pid = std::process::id();
-        p.push(format!("subetha-hashmap-{name}-{pid}.bin"));
-        p
+    /// A file for one test, removed when the test ends; declared before the
+    /// map so it drops after it.
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-hashmap-{name}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -974,7 +973,6 @@ mod tests {
         assert_eq!(m.len(), 0);
         assert!(m.is_empty());
         assert_eq!(m.get(&42), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -989,7 +987,6 @@ mod tests {
         assert_eq!(m.get(&2), Some(200));
         assert_eq!(m.get(&3), Some(300));
         assert_eq!(m.get(&999), None);
-        std::fs::remove_file(&p).ok();
     }
 
     /// A second create attaches to the live map with its entries intact;
@@ -997,7 +994,6 @@ mod tests {
     #[test]
     fn second_create_attaches_and_keeps_entries() {
         let p = tmp("attach");
-        std::fs::remove_file(&p).ok();
         let m: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 32).unwrap();
         m.insert(7, 777).unwrap();
 
@@ -1013,7 +1009,6 @@ mod tests {
         assert_eq!(fresh.len(), 0);
         assert_eq!(fresh.get(&7), None, "reset left an entry behind");
         drop(fresh);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Attaching with a different capacity or key type is refused, and a
@@ -1022,7 +1017,6 @@ mod tests {
     #[test]
     fn create_refuses_a_mismatched_region() {
         let p = tmp("mismatch");
-        std::fs::remove_file(&p).ok();
         let m: SharedHashMap<u32, u64> = SharedHashMap::create(&p, 32).unwrap();
         assert!(matches!(
             SharedHashMap::<u32, u64>::create(&p, 16),
@@ -1054,7 +1048,6 @@ mod tests {
         assert_eq!(m.insert(7, 200).unwrap(), InsertOutcome::Updated);
         assert_eq!(m.len(), 1);
         assert_eq!(m.get(&7), Some(200));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1068,7 +1061,6 @@ mod tests {
         assert_eq!(m.get(&1), None);
         assert_eq!(m.get(&2), Some(20));
         assert_eq!(m.remove(&999), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1086,7 +1078,6 @@ mod tests {
                 "key {k} should still be findable past the tombstone");
         }
         assert_eq!(m.get(&2), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1100,7 +1091,6 @@ mod tests {
         assert_eq!(m.insert(5, 5).err(), Some(MapError::Full));
         // Update of existing key still works.
         assert_eq!(m.insert(1, 100).unwrap(), InsertOutcome::Updated);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1114,7 +1104,6 @@ mod tests {
         assert_eq!(m.get(&0), None);
         m.insert(99, 99).unwrap();
         assert_eq!(m.get(&99), Some(99));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1128,7 +1117,6 @@ mod tests {
         let mut snap = m.snapshot();
         snap.sort();
         assert_eq!(snap, vec![(1, 10), (3, 30)]);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1142,7 +1130,6 @@ mod tests {
         assert_eq!(writer.get(&7), Some(77));
         writer.remove(&42);
         assert_eq!(reader.get(&42), None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1170,7 +1157,6 @@ mod tests {
                     "key {key} should be present with value {}", key * 10);
             }
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1187,7 +1173,6 @@ mod tests {
         let v = Session { token: 0xDEAD_BEEF, expires_us: 9_999_999_999 };
         m.insert(k, v).unwrap();
         assert_eq!(m.get(&k), Some(v));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1201,7 +1186,6 @@ mod tests {
         let p = tmp("too-large");
         let r = SharedHashMap::<BigKey, u32>::create(&p, 4);
         assert_eq!(r.err(), Some(MapError::PayloadTooLarge));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1220,7 +1204,6 @@ mod tests {
         assert_eq!(m2.get(&2), None);
         assert_eq!(m2.get(&3), Some(300));
         assert_eq!(m2.get(&4), Some(400));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1240,7 +1223,6 @@ mod tests {
         let m: SharedHashMap<u32, u32> = SharedHashMap::create(&p, 10).unwrap();
         for k in 0..3u32 { m.insert(k, k).unwrap(); }
         assert_eq!(m.load_factor(), 0.3);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1256,7 +1238,6 @@ mod tests {
         // Removing absent key does NOT bump tombstone count.
         m.remove(&999);
         assert_eq!(m.tombstone_count(), 2);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1269,7 +1250,6 @@ mod tests {
         // Map remains fully usable.
         m.insert(7, 70).unwrap();
         assert_eq!(m.get(&7), Some(70));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1283,7 +1263,6 @@ mod tests {
         assert_eq!(reclaimed, 5);
         assert_eq!(m.tombstone_count(), 0);
         assert_eq!(m.len(), 5);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1311,7 +1290,6 @@ mod tests {
         for (k, v) in &post {
             assert_eq!(m.get(k), Some(*v));
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1339,7 +1317,6 @@ mod tests {
             let new_key = 100 + round;
             assert_eq!(m.get(&new_key), Some(new_key));
         }
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1361,7 +1338,6 @@ mod tests {
         assert_eq!(m.get(&99), Some(99));
         assert_eq!(m.tombstone_count(), 0,
             "successful tombstone reuse must decrement the counter");
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1380,7 +1356,6 @@ mod tests {
         assert_eq!(reclaimed, 15);
         assert_eq!(m.tombstone_count(), 0);
         assert_eq!(m.len(), 5);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1396,7 +1371,6 @@ mod tests {
         assert!(m.should_compact(0.30));
         assert!(m.should_compact(0.29));
         assert!(!m.should_compact(0.31));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1418,7 +1392,6 @@ mod tests {
         for k in [0u32, 2, 4] {
             assert_eq!(m2.get(&k), None);
         }
-        std::fs::remove_file(&p).ok();
     }
 
     /// Many writers racing insert_if_absent on ONE absent key: exactly one
@@ -1459,7 +1432,6 @@ mod tests {
             assert_eq!(m.len(), 0);
         }
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1470,7 +1442,6 @@ mod tests {
         assert_eq!(m.insert_if_absent(7, 71).unwrap(), Some(70));
         assert_eq!(m.get(&7), Some(70), "the present value is not overwritten");
         assert_eq!(m.len(), 1);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -1485,7 +1456,6 @@ mod tests {
         assert_eq!(m.get(&1), Some(11));
         m.remove(&1);
         assert_eq!(m.compare_exchange(&1, 11, 12), Err(MapError::KeyAbsent));
-        std::fs::remove_file(&p).ok();
     }
 
     /// Writers contending on ONE key's value through compare_exchange
@@ -1520,7 +1490,6 @@ mod tests {
         }
         assert_eq!(m.get(&1), Some(per_thread * threads as u64));
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 
     /// Two writers updating one key through insert take turns on the slot
@@ -1563,6 +1532,5 @@ mod tests {
         }
         assert!(reads > 0);
         drop(m);
-        std::fs::remove_file(&p).ok();
     }
 }

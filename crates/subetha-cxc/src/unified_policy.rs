@@ -408,8 +408,12 @@ impl UnifiedSidecar {
 
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(h) = self.handle.take() {
-            h.join().ok();
+        if let Some(h) = self.handle.take()
+            && let Err(payload) = h.join()
+        {
+            // The scanner panicked; the caller who asked for the
+            // shutdown is the one to hear it.
+            std::panic::resume_unwind(payload);
         }
     }
 }
@@ -417,8 +421,12 @@ impl UnifiedSidecar {
 impl Drop for UnifiedSidecar {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(h) = self.handle.take() {
-            h.join().ok();
+        if let Some(h) = self.handle.take()
+            && h.join().is_err()
+        {
+            // A Drop has no caller to hand the scanner's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the unified sidecar's scanner ended by panic");
         }
     }
 }

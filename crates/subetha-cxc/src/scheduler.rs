@@ -167,6 +167,9 @@ pub struct BackgroundScheduler {
     heartbeat: Arc<HeartbeatTable>,
     slot_idx: usize,
     stop: Arc<AtomicBool>,
+    /// Results the worker computed and could not push because the result
+    /// ring was full: work done whose outcome no collector will see.
+    results_dropped: Arc<AtomicU64>,
     worker: Option<JoinHandle<()>>,
     header_sidecar: subetha_core::HandshakeHeader,
     ring_sidecar: Box<subetha_core::ObservationRing>,
@@ -230,10 +233,12 @@ impl BackgroundScheduler {
         let submit_w = submit_ring.clone();
         let result_w = result_ring.clone();
         let hb_w = heartbeat.clone();
+        let results_dropped = Arc::new(AtomicU64::new(0));
+        let dropped_w = Arc::clone(&results_dropped);
         let worker = std::thread::Builder::new()
             .name(format!("subetha-sched-worker-pid{pid}"))
             .spawn(move || {
-                Self::worker_loop(submit_w, result_w, hb_w, slot_idx, stop_w);
+                Self::worker_loop(submit_w, result_w, hb_w, slot_idx, stop_w, dropped_w);
             })
             .expect("spawn scheduler worker thread");
 
@@ -243,6 +248,7 @@ impl BackgroundScheduler {
             heartbeat,
             slot_idx,
             stop,
+            results_dropped,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
             worker: Some(worker),
@@ -341,6 +347,14 @@ impl BackgroundScheduler {
     /// The slot index this scheduler claimed in the heartbeat table.
     pub fn slot_idx(&self) -> usize { self.slot_idx }
 
+    /// Results the worker computed and could not push because the result
+    /// ring was full: work done whose outcome no collector will see. A
+    /// count above zero means the collector is not draining fast enough
+    /// for the submit rate.
+    pub fn results_dropped(&self) -> u64 {
+        self.results_dropped.load(Ordering::Relaxed)
+    }
+
     /// One scan of the watchdog (typically called from the
     /// coordinator process's main loop). Returns reclaim report.
     pub fn watchdog_scan(&self) -> crate::failover::ReclaimReport {
@@ -358,6 +372,7 @@ impl BackgroundScheduler {
         heartbeat: Arc<HeartbeatTable>,
         slot_idx: usize,
         stop: Arc<AtomicBool>,
+        results_dropped: Arc<AtomicU64>,
     ) {
         let mut slot_buf = [0u8; PAYLOAD_BYTES];
         let mut beat_counter = 0u64;
@@ -375,16 +390,24 @@ impl BackgroundScheduler {
                     heartbeat.mark_in_flight(slot_idx, bit);
                     let r = exec_pass(&pass);
                     let result_payload = encode_result_slot(token, &r);
-                    // Result ring may be full if no consumer is
-                    // reading; we drop the result rather than blocking.
-                    result.try_push(&result_payload).ok();
+                    // A result ring nobody is draining fills; the worker
+                    // does not block on it, and the result it then cannot
+                    // deliver is counted rather than lost without a trace.
+                    if result.try_push(&result_payload).is_err() {
+                        results_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                     heartbeat.clear_in_flight(slot_idx, bit);
                 }
                 Err(TransportError::Empty) => {
                     // Idle: short sleep to avoid burning CPU.
                     std::thread::sleep(Duration::from_micros(100));
                 }
-                Err(_) => break,
+                // The submit transport refused the pop; the worker cannot
+                // take work past it and says which error ended it.
+                Err(e) => {
+                    eprintln!("subetha: scheduler worker {slot_idx} stopped, its submit transport refused a pop: {e:?}");
+                    break;
+                }
             }
         }
         heartbeat.unregister(slot_idx);
@@ -394,9 +417,12 @@ impl BackgroundScheduler {
 impl Drop for BackgroundScheduler {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(w) = self.worker.take() {
-            // Worker panic on shutdown is non-fatal; ignore join error.
-            w.join().ok();
+        if let Some(w) = self.worker.take()
+            && w.join().is_err()
+        {
+            // A Drop has no caller to hand the worker's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the scheduler worker ended by panic");
         }
     }
 }

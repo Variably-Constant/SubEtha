@@ -254,7 +254,16 @@ impl<N: Copy + Default + 'static, E: Copy + Default + 'static>
         let max_iter = self.edges.capacity() as u32;
         while cur != NIL_INDEX && visited < max_iter {
             let e = match self.edges.get(OffsetPtr::new(cur)) {
-                Ok(e) => e, Err(_) => break,
+                Ok(e) => e,
+                Err(unreadable) => {
+                    // The list names an edge the region cannot read; the
+                    // walk stops there and the sidecar records the short
+                    // result as status 3.
+                    debug_assert!(false, "edge {cur} in an out-list is unreadable: {unreadable:?}");
+                    self.ring_sidecar
+                        .push_op(crate::sidecar_ops::graph::OP_NEIGHBORS, 3);
+                    break;
+                }
             };
             out.push((EdgeIndex::new(cur), NodeIndex::new(e.dst), e.value));
             cur = e.next_in_src_list;
@@ -309,8 +318,13 @@ impl<N: Copy + Default + 'static, E: Copy + Default + 'static>
         }
         src_node.n_out_edges = src_node.n_out_edges.saturating_sub(1);
         self.nodes.set(OffsetPtr::new(src.index), src_node).ok()?;
-        // Free returns the prior value; we don't need it here.
-        self.edges.free(OffsetPtr::new(edge_idx.index)).ok();
+        // The edge is unlinked either way; a free the region refuses
+        // leaves its slot unreclaimable, which the sidecar records as
+        // status 3 against the remove.
+        if self.edges.free(OffsetPtr::new(edge_idx.index)).is_err() {
+            self.ring_sidecar
+                .push_op(crate::sidecar_ops::graph::OP_REMOVE_EDGE, 3);
+        }
         Some(target_value)
     }
 

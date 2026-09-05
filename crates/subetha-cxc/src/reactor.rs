@@ -214,8 +214,12 @@ impl Drop for ReactorHandle {
         self.shutdown.store(true, Ordering::Release);
         // Unblock the reactor's wait() so it sees the shutdown flag.
         self.xwaker.wake_all();
-        if let Some(j) = self.join.take() {
-            j.join().ok();
+        if let Some(j) = self.join.take()
+            && j.join().is_err()
+        {
+            // A Drop has no caller to hand the reactor's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the ring reactor ended by panic");
         }
     }
 }
@@ -349,8 +353,15 @@ fn reactor_loop(
                 // publish) or the shutdown `wake_all` ends the wait fast;
                 // the bounded tick is the backstop so a wake lost to the
                 // register/visibility race self-heals at the loop top
-                // (head re-check) instead of hanging the consumer.
-                xwaker.wait(token, Some(REACTOR_HEAL_INTERVAL)).ok();
+                // (head re-check) instead of hanging the consumer. The
+                // tick elapsing is that backstop, not an error.
+                match xwaker.wait(token, Some(REACTOR_HEAL_INTERVAL)) {
+                    Ok(()) | Err(crate::cross_process_waker::WakerError::Timeout) => {}
+                    Err(e) => {
+                        eprintln!("subetha: the reactor's wait on its waker failed, so it stops: {e:?}");
+                        break;
+                    }
+                }
                 waits += 1;
             }
             Err(crate::cross_process_waker::WakerError::Full) => {
@@ -358,7 +369,12 @@ fn reactor_loop(
                 // No free waker slot; re-check shortly.
                 std::hint::spin_loop();
             }
-            Err(_) => break,
+            // The waker region itself refused the park; nothing this
+            // loop can do fires the future again, so it stops and says so.
+            Err(e) => {
+                eprintln!("subetha: the reactor could not park on its waker, so it stops: {e:?}");
+                break;
+            }
         }
     }
 }
@@ -378,8 +394,12 @@ impl Drop for SeqReactor {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
         self.xwaker.wake_all();
-        if let Some(j) = self.join.take() {
-            j.join().ok();
+        if let Some(j) = self.join.take()
+            && j.join().is_err()
+        {
+            // A Drop has no caller to hand the reactor's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the sequence reactor ended by panic");
         }
     }
 }
@@ -428,12 +448,25 @@ fn seq_reactor_loop(
                     xwaker.release(token);
                     continue;
                 }
-                xwaker.wait(token, Some(REACTOR_HEAL_INTERVAL)).ok();
+                // The heal tick elapsing is the backstop against a lost
+                // wake, not an error.
+                match xwaker.wait(token, Some(REACTOR_HEAL_INTERVAL)) {
+                    Ok(()) | Err(crate::cross_process_waker::WakerError::Timeout) => {}
+                    Err(e) => {
+                        eprintln!("subetha: the sequence reactor's wait on its waker failed, so it stops: {e:?}");
+                        break;
+                    }
+                }
             }
             Err(crate::cross_process_waker::WakerError::Full) => {
                 std::hint::spin_loop();
             }
-            Err(_) => break,
+            // The waker region itself refused the park; nothing this
+            // loop can do fires the future again, so it stops and says so.
+            Err(e) => {
+                eprintln!("subetha: the sequence reactor could not park on its waker, so it stops: {e:?}");
+                break;
+            }
         }
     }
 }

@@ -147,12 +147,12 @@ const NAK_COOLDOWN: Duration = Duration::from_millis(12);
 /// OS clamps the request to its configured maximum.
 const SOCK_BUF_BYTES: usize = 8 << 20;
 
-/// Size `sock`'s receive and send buffers to [`SOCK_BUF_BYTES`]. Best-effort:
-/// a kernel that refuses or clamps the request just keeps a smaller buffer.
+/// Size `sock`'s receive and send buffers to [`SOCK_BUF_BYTES`]. A kernel
+/// that refuses the request leaves the socket at its default size, and the
+/// refusal counts in [`crate::sens_rlc::socket_buffer_refusals`]; one that
+/// clamps it reports no error and keeps its clamped size.
 fn size_socket_buffers(sock: &UdpSocket) {
-    let s = socket2::SockRef::from(sock);
-    s.set_recv_buffer_size(SOCK_BUF_BYTES).ok();
-    s.set_send_buffer_size(SOCK_BUF_BYTES).ok();
+    crate::sens_rlc::set_buffers_to(sock, SOCK_BUF_BYTES);
 }
 
 /// Minimum spacing between plain ACK feedback packets. The ack frontier
@@ -426,6 +426,11 @@ pub struct ReliableUdpSender {
     trace_round: u8,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     trace_send_us: Vec<u64>,
+    /// Trace probes the socket refused to send. A probe's send may surface
+    /// an earlier probe's latched ICMP error, which is the trace working,
+    /// so a refusal skips that hop for the round; the count says how
+    /// many hops went unprobed.
+    trace_sends_skipped: u64,
     trace_hops: Vec<crate::trace_sensor::TraceHop>,
     asym: crate::trace_sensor::PathAsymmetry,
     /// AccECN (item 15): the graded CE rate the peer's cumulative CE / ECT counts
@@ -741,6 +746,7 @@ impl ReliableUdpSender {
             last_trace: now,
             trace_round: 0,
             trace_send_us: vec![0u64; MAX_TRACE_HOPS as usize + 1],
+            trace_sends_skipped: 0,
             trace_hops: Vec::new(),
             asym: crate::trace_sensor::PathAsymmetry::new(),
             ce_rate: 0.0,
@@ -1610,9 +1616,11 @@ impl ReliableUdpSender {
                 let buf = encode_control(&cp);
                 // A probe send may surface a prior probe's latched ICMP error
                 // (IP_RECVERR); that is the trace working, not a failure, so a
-                // send error here just means this probe is skipped this round.
-                crate::trace_sensor::send_at_ttl(fd, self.trace_peer, &buf, ttl)
-                    .ok();
+                // send error here means this hop goes unprobed this round,
+                // which trace_sends_skipped() counts.
+                if crate::trace_sensor::send_at_ttl(fd, self.trace_peer, &buf, ttl).is_err() {
+                    self.trace_sends_skipped += 1;
+                }
                 self.trace_send_us[ttl as usize] = now;
             }
             self.last_trace = Instant::now();
@@ -1649,6 +1657,14 @@ impl ReliableUdpSender {
     /// `(ttl, router address, RTT)` from an ICMP TimeExceeded.
     pub fn trace_hops(&self) -> &[crate::trace_sensor::TraceHop] {
         &self.trace_hops
+    }
+
+    /// Trace probes the socket refused to send, each a hop that went
+    /// unprobed for its round. A probe's send surfacing an earlier
+    /// probe's latched ICMP error is the usual cause and is the trace
+    /// working; a count that climbs every round is the socket.
+    pub fn trace_sends_skipped(&self) -> u64 {
+        self.trace_sends_skipped
     }
 
     /// Forward / reverse path hop counts and their asymmetry (item 14), or `None`
@@ -2441,6 +2457,10 @@ pub struct ReliableUdpReceiver {
     /// unbounded; set by [`with_session_ceiling`](Self::with_session_ceiling).
     session_ceiling: Option<usize>,
     session_refusals: u64,
+    /// Service rounds a session could not complete: a send toward its own
+    /// peer that the socket refused, so that peer has not been told what
+    /// this receiver is missing. The other sessions were serviced.
+    session_service_errors: u64,
     /// Monotonic nonce source, mixed so the emitted value is not a guessable
     /// counter.
     session_nonce_seq: u64,
@@ -3846,6 +3866,7 @@ impl ReliableUdpReceiver {
             pending_admissions: HashMap::new(),
             session_ceiling: None,
             session_refusals: 0,
+            session_service_errors: 0,
             session_nonce_seq: 0,
             session_changed: false,
             session_admissions: 0,
@@ -3971,19 +3992,35 @@ impl ReliableUdpReceiver {
 
         let ids = self.order.clone();
         // A session's service error is a send toward its own peer and stays
-        // with that session. Every session is serviced each tick, and `tagged`
-        // keeps this tick's items.
+        // with that session: it is counted, reported the first time, and the
+        // other sessions are serviced. `tagged` keeps this tick's items.
         for epoch in ids {
             if let Some(mut s) = self.sessions.remove(&epoch) {
                 s.local_pmtu = pmtu;
                 let r = s.service(timed_out);
                 self.sessions.insert(epoch, s);
-                if let Ok(items) = r {
-                    tagged.extend(items.into_iter().map(|i| (epoch, i)));
+                match r {
+                    Ok(items) => tagged.extend(items.into_iter().map(|i| (epoch, i))),
+                    Err(e) => {
+                        self.session_service_errors += 1;
+                        if self.session_service_errors == 1 {
+                            eprintln!(
+                                "subetha: RS session {epoch} could not be serviced: {e} - \
+                                 its peer has not been told what this receiver is missing"
+                            );
+                        }
+                    }
                 }
             }
         }
         Ok(tagged)
+    }
+
+    /// Service rounds a session could not complete: a send toward its own
+    /// peer that the socket refused, so that peer has not been told what
+    /// this receiver is missing. The first is reported to stderr as well.
+    pub fn session_service_errors(&self) -> u64 {
+        self.session_service_errors
     }
 
     /// Receive one datagram, decode it, send feedback, and return any items
@@ -4199,17 +4236,20 @@ impl ReliableUdpReceiver {
     /// Send one feedback round to every live peer without waiting for a
     /// datagram.
     pub fn nudge_feedback(&mut self) -> io::Result<()> {
-        // A session's send error stays with that session; every session gets
-        // its feedback round.
+        // Every session gets its feedback round whatever an earlier one's
+        // send did; the first send that failed is what the caller hears.
+        let mut first_failure: Option<io::Error> = None;
         let ids = self.order.clone();
         for epoch in ids {
             if let Some(mut s) = self.sessions.remove(&epoch) {
                 let r = s.nudge_feedback();
                 self.sessions.insert(epoch, s);
-                r.ok();
+                if let Err(e) = r {
+                    first_failure.get_or_insert(e);
+                }
             }
         }
-        Ok(())
+        first_failure.map_or(Ok(()), Err)
     }
 
     /// Drop `pct` percent of incoming data datagrams (seeded, reproducible) to

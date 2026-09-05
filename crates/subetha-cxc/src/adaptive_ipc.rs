@@ -797,7 +797,13 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         match tag {
             TAG_RING => match self.ring.try_recv(0, &mut out) {
                 Ok(n) => Ok(Some(T::unmarshal(&out[..n.min(out.len())])?)),
-                Err(_) => Ok(None),
+                // Nothing queued is `None`; the ring refusing the pop for
+                // another reason is the transport's error.
+                Err(crate::shared_ring::RingError::Empty) => Ok(None),
+                Err(refused) => {
+                    debug_assert!(refused != crate::shared_ring::RingError::Empty);
+                    Err(ApiError::Transport(TransportError::Other))
+                }
             },
             TAG_DEQUE => match self.deque.steal() {
                 Some(slot) => Ok(Some(T::unmarshal(
@@ -1065,22 +1071,32 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         let last = self.last_inversions_atom.swap(inversions, Ordering::AcqRel);
         let elapsed_secs = (now.saturating_sub(then) as f64 / 1e9).max(1e-9);
         let rate = inversions.saturating_sub(last) as f64 / elapsed_secs;
-        if rate > threshold {
-            self.ring.set_ordering_mode(OrderingMode::MergeByStamp).ok();
+        if rate > threshold && self.ring.set_ordering_mode(OrderingMode::MergeByStamp).is_err() {
+            // The check has no result to return; the ring counts the
+            // flip it refused in mode_refusals().
+            self.ring.note_mode_refusal();
         }
+    }
+}
+
+/// Remove one of the files an endpoint laid out. A file a peer already
+/// removed reads as absent and is fine; any other refusal is a file left
+/// behind, reported because a Drop has no caller to hand it to.
+fn remove_laid_out(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("subetha: adaptive ipc file {} not removed: {e}", path.display()),
     }
 }
 
 impl<T: Marshal + Copy + 'static> Drop for AdaptiveIpc<T> {
     fn drop(&mut self) {
-        let deque_p = deque_path_for(&self.base_path);
-        let ctl_p = control_path_for(&self.base_path);
-        let pingen_p = pingen_path_for(&self.base_path);
-        std::fs::remove_file(&deque_p).ok();
-        std::fs::remove_file(&ctl_p).ok();
-        std::fs::remove_file(&pingen_p).ok();
+        remove_laid_out(&deque_path_for(&self.base_path));
+        remove_laid_out(&control_path_for(&self.base_path));
+        remove_laid_out(&pingen_path_for(&self.base_path));
         if self.khl.is_some() {
-            std::fs::remove_file(khl_path_for(&self.base_path)).ok();
+            remove_laid_out(&khl_path_for(&self.base_path));
         }
 
         // AdaptiveRing's file-backed constructor lays its files out
@@ -1089,16 +1105,12 @@ impl<T: Marshal + Copy + 'static> Drop for AdaptiveIpc<T> {
         // here so cleanup is exhaustive.
         let ring_prefix = ring_path_prefix_for(&self.base_path);
         let max_producers = self.ring.max_producers();
-        std::fs::remove_file(with_suffix(&ring_prefix, ".spsc.bin")).ok();
-        std::fs::remove_file(with_suffix(&ring_prefix, ".vyukov.bin")).ok();
-        std::fs::remove_file(with_suffix(&ring_prefix, ".ordering.bin")).ok();
+        remove_laid_out(&with_suffix(&ring_prefix, ".spsc.bin"));
+        remove_laid_out(&with_suffix(&ring_prefix, ".vyukov.bin"));
+        remove_laid_out(&with_suffix(&ring_prefix, ".ordering.bin"));
         for i in 0..max_producers {
-            std::fs::remove_file(
-                with_suffix(&ring_prefix, &format!(".mpsc.{i}.bin")),
-            ).ok();
-            std::fs::remove_file(
-                with_suffix(&ring_prefix, &format!(".mpmc.{i}.bin")),
-            ).ok();
+            remove_laid_out(&with_suffix(&ring_prefix, &format!(".mpsc.{i}.bin")));
+            remove_laid_out(&with_suffix(&ring_prefix, &format!(".mpmc.{i}.bin")));
         }
     }
 }
@@ -1344,8 +1356,12 @@ impl AdaptiveIpcSidecar {
 impl Drop for AdaptiveIpcSidecar {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(h) = self.handle.take() {
-            h.join().ok();
+        if let Some(h) = self.handle.take()
+            && h.join().is_err()
+        {
+            // A Drop has no caller to hand the sidecar's panic to, and a
+            // panic here would abort an unwind already in progress.
+            eprintln!("subetha: the adaptive ipc sidecar ended by panic");
         }
     }
 }

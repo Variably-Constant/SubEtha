@@ -120,7 +120,11 @@ impl TaskPool {
         }
         self.ready.signal.notify_all();
         for w in self.workers {
-            w.join().ok();
+            // A worker that panicked panicked in a task; the caller who
+            // asked for the shutdown is the one to hear it.
+            if let Err(payload) = w.join() {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }

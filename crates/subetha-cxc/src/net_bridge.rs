@@ -73,7 +73,15 @@ pub fn ship(
                         .copy_from_slice(&slot);
                     filled += 1;
                 }
-                Err(_) => break,
+                // Nothing queued right now: ship what is filled.
+                Err(crate::shared_ring::RingError::Empty) => break,
+                // The ring itself refused the pop; the bridge cannot
+                // continue past it and says which error ended it.
+                Err(e) => {
+                    return Err(std::io::Error::other(format!(
+                        "the producer ring refused a pop: {e:?}"
+                    )));
+                }
             }
         }
         if filled == 0 {

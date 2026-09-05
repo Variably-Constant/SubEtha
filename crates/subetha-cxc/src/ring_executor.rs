@@ -245,7 +245,11 @@ impl RingExecutor {
     pub fn shutdown(self) {
         self.shutdown.store(true, Ordering::Release);
         for w in self.workers {
-            w.join().ok();
+            // A worker that panicked panicked in a task; the caller who
+            // asked for the shutdown is the one to hear it.
+            if let Err(payload) = w.join() {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }

@@ -150,7 +150,15 @@ impl QuicBridgeClient {
                 let dst = &mut batch[filled * SLOT..(filled + 1) * SLOT];
                 match self.producer_ring.try_recv(0, dst) {
                     Ok(_) => filled += 1,
-                    Err(_) => break,
+                    // Nothing queued right now: ship what is filled.
+                    Err(crate::shared_ring::RingError::Empty) => break,
+                    // The ring itself refused the pop; the bridge cannot
+                    // continue past it and says which error ended it.
+                    Err(e) => {
+                        return Err(QuicBridgeError::Quic(format!(
+                            "the producer ring refused a pop: {e:?}"
+                        )));
+                    }
                 }
             }
             if filled == 0 {
@@ -381,7 +389,13 @@ pub fn make_self_signed_pair(
 /// VAES, with a lighter build chain) so example binaries work out
 /// of the box.
 pub fn install_default_crypto_provider() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+    match rustls::crypto::ring::default_provider().install_default() {
+        Ok(()) => {}
+        // The Err carries the provider that is already the process default,
+        // installed by an earlier call here or by the embedding program.
+        Err(already_installed) => debug_assert!(
+            !already_installed.cipher_suites.is_empty(),
+            "a provider with no cipher suites is the process default"
+        ),
+    }
 }
