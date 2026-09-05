@@ -24,9 +24,9 @@ with [`examples/bridge_lan.rs`](../crates/subetha-cxc/examples/bridge_lan.rs).
 
 | Host | Role mix | Hardware | Link |
 |---|---|---|---|
-| `192.168.1.210` | client / server / ping | Windows 11, Ryzen 7 2700 (Zen+) | **Wi-Fi** - the bandwidth-limiting hop |
-| `192.168.1.213` | client / server / pong | Ubuntu 24.04 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
-| `192.168.1.74` | client / server / pong | FreeBSD 15.0-RELEASE VM guest, Ryzen 7 5700G (Zen3) | wired to the AP |
+| `host-a` | client / server / ping | Windows 11, Ryzen 7 2700 (Zen+) | **Wi-Fi** - the bandwidth-limiting hop |
+| `host-b` | client / server / pong | Ubuntu 24.04 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
+| `host-c` | client / server / pong | FreeBSD 15.0-RELEASE VM guest, Ryzen 7 5700G (Zen3) | wired to the AP |
 
 The Windows host is one end of every pair; the Ubuntu and FreeBSD
 peers were measured in separate sessions on the same hypervisor

@@ -34,9 +34,9 @@
 //! Examples:
 //!     bridge_lan --gen-cert /tmp/c.der /tmp/k.der
 //!     bridge_lan --transport tcp --role server --bind 0.0.0.0:7401 --items 200000
-//!     bridge_lan --transport tcp --role client --connect 192.168.1.210:7401 --items 200000
+//!     bridge_lan --transport tcp --role client --connect 203.0.113.10:7401 --items 200000
 //!     bridge_lan --transport quic --role pong --bind 0.0.0.0:7402 \
-//!         --connect 192.168.1.210:7401 --rounds 2000 --cert /tmp/c.der --key /tmp/k.der
+//!         --connect 203.0.113.10:7401 --rounds 2000 --cert /tmp/c.der --key /tmp/k.der
 //!
 //! Build: cargo build --release --example bridge_lan \
 //!     --features quic-bridge,tcp-bridge

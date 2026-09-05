@@ -2,19 +2,19 @@
   "description": "Cross-host LAN bridge runs via examples/bridge_lan.rs: two physical hosts per run, real LAN hop, every run integrity-asserted (strict per-item sequence + count + sum on the receiving app). The Windows box is one end of every pair; the peer VMs (Ubuntu, FreeBSD) run on the same Ryzen 7 5700G hypervisor host.",
   "hosts": {
     "windows": {
-      "ip": "192.168.1.210",
+      "host": "host-a",
       "os": "Windows 11 Pro",
       "cpu": "AMD Ryzen 7 2700 (Zen+)",
       "link": "Wi-Fi (the bandwidth-limiting hop)"
     },
     "linux": {
-      "ip": "192.168.1.213",
+      "host": "host-b",
       "os": "Ubuntu 24.04.4 LTS (KVM guest)",
       "cpu": "AMD Ryzen 7 5700G (Zen3)",
       "link": "virtio / wired to the AP"
     },
     "freebsd": {
-      "ip": "192.168.1.74",
+      "host": "host-c",
       "os": "FreeBSD 15.0-RELEASE (VM guest)",
       "cpu": "AMD Ryzen 7 5700G (Zen3)",
       "link": "wired to the AP"

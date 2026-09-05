@@ -78,9 +78,9 @@ LAN.
 
 | Host | Hardware | Link |
 |---|---|---|
-| `192.168.1.210` | Windows 11, Ryzen 7 2700 (Zen+) | Wi-Fi 802.11ac |
-| `192.168.1.213` | Ubuntu 24.04 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
-| `192.168.1.74` | FreeBSD 15.0 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
+| `host-a` | Windows 11, Ryzen 7 2700 (Zen+) | Wi-Fi 802.11ac |
+| `host-b` | Ubuntu 24.04 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
+| `host-c` | FreeBSD 15.0 KVM guest, Ryzen 7 5700G (Zen3) | virtio, wired to the AP |
 
 The transport builds and runs natively on all three (Windows MSVC, Linux,
 FreeBSD 15.0 with clang), and every cross-host run below asserted
