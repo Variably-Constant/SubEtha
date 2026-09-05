@@ -6,7 +6,7 @@ crates (`subetha`, `subetha-core`, `subetha-cxc`, `subetha-pointers`,
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each version heading links to the commit that cut it.
 
-## [0.2.9] - Unreleased
+## [0.2.9] - 2026-09-05
 
 ### Added
 
@@ -550,26 +550,26 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[0.2.9]: https://github.com/Variably-Constant/SubEtha/compare/e5478d8...main
-[0.2.8]: https://github.com/Variably-Constant/SubEtha/commit/e5478d8
-[0.2.7]: https://github.com/Variably-Constant/SubEtha/commit/91ce2b5
-[0.2.6]: https://github.com/Variably-Constant/SubEtha/commit/b38f33a
-[0.2.5]: https://github.com/Variably-Constant/SubEtha/commit/cac43e0
-[0.2.4]: https://github.com/Variably-Constant/SubEtha/commit/1f6f384
-[0.2.3]: https://github.com/Variably-Constant/SubEtha/commit/2154b73
-[0.2.2]: https://github.com/Variably-Constant/SubEtha/commit/1e811c9
-[0.2.1]: https://github.com/Variably-Constant/SubEtha/commit/1175c79
-[0.2.0]: https://github.com/Variably-Constant/SubEtha/commit/152b628
-[0.1.12]: https://github.com/Variably-Constant/SubEtha/commit/fdf7ed3
-[0.1.11]: https://github.com/Variably-Constant/SubEtha/commit/e90c272
-[0.1.10]: https://github.com/Variably-Constant/SubEtha/commit/075cb5c
-[0.1.9]: https://github.com/Variably-Constant/SubEtha/commit/0f60be0
-[0.1.8]: https://github.com/Variably-Constant/SubEtha/commit/aab02be
-[0.1.7]: https://github.com/Variably-Constant/SubEtha/commit/28a5a83
-[0.1.6]: https://github.com/Variably-Constant/SubEtha/commit/2e6a84c
-[0.1.5]: https://github.com/Variably-Constant/SubEtha/commit/8b1aeb7
-[0.1.4]: https://github.com/Variably-Constant/SubEtha/commit/162b8df
-[0.1.3]: https://github.com/Variably-Constant/SubEtha/commit/fe82de1
+[0.2.9]: https://github.com/Variably-Constant/SubEtha/compare/6ca3d22...main
+[0.2.8]: https://github.com/Variably-Constant/SubEtha/commit/6ca3d22
+[0.2.7]: https://github.com/Variably-Constant/SubEtha/commit/aec1f18
+[0.2.6]: https://github.com/Variably-Constant/SubEtha/commit/597c23a
+[0.2.5]: https://github.com/Variably-Constant/SubEtha/commit/7d1fc25
+[0.2.4]: https://github.com/Variably-Constant/SubEtha/commit/e73a185
+[0.2.3]: https://github.com/Variably-Constant/SubEtha/commit/0cd7018
+[0.2.2]: https://github.com/Variably-Constant/SubEtha/commit/c301474
+[0.2.1]: https://github.com/Variably-Constant/SubEtha/commit/a8e96f0
+[0.2.0]: https://github.com/Variably-Constant/SubEtha/commit/7a41964
+[0.1.12]: https://github.com/Variably-Constant/SubEtha/commit/6827089
+[0.1.11]: https://github.com/Variably-Constant/SubEtha/commit/f9fc6e3
+[0.1.10]: https://github.com/Variably-Constant/SubEtha/commit/b08e3f8
+[0.1.9]: https://github.com/Variably-Constant/SubEtha/commit/234f370
+[0.1.8]: https://github.com/Variably-Constant/SubEtha/commit/536a9dc
+[0.1.7]: https://github.com/Variably-Constant/SubEtha/commit/16ca524
+[0.1.6]: https://github.com/Variably-Constant/SubEtha/commit/64d4c51
+[0.1.5]: https://github.com/Variably-Constant/SubEtha/commit/04f5477
+[0.1.4]: https://github.com/Variably-Constant/SubEtha/commit/7d6a890
+[0.1.3]: https://github.com/Variably-Constant/SubEtha/commit/a7bc859
 [0.1.2]: https://github.com/Variably-Constant/SubEtha/commit/de5f6d3
 [0.1.1]: https://github.com/Variably-Constant/SubEtha/commit/0a5e48e
 [0.1.0]: https://github.com/Variably-Constant/SubEtha/commit/9a91f03
