@@ -2518,6 +2518,11 @@ impl UnifiedSensReceiver {
                     // guard below load-bearing on this path too.
                     #[cfg(feature = "tls")]
                     if self.tls_listen.is_some() {
+                        debug_assert!(
+                            self.rs_next_global >= self.delivered_total,
+                            "a listening receiver's RS index trails its delivery frontier: \
+                             a handover happened on a path whose policy cannot switch"
+                        );
                         self.delivered_total += 1;
                         self.rs_next_global += 1;
                         if let Some(item) = self.open_listen(u64::from(epoch), payload) {
