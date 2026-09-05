@@ -8,8 +8,8 @@
 //! crossed but the payload did not; now a shm-backed ring names a SHARED
 //! `{prefix}_frames` region both processes map.
 //!
-//! The parent enqueues a mix of inline + offset frames (including the
-//! 4670-byte DeusARC snapshot size and an 8000-byte near-block payload);
+//! The parent enqueues a mix of inline + offset frames (including a
+//! 4670-byte payload and an 8000-byte near-block payload);
 //! the worker attaches via `open_shmfs` and must recover every frame's
 //! exact bytes AND its class.
 //!
@@ -26,7 +26,7 @@ const CAPACITY: usize = 256;
 // exercise alloc/free of multiple blocks across the boundary.
 const FRAMES: &[(usize, FrameClass)] = &[
     (30, FrameClass::Inline),
-    (4670, FrameClass::Offset), // the DeusARC snapshot size, exactly
+    (4670, FrameClass::Offset), // a mid-sized offset payload
     (8000, FrameClass::Offset), // near the 8192 block ceiling
     (4670, FrameClass::Offset),
     (12, FrameClass::Inline),
@@ -39,8 +39,8 @@ fn payload(seq: usize, len: usize) -> Vec<u8> {
 }
 
 // --big: a single frame ABOVE the default 8192 block, carried by a
-// with_frames-sized region on BOTH sides. Exercises the DeusARC concern
-// that a real snapshot can exceed 8 KB.
+// with_frames-sized region on BOTH sides, for a payload that exceeds
+// 8 KB.
 const BIG_BLOCK: usize = 16384;
 const BIG_COUNT: usize = 64;
 const BIG_PAYLOAD: usize = 12000;

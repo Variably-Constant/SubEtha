@@ -1,6 +1,6 @@
 //! `KTowerPointer<T>` - recursive pow2-of-pow2 address decomposition.
 //!
-//! Direct analog of quartz's `Tower<T, [K_a, K_b, ...]>` lifted to
+//! A tower of pow2 blocks, `Tower<T, [K_a, K_b, ...]>`, lifted to
 //! pointers. The key idea is RECURSIVE: a pointer is a pow2 block
 //! split into segments where each segment can ITSELF be a pow2 block
 //! split into further segments, all the way down. The hardware MMU
@@ -60,7 +60,7 @@
 //! 3. **Adaptive depth**: hot data uses 1-level (flat index, fastest
 //!    lookup); medium data uses 2-level (recursive but small); cold
 //!    sparse data uses 4-level (deep tree, minimal storage for empty
-//!    regions). The `K_outer` axis from quartz applied to addressing:
+//!    regions). A pow2 block-count axis (`K_outer`) applied to addressing:
 //!    pick the recursion depth at runtime based on observed
 //!    sparsity, like AdaptivePointer migrating between encodings.
 //!

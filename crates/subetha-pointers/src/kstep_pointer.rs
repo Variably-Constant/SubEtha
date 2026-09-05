@@ -12,8 +12,8 @@
 //! | 6      | 64 * sizeof(T)             | Cache-line stride              |
 //! | 12     | 4096 * sizeof(T)           | Page-aligned stride            |
 //!
-//! K_step is the pointer-side analog of quartz's `K_inner` axis -
-//! it controls the granularity of iteration. The advantage over a
+//! K_step is the pointer-side form of a per-element bit-width axis
+//! (`K_inner`): it controls the granularity of iteration. The advantage over a
 //! runtime `stride: usize` is that K_step is a const-encoded shift
 //! amount; the compiler can fold `<< k_step` into address generation
 //! and SIMD ops know the stride at codegen time.
