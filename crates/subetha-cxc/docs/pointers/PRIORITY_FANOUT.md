@@ -31,7 +31,7 @@ not a source of truth; the rings are authoritative.
   bitmap. Larger fanouts need a Vec<u64> bitmap (separate
   primitive).
 - **Producer protocol**: ring push, then `fetch_or` the bitmap
-  bit. The push happens BEFORE the bitmap set; readers may
+  bit. The push happens before the bitmap set; readers may
   transiently miss a just-pushed item until the producer
   completes the fetch_or.
 - **Consumer protocol**: CLZ-find highest set bit, try ring pop;
@@ -211,7 +211,7 @@ pops in O(log N).
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   cleanup of bitmap + per-priority ring files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process operation**: any process can submit; any
   process can drain. The mutex baseline is in-process only.
@@ -338,8 +338,8 @@ at other priorities.
   `n_priorities` and `ring_capacity` as create. Pin in a shared
   spec.
 
-- **Confusing priority semantics.** Priority 0 is LOWEST, N-1 is
-  HIGHEST. The bitmap's MSB direction matches this: highest set
+- **Confusing priority semantics.** Priority 0 is lowest, N-1 is
+  highest. The bitmap's MSB direction matches this: highest set
   bit = highest priority.
 
 - **Submitting to an out-of-bounds priority.** Returns

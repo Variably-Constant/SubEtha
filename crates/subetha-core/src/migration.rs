@@ -42,7 +42,7 @@ impl<'a> Drop for Generation<'a> {
 /// Guard for the migration coordinator. Wraps the migrate-then-drain
 /// sequence: `begin` bumps the generation and swaps the tag,
 /// `wait_quiescent` drains the old generation. The drain is explicit -
-/// the guard does NOT drain on drop.
+/// the guard does not drain on drop.
 pub struct MigrationGuard<'a> {
     header: &'a HandshakeHeader,
     old_value: u32,

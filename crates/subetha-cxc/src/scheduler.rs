@@ -12,7 +12,7 @@
 //!    cluster, typically the coordinator).
 //!
 //! The same MMF backing gives cross-thread + cross-process + disk
-//! durability. The submit-ring file IS the persistent queue; a
+//! durability. The submit-ring file is the persistent queue; a
 //! process that died holding work in the ring loses nothing; when
 //! it restarts, those slots are still there.
 
@@ -28,7 +28,7 @@ use crate::message_transport::{MessageTransport, TransportError};
 use crate::pass_registry::{execute as exec_pass, Pass, PassResult};
 use crate::shared_ring::{RingError, SharedRing, PAYLOAD_BYTES};
 
-/// Submit-ring payload encoding: a Pass serialised into the slot.
+/// Submit-ring payload encoding: a Pass serialized into the slot.
 ///
 /// Wire format (fits in PAYLOAD_BYTES = 56 bytes):
 /// ```text

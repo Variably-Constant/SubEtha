@@ -277,13 +277,13 @@ hardware speed.
 - **MMF lifecycle managed**: bench creates the file, runs ops,
   deletes the file at end. No leakage across runs.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process visibility cost**: in-process bench cannot
   measure cross-process round-trip; cache coherence completes
   in sub-microsecond on shared L3.
 - **Multi-thread contention**: bench is single-threaded.
-  Multi-writer contention on the SAME atomic incurs cache-line
+  Multi-writer contention on the same atomic incurs cache-line
   bounce; SharedAtomic and std::Atomic share this characteristic.
 
 ---
@@ -354,8 +354,8 @@ each iteration. No IPC pipe / socket needed.
   the same time.
 
 - **Forgetting `flush` before relying on cross-process durability.**
-  Cross-process VISIBILITY is immediate via cache coherence;
-  cross-process DURABILITY (survives process crash) requires
+  Cross-process visibility is immediate via cache coherence;
+  cross-process durability (survives process crash) requires
   explicit flush.
 
 - **Wrapping `SharedAtomicU64` in a Mutex.** Pointless; the atomic

@@ -31,7 +31,7 @@ and the consumer that reads it (reader side). The conventional
 choice - raw `*const T` - forces a memory load to answer any
 question about the target. These pointers move the answer to the
 most common question **into the pointer bits themselves**, so the
-question can be answered with a single AND / compare / mask, no
+question can be answered with a single `AND` / compare / mask, no
 dereference, no cache miss.
 
 The win is shape-dependent. Umbra-style prefix carrying wins on

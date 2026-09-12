@@ -84,10 +84,10 @@ impl From<WakerError> for BlockingError {
 /// Consumer-local adaptive phase-locked-waiting state. SPSC has
 /// exactly one consumer, so the ring owns it.
 ///
-/// DEFAULT OFF. The cross-process bench (`phase_lock_xproc`) showed
+/// Off by default. The cross-process bench (`phase_lock_xproc`) showed
 /// that across the OS process boundary - SubEtha's primary use case -
 /// the doorbell wake is already ~400-500 ns and predictive waiting is
-/// a LOSS (worse p50 and much worse p99 from prediction jitter). The
+/// a loss (worse p50 and much worse p99 from prediction jitter). The
 /// in-process win it shows (10-50x) came from thread-scheduling
 /// contention inflating the in-process doorbell to ~10 us, which does
 /// not occur cross-process. So predictive waiting is opt-in for the
@@ -109,7 +109,7 @@ struct PhaseControl {
     /// the estimator lock or an `Instant::now`.
     consecutive_fast: AtomicU32,
     /// Consecutive empty-ring waits. Prediction fires only after a
-    /// sustained run, so a MIXED regime (small backlog, only
+    /// sustained run, so a mixed regime (small backlog, only
     /// occasional empties) never predicts - predicting there mistimes
     /// the park against queued items and adds latency. Reset by any
     /// fast catch.
@@ -119,7 +119,7 @@ struct PhaseControl {
     /// (the syscall-free path). Observability - proves the mechanism
     /// fired, surviving the tail-drain estimator reset.
     predictive_catches: AtomicU64,
-    /// The arrival estimator. Locked ONLY on the wait path (already
+    /// The arrival estimator. Locked only on the wait path (already
     /// slow), never on the fast path.
     est: Mutex<PhaseEstimator>,
 }
@@ -127,7 +127,7 @@ struct PhaseControl {
 impl PhaseControl {
     fn new() -> Self {
         Self {
-            // OFF by default: predictive waiting loses cross-process
+            // Off by default: predictive waiting loses cross-process
             // (see the type doc); opt-in via set_phase_locking.
             enabled: AtomicBool::new(false),
             in_wait_mode: AtomicBool::new(false),
@@ -143,10 +143,10 @@ impl PhaseControl {
 /// SPSC ring with cross-process blocking recv / send.
 pub struct BlockingSpscRing {
     inner: Arc<SpscRingCore>,
-    /// Wakes a parked CONSUMER when the producer pushes (consumer
+    /// Wakes a parked consumer when the producer pushes (consumer
     /// is waiting on a non-empty ring).
     consumer_waker: Arc<CrossProcessWaker>,
-    /// Wakes a parked PRODUCER when the consumer pops (producer
+    /// Wakes a parked producer when the consumer pops (producer
     /// is waiting on a non-full ring).
     producer_waker: Arc<CrossProcessWaker>,
     /// Adaptive phase-locked waiting, automatic and atomically
@@ -273,7 +273,7 @@ impl BlockingSpscRing {
     }
 
     /// Block until either a push succeeds or `timeout` elapses.
-    /// On `Err(Timeout)` the caller's payload is NOT in the ring.
+    /// On `Err(Timeout)` the caller's payload is not in the ring.
     pub fn send_blocking(
         &self,
         payload: &[u8],
@@ -324,7 +324,7 @@ impl BlockingSpscRing {
     /// ring's consumer at runtime. Atomic; takes effect on the next
     /// `recv_blocking` call. Default is DISABLED - the bare doorbell
     /// wins cross-process (the primary use case). Enable it only for
-    /// an IN-PROCESS consumer whose producer contends for cores
+    /// an in-process consumer whose producer contends for cores
     /// (where the doorbell wake inflates and predictive spinning
     /// shaves it); see the `phase_lock_probe` (in-process win) and
     /// `phase_lock_xproc` (cross-process loss) benches.
@@ -363,7 +363,7 @@ impl BlockingSpscRing {
 
     /// Fast-path catch while in wait mode: cheap, lock-free,
     /// `Instant`-free. The consumer caught up; count toward leaving
-    /// wait mode. No estimator update - only WAIT arrivals feed the
+    /// wait mode. No estimator update - only wait-path arrivals feed the
     /// period estimate.
     #[inline]
     fn phase_on_fast(&self) {
@@ -397,7 +397,7 @@ impl BlockingSpscRing {
         out: &mut [u8],
         deadline: Option<Instant>,
     ) -> Result<Option<usize>, BlockingError> {
-        // Predict only on a regular cadence AND sustained empty-ring
+        // Predict only on a regular cadence and sustained empty-ring
         // waiting - a mixed regime stays on the doorbell.
         if self.phase.consecutive_waits.load(Ordering::Relaxed)
             < PHASE_MIN_SUSTAINED_WAITS
@@ -456,9 +456,9 @@ impl BlockingSpscRing {
     ///
     /// By default this is the bare doorbell park (the consumer parks
     /// on the cross-process waker until the producer's push wakes it).
-    /// Predictive (phase-locked) waiting is OPT-IN via
+    /// Predictive (phase-locked) waiting is opt-in via
     /// [`Self::set_phase_locking`] - it wins only for an in-process consumer
-    /// whose producer contends for cores, and LOSES cross-process
+    /// whose producer contends for cores, and loses cross-process
     /// where the doorbell is already fast. When enabled and the
     /// consumer waits on a regular-cadence producer, it predicts the
     /// arrival and spins a short guard band instead of paying the
@@ -473,7 +473,7 @@ impl BlockingSpscRing {
         let deadline = timeout.map(|d| Instant::now() + d);
         let adaptive = self.phase.enabled.load(Ordering::Relaxed);
         // Per-call: did this recv park/spin-wait before catching? A
-        // catch after a park is a WAIT, even though it surfaces via
+        // catch after a park is a wait-path arrival, even though it surfaces via
         // the fast-path try_pop on the loop-back - classifying it as
         // "fast" would reset the sustained-wait counter and prediction
         // would never accumulate.

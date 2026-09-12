@@ -12,8 +12,8 @@
 //! 2. Capacity check: `(bottom - top) + n_slots <= capacity`.
 //! 3. For each of the `n_slots` slots: write 64 bytes (sequence-
 //!    number-free) carrying 3 [`LineItem`] payloads + a count.
-//! 4. ONE Release fence orders all slot writes.
-//! 5. ONE Relaxed store on owner-private `bottom` advances bottom by
+//! 4. One Release fence orders all slot writes.
+//! 5. One Relaxed store on owner-private `bottom` advances bottom by
 //!    `n_slots`, atomically publishing all slots from the thieves'
 //!    perspective.
 //!
@@ -27,21 +27,21 @@
 //! | Primitive | Producer atomics |
 //! |---|---:|
 //! | `SharedDeque<u64>` (Chase-Lev `K_inner=1`) | 64 Release fences + 64 Relaxed bottom stores + 64 top loads |
-//! | `SharedDequeKhpd::publish_batch` | 22 slot Release-stores on state + 1 `fetch_add` (LOCK XADD) |
-//! | `SharedDequeLoh::publish_batch` | 64 slot Release-stores on sequence + 1 LOCK XADD |
+//! | `SharedDequeKhpd::publish_batch` | 22 slot Release-stores on state + 1 `fetch_add` (`LOCK XADD`) |
+//! | `SharedDequeLoh::publish_batch` | 64 slot Release-stores on sequence + 1 `LOCK XADD` |
 //! | `SharedDequeKhl::publish_batch` | 22 slot Acquire-loads on sequence + 22 slot Release-stores on sequence + 1 Release-store on owner-private tail |
 //! | **`SharedDequeFcl::publish_batch`** | **1 top Acquire-load + 22 cache-line writes + 1 Release fence + 1 Relaxed bottom store** |
 //!
 //! Fcl's producer side has the **fewest atomic operations** of any
 //! batched deque-family primitive on this substrate. The trade-off
 //! is on the thief side: Chase-Lev's steal protocol does a
-//! speculative slot read BEFORE the head CAS, so a thief that loses
+//! speculative slot read before the head CAS, so a thief that loses
 //! the CAS has read a 64-byte slot for nothing. Under heavy
 //! contention this wastes cache bandwidth; under producer-fast
 //! single-thief (the workload-shape Fcl targets) the speculative
 //! reads never get wasted because the CAS never loses.
 //!
-//! ## Why this is novel
+//! ## Why the fat slot is sound
 //!
 //! The Chase-Lev literature treats `K_inner = 1` as a fixed feature
 //! of the protocol, but inspecting the safety proof shows it never
@@ -51,7 +51,7 @@
 //! plus 8 B of tail padding fit exactly in 64 B. The slot becomes
 //! cache-line aligned by construction; sequential slot writes are
 //! sequential cache-line writes. This is the counter-only end's
-//! analogue of the `K_inner = 3` lever that KHPD pulled on the
+//! analog of the `K_inner = 3` lever that KHPD pulled on the
 //! per-slot end.
 //!
 //! ## When to use this
@@ -59,10 +59,10 @@
 //! - **Producer-fast single-thief batched workloads**: this is the
 //!   win zone. Fcl's per-batch cost is dominated by 22 cache-line
 //!   writes; everything else is essentially free.
-//! - **NOT for multi-thief contention**: the speculative slot read
+//! - **Not for multi-thief contention**: the speculative slot read
 //!   before head CAS wastes cache when the CAS races. Use
 //!   [`SharedDequeUrd`](crate::SharedDequeUrd) instead.
-//! - **NOT for per-item dispatch with K = 1**: just use plain
+//! - **Not for per-item dispatch with K = 1**: just use plain
 //!   [`SharedDeque`]; Fcl's K_inner = 3 wastes slot bytes if the
 //!   caller has nothing to fill them with.
 
@@ -114,7 +114,7 @@ impl SharedDequeFcl {
 
     /// Owner-side batched publish. Packs `items` into
     /// `ceil(items.len() / LINE_ITEMS)` fat slots, then publishes
-    /// them with ONE top load + ONE Release fence + ONE Relaxed
+    /// them with one top load + one Release fence + one Relaxed
     /// bottom store via [`SharedDeque::push_batch`].
     ///
     /// Cost: 1 top load + `ceil(K/3)` cache-line writes + 1 Release

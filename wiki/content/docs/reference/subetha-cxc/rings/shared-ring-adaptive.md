@@ -17,11 +17,11 @@ Shape-morphing ring with all four ring family shapes
 [composed MPMC](../shared-ring-mpmc/),
 [Vyukov global-FIFO](../shared-ring/)) pre-allocated as backings.
 The active shape is selected by an `AtomicU8` shape tag; a morph
-swaps the tag with a Release-store and marks the old shape's
-backing STALE - no data moves; the consumer's pop path drains the
-stale backlog before reading the new shape. A `pin_generation`
-counter, bumped on every morph, invalidates outstanding pinned
-handles.
+swaps the tag with a Release-store and adds the shape it left to
+the walked set - no data moves; the consumer's pop path drains
+every other walked shape before reading the current one. A
+`pin_generation` counter, bumped on every morph, invalidates
+outstanding pinned handles.
 
 Two execution paths through the same primitive:
 
@@ -37,8 +37,8 @@ Two execution paths through the same primitive:
 - **Peek-direct path** (`peek_spsc_slot()` returns
   `Option<PeekedSpscSlot<'_>>`): zero-copy view into the SPSC
   backing's next slot. Returns `Some` when the active shape is
-  SPSC AND the ring is non-empty; `None` otherwise. The slot
-  derefs to `&[u8]` pointing INTO the mmap region; pass that
+  SPSC and the ring is non-empty; `None` otherwise. The slot
+  derefs to `&[u8]` pointing into the mmap region; pass that
   slice straight to a downstream consumer (e.g. quinn's
   `write_all`), then call `PeekedSpscSlot::confirm()` to
   release. Used by the bridge primitives' egress loops for
@@ -63,34 +63,34 @@ Two execution paths through the same primitive:
 - **The payload region rides the ring's own locale**, so offset
   (spilled) frames cross a process boundary. An `create_anon` ring gets
   a private in-process region; a `create` / `open` (file) or
-  `create_shmfs` / `open_shmfs` (shm) ring gets a SHARED region named
+  `create_shmfs` / `open_shmfs` (shm) ring gets a shared region named
   off the backing prefix (`<prefix>.frames.bin` / `<prefix>_frames`)
   that every attached process maps. The region is created lazily on the
   first offset frame - the producer creates it before pushing the
   descriptor, so a consumer that opens it on receipt always finds the
-  already-initialised region. (Inline frames never touch the region;
+  already-initialized region. (Inline frames never touch the region;
   only records above the inline budget do.)
 - **A single frame cannot exceed the region block size** (8 KB
   default), so a payload larger than ~8187 bytes returns
   `PayloadTooLarge` unless you enlarge the block. On a cross-process
-  ring, call `with_frames(block_size, block_count)` with the SAME
-  arguments on BOTH the creating side (`create` / `create_shmfs`) and
-  every attaching side (`open` / `open_shmfs`) BEFORE the first
+  ring, call `with_frames(block_size, block_count)` with the same
+  arguments on both the creating side (`create` / `create_shmfs`) and
+  every attaching side (`open` / `open_shmfs`) before the first
   `send_frame` - both sides must agree on the region geometry or the
   attaching side's `recv_frame` reports a layout mismatch. The default
   geometry (no `with_frames`) already matches on both sides, so records
   up to ~8 KB need no coordination.
 - **Initial shape is `RingShape::Spsc`** (the cheapest backing).
-- **`max_producers` + `max_consumers` are sizing HINTS**, not
+- **`max_producers` + `max_consumers` are sizing hints**, not
   ceilings: they set how many per-producer backings are
-  pre-allocated up front. `register_producer` past the hint GROWS
+  pre-allocated up front. `register_producer` past the hint grows
   the ring (a new backing pair, published cross-process through
   the shared peer directory); `register_consumer` claims a
   consumer slot and rebalances MPMC ring ownership. Registration
   fails only under a caller-declared `RingContract` ceiling
   (`with_contract` sets `max_concurrent_push` /
   `max_concurrent_pop`, an ordering contract, or a capacity
-  ceiling) - the declared contract is the ONLY source of
+  ceiling) - the declared contract is the only source of
   `AdaptiveError::TooManyProducers` / `TooManyConsumers`. Without
   one the contract is unbounded and growth is capped only by the
   substrate slot ceilings (4096 concurrent producer slots, 256
@@ -105,11 +105,11 @@ in where the backing memory lives.
 |---|---|---|
 | `create_anon(max_producers, max_consumers, capacity)` | process-private anon mmap | in-process only; cheapest |
 | `create(path_prefix, max_producers, max_consumers, capacity)` | file-backed | cross-process + disk-persistent; one file per backing (`<prefix>.spsc.bin`, `.mpsc.{i}.bin`, `.mpmc.{i}.bin`, `.vyukov.bin`) |
-| `open(path_prefix, max_producers, max_consumers, expected_capacity)` | file-backed (attach) | opens an existing `create` set, validating each backing's magic + capacity without re-initializing; the CURRENT backing count comes from the shared peer directory (a ring that grew past the creator's hint opens fully); the shape tag + pin generation are process-local and re-track the shared peer counts on the next op |
+| `open(path_prefix, max_producers, max_consumers, expected_capacity)` | file-backed (attach) | opens an existing `create` set, validating each backing's magic + capacity without re-initializing; the current backing count comes from the shared peer directory (a ring that grew past the creator's hint opens fully); the shape tag + pin generation are process-local and re-track the shared peer counts on the next op |
 | `create_shmfs(name_prefix, max_producers, max_consumers, capacity)` | named RAM-resident shared memory (ShmFs) | cross-process, never touches the page cache; names `{prefix}_spsc` / `_mpsc_{i}` / `_mpmc_{i}` / `_vyukov` |
-| `open_shmfs(name_prefix, max_producers, max_consumers, expected_capacity)` | named shared memory (ShmFs, attach) | the ShmFs peer of `open`: attaches to a region a *different* process already `create_shmfs`'d, validating each backing's magic + capacity WITHOUT re-initializing, so a snapshot the creator already enqueued survives. `create_shmfs` re-lays-out every backing (correct for the region's owner, data-loss for a late attacher), so any process that JOINS an existing region must use `open_shmfs`, not `create_shmfs`. Backing count comes from the shared peer directory |
+| `open_shmfs(name_prefix, max_producers, max_consumers, expected_capacity)` | named shared memory (ShmFs, attach) | the ShmFs peer of `open`: attaches to a region a *different* process already `create_shmfs`'d, validating each backing's magic + capacity without re-initializing, so a snapshot the creator already enqueued survives. `create_shmfs` re-lays-out every backing (correct for the region's owner, data-loss for a late attacher), so any process that joins an existing region must use `open_shmfs`, not `create_shmfs`. Backing count comes from the shared peer directory |
 | `create_shmfs_in(name_prefix, max_producers, max_consumers, capacity, ns)` | named shared memory in a chosen namespace | `create_shmfs` with the namespace named explicitly; `ShmNamespace::Machine` puts every region where any Windows session resolves it, which is what a service in session 0 and its interactive clients need. The namespace is retained, so the ordering and payload regions the ring creates later land beside its backings |
-| `open_shmfs_in(name_prefix, max_producers, max_consumers, expected_capacity, ns)` | named shared memory in a chosen namespace (attach) | the attach peer of `create_shmfs_in`, and it must be passed the SAME namespace the creator used. These are create-or-open names, so a mismatch does not report a missing region: both sides succeed against separate regions and neither sees the other |
+| `open_shmfs_in(name_prefix, max_producers, max_consumers, expected_capacity, ns)` | named shared memory in a chosen namespace (attach) | the attach peer of `create_shmfs_in`, and it must be passed the same namespace the creator used. These are create-or-open names, so a mismatch does not report a missing region: both sides succeed against separate regions and neither sees the other |
 | `create_shmfs_secured(name_prefix, max_producers, max_consumers, capacity, ns, sddl)` | named shared memory with a security descriptor | `create_shmfs_in` with `sddl` as the descriptor applied to every region it creates. A `ShmNamespace::Machine` region carries the creator's default otherwise, which admits only the creator's own session, so reaching a service in session 0 from an interactive client takes both. The descriptor is retained alongside the namespace and reaches the peer directory, the ordering region and the payload region. See [Access control](../../specialized/shm-file/#access-control) |
 | `open_shmfs_secured(name_prefix, max_producers, max_consumers, expected_capacity, ns, sddl)` | named shared memory with a security descriptor (attach) | the attach peer of `create_shmfs_secured`. These are create-or-open names, so a descriptor is applied only where the call creates a region the creator has not yet made; an attach to a live region uses the descriptor already on it |
 | `create_hugepage(max_producers, max_consumers, capacity)` | huge / large / super pages | each backing on its own 2 MB-paged region (Linux `MAP_HUGETLB`, Windows `MEM_LARGE_PAGES`, FreeBSD `MAP_ALIGNED_SUPER`, macOS x86_64 `VM_FLAGS_SUPERPAGE_SIZE_2MB`); needs a reservation/privilege on Linux/Windows, returns `Err` so the caller can fall back to `create_anon` |
@@ -124,34 +124,29 @@ directory** (`<prefix>.peers.bin` / `{prefix}_peers` / in-process
 for anon): shared producer + consumer slot bitmaps, the published
 backing count, MPMC ring ownership, and a topology epoch. Hot
 paths poll the epoch with one relaxed load; a change (a peer
-registered / unregistered / grew the ring in ANY process) runs the
+registered / unregistered / grew the ring in any process) runs the
 sync slow path - open the new backings, re-morph the shape.
 
 ## Morph protocol
 
-Morphs are AUTOMATIC by default: every register / unregister
+Morphs are automatic by default: every register / unregister
 re-morphs the shape to the live cross-process peer counts
 ((1,1) -> SPSC, (N,1) -> MPSC, (N,M) -> MPMC), and other attached
 processes follow through the topology epoch on their next op. An
-explicit `morph_to` (or `pin_shape`) PINS the shape - the user
+explicit `morph_to` (or `pin_shape`) pins the shape - the user
 override - until `resume_auto_shape`. The mechanism either way:
 
 ```text
 1. Register/unregister (automatic), a policy sidecar, or an
    explicit morph_to call requests new_shape.
 2. If old_shape == new_shape: no-op return.
-3. If the previous morph's stale backing still holds a backlog:
-   the request is recorded as pending and the caller gets
-   Err(RingError::StaleBacklog). The pop that empties that backlog
-   applies the pending shape, so a peer count the ring could not
-   serve at registration time is served as soon as it safely can be.
-4. pin_generation.fetch_add(1, AcqRel)
+3. pin_generation.fetch_add(1, AcqRel)
      -> all outstanding PinnedRing handles see is_still_valid() == false.
-5. stale_shape_tag.store(old as u8, Release)
-6. shape_tag.store(new as u8, Release)
+4. used_shapes |= 1 << old, and |= 1 << new (AcqRel)
+5. shape_tag.store(new as u8, Release)
      -> subsequent try_send calls route via the new backing;
-        try_recv walks the stale backing first until it drains.
-7. Caller observes the morph by re-pinning via pin_current_shape().
+        try_recv walks every other used shape before it.
+6. Caller observes the morph by re-pinning via pin_current_shape().
 ```
 
 A declared contract also filters this morph. The policy's proposed
@@ -161,14 +156,15 @@ gate, so a `Fifo` ordering contract steers a multi-producer morph to
 leave the declared ordering envelope. Under the default (unbounded) contract the
 filter is the identity.
 
-No data moves during a morph: the old backing keeps its single
-reader (the consumer's stale walk) and the new backing starts
-empty, so morphs are safe under saturating traffic with live
-producers and a live consumer, and there is no transfer to
-overflow the target shape's capacity. The stale marker stays set
-until the next morph so a producer push that straddled the tag
-flip still lands somewhere the consumer looks. Pinned NATIVE pops
-(`spsc_try_pop` etc.) are shape-direct and skip the stale walk;
+No data moves during a morph: each backing keeps its single reader
+(the consumer's walk) and the new backing starts empty, so morphs
+are safe under saturating traffic with live producers and a live
+consumer, and there is no transfer to overflow the target shape's
+capacity. A shape that has been used stays in the walked set for
+the life of the ring, so a producer push that straddled the tag
+flip still lands somewhere the consumer looks, however many morphs
+follow it. Pinned native pops
+(`spsc_try_pop` etc.) are shape-direct and skip that walk;
 drain through `try_recv` (or `ordered_try_pop` on stamped rings)
 across morphs.
 
@@ -229,7 +225,7 @@ on the composed shapes - no morph, no data movement, backlog
 retroactively ordered. Stamped rings never morph to the Vyukov
 shape (the stamped slot layout does not fit its 56-byte slots; the
 `GlobalFifo` declaration is served by the merge flag instead).
-Ordering-mode flips do NOT bump the pin generation; the pinned
+Ordering-mode flips do not bump the pin generation; the pinned
 `ordered_try_pop` consults the mode atom per call.
 `with_ordering_stamps_kind(StampKind)` selects the stamp source
 explicitly - `StampKind::SharedCounter` is the exactness opt-in (a
@@ -254,7 +250,7 @@ their silence by design. The merge runs under a drainer lease
 another consumer after `DRAINER_GRACE_EPOCHS` missed beats). `inversions()`
 exposes the shared cross-producer inversion count; `try_recv_with_stamp`
 (and `PinnedRing::ordered_try_pop_with_stamp`) return the popped stamp so a
-consumer can ASSERT the monotonicity it paid for rather than trust it.
+consumer can assert the monotonicity it paid for rather than trust it.
 `is_stamped()` / `stamp_kind()` report the configuration.
 
 ## The payload-size axis
@@ -310,10 +306,10 @@ shape-direct native ops so a stable-shape hot loop skips the tag dispatch:
 | `vyukov_try_push` / `vyukov_try_pop` | the Vyukov global-FIFO backing |
 | `stamped_try_push(producer_id, ..)` | a stamped ring (else `NotStamped`) |
 | `ordered_try_pop(consumer_id, ..)` / `ordered_try_pop_with_stamp(..)` | stamped pop that reads the live mode atom per call (valid across mode flips) |
-| `recv_signal(shape) -> &AtomicU64` | a monitor-wait HINT: arm `monitor_wait::monitor_wait_u64` on it instead of a raw spin loop (Windows deschedules pure spinners). Covers producer line 0 on the composed shapes and the current consumer slot on Vyukov - a hint, not a wake guarantee, so keep waits budget-bounded |
+| `recv_signal(shape) -> &AtomicU64` | a monitor-wait hint: arm `monitor_wait::monitor_wait_u64` on it instead of a raw spin loop (Windows deschedules pure spinners). Covers producer line 0 on the composed shapes and the current consumer slot on Vyukov - a hint, not a wake guarantee, so keep waits budget-bounded |
 
-The native pops are shape-direct and do NOT walk the stale backing across a
-morph; a consumer that pops through pins across morphs uses
+The native pops are shape-direct and do not walk the earlier backings across
+a morph; a consumer that pops through pins across morphs uses
 `AdaptiveRing::try_recv` / `PinnedRing::ordered_try_pop`, which do.
 
 Payload-size constants: `ADAPTIVE_SPSC_PAYLOAD_BYTES = 64` (SPSC/MPSC/MPMC
@@ -322,11 +318,11 @@ Vyukov backing spends 8 bytes on its per-slot sequence atom). The
 shape-agnostic raw path is bounded by the smaller (56).
 
 Peer / contract accessors round out the surface: `max_producers()` /
-`max_consumers()` (construction HINTS), `published_producers()` (backings
+`max_consumers()` (construction hints), `published_producers()` (backings
 that exist right now - pre-allocated + grown, shared across processes),
 `active_producers()` / `active_consumers()` (live cross-process counts,
 claimed / released by `register_*` / `unregister_*`), `contract()` (the
-effective `RingContract`, UNBOUNDED unless declared with `with_contract`),
+effective `RingContract`, unbounded unless declared with `with_contract`),
 `shape_is_auto()` / `pin_shape()` / `resume_auto_shape()` (the automatic
 shape dial), `ownership_snapshot()` (one `(ring, owner, pending)` triple
 per MPMC ring, so a consumer that pops `Empty` can be told apart from one
@@ -335,8 +331,8 @@ shape to the nearest contract-legal one - applied before every automatic
 morph).
 
 `SUBETHA_RING_DEBUG` in the environment logs each shape transition to
-stderr, including a morph deferred behind a stale backlog and the pop
-that later lands it. It changes no behavior.
+stderr, naming the shape left, the shape taken and the walked set the
+morph leaves behind. It changes no behavior.
 
 ## Shape-aware observability
 
@@ -360,7 +356,7 @@ decide whether to grow / shrink. They are constant-time per call.
 
 ## Automatic morphing
 
-The shape tracks the live peer counts BY DEFAULT, with no thread and
+The shape tracks the live peer counts by default, with no thread and
 no opt-in: every `register_producer` / `register_consumer` /
 `unregister_*` (in any attached process) re-morphs the shape to the
 counts, and other processes follow through the shared topology epoch
@@ -370,7 +366,7 @@ that pin the shape; `resume_auto_shape` resumes tracking;
 
 ### Policy sidecar (custom policies / the QoS ordering axis)
 
-`AdaptiveRingSidecar` layers POLICY-driven morphing on top - custom
+`AdaptiveRingSidecar` layers policy-driven morphing on top - custom
 shape policies, QoS-declaration handling, and the stamped ring's
 ordering-mode flips from a background scan thread. With the default
 shape policy it has nothing to correct (the register path already
@@ -381,14 +377,14 @@ tracks counts); spawn it for custom policies or the QoS axes.
   current shape, time since last morph, stamped flag), asks the
   `RingShapePolicy`, and applies a `Some(shape)` answer (passed
   through `contract_filtered_shape` first, so an auto-morph never leaves a
-  declared ordering envelope; policy morphs do NOT pin the shape).
+  declared ordering envelope; policy morphs do not pin the shape).
 - `spawn_gated(.., GateConfig)` inserts a confidence gate between the policy
   and the morph (the default `GateConfig` is disabled, reproducing `spawn`).
 - `spawn_with_qos(ring, shape_policy, ordering_policy, qos, scan_interval)`
-  drives BOTH axes per tick: the shape morph AND, on a stamped ring, the
+  drives both axes per tick: the shape morph and, on a stamped ring, the
   ordering-mode flip (computing inversions/sec from the shared counter delta
   and ticking the drainer-lease epoch). The shape axis is ungated by default
-  (capacity-class morphs are cheap to reverse); the ordering AUTO-arm
+  (capacity-class morphs are cheap to reverse); the ordering auto-arm
   (`Unordered -> MergeByStamp` from a rising inversion rate under a
   `PerProducer` declaration) is gated by default, because that flip is
   one-way (merged pops read zero inversions, so nothing walks it back).
@@ -411,7 +407,7 @@ Policies are pluggable via two traits:
 |---|---|
 | `RingShapePolicy::decide(&PolicyObservation) -> Option<RingShape>` | the morph target |
 | `DefaultRingShapePolicy { hysteresis }` | cheapest shape for the peer counts: `1/1 -> Spsc`, `>=2/1 -> Mpsc`, `*/>=2 -> Mpmc`; returns `None` inside the hysteresis window or when either count is 0 |
-| `QosRingShapePolicy { qos, hysteresis }` | as default, but a `GlobalFifo` QoS declaration on an UNSTAMPED ring forces `Vyukov` (stamped rings stay composed and use the merge flag) |
+| `QosRingShapePolicy { qos, hysteresis }` | as default, but a `GlobalFifo` QoS declaration on an unstamped ring forces `Vyukov` (stamped rings stay composed and use the merge flag) |
 | `OrderingPolicy::decide(&OrderingPolicyObservation) -> Option<OrderingMode>` | the stamped ring's ordering-mode flip |
 | `DefaultOrderingPolicy { hysteresis, auto_order_threshold }` | `GlobalFifo` declaration arms `MergeByStamp`; with `auto_order_threshold` set, a `PerProducer` ring whose inversions/sec exceed it auto-arms `MergeByStamp` (one-way) |
 
@@ -440,10 +436,10 @@ zero duplicated. Run with
 `cargo run --release --example adaptive_ring_morph`.
 
 `crates/subetha-cxc/examples/adaptive_growth_xproc.rs` proves the
-AUTOMATIC axis across real OS processes: a ring created with a
+automatic axis across real OS processes: a ring created with a
 1-producer / 1-consumer hint takes 3 producer processes and 2
 consumer processes with zero registration errors - slots 1 and 2
-GROW the ring (new backings published through the peer directory),
+grow the ring (new backings published through the peer directory),
 the driver's shape morphs SPSC -> MPSC -> MPMC on its own as each
 process joins, MPMC ownership rebalances live between the two
 consumers, and 240,000 items arrive exactly once with per-producer
@@ -459,7 +455,7 @@ FIFO monotone on both. Run with
 | Operator-deployment-time-unknown shape | Library shipped to consumers who configure peer count externally; no need to re-instantiate. |
 | Failover scenarios | Consumer dies and a backup attaches; morph from "1 consumer" to "2 consumers" mid-stream. |
 
-## When NOT to reach for this
+## When not to reach for this
 
 | Use case | Reach for instead |
 |---|---|
@@ -472,16 +468,25 @@ FIFO monotone on both. Run with
 - **Any peer counts**: consumers can outnumber producers; the MPMC
   ownership table simply leaves the surplus consumers with no rings
   until producers grow (they pop `Empty` in the meantime).
-- **One stale backing at a time**: a second morph before the
-  previous shape's backlog drains returns
-  `RingError::StaleBacklog` and is held as pending; the pop that
-  clears the backlog applies it.
-- **Single-reader shapes serve consumer 0**: an SPSC or MPSC
-  backing tolerates exactly one reader, so consumer 0 alone pops
-  it, whether it is the current shape or a stale one. A consumer
-  the current shape cannot serve reads empty and waits for the
-  shape it needs; two of them draining one Lamport core would
-  take the same items twice.
+- **A used backing is walked for the ring's life**: the walked set
+  only grows, so a pop that finds the current backing empty may
+  touch up to three others. There are four shapes, so the walk is
+  bounded; the alternative is a backing forgotten while a producer
+  push is still in flight to it, which nothing can rule out,
+  because the push has not happened yet when the question is
+  asked.
+- **Single-reader shapes serve one designated reader**: an SPSC or
+  MPSC backing tolerates exactly one reader, so the lowest claimed
+  consumer slot alone pops it, whether it is the current shape or
+  one the ring has left. That is slot 0 while slot 0 is claimed,
+  and while no slot is claimed at all, which is what an
+  unregistered caller passes. A consumer the current shape cannot
+  serve reads empty and waits for the shape it needs; two of them
+  draining one Lamport core would take the same items twice. A
+  debug build catches that: the pop claims the tail advance with a
+  compare-exchange and panics naming the consumer, the backing and
+  the ring's recent history, where a release build keeps the plain
+  store the single-reader contract allows.
 - **Pin invalidation is caller-polled**: `is_still_valid()` is
   one Acquire load, so callers sample at any cadence (every op,
   every N ops, on backpressure events). No push notification.

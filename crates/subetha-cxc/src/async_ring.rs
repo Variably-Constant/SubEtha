@@ -13,7 +13,7 @@
 //! Rust's async model is "Future returns `Pending` and registers a
 //! Waker; something fires the Waker; executor re-polls." The
 //! underlying `CrossProcessWaker` is a kernel-park primitive that
-//! does the wait OFF the async runtime's thread. To bridge:
+//! does the wait off the async runtime's thread. To bridge:
 //!
 //! 1. First poll calls `try_*` on the inner ring. If immediately
 //!    ready, return `Poll::Ready`.
@@ -26,7 +26,7 @@
 //!
 //! # Why a bounded timeout is required
 //!
-//! Dropping a pending `AsyncRecv` / `AsyncSend` future does NOT
+//! Dropping a pending `AsyncRecv` / `AsyncSend` future does not
 //! cancel the spawned worker thread (`std::thread` lacks safe
 //! cancellation). The thread's worst-case lifetime equals the
 //! caller-supplied timeout. Unbounded waits are rejected at the
@@ -300,7 +300,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(40));
             let mut payload = [0u8; 56];
             payload[..8].copy_from_slice(&7u64.to_le_bytes());
-            // Publish the flag BEFORE the push. `recv` returns the
+            // Publish the flag before the push. `recv` returns the
             // instant the item is visible, and the ring's Release on
             // `head` (paired with the consumer's Acquire) carries this
             // store with it - so the assert below never races a flag

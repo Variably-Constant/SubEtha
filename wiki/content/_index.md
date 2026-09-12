@@ -119,7 +119,7 @@ not separate types; you pick per call. The async future is a plain
 runtime-free `block_on`.
 
 Same file path, opened from another thread or another process or after
-a reboot: same behaviour. The `AutoIpc` builder picks the
+a reboot: same behavior. The `AutoIpc` builder picks the
 empirically-best primitive based on declarative workload hints.
 `.batch_size(64)` flips to KHL work-stealing. `.consumers(4)` flips to
 URD per-thief mailboxes. No hints flips to SharedRing streaming.
@@ -129,8 +129,8 @@ URD per-thief mailboxes. No hints flips to SharedRing streaming.
 The principal user-facing crate is
 [`subetha-cxc`](docs/reference/subetha-cxc/_index.md), the CXC
 implementation. `Channel<T>`, `AdaptiveIpc<T>`, `AutoIpc`, the MMF
-dispatcher, and roughly forty MMF-backed primitives: `SharedRing`,
-the `SharedDeque` family (Chase-Lev, plus the novel KHL / KHPD / LOH /
+dispatcher, and more than sixty MMF-backed primitives: `SharedRing`,
+the `SharedDeque` family (Chase-Lev, plus the SubEtha-native KHL / KHPD / LOH /
 URD variants), `SharedHashMap`, `SharedRWLock`, `SharedSemaphore`,
 `SharedLRUCache`, `SharedBTreeMap`, `OwnerLease`, `HeartbeatTable`,
 `EpochBarrier`. Same MMF, three deployment modes. Map the file from a
@@ -164,7 +164,7 @@ The substrate is [`subetha-core`](docs/reference/subetha-core/_index.md)
 catalog, CPUID helpers). The control plane is
 [`subetha-sidecar`](docs/reference/subetha-sidecar/_index.md)
 (per-NUMA scan thread, policy, `SidecarBox`, `AdaptiveInstance`).
-The 1.62x `send::<u64>` speedup is in source: a `TypeId`-monomorphised
+The 1.62x `send::<u64>` speedup is in source: a `TypeId`-monomorphized
 branch in `AdaptiveIpc::send` that LLVM resolves to a constant at
 codegen time. No opt-in. **All four crates build on stable Rust 1.96+.**
 

@@ -141,10 +141,10 @@ lookup. Stale rejection is the same cost as a live read.
   new handle.
 - **MMF lifecycle managed**.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process visibility**: the bench is in-process. The
-  architectural lever (handles valid in OTHER processes) is what
+  architectural lever (handles valid in other processes) is what
   the RwLock<HashMap> baseline cannot do.
 - **Concurrent insert/remove**: bench is single-threaded.
   Multi-thread workloads exercise the ABA-free CAS protocol;

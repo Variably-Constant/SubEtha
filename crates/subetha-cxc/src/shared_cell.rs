@@ -12,7 +12,7 @@
 //! Layout (one cache line):
 //! ```text
 //! +---------+---------+---------+--------------------------+
-//! | magic   | size    | version | payload [u8; PAYLOAD]    |
+//! | magic   | size    | version | payload [u8; N]          |
 //! +---------+---------+---------+--------------------------+
 //!   u32       u32       u32       up to 52 bytes
 //! ```
@@ -29,7 +29,7 @@
 //! 3. Load `version` again (Acquire). If it changed, retry.
 //! 4. Return the buffered payload.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
@@ -55,7 +55,7 @@ pub const CELL_FILE_SIZE: usize = size_of::<CellHeader>();
 pub enum SharedCellError {
     LayoutMismatch,
     PayloadTooLarge,
-    NotInitialised,
+    NotInitialized,
     IoError(std::io::ErrorKind),
 }
 
@@ -142,7 +142,7 @@ impl<T: Copy + 'static> SharedCell<T> {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedCellError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < CELL_FILE_SIZE as u64 {
             return Err(SharedCellError::LayoutMismatch);
         }

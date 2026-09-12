@@ -16,9 +16,9 @@
 //!  - **refuse-epoch**: a shard stamped with another session's epoch, the
 //!    earliest exit that still parses a header.
 //!
-//! The two refusal arms are the ones the accounting is FOR, so they are the
+//! The two refusal arms are the ones the accounting exists for, so they are the
 //! ones whose cost has to be honest: a counter that makes the refusal path
-//! expensive would penalise exactly the link that is already in trouble.
+//! expensive would penalize exactly the link that is already in trouble.
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -117,7 +117,7 @@ fn main() {
         })
     };
 
-    // Bytes per nanosecond IS gigabytes per second.
+    // Bytes per nanosecond is gigabytes per second.
     let gbps = |ns: f64| SHARD as f64 / ns;
     println!("  accept            {accept_ns:8.1} ns/datagram   {:8.1} GB/s", gbps(accept_ns));
     println!(

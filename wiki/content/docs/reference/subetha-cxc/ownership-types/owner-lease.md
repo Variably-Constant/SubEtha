@@ -24,7 +24,7 @@ hold across many ops, release explicitly or via auto-failover.
 > primitive.** Acquire-release cycle: 23.94 ns vs
 > `std::sync::Mutex` 16.75 ns (1.43x slower; the failover
 > machinery costs ~7 ns). **Held-read at 9.64 ns vs
-> std::Mutex::lock+read+unlock 16.84 ns (1.75x FASTER)** -
+> std::Mutex::lock+read+unlock 16.84 ns (1.75x faster)** -
 > the lease's "acquire once, hold across many ops" pattern
 > beats per-op mutex cycling. `beat` heartbeat refresh at
 > 2.62 ns. The architectural lever: cross-process visibility,
@@ -37,8 +37,8 @@ hold across many ops, release explicitly or via auto-failover.
 - **`T: Copy + 'static`, fixed payload** sized to
   `PAYLOAD_BYTES` (48 bytes), aligned to 8 bytes max.
 - **Lowest PID wins preemption**: `try_acquire(my_pid, grace)`
-  succeeds when (a) no current owner, OR (b) `my_pid < current
-  owner` (preemption), OR (c) current owner's heartbeat is more
+  succeeds when (a) no current owner, or (b) `my_pid < current
+  owner` (preemption), or (c) current owner's heartbeat is more
   than `grace` epochs stale.
 - **Owner-only writes**: `write_as_owner` returns `false` if
   the caller has been preempted; same for `read_as_owner` (use
@@ -166,12 +166,12 @@ The lease pays ~7-20 ns extra vs the mutex baselines: the CAS
 includes the lease_term increment + heartbeat write; with_lease
 adds SeqLock-protected read/write of the payload.
 
-### Held-lease ops (acquire ONCE, then many ops)
+### Held-lease ops (acquire once, then many ops)
 
 | Op | `OwnerLease` (mmf) | `std::sync::Mutex` (lock+op+unlock) | mmf relative |
 |---|---:|---:|---|
-| read_as_owner (held) | **9.64 ns** | 16.84 ns | **1.75x FASTER** |
-| write_as_owner (held) | **13.47 ns** | 16.92 ns | **1.26x FASTER** |
+| read_as_owner (held) | **9.64 ns** | 16.84 ns | **1.75x faster** |
+| write_as_owner (held) | **13.47 ns** | 16.92 ns | **1.26x faster** |
 
 When callers amortize the acquire over many ops (the natural
 lease usage pattern), per-op cost beats per-op mutex cycling.
@@ -218,7 +218,7 @@ The architectural lever stacks on top:
 - **Fair contenders**: `std::sync::Mutex<T>` and
   `parking_lot::Mutex<T>` are the textbook in-process mutex
   baselines. Both bench the same workload (per-op cycle).
-- **Two usage patterns measured**: acquire-release per op AND
+- **Two usage patterns measured**: acquire-release per op and
   acquire-once-hold-many. Acknowledges that the lease and
   mutex serve different shapes.
 - **No `thread::spawn` inside `b.iter`**: all single-threaded.
@@ -228,7 +228,7 @@ The architectural lever stacks on top:
 - **MMF lifecycle managed**: create + acquire + ops + release
   + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process lease**: the architectural lever. Process A
   holds the lease; Process B's `try_acquire` returns false

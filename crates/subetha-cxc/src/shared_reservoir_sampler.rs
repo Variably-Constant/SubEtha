@@ -15,7 +15,7 @@
 //! - No spin loops, no CAS retry loops, no Drop guards.
 //! - Bounded capacity at create.
 //! - `total_seen.fetch_add` is monotonic (no underflow).
-//! - Concurrent races on `slot[j]` for the SAME `j` after capacity
+//! - Concurrent races on `slot[j]` for the same `j` after capacity
 //!   is exceeded just keep one of the racers' values; statistically
 //!   the uniform-sampling property is preserved because both values
 //!   were equally eligible.
@@ -28,7 +28,7 @@
 //! [`SharedCell`](crate::SharedCell).
 
 use std::cell::Cell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -186,7 +186,7 @@ impl<T: Copy + 'static> SharedReservoirSampler<T> {
             return Err(ReservoirError::PayloadTooLarge);
         }
         let total = reservoir_file_size(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(ReservoirError::LayoutMismatch);
         }

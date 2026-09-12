@@ -17,3 +17,8 @@ Read the pages in order:
 2. [Installation](installation/) - workspace + stable toolchain setup details.
 3. [Cross-process round-trip in 30 lines](cross-process-roundtrip/) - one process writes a `SharedHashMap`, another reads it.
 4. [Reading sidecar observations](reading-observations/) - what the observation ring exposes and how to consume it.
+
+Arriving with a C or C++ toolchain rather than a Rust one? Read
+[SubEtha from C and C++](c-and-cpp/) instead of the pages above: it
+installs the library, links a program against it, sends a message
+through a ring, and reads a failure, without asking you to write Rust.

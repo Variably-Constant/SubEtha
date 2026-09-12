@@ -1,14 +1,13 @@
 //! Multi-process proof that `AdaptiveRing::open_shmfs` attaches to a
-//! populated shared-memory region WITHOUT wiping it - the capability a
-//! late-joining worker needs and that `create_shmfs` cannot provide
-//! (it re-lays-out every backing, zeroing whatever the creator enqueued).
+//! populated shared-memory region and leaves its contents in place,
+//! which a late-joining worker needs and `create_shmfs` cannot give: it
+//! re-lays-out every backing, zeroing whatever the creator enqueued.
 //!
 //! The parent process creates the region, enqueues a known snapshot of
 //! N items, then spawns a worker process that attaches and must pop the
-//! same N items back in order. A `--buggy` worker instead calls
-//! `create_shmfs` (the wrong tool for a late attach) and is expected to
-//! find the region wiped - the negative control that makes the fix
-//! visible.
+//! same N items back in order. With `--buggy` the worker calls
+//! `create_shmfs` instead and finds the region wiped, which is the
+//! negative control.
 //!
 //! Run (the parent spawns the worker itself):
 //!   cargo run --release -p subetha-cxc --example open_shmfs_attach_e2e
@@ -64,7 +63,7 @@ fn main() -> Result<(), BoxErr> {
         status.code().unwrap_or(-1),
         if buggy { "buggy(create_shmfs)" } else { "open_shmfs" },
         if buggy {
-            // In buggy mode we EXPECT the worker to find the region wiped,
+            // In buggy mode we expect the worker to find the region wiped,
             // so a worker failure is the demonstrated data loss.
             if ok { "UNEXPECTED PASS (buggy worker saw data?!)" } else { "PASS: create_shmfs wiped the snapshot, as the fix documents" }
         } else if ok {
@@ -113,7 +112,7 @@ fn worker(name: &str, buggy: bool) -> Result<(), BoxErr> {
         println!("worker: recovered all {got} items in order (attach preserved the snapshot)");
         Ok(())
     } else {
-        eprintln!("worker: recovered only {got}/{N_ITEMS} items (region was re-initialised / wiped)");
+        eprintln!("worker: recovered only {got}/{N_ITEMS} items (region was re-initialized / wiped)");
         std::process::exit(1);
     }
 }

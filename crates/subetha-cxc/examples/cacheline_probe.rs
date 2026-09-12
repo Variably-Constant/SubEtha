@@ -96,9 +96,9 @@ fn bench_cas_prefetchw() {
 }
 
 fn bench_mmf_warm() {
-    // The warm-up wiring targets the OPEN path (create's init pass
+    // The warm-up wiring targets the open path (create's init pass
     // touches every page itself). Shape: creator fills a 32 MiB ring
-    // and drops its mapping; the OPENER - a fresh mapping with empty
+    // and drops its mapping; the opener - a fresh mapping with empty
     // page tables - drains it, which is the attach-side first-traffic
     // pass the bridges pay. Warm on/off comes from re-running with
     // SUBETHA_NO_MMF_WARM=1.

@@ -16,7 +16,7 @@
 //!
 //! - **WAITPKG available** (Intel Tremont / Tiger Lake+ and
 //!   AMD Zen 5+): thief uses `UMONITOR` + `UMWAIT` to halt until
-//!   the cache line transitions OR a TSC deadline fires.
+//!   the cache line transitions or a TSC deadline fires.
 //!   Power-efficient; the thief does not burn pipeline slots
 //!   polling.
 //! - **WAITPKG not available** (most pre-2020 silicon including
@@ -50,7 +50,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -97,7 +97,7 @@ impl WaitStrategy {
 pub enum PublishStrategy {
     /// Byte-by-byte store path: the publisher writes items into the
     /// mailbox slots through normal cached stores, then Release-
-    /// stores the state word to READY. Universally available.
+    /// stores the state word's claim to `CLAIM_READY`. Universally available.
     Scalar,
     /// `MOVDIR64B` path: the publisher builds a 64-byte source line
     /// containing the new state plus all items, then issues one
@@ -123,7 +123,7 @@ impl PublishStrategy {
 }
 
 /// State word packed-bit layout: top 32 bits = epoch, bits 16..32 =
-/// `n_items`, bits 0..16 = claim (0 = EMPTY, 1 = READY).
+/// `n_items`, bits 0..16 = claim (`STATE_EMPTY` is 0, `CLAIM_READY` is 1).
 const STATE_EMPTY: u64 = 0;
 const CLAIM_READY: u64 = 1;
 
@@ -220,12 +220,7 @@ impl SharedDequeUrd {
         let n_mailboxes = n_mailboxes.max(1);
         let size = urd_file_size(n_mailboxes);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(size as u64)?;
 
         // SAFETY: `map_mut` is unsafe because the kernel cannot
@@ -274,10 +269,7 @@ impl SharedDequeUrd {
 
     /// Open an existing URD file.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let size = file.metadata()?.len() as usize;
         if size < std::mem::size_of::<UrdHeader>() {
             return Err(io::Error::new(
@@ -365,7 +357,7 @@ impl SharedDequeUrd {
     }
 
     /// Owner-side: publish `items` to mailbox `target`. Spins until
-    /// the mailbox is EMPTY (the previous batch has been consumed),
+    /// the mailbox state is `STATE_EMPTY` (the previous batch has been consumed),
     /// then publishes via the per-host
     /// [`PublishStrategy`](Self::publish_strategy):
     ///
@@ -374,7 +366,7 @@ impl SharedDequeUrd {
     ///   via the `MOVDIR64B` instruction (one Write-Combining
     ///   store, no RFO).
     /// - [`PublishStrategy::Scalar`]: writes items via cached
-    ///   stores, then Release-stores the state word to READY (two-
+    ///   stores, then Release-stores the state word with claim `CLAIM_READY` (two-
     ///   step protocol).
     ///
     /// Returns the number of items published.
@@ -393,10 +385,10 @@ impl SharedDequeUrd {
             return Ok(0);
         }
         let mb = self.mailbox(target);
-        // Spin-wait for the mailbox to be EMPTY (previous batch
-        // consumed). The owner is on the WRITE side so a brief
-        // PAUSE-spin is the right primitive here regardless of the
-        // thief's WAITPKG availability.
+        // Spin-wait for the mailbox to be STATE_EMPTY (previous batch
+        // consumed). The owner is on the write side, so a brief
+        // `PAUSE` spin is the primitive here whatever the thief's
+        // WAITPKG availability.
         loop {
             let s = mb.state.load(Ordering::Acquire);
             if s == STATE_EMPTY {
@@ -421,7 +413,7 @@ impl SharedDequeUrd {
             PublishStrategy::Scalar => {
                 // SAFETY: mailbox is in-bounds + aligned; we have
                 // exclusive access until the Release-store below
-                // transitions state to READY.
+                // sets the claim to CLAIM_READY.
                 unsafe {
                     let mb_ptr = self.mailbox_ptr(target);
                     for (i, item) in items.iter().enumerate() {
@@ -518,9 +510,9 @@ impl SharedDequeUrd {
         Ok((target, n))
     }
 
-    /// Thief-side: drain own mailbox if it has READY items.
+    /// Thief-side: drain own mailbox if its claim is `CLAIM_READY`.
     /// `mailbox_idx` is the thief's pre-assigned mailbox. Returns
-    /// [`Drain::Empty`] when the state byte is EMPTY (no work
+    /// [`Drain::Empty`] when the claim is not `CLAIM_READY` (no work
     /// published yet).
     pub fn drain_mailbox(&self, mailbox_idx: usize) -> Drain {
         if mailbox_idx >= self.n_mailboxes {
@@ -533,7 +525,7 @@ impl SharedDequeUrd {
         }
         let n_items = ((s >> 16) & 0xFFFF) as usize;
         let n_items = n_items.min(MAILBOX_ITEMS);
-        // SAFETY: state's READY bit is set; the publisher's
+        // SAFETY: the claim is CLAIM_READY; the publisher's
         // Release-store synchronizes-with our Acquire-load above so
         // item bytes are visible.
         let result = unsafe {
@@ -542,14 +534,14 @@ impl SharedDequeUrd {
                 items: (*self.mailbox_ptr(mailbox_idx)).items,
             }
         };
-        // Release the mailbox: state -> EMPTY. The owner's next
-        // `publish_to(target)` spin sees EMPTY and writes.
+        // Release the mailbox: state -> STATE_EMPTY. The owner's next
+        // `publish_to(target)` spin sees STATE_EMPTY and writes.
         mb.state.store(STATE_EMPTY, Ordering::Release);
         Drain::Success(result)
     }
 
     /// Thief-side: block (per the host's [`WaitStrategy`]) until
-    /// the mailbox transitions to READY, then drain it.
+    /// the mailbox claim becomes `CLAIM_READY`, then drain it.
     ///
     /// On WAITPKG-capable hardware the thief uses `UMONITOR` +
     /// `UMWAIT` to halt; otherwise it uses `PAUSE`-spin. The
@@ -593,13 +585,13 @@ impl SharedDequeUrd {
 }
 
 /// `UMONITOR` + `UMWAIT` wait primitive. Halts the calling logical
-/// CPU until the monitored cache line transitions OR the TSC
+/// CPU until the monitored cache line transitions or the TSC
 /// reaches `deadline_tsc` (whichever comes first). Pass
 /// `deadline_tsc = u64::MAX` for "no deadline".
 ///
 /// # Safety
 ///
-/// The caller MUST have confirmed WAITPKG is available via
+/// The caller has confirmed WAITPKG is available via
 /// [`subetha_core::has_waitpkg`] - executing `UMONITOR` /
 /// `UMWAIT` on hardware without WAITPKG raises an illegal-
 /// instruction trap (`#UD`).
@@ -748,7 +740,7 @@ mod tests {
             }
             Drain::Empty => panic!("expected ready mailbox"),
         }
-        // After drain, mailbox is EMPTY.
+        // After the drain, the mailbox is empty.
         assert!(matches!(u.drain_mailbox(0), Drain::Empty));
     }
 

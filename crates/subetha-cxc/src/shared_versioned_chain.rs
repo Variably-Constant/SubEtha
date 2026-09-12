@@ -31,7 +31,7 @@
 //! Same slot-allocator pattern as `SharedHandleTable`: ABA-free
 //! Treiber stack for the free list, atomic CAS for head updates.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
@@ -187,7 +187,7 @@ impl<T: Copy + 'static> SharedVersionedChain<T> {
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, ChainError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = versioned_chain_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(ChainError::LayoutMismatch);

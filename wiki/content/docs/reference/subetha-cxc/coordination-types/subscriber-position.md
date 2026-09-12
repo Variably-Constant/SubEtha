@@ -18,7 +18,7 @@ last acknowledged position.
 
 | Call | Behavior |
 |---|---|
-| `SubscriberPosition::create(path, initial: u64)` | Create new position file initialised to `initial`. |
+| `SubscriberPosition::create(path, initial: u64)` | Create new position file initialized to `initial`. |
 | `SubscriberPosition::open(path)` | Reopen existing position file. |
 | `position.get() -> u64` | Acquire load. |
 | `position.advance(by: u64) -> u64` | Atomic fetch_add; returns new position. |
@@ -56,7 +56,7 @@ runs the producer-subscriber-crash-resume lifecycle end-to-end:
 sub1 consumes 50 items + checkpoints + crashes, sub2 reopens and
 resumes, all 300 items integrity verified.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - In-process subscribers that survive only while the process
   lives. The ring's `tail` counter already tracks this.

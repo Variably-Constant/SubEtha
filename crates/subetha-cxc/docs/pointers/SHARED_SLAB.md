@@ -25,9 +25,9 @@ retries rather than seeing a mixture.
 
 - **`T: Copy + 'static`**. A slot is a byte copy; no `Drop` runs.
 - **One writer per slot, any number of readers.** Two writers on the
-  SAME slot race: the SeqLock makes a torn READ detectable, and does
+  same slot race: the SeqLock makes a torn read detectable, and does
   not make a torn write safe. A caller writing one index from two
-  threads serialises that itself.
+  threads serializes that itself.
 - **The index is the caller's.** There is no allocator, no free list
   and no length. A caller that persists ids - a write-ahead log
   naming a slot, a snapshot restoring one - keeps addressing them
@@ -95,7 +95,7 @@ slot cannot carry at all - against `Mutex<Vec<Record>>` and
   because a 4-byte record would measure `SharedVec`'s territory and
   flatter the slab's stride.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process access.** Both baselines are impossible across a
   process boundary; that is the reason to reach for the slab.

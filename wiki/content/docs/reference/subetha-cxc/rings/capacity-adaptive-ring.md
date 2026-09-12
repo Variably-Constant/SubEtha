@@ -19,7 +19,7 @@ morphs the *capacity* itself: callers (or the bundled
 [`CapacityAdaptiveRingSidecar`](#sidecar--hysteresis-gated-policy))
 call `morph_capacity_to(new_pow2)`, the substrate allocates a fresh
 underlying `AdaptiveRing` at the new size, atomically swaps a single
-`ArcSwap<RingState>` that holds both the new active backing AND the
+`ArcSwap<RingState>` that holds both the new active backing and the
 stale-list of post-morph backings still draining, and bumps a pin
 generation so outstanding handles invalidate.
 
@@ -47,7 +47,7 @@ try_recv  -> state = state.load()
              state.active.try_recv(consumer_id, out)
 ```
 
-For absolute production speed when the shape is stable AND the
+For absolute production speed when the shape is stable and the
 capacity is stable, call
 [`pin_current_capacity()`](#pinned-handoff--native-primitive-speed)
 once and hot-loop on the inner native primitive via PinnedRing's
@@ -75,7 +75,7 @@ the pinned path hits).
 | `ring.try_send(producer_id, payload) -> Result<(), RingError>` | Hot-path push. One ArcSwap load + native dispatch. |
 | `ring.try_recv(consumer_id, out) -> Result<usize, RingError>` | Hot-path pop. One ArcSwap load + stale-walk + native dispatch. |
 | `ring.morph_capacity_to(new_capacity) -> Result<(), CapacityMorphError>` | Capacity-only morph. Delegates to `morph_to_config` with `capacity: Some(..)`. |
-| `ring.morph_to_config(&RingConfig) -> Result<(), CapacityMorphError>` | Compound morph: change any subset of {shape, capacity, locale} in ONE transition (see below). |
+| `ring.morph_to_config(&RingConfig) -> Result<(), CapacityMorphError>` | Compound morph: change any subset of {shape, capacity, locale} in one transition (see below). |
 | `ring.prewarm(capacity) -> Result<(), CapacityMorphError>` | Speculatively build the next backing off the morph lock (current locale). |
 | `ring.prewarm_config(&RingConfig) -> Result<(), CapacityMorphError>` | Prewarm at a target (capacity, locale); shape is ignored in the warm key. |
 | `ring.warm_capacity() -> Option<usize>` / `ring.warm_hits() -> u64` / `ring.clear_warm()` | Warm-cache introspection + drop (see below). |
@@ -101,7 +101,7 @@ active alike). This is what rules out the two-consumer-on-one-SPSC
 race that any drain-based morph has to defend against.
 
 ```text
-1. Take morph_lock (serialises concurrent morphs).
+1. Take morph_lock (serializes concurrent morphs).
 2. Validate: new_capacity is pow2 >= 2.
 3. If old_capacity == new_capacity (and shape + locale unchanged): no-op return.
 4. Warm-cache probe: if a prewarmed backing matches the target
@@ -118,9 +118,13 @@ race that any drain-based morph has to defend against.
        active: new,
        stale: prune(old_state.stale) ++ [old.active],
    }
-   The prune drops any prior-stale entries that are fully empty
-   (no in-flight items left); this is the shape-aware
-   AdaptiveRing::is_empty() check.
+   The prune drops a prior-stale entry that is fully empty (the
+   shape-aware AdaptiveRing::is_empty() check) and that the stale
+   list alone holds (Arc strong count 1). A producer pushes into the
+   active backing of the state it loaded, and that load can predate
+   two morphs; its snapshot holds the state, which holds the backing,
+   so an entry a snapshot can still reach keeps a count above one and
+   stays on the list until that push has landed and been drained.
 10. state.store(new_state) -> single atomic publish.
 11. capacity_atom.store(new_capacity, Release) -> observable
     capacity tracks active.
@@ -128,8 +132,8 @@ race that any drain-based morph has to defend against.
 ```
 
 Subscribers reading the wrapper via `state.load()` between step 1
-and step 10 see the OLD state (full snapshot of pre-morph
-`(active=old, stale=prior_stale)`). Subscribers reading AFTER step
+and step 10 see the old state (full snapshot of pre-morph
+`(active=old, stale=prior_stale)`). Subscribers reading after step
 10 see the new state. The single atomic publish is what gives FIFO
 correctness across the morph for free.
 
@@ -142,7 +146,7 @@ from "ring has uncommitted slot claims". When a stale ring returns
 - If `ring.is_empty()` (producer_seq == consumer_seq for Vyukov, all
   sub-rings empty for composed shapes): safe to advance to the next
   stale entry or fall through to active.
-- Otherwise: another consumer is mid-CAS on this ring's slot, OR a
+- Otherwise: another consumer is mid-CAS on this ring's slot, or a
   producer is mid-publish on a slot that was claimed before the
   state swap. Spin and retry on the same stale ring until either we
   read an item or the ring is truly drained.
@@ -160,7 +164,7 @@ matrix.
 
 `morph_capacity_to` is the capacity-only convenience; the underlying primitive
 is `morph_to_config(&RingConfig)`, which changes any subset of
-`{shape, capacity, locale}` in ONE transition. Each field is optional (`None`
+`{shape, capacity, locale}` in one transition. Each field is optional (`None`
 keeps the current value):
 
 ```rust,no_run
@@ -173,25 +177,25 @@ ring.morph_to_config(&RingConfig {
 })?;
 ```
 
-One compound morph builds ONE fresh backing at the combined target, mirrors
+One compound morph builds one fresh backing at the combined target, mirrors
 registrations once, applies the target shape to the empty backing once, bumps
 the pin generation once, and appends the displaced active to the stale list
 once - however many axes changed. A sequential walk of the same axes pays each
 of those costs per axis. Two special cases short-circuit: every axis already at
-target is a no-op (no generation bump), and a shape-ONLY change (capacity +
+target is a no-op (no generation bump), and a shape-only change (capacity +
 locale unchanged) delegates to the active backing's in-place `morph_to` (no
 fresh backing, the wrapper pin stays valid, in-flight items stay put).
 `BackingTarget` is `Anon` / `File(PathBuf)` / `Shm(String)`; setting the locale
-axis retargets the wrapper for this morph AND every subsequent morph / prewarm.
+axis retargets the wrapper for this morph and every subsequent morph / prewarm.
 
 ## Warm cache (predictive prebuild)
 
 Allocating a fresh backing (file create + ftruncate + first-page-fault, or a
 named-shm region + zeroing) is the expensive part of a morph. `prewarm(capacity)`
 (or `prewarm_config(&RingConfig)` for a capacity+locale target) builds that
-backing in a one-slot cache OFF the morph lock; the next morph at the matching
+backing in a one-slot cache off the morph lock; the next morph at the matching
 (capacity, locale) consumes it (bumping `warm_hits`) and skips allocation.
-Shape is deliberately NOT part of the warm key - a fresh backing starts SPSC
+Shape is deliberately not part of the warm key - a fresh backing starts SPSC
 and the swap path shapes the empty backing in microseconds. `warm_capacity()`
 reports what is cached, `warm_hits()` counts consumed predictions, and
 `clear_warm()` drops the cached backing. The bundled sidecar wires this
@@ -201,12 +205,12 @@ automatically via the policy's `predict` (see below).
 
 Each constructor has a `*_stamped` twin (`create_anon_stamped`,
 `create_stamped`, `create_shmfs_stamped`) that turns on the
-[ordering-stamp](../adaptive-ordering/) axis on the backing AND on every backing
-subsequent morphs allocate. A capacity morph SEEDS the fresh region's stamp
+[ordering-stamp](../adaptive-ordering/) axis on the backing and on every backing
+subsequent morphs allocate. A capacity morph seeds the fresh region's stamp
 counters from the old region at swap time, so stamps stay monotone across the
 resize. The surface: `is_stamped()` reports whether stamps are on,
 `ordering_mode() -> Option<OrderingMode>` reads the live mode,
-`set_ordering_mode(mode)` flips it across the active backing AND every stale
+`set_ordering_mode(mode)` flips it across the active backing and every stale
 backing still draining (so the consumer's stale-walk-then-active pop applies one
 consistent discipline), and `inversions()` reports cross-producer inversions
 observed on the active backing (continuous across morphs via the counter seed).
@@ -215,8 +219,8 @@ observed on the active backing (continuous across morphs via the counter seed).
 
 - **Power-of-two capacity preserved.** New capacity must be a power
   of two and at least 2. Slot-index calculation stays
-  `hash & (capacity - 1)` = one AND instruction.
-- **Grow AND shrink both succeed unconditionally.** In-flight items
+  `hash & (capacity - 1)` = one `AND` instruction.
+- **Grow and shrink both succeed unconditionally.** In-flight items
   physically stay in the old (larger or smaller) backing as part of
   the stale list; the new capacity governs only items the producer
   pushes after the morph. A shrink therefore never fails on in-flight
@@ -225,10 +229,10 @@ observed on the active backing (continuous across morphs via the counter seed).
   `PinnedCapacity` handles observe the generation bump on the next
   `is_still_valid()` call. Hot loops sample at whatever cadence
   fits their latency budget; the substrate does not push.
-- **Morph is serialised.** A single in-flight morph at a time;
-  concurrent callers of `morph_capacity_to` are mutex-serialised
+- **Morph is serialized.** A single in-flight morph at a time;
+  concurrent callers of `morph_capacity_to` are mutex-serialized
   so the state build + swap is atomic with respect to other morphs.
-  Producer / consumer hot-path ops are NOT serialised against the
+  Producer / consumer hot-path ops are not serialized against the
   morph - they keep dispatching via the ArcSwap.
 - **Consumer is sole reader of every backing.** Producers only
   write to active; morphs never read from any backing. The
@@ -301,7 +305,7 @@ sidecar.shutdown();
 [`AdaptiveRing::approx_len()`](../shared-ring-adaptive/) +
 [`AdaptiveRing::total_slot_capacity()`](../shared-ring-adaptive/),
 computes `fill_ratio`, and returns `Some(new_cap)` when the ratio
-crosses the threshold AND `since_last_morph >= hysteresis`. The
+crosses the threshold and `since_last_morph >= hysteresis`. The
 hysteresis cooldown prevents thrashing under bursty load: rapid
 fill / drain oscillations collapse into one morph per cooldown
 window, not one morph per burst.
@@ -332,7 +336,7 @@ impl CapacityPolicy for MyPolicy {
 `DefaultCapacityPolicy` overrides `predict` too: it names the doubled capacity
 once the fill ratio crosses 75% of `grow_at`, and the halved capacity once it
 falls under 150% of `shrink_at` - trend bands sitting in front of the decide
-thresholds, deliberately NOT gated on hysteresis (the post-morph cooldown is
+thresholds, deliberately not gated on hysteresis (the post-morph cooldown is
 exactly when to build the next predicted backing). `prewarms_issued()` on the
 sidecar counts how many speculative backings those trends pre-built.
 
@@ -407,12 +411,12 @@ delivered cleanly.
   runtime (services that gain or shed consumers, batch jobs that
   switch phases).
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Workloads where the queueing depth is known up-front and never
   changes. Plain `AdaptiveRing` at the right capacity is cheaper
   (one less ArcSwap load on the hot path).
-- Workloads that need the lowest possible per-op latency AND
+- Workloads that need the lowest possible per-op latency and
   cannot grab a pin. The unpinned dispatch adds a few ns vs a
   direct `AdaptiveRing` call. The pinned path matches native
   primitive speed (see [throughput results](../throughput-results/)).

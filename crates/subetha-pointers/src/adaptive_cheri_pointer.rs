@@ -14,7 +14,7 @@
 //!
 //! # Read vs Write: distinct types
 //!
-//! This module separates capability semantics at the TYPE level
+//! This module separates capability semantics at the type level
 //! rather than the runtime permission-bit level:
 //!
 //! - [`ReadableCapability<T>`] - bounds-checked read-only view of T.
@@ -42,19 +42,11 @@
 //! | OwnedReadableCapability    | new(value), from_box | -                 |
 //! | OwnedWritableCapability    | new(value), from_box | -                 |
 //!
-//! # Hardware backend
+//! # Backend
 //!
-//! The hardware-capability backend (real CHERI primitives on ARM
-//! Morello, gated on `target_arch = aarch64` + a `cheri` feature
-//! flag) is tracked by its own bead and uses the same
-//! ReadableCapability / WritableCapability surface so callers don't
-//! need to change code when the hardware path lands.
-//!
-//! # Instruction-set emulation paths
-//!
-//! The hardware backend can be developed and benched today without
-//! Morello silicon using QEMU-Morello + CHERI-LLVM toolchain, or
-//! CheriBSD images, or the Cheriot-RTOS RISC-V FPGA implementation.
+//! Bounds and permissions are checked in software on every target. The
+//! crate has no hardware CHERI backend and uses no Morello capability
+//! instructions.
 //!
 //! # Safety contract
 //!
@@ -231,11 +223,11 @@ impl<T> ReadableCapability<T> {
 // WritableCapability<T> - bounds-checked read+write access. !Copy/!Clone.
 // =========================================================================
 
-/// Read+Write bounds-checked capability. NOT Copy/Clone so the
+/// Read+Write bounds-checked capability. Not Copy/Clone so the
 /// borrow checker prevents aliasing the unique-writer status.
 ///
 /// Constructed from `&mut [T]` or an owned `Box<T>` (via
-/// [`OwnedWritableCapability::from_box`]). The `&mut` borrow IS the
+/// [`OwnedWritableCapability::from_box`]). The `&mut` borrow is the
 /// unique-writer guarantee; without it, multiple WritableCapability
 /// instances could simultaneously write the same region.
 #[derive(Debug)]
@@ -374,7 +366,7 @@ impl<T> WritableCapability<T> {
     }
 
     /// Narrow to a read-only view. Returned ReadableCapability does
-    /// NOT have Write perm regardless of what `sub_perms` contains.
+    /// not have Write perm regardless of what `sub_perms` contains.
     pub fn narrow_readable(&self, sub_base: usize, sub_length: u32, sub_perms: u32)
         -> Result<ReadableCapability<T>, CapabilityError>
     {
@@ -734,7 +726,7 @@ mod tests {
         let before = DROPS.load(Ordering::Relaxed);
         let owned = OwnedWritableCapability::new(DropCounter(99));
         let b = owned.into_box();
-        // into_box must NOT have fired Drop on the wrapper.
+        // into_box must not have fired Drop on the wrapper.
         assert_eq!(DROPS.load(Ordering::Relaxed), before);
         assert_eq!(b.0, 99);
         drop(b);

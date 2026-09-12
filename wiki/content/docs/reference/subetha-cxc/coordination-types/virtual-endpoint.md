@@ -45,7 +45,7 @@ without grepping config for "is this peer local or remote".
 
 `PinnedEndpoint::is_still_valid()` is one Acquire load on the
 registry's generation counter. The check is **registry-wide**:
-ANY bind / unbind / rebind on ANY endpoint in the registry bumps
+Any bind / unbind / rebind on any endpoint in the registry bumps
 the generation, so all outstanding pins see invalidation. This is
 intentional: one Acquire-load per validity check vs per-endpoint
 generation tracking. Callers pinning many endpoints in a tight
@@ -126,9 +126,9 @@ runs.
 - The local vs remote decision lives outside the application
   (config, service discovery, runtime policy).
 
-## When NOT to reach for this
+## When not to reach for this
 
-- All peers are statically local AND the application holds the
+- All peers are statically local and the application holds the
   `Arc<LocaleAdaptiveRing>` directly.
 - The endpoint table is single-binding (a `VirtualEndpoint` for
   one peer adds indirection without flexibility).

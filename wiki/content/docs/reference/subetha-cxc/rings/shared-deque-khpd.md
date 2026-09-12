@@ -60,7 +60,7 @@ in one cache-line transfer.
 Measured on AMD Ryzen 7 2700 (Zen+) under Criterion publication-grade
 defaults (warm-up 3 s + measurement 5 s, 100 samples). Workload:
 K=64 items per iter, drain runs in the background, wait-for-drain
-catch-up happens OUTSIDE the timed window via `iter_custom` so the
+catch-up happens outside the timed window via `iter_custom` so the
 bench measures pure producer-side throughput.
 
 | Backend | K=64 wall-clock | Per-item | Throughput |

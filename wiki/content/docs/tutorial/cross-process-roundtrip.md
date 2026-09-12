@@ -83,7 +83,7 @@ consumer: sum = 4950000
 ## What just happened
 
 > [!NOTE]
-> **No serialisation, no IPC channel.** Both processes mapped the
+> **No serialization, no IPC channel.** Both processes mapped the
 > same MMF file. The OS page cache aliases the two virtual mappings
 > onto the same physical pages. Reads in `consumer` go to the
 > exact bytes that `producer`'s `insert()` calls wrote.

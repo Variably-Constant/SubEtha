@@ -52,7 +52,7 @@ On either host:
 bridge_lan --gen-cert /tmp/cert.der /tmp/key.der
 ```
 
-Ship BOTH files to the server host and `cert.der` (only) to every
+Ship both files to the server host and `cert.der` (only) to every
 client host - any channel you trust for key material. The
 certificate names the SNI string `subetha-lan`, not an IP address,
 so the same pair works for any addresses; the client passes that
@@ -121,7 +121,7 @@ when every slot arrived intact and in order.
 
 ## Step 4: round-trip latency
 
-Both roles bind a server AND connect a client (each direction has
+Both roles bind a server and connect a client (each direction has
 its own socket), print `BOUND` once their listener is up, and wait
 for a newline on stdin before connecting - start both, then press
 Enter in each terminal (or drive them from a script):

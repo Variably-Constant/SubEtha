@@ -305,7 +305,7 @@ impl<T> BloomCascade<T> {
 
     /// Cascade rejection: coarse first (register-only), fine
     /// second (32 bytes, 4 cache lines worst case). Returns the
-    /// LEVEL where the reject fired (0 = coarse rejected, 1 = fine
+    /// level where the reject fired (0 = coarse rejected, 1 = fine
     /// rejected, 2 = both layers said maybe-yes).
     pub fn cascade_check<K: Hash + ?Sized>(&self, key: &K) -> CascadeOutcome {
         if !self.coarse.might_contain(key) {
@@ -342,7 +342,7 @@ mod tests {
         b.insert(&"hello");
         assert!(b.might_contain(&42u64));
         assert!(b.might_contain(&"hello"));
-        // Random key should usually NOT match in a fresh filter.
+        // Random key should usually not match in a fresh filter.
         // Test multiple unrelated keys; expect most to reject.
         let mut rejects = 0;
         for k in 1000..1100u64 {
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn bloom64_no_false_negative() {
-        // Property: inserting a key MUST always make it present.
+        // Property: inserting a key must always make it present.
         let mut b = Bloom64::ZERO;
         for k in 0..16u64 { b.insert(&k); }
         for k in 0..16u64 {
@@ -420,7 +420,7 @@ mod tests {
                     "inserted key {k} must not be rejected");
         }
 
-        // Most random keys should be rejected at coarse OR fine.
+        // Most random keys should be rejected at coarse or fine.
         let mut coarse_rej = 0;
         let mut fine_rej = 0;
         let mut survive = 0;
@@ -458,17 +458,17 @@ mod tests {
 
     #[test]
     fn bloom_cascade_outer_inner_information() {
-        // Demonstrate that the cascade levels carry DIFFERENT
+        // Demonstrate that the cascade levels carry different
         // information: a key in coarse-filter range but not fine-
         // filter range can be rejected at the fine level.
         let mut coarse = Bloom64::ZERO;
         let mut fine = BloomFine::ZERO;
-        // Insert keys 0..10 into BOTH levels.
+        // Insert keys 0..10 into both levels.
         for k in 0..10u64 {
             coarse.insert(&k);
             fine.insert(&k);
         }
-        // Insert additional keys 100..200 into coarse ONLY so a
+        // Insert additional keys 100..200 into coarse only so a
         // coarse-pass / fine-reject path exists.
         for k in 100..200u64 {
             coarse.insert(&k);
@@ -478,7 +478,7 @@ mod tests {
             coarse, fine,
             target: Arc::new(()),
         };
-        // Key 150 is in coarse but NOT in fine; must reject at fine.
+        // Key 150 is in coarse but not in fine; must reject at fine.
         // (With overwhelming probability.)
         let outcome = bc.cascade_check(&150u64);
         assert_ne!(outcome, CascadeOutcome::RejectedAtCoarse,

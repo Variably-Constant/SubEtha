@@ -1,4 +1,4 @@
-//! Item 17: LEO periodic-handover detection from the OWD trace.
+//! LEO periodic-handover detection from the OWD trace.
 //!
 //! A low-earth-orbit link (Starlink) hands the user terminal between satellites
 //! on a fixed cadence - ~15 s - and each handover is a delay spike. The cadence

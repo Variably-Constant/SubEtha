@@ -2,7 +2,7 @@
 //! a direct closure call and a `Mutex<HashMap>` registry variant.
 //!
 //! The pass_registry is purely in-process; its cross-process
-//! value is the dispatch CONVENTION (Pass { id, args } shipped
+//! value is the dispatch convention (Pass { id, args } shipped
 //! between processes; each process has its own registry). This
 //! bench measures the lookup + dispatch overhead vs the
 //! underlying closure-call cost, and vs a Mutex-based registry

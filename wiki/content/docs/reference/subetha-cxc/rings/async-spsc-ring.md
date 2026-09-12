@@ -37,7 +37,7 @@ with any async executor (tokio, smol, async-std, custom).
 ## Constraints
 
 - **Bounded timeout is required** (`Duration`, not
-  `Option<Duration>`). Dropping a pending future does NOT cancel
+  `Option<Duration>`). Dropping a pending future does not cancel
   the spawned worker thread (`std::thread` lacks safe
   cancellation); the worker's worst-case lifetime equals the
   caller-supplied timeout.

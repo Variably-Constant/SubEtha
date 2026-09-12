@@ -44,7 +44,7 @@
 //! that would otherwise alias. Each vacant slot's `next_free` field
 //! is the linkage.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
@@ -235,7 +235,7 @@ impl<T: Copy + 'static> SharedHandleTable<T> {
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, HandleTableError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = handle_table_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(HandleTableError::LayoutMismatch);
@@ -350,7 +350,7 @@ impl<T: Copy + 'static> SharedHandleTable<T> {
         let slot_idx = h.slot();
         if (slot_idx as usize) >= self.capacity { return None; }
         let slot = self.slot(slot_idx);
-        // Re-check generation AFTER reading payload to catch
+        // Re-check generation after reading payload to catch
         // mid-read modification by a remover.
         loop {
             let gen1 = slot.generation.load(Ordering::Acquire);

@@ -3,7 +3,7 @@
 //! A lost shard means two very different things. A *congestion* drop says the
 //! path is overfull: raise parity broadly and ease off the gas. A *wireless*
 //! drop is a random radio hit on an otherwise-fine path: recover it locally
-//! with FEC / interleaving and do NOT back off. Treating one as the other is
+//! with FEC / interleaving and hold the rate. Treating one as the other is
 //! the classic mistake - over-driving a congested path, or needlessly throttling
 //! a clean one - so the controller wants to know which it is.
 //!
@@ -16,7 +16,7 @@
 //!    (n+1.25) * T_min)` - the 1.25 upper factor is the modified-Biaz tuning
 //!    (Fig. 2), tightening the original Biaz `[(n+1) * T_min, (n+2) * T_min)` to
 //!    cut congestion misclassification. The bridge ships a block as one GSO
-//!    burst, so its shards arrive back-to-back and a SUB-window spacing is a
+//!    burst, so its shards arrive back-to-back and a sub-window spacing is a
 //!    batched arrival, not evidence of loss type. So here Biaz votes congestion
 //!    only when the spacing is at or above the window (a genuine queuing delay);
 //!    in-window and burst spacing are left to Spike.
@@ -29,7 +29,7 @@
 //!    The ROTT is receiver-minus-sender timestamps; a constant clock offset
 //!    cancels in the min / max range, exact on same-machine and low-skew links.
 //!
-//! The hybrid calls a loss *congestion* when EITHER signal flags it - Biaz sees
+//! The hybrid calls a loss *congestion* when either signal flags it - Biaz sees
 //! queuing delay or the path is in a Spike - and *wireless* only when neither
 //! does. Congestion is the costlier miss - the paper notes a congestion loss
 //! mistaken for wireless "will not be reduced when the network is congested" -
@@ -62,9 +62,9 @@ const CONGESTION_GAIN: f64 = 1.0 / 8.0;
 /// has no real queue.
 const MIN_QUEUE_US: f64 = 1000.0;
 /// Samples in the recent-ROTT-min window. The congestion signal is the recent
-/// FLOOR (fastest recent packet) rising above the all-time floor (RTprop) - a
+/// floor (fastest recent packet) rising above the all-time floor (RTprop) - a
 /// real standing queue raises every packet, including the fastest, while a decode
-/// / scheduling backlog only inflates the SLOW packets, never the recent min, so
+/// / scheduling backlog only inflates the slow packets, never the recent min, so
 /// this rejects the backlog that the receiver's own processing adds to the ROTT.
 const SPIKE_WINDOW: usize = 32;
 /// Fraction of [`MIN_QUEUE_US`] below which the queue is judged drained (Spike
@@ -127,7 +127,7 @@ impl LossClassSensor {
         while self.recent_owd.len() > SPIKE_WINDOW {
             self.recent_owd.pop_front();
         }
-        // The standing-queue delay is how far the recent FLOOR (the fastest of
+        // The standing-queue delay is how far the recent floor (the fastest of
         // the last `SPIKE_WINDOW` packets) sits above the all-time floor RTprop.
         // A real queue raises every packet including the fastest; a decode /
         // scheduling backlog inflates only the slow packets, leaving the recent
@@ -154,11 +154,11 @@ impl LossClassSensor {
         let n = gap.max(1) as f64;
         // mBiaz's wireless window is `[(n+1)*T_min, (n+1.25)*T_min)`. The bridge
         // ships a block as one GSO super-buffer, so its shards arrive back-to-
-        // back and a SUB-window inter-arrival is a batched arrival, not evidence
-        // of loss type. So Biaz only votes CONGESTION when the spacing is ABOVE
+        // back and a sub-window inter-arrival is a batched arrival, not evidence
+        // of loss type. So Biaz only votes congestion when the spacing is above
         // the window `(n+1.25)*T_min` - a genuine queuing delay; in-window or
-        // burst spacing is left to Spike. A loss is congestion when EITHER Biaz
-        // sees queuing OR the path is in a congestion spike, and wireless only
+        // burst spacing is left to Spike. A loss is congestion when either Biaz
+        // sees queuing or the path is in a congestion spike, and wireless only
         // when neither does (the conservative tie-break to congestion).
         let biaz_congestion = self.t_min.is_finite()
             && self.t_min > 0.0
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn spike_state_has_hysteresis() {
         let mut s = LossClassSensor::new();
-        // RTprop baseline 5000us. A SUSTAINED 2000us queue (> MIN_QUEUE 1000us)
+        // RTprop baseline 5000us. A sustained 2000us queue (> MIN_QUEUE 1000us)
         // raises the recent floor and enters the spike.
         for _ in 0..40 {
             s.observe_owd(5000.0);
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(s.classify(1, 0.0), LossClass::Wireless, "drained queue leaves spike");
     }
 
-    /// The hybrid is conservative: mBiaz saying wireless does NOT override a
+    /// The hybrid is conservative: mBiaz saying wireless leaves standing a
     /// congestion spike - both must agree on wireless.
     #[test]
     fn hybrid_breaks_ties_to_congestion() {

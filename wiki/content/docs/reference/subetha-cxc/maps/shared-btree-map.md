@@ -17,7 +17,7 @@ degree `T = 8`, fanout `2T = 16`), so a lookup touches only
 `~log_16(N)` nodes and each node's binary search reads a contiguous,
 prefetcher-friendly key array rather than chasing scattered
 single-cache-line nodes. Reads are lock-free against a quiescent
-tree via a global seqlock; a single writer serialises `insert` /
+tree via a global seqlock; a single writer serializes `insert` /
 `remove`.
 
 > **The "cross-process ordered map" primitive.** At 100 keys get_hit
@@ -37,8 +37,8 @@ tree via a global seqlock; a single writer serialises `insert` /
 - **Native sidecar integration**: the struct carries a `HandshakeHeader` + `ObservationRing` and implements `subetha_sidecar::AdaptiveInstance`. Wrap in `SidecarBox::new` to register with the global sidecar; raw `create()` / `open()` return the unregistered type unchanged.
 
 - **`K: Copy + Ord + Default`, `V: Copy + Default`**.
-- **SINGLE-WRITER, MULTI-READER**: `insert` / `remove` require
-  external serialisation. `get`, `contains_key`, `len`, `first`,
+- **Single-writer, multi-reader**: `insert` / `remove` require
+  external serialization. `get`, `contains_key`, `len`, `first`,
   `range`, `iter_ascending` are lock-free against a quiescent (build-
   then-query) tree.
 - **`range` is bounded and resumed by key**: one call returns at most
@@ -106,7 +106,7 @@ Workload: `K=u32`, `V=u32`.
 3. **Iteration is level.** A full in-order walk is a sequential node
    traversal on both sides; the contiguous key arrays keep the mmf
    level with the in-process iterator. Note that `iter_ascending`
-   materialises a `Vec<(K, V)>` rather than returning a lazy iterator,
+   materializes a `Vec<(K, V)>` rather than returning a lazy iterator,
    so the cost includes building it.
 4. **The architectural lever is what `BTreeMap` cannot do**:
    cross-process visibility, lock-free multi-reader access, and a
@@ -125,12 +125,12 @@ Workload: `K=u32`, `V=u32`.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process ordered map**: any process opens the tree and
   reads it ordered; an in-process `BTreeMap` cannot be shared.
 - **Lock-free multi-reader scaling**: N concurrent readers each walk
-  independently with no lock; the mutex baseline serialises every
+  independently with no lock; the mutex baseline serializes every
   reader.
 - **Disk persistence**: the tree survives process restart.
 
@@ -166,7 +166,7 @@ let first_n: Vec<_> = bt.iter_ascending().into_iter().take(10).collect();
 
 ### Ordered scan over a large map
 
-`iter_ascending` materialises the whole map, so a scan of an index too
+`iter_ascending` materializes the whole map, so a scan of an index too
 large to hold at once takes `range` a chunk at a time.
 
 ```rust
@@ -212,7 +212,7 @@ survives restart.
 ## Known limitations
 
 - **Single-writer**: concurrent `insert` / `remove` need external
-  serialisation; reads stay lock-free.
+  serialization; reads stay lock-free.
 - **Large-N raw lookup** trails an in-process `BTreeMap`: the mmf
   pays seqlock re-validation and position-independent addressing.
   Choose this primitive for cross-process + lock-free-read shapes,

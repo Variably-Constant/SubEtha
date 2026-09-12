@@ -16,14 +16,14 @@
 //!    a growth reallocation inside the measured loop, and the lock arms
 //!    index a plain `Vec` with no indirection the slab does not also
 //!    have.
-//! 3. The record is 168 bytes, chosen because it is PAST
+//! 3. The record is 168 bytes, chosen because it is past
 //!    `VEC_PAYLOAD_BYTES` (52) - the case a `SharedVec` cannot carry at
 //!    all, which is the reason the slab exists. A 4-byte record would
 //!    measure `SharedVec`'s territory and flatter the slab's stride.
 //!
-//! What the numbers do NOT show: both lock baselines are
+//! What the numbers leave out: both lock baselines are
 //! cross-process-impossible, and multi-reader scaling, where SeqLock
-//! reads of distinct slots do not contend and a `Mutex` serialises them.
+//! reads of distinct slots do not contend and a `Mutex` serializes them.
 
 use std::hint::black_box;
 use std::sync::{Mutex, RwLock};

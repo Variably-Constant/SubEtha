@@ -19,7 +19,7 @@ futex-shaped `send_blocking` / `recv_blocking`. Wraps the
 "../coordination-types/cross-process-waker" >}}) instances (one
 for each side). The hot path (`try_push` / `try_pop`) is
 identical to the bare SPSC ring; the blocking calls add a
-pre-park spin and a kernel park backed by SHARED `futex` on
+pre-park spin and a kernel park backed by shared `futex` on
 Linux, `WaitOnAddress` on Windows.
 
 > **The "SPSC + futex slot" primitive.** Producer's `try_push`
@@ -93,7 +93,7 @@ waker with `target = tail + 1`.
 Beyond the bare doorbell park, the consumer can *predict* the next arrival
 and spin a short guard band instead of paying the park/wake round-trip. This
 is **off by default**: the cross-process doorbell is already ~400-500 ns, and
-predictive waiting is a LOSS there (worse p99 from prediction jitter). It
+predictive waiting is a loss there (worse p99 from prediction jitter). It
 wins only for an **in-process** consumer whose producer contends for cores
 (where thread-scheduling inflates the doorbell to ~10 us). Correctness
 (exactly-once, FIFO) is identical in every mode.

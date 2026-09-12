@@ -74,7 +74,13 @@ const WINDOW_MIN: u16 = 8;
 /// Largest coding window. Bounded so the decoder's Gaussian-elimination cost
 /// per repair stays small and the receiver's recovery horizon comfortably
 /// exceeds it.
-const WINDOW_MAX: u16 = 64;
+///
+/// It also bounds the published tap table: a repair reaches only as far
+/// as the table is long, so a table shorter than this leaves the oldest
+/// positions of a widened window with no coefficient. `rlc_fec` asserts
+/// the relation rather than trusting the two constants to be edited
+/// together.
+pub(crate) const WINDOW_MAX: u16 = 64;
 /// Window provisioning factor over the bare burst-span estimate `mean_burst *
 /// step`, so a burst slightly longer than the fitted mean is still in scope.
 const WINDOW_BURST_SAFETY: f32 = 1.5;
@@ -118,17 +124,18 @@ pub fn rlc_target_with_margin(s: &SensorSnapshot, margin: f32) -> RlcDecision {
             dt: DEFAULT_DT,
         };
     }
-    // The RLC FEC provisions its RATE against the measured LOSS RATE - the one
+    // The RLC FEC provisions its rate against the measured loss rate - the one
     // channel signal that is reliably measured here (the Gilbert-Elliott fit's
-    // marginal loss). In principle congestion loss should bias the rate LIGHTER
+    // marginal loss). In principle congestion loss should bias the rate lighter
     // (QUIC-FEC: FEC on a congested/bulk path steals bottleneck bandwidth and
-    // deepens the queue), but acting on that needs a TRUSTWORTHY queue signal:
-    // this transport's one-way-trip time folds in the receiver's own decode
-    // backlog (it stamps arrival at process time and decodes synchronously), so
-    // under loss it reads a false congestion, and a false positive that lightened
-    // the rate would collapse recovery. So the congestion share is measured and
-    // reported but does NOT drive the rate; the rate tracks the loss rate, which
-    // is robust. Density and window carry the burst signal, which IS reliable.
+    // deepens the queue), but acting on that needs a queue signal worth
+    // trusting: this transport's one-way-trip time folds in the receiver's own
+    // decode backlog (it stamps arrival at process time and decodes
+    // synchronously), so under loss it reads a false congestion, and a false
+    // positive that lightened the rate would collapse recovery. So the
+    // congestion share is measured and reported while the rate tracks the loss
+    // rate, which is robust. Density and window carry the burst signal, which
+    // is itself reliable.
     let loss_rate = s.loss.max(MIN_EFFECTIVE_LOSS);
     // Rate law R = T/(T+B): redundancy 1/(step+1) >= margin * loss_rate, so
     // step <= 1/(margin * loss_rate) - 1. Heavier loss -> smaller step; a larger
@@ -142,7 +149,7 @@ pub fn rlc_target_with_margin(s: &SensorSnapshot, margin: f32) -> RlcDecision {
     let window = span
         .max(2 * step as u32)
         .clamp(WINDOW_MIN as u32, WINDOW_MAX as u32) as u16;
-    // Denser coefficients under BURSTY loss: a base 0.5 density plus half the
+    // Denser coefficients under bursty loss: a base 0.5 density plus half the
     // burstiness, mapped onto 0..=15 and floored at 4 (a too-sparse repair over a
     // small window can miss the lost symbol entirely). Density tracks burstiness
     // alone - congestion does not make a loss more recoverable, and denser
@@ -168,7 +175,7 @@ fn more_protective(a: &RlcDecision, b: &RlcDecision) -> bool {
 /// raises protection (coding on, smaller step, larger window, denser
 /// coefficients) the instant the sensors call for it - cheap insurance against
 /// loss - but only lowers it after `hold` consecutive ticks that all want less,
-/// so a brief quiet spell does not strip protection. Turning coding OFF
+/// so a brief quiet spell does not strip protection. Turning coding off
 /// entirely (disable-on-clean) is the riskiest de-escalation, so it needs the
 /// longer `clean_hold` sustained-clean window, exactly as the block-RS policy
 /// guards the drop to Passthrough.
@@ -187,12 +194,12 @@ pub struct RlcController {
     /// the next loss, which head-of-line-stalls in-order delivery. For the
     /// latency-priority code (RLC in the unified transport) the step is clamped at
     /// `floor_step` (the configured baseline) so an isolated loss always recovers
-    /// in-window; the controller may still escalate HEAVIER under high loss. Zero
-    /// disables the floor (the default bulk behaviour with disable-on-clean).
+    /// in-window; the controller may still escalate heavier under high loss. Zero
+    /// disables the floor (the default bulk behavior with disable-on-clean).
     floor_step: u16,
-    /// Latency-priority floor on the coding WINDOW: never shrink the window below
+    /// Latency-priority floor on the coding window: never shrink the window below
     /// this baseline span. A clean assessment otherwise collapses the window to
-    /// the minimum, and a short window cannot span a loss CLUSTER even at heavy
+    /// the minimum, and a short window cannot span a loss cluster even at heavy
     /// redundancy (too few repairs reach back over the burst), so clustered losses
     /// fall to ARQ. Keeping the baseline span lets the in-window repairs cover a
     /// burst. Zero disables the floor.
@@ -239,7 +246,7 @@ impl RlcController {
     /// controller never relaxes FEC lighter than this (nor disables coding), so an
     /// isolated loss always has an in-window repair and never falls to an ARQ
     /// round trip that stalls in-order delivery. The controller may still escalate
-    /// HEAVIER under high loss. Call once at construction, before any feedback.
+    /// heavier under high loss. Call once at construction, before any feedback.
     pub fn set_latency_floor(&mut self) {
         self.floor_step = self.state.step.max(1);
         self.floor_window = self.state.window;
@@ -257,7 +264,7 @@ impl RlcController {
         // coding or relax the rate too light, so the next loss falls to an ARQ
         // round trip that head-of-line-stalls the in-order stream. Hold coding on
         // and clamp the step at the baseline (never lighter), so an isolated loss
-        // always recovers in-window; escalation to a HEAVIER step under high loss
+        // always recovers in-window; escalation to a heavier step under high loss
         // still applies (the clamp only caps the light side).
         if self.floor_step > 0 {
             t.coding_on = true;
@@ -423,7 +430,7 @@ mod tests {
         let mut c = RlcController::with_holds(16, 4, 15, 4, 16);
         c.decide(&lossy(0.25, 0.5)); // escalate
         let escalated = c.current();
-        // One clean tick must NOT immediately relax protection.
+        // One clean tick leaves protection where it is.
         let d = c.decide(&clean());
         assert_eq!(d.step, escalated.step, "a single clean tick must not relax step");
         assert!(d.coding_on, "a single clean tick must not disable coding");
@@ -445,11 +452,9 @@ mod tests {
 
     #[test]
     fn latency_floor_holds_baseline_through_clean() {
-        // The latency-priority floor holds FEC on AND never relaxes the step
-        // lighter than the baseline (4) through a sustained-clean run - the fix
-        // for the ARQ-latency cliff where the controller would otherwise relax to
-        // an over-light rate (or disable coding) and pay an ARQ round trip on the
-        // next loss.
+        // The latency-priority floor holds FEC on and never relaxes the step
+        // lighter than the baseline (4) through a sustained-clean run, so the
+        // next loss is repaired without an ARQ round trip.
         let mut c = RlcController::with_holds(16, 4, 15, 2, 4);
         c.set_latency_floor();
         c.decide(&lossy(0.25, 0.5)); // escalate under loss (step drops below 4)
@@ -459,10 +464,10 @@ mod tests {
             assert!(d.step <= 4, "floor must not relax lighter than baseline 4 (got {})", d.step);
             assert!(d.window >= 16, "floor must not shrink window below baseline 16 (got {})", d.window);
         }
-        // The floor still escalates HEAVIER than the baseline under high loss.
+        // The floor still escalates heavier than the baseline under high loss.
         let heavy = c.decide(&lossy(0.30, 0.5));
         assert!(heavy.step < 4, "floor must still escalate heavier under loss (got {})", heavy.step);
-        // The same sustained-clean run disables coding WITHOUT the floor (baseline).
+        // The same sustained-clean run disables coding without the floor (baseline).
         let mut base = RlcController::with_holds(16, 4, 15, 2, 4);
         base.decide(&lossy(0.25, 0.5));
         let mut disabled = false;

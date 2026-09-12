@@ -20,7 +20,7 @@
 //! Workload: SPSC sustained burst of N=10000 sends, consumer drains
 //! through the same `recv()` in both cases.
 //!
-//! Bench audit (HARD RULE 3):
+//! Bench audit:
 //! - Both contenders push the same payload bytes through the same
 //!   `SharedRing` transport (TAG_RING path).
 //! - Same N, same consumer drain pattern, same `iter_custom` shape

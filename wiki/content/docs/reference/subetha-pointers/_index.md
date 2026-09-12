@@ -12,9 +12,9 @@ tag, a CHERI capability bound. The point is that the consumer can
 take a useful action - skip a deref, prune a hash bucket, branch
 on type, validate a bound - without going through the data.
 
-Every pointer here is an IN-PROCESS encoding: the address it
+Every pointer here is an in-process encoding: the address it
 carries is a raw `*const T` / `*mut T` (or an `Arc<T>`), valid
-only within the constructing process. They are NOT
+only within the constructing process. They are not
 cross-process-portable and do not travel through an MMF unchanged.
 For the cross-process siblings - position-independent encodings
 that resolve in any process holding the same region - use the

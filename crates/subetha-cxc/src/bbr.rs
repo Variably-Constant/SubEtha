@@ -8,10 +8,10 @@
 //! - `draft-cheng-iccrg-delivery-rate-estimation` (the per-packet
 //!   rate-sample bookkeeping).
 //!
-//! This is the BBRv1 model: the bottleneck is characterised by two
-//! quantities the sender can measure, `BtlBw` (the windowed-MAX of the
-//! delivery rate) and `RTprop` (the windowed-MIN of the round-trip
-//! time), and the sender PACES at `pacing_gain * BtlBw` while bounding
+//! This is the BBRv1 model: the bottleneck is characterized by two
+//! quantities the sender can measure, `BtlBw` (the windowed maximum of the
+//! delivery rate) and `RTprop` (the windowed minimum of the round-trip
+//! time), and the sender paces at `pacing_gain * BtlBw` while bounding
 //! in-flight to `cwnd_gain * BDP` (BDP = BtlBw * RTprop). That keeps the
 //! bottleneck queue near-empty: throughput at the bottleneck rate with
 //! minimal standing queue, which is the whole point, low latency under
@@ -19,17 +19,17 @@
 //!
 //! # Why the rate sampler matters (the part a naive version gets wrong)
 //!
-//! The delivery rate must NOT be `acked_bytes / ack_arrival_interval`:
+//! The delivery rate must not be `acked_bytes / ack_arrival_interval`:
 //! when a frontier hole fills, the receiver delivers a backlog at once,
 //! the ACKs arrive compressed, and that ratio spikes to many times the
-//! true link rate. The spec's fix (followed here) snapshots, PER PACKET
+//! true link rate. The spec's fix (followed here) snapshots, per packet
 //! at send time, the connection's `delivered` count and the time it was
 //! last updated; on ACK the rate is `delivered_delta /
-//! max(send_elapsed, ack_elapsed)`. Taking the MAX of the send-side and
+//! max(send_elapsed, ack_elapsed)`. Taking the max of the send-side and
 //! ack-side elapsed intervals makes the estimate robust to both ACK
 //! compression (ack_elapsed too small) and send bursts (send_elapsed too
-//! small). This is exactly what an earlier hand-rolled
-//! windowed-max-of-raw-ACK-delta got wrong.
+//! small). A windowed max of raw per-ACK deltas is robust to
+//! neither.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -44,7 +44,7 @@ const DRAIN_PACING_GAIN: f64 = std::f64::consts::LN_2 / 2.0;
 /// Steady-state in-flight headroom: cwnd = 2 * BDP tolerates delayed/
 /// aggregated ACKs without starving the pipe.
 const CWND_GAIN: f64 = 2.0;
-/// ProbeBW pacing-gain cycle, one phase per RTprop: probe UP at 1.25x for
+/// ProbeBW pacing-gain cycle, one phase per RTprop: probe up at 1.25x for
 /// one round to look for more bandwidth, drain at 0.75x the next round,
 /// then cruise at 1.0x for six rounds.
 const PROBE_BW_GAINS: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
@@ -238,9 +238,9 @@ impl Bbr {
         }
 
         // Round-trip accounting (BBRUpdateRound): a round ends when we ACK a
-        // packet that was SENT at or after the `delivered` mark captured at the
+        // packet that was sent at or after the `delivered` mark captured at the
         // previous round start - i.e. roughly one RTT, one BDP of delivery. The
-        // mark is the acked packet's OWN `delivered` snapshot, NOT the running
+        // mark is the acked packet's own `delivered` snapshot, not the running
         // cumulative; using the cumulative ticked a round per ACK batch, making
         // the BtlBw window far shorter than its intended 10 round trips so the
         // peak expired and the estimate decayed.
@@ -252,7 +252,7 @@ impl Bbr {
 
         // Delivery-rate sample = delivered / max(send_elapsed, ack_elapsed),
         // gated on a reliable interval (>= min RTT). An app-limited sample
-        // understates the bandwidth, so it only RAISES the max filter.
+        // understates the bandwidth, so it only raises the max filter.
         let send_elapsed = p.sent_time.saturating_duration_since(p.first_sent_time);
         let ack_elapsed = now.saturating_duration_since(p.delivered_time);
         let interval = send_elapsed.max(ack_elapsed);
@@ -401,7 +401,7 @@ mod tests {
 
     /// Drive `bbr` through a realistic pipelined link: `link_bps` bottleneck,
     /// `rtt` propagation, a `cwnd_pkts` sliding window. Packets enter the
-    /// bottleneck serialised at the link rate (so delivery is link-paced) and
+    /// bottleneck serialized at the link rate (so delivery is link-paced) and
     /// are acked one `rtt` after delivery. Events are processed in time order,
     /// exactly as on a real connection (send and ack interleave). `compress`
     /// optionally batches all acks in a round into one instant (ACK
@@ -423,7 +423,7 @@ mod tests {
             // Send while the window has room and packets remain.
             while sent < n && (inflight.len() as u64) < cwnd {
                 let s = bbr.on_send(now, false);
-                // Bottleneck serialises: this packet is delivered when the link
+                // Bottleneck serializes: this packet is delivered when the link
                 // is free, plus the propagation delay.
                 let deliver = next_bottleneck.max(now) + serialize;
                 next_bottleneck = deliver;
@@ -463,7 +463,7 @@ mod tests {
         assert!((8.0..=12.5).contains(&mbit), "btlbw {mbit:.1} mbit/s off true 10");
     }
 
-    /// ACK compression (a whole round acked in one instant) must NOT inflate
+    /// ACK compression (a whole round acked in one instant) must not inflate
     /// btlbw above the true link rate: the send_elapsed term bounds it.
     #[test]
     fn compressed_ack_burst_does_not_inflate() {

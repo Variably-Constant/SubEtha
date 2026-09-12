@@ -51,10 +51,10 @@ Canonical doc:
 
 ## `SharedOnceCell`
 
-The one-shot init analogue. Once-only initialisation with
+The one-shot init analog. Once-only initialization with
 `get_or_init`-style semantics across processes. The race is
 resolved by CAS on the state field; losers wait until the winner
-finishes initialising.
+finishes initializing.
 
 State machine:
 
@@ -72,7 +72,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;
 pub fn reset(path: impl AsRef<Path>) -> Result<Self, SharedOnceError>;   // truncates; re-arms the once
 ```
 
-The winning initialiser writes the payload then transitions to
+The winning initializer writes the payload then transitions to
 `STATE_INITIALIZED`; losers spin on the state load until they see
 the transition, then read the payload. The cross-process variant
 of the in-memory busy-spin wait strategy; the parked variants are

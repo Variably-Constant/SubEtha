@@ -2,7 +2,7 @@
 //! the textbook in-process priority queue pattern most ad-hoc code
 //! reaches for.
 //!
-//! Architectural claim: PriorityFanout is O(1) per submit AND per
+//! Architectural claim: PriorityFanout is O(1) per submit and per
 //! drain via the CLZ bitmap; BinaryHeap is O(log N) per operation
 //! plus a Mutex round-trip on every access. The bench measures both
 //! cost shapes; PriorityFanout's lock-free atomics should

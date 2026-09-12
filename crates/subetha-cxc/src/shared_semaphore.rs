@@ -14,7 +14,7 @@
 //! `acquire`:
 //! 1. Load `count`. If > 0, try CAS to decrement; on success, return.
 //! 2. On 0 (or CAS lost), increment `waiters`, snapshot `wakeup`,
-//!    re-check `count`, then yield/sleep until either `count > 0` OR
+//!    re-check `count`, then yield/sleep until either `count > 0` or
 //!    `wakeup` advances. Loop back to 1.
 //!
 //! `release`:
@@ -30,7 +30,7 @@
 //! needs to know "something changed." A generation counter gives
 //! that exactly. Adding a ring of waiter PIDs only helps if you need
 //! strict FIFO fairness, which most cross-process resource limiters
-//! do NOT. The generation-counter design is simpler, has zero
+//! do not. The generation-counter design is simpler, has zero
 //! allocation, and matches the semantics of every modern OS
 //! semaphore primitive (which all coalesce identical wakeups
 //! internally).
@@ -204,7 +204,7 @@ impl SharedSemaphore {
                 self.waiters.fetch_sub(1, Ordering::AcqRel);
                 continue;
             }
-            // Wait until either count > 0 OR wakeup advances.
+            // Wait until either count > 0 or wakeup advances.
             let mut spins = 0u32;
             loop {
                 let cur_count = self.count.load(Ordering::Acquire);
@@ -323,7 +323,7 @@ impl SharedSemaphore {
 
     /// Current wakeup-generation counter snapshot. Used by the
     /// `BlockingSemaphore` wrapper to compute waker park targets:
-    /// the wrapper snapshots this BEFORE checking `available()`,
+    /// the wrapper snapshots this ahead of checking `available()`,
     /// then parks at `snapshot + 1`. Any subsequent `release` bumps
     /// the generation, which the wake call observes as `seq >=
     /// target`.
@@ -340,7 +340,7 @@ impl SharedSemaphore {
     /// kernel-park slow path.
     ///
     /// The internal release path keys its wakeup-bump on
-    /// `waiters > 0`, so a parker that does NOT register here will
+    /// `waiters > 0`, so a parker that skips registering here will
     /// not be woken (the wakeup generation stays unchanged).
     #[inline]
     pub fn mark_waiter_entered(&self) {

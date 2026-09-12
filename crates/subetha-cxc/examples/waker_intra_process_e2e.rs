@@ -2,9 +2,9 @@
 //! `CrossProcessWaker`.
 //!
 //! Producer + consumer run on separate OS threads of one binary.
-//! The producer publishes items at a CONTROLLED CADENCE so the
+//! The producer publishes items at a controlled cadence so the
 //! consumer's hot path observes both "ring already has items"
-//! (fast non-blocking pop) AND "ring empty, must park" (the
+//! (fast non-blocking pop) and "ring empty, must park" (the
 //! waker path) for a meaningful share of calls.
 //!
 //! The demo measures and prints:
@@ -76,7 +76,7 @@ fn main() {
     // actually hit the kernel-block path. We can't see that from
     // outside the wrapper directly; instead, we infer it by
     // checking whether the ring was Empty when we entered the call
-    // AND the spin window failed to find an item. Approximated
+    // and the spin window failed to find an item. Approximated
     // here by: if recv_blocking takes longer than the producer's
     // single-item arrival window (a few microseconds), the
     // consumer parked. Threshold = 50us captures park calls and

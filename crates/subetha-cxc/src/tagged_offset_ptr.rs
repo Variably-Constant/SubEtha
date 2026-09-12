@@ -1,15 +1,15 @@
 //! `TaggedOffsetPtr<T, const TAG_BITS: u32>` - high-bit-stealing
 //! variant of [`OffsetPtr`](crate::OffsetPtr).
 //!
-//! Steals the TOP `TAG_BITS` bits of the u32 index for a small type
+//! Steals the top `TAG_BITS` bits of the u32 index for a small type
 //! tag, leaving `(32 - TAG_BITS)` bits of index space.
 //!
 //! # Why high-bit stealing
 //!
-//! Classical tagged pointers steal the LOW bits because aligned
-//! pointers have low bits guaranteed zero. We work with INDICES,
+//! Classical tagged pointers steal the low bits because aligned
+//! pointers have low bits guaranteed zero. We work with indices,
 //! not addresses, so alignment is irrelevant. The natural free
-//! bits in an index are the HIGH bits, because most regions don't
+//! bits in an index are the high bits, because most regions don't
 //! fill all 4 billion u32 slots. With `TAG_BITS = 4` you still
 //! get 268M slots and 16 type IDs - plenty for most data
 //! structures.
@@ -34,7 +34,7 @@
 //!
 //! NIL is `u32::MAX` (all-ones, both tag and index saturated).
 //! Distinguishable from any meaningful `(tag, index)` pair as long
-//! as the caller doesn't create one with tag == max_tag AND index ==
+//! as the caller doesn't create one with tag == max_tag and index ==
 //! max_index. For safety, use `NIL` constant rather than constructing
 //! all-ones manually.
 //!
@@ -82,7 +82,7 @@ impl<T, const TAG_BITS: u32> TaggedOffsetPtr<T, TAG_BITS> {
     // need a 33-bit shift which is UB; at >=32 the index space is
     // zero which has no useful meaning. This const item is evaluated
     // when the type is instantiated, blocking invalid TAG_BITS at
-    // monomorphisation time.
+    // monomorphization time.
     const _ASSERT_TAG_BITS: () = assert!(
         TAG_BITS <= 31,
         "TAG_BITS must be in 0..=31 (32 would leave no index bits)",
@@ -116,7 +116,7 @@ impl<T, const TAG_BITS: u32> TaggedOffsetPtr<T, TAG_BITS> {
     /// exceeds its range. Use [`try_new`](Self::try_new) for
     /// fallible construction.
     pub fn new(index: u32, tag: u32) -> Self {
-        // Force the const-eval ASSERT to fire if TAG_BITS is invalid.
+        // Force the const-eval assert to fire if TAG_BITS is invalid.
         let _: () = Self::_ASSERT_TAG_BITS;
         assert!(
             tag <= Self::max_tag(),
@@ -152,14 +152,14 @@ impl<T, const TAG_BITS: u32> TaggedOffsetPtr<T, TAG_BITS> {
     }
 
     /// Construct from the raw packed `u32` representation. Useful
-    /// for deserialisation. Caller is responsible for ensuring the
+    /// for deserialization. Caller is responsible for ensuring the
     /// raw value is meaningful for the chosen `TAG_BITS`.
     #[inline]
     pub const fn from_raw(packed: u32) -> Self {
         Self { packed, _phantom: PhantomData }
     }
 
-    /// Extract the raw packed `u32`. Useful for serialisation.
+    /// Extract the raw packed `u32`. Useful for serialization.
     #[inline]
     pub const fn raw(self) -> u32 { self.packed }
 
@@ -186,6 +186,88 @@ impl<T, const TAG_BITS: u32> TaggedOffsetPtr<T, TAG_BITS> {
     /// True when the pointer is the NIL sentinel.
     #[inline]
     pub fn is_nil(self) -> bool { self.packed == u32::MAX }
+}
+
+/// The widest tag [`pack_runtime`] and [`unpack_runtime`] accept. Thirty
+/// two would leave no index bits.
+pub const MAX_TAG_BITS: u32 = 31;
+
+/// Pack `(index, tag)` at a tag width known only at run time.
+///
+/// [`TaggedOffsetPtr::new`] is the one to reach for where the width is a
+/// constant; it is checked when the type is instantiated and panics on a
+/// value out of range. This exists for a caller that learns the width
+/// later and must be told rather than aborted: the C ABI, which has no
+/// const generics and no panics to give a caller.
+///
+/// `None` when `tag_bits` is above [`MAX_TAG_BITS`], or when either
+/// component does not fit the width.
+pub fn pack_runtime(index: u32, tag: u32, tag_bits: u32) -> Option<u32> {
+    if tag_bits > MAX_TAG_BITS {
+        return None;
+    }
+    let max_tag = if tag_bits == 0 { 0 } else { (1u32 << tag_bits) - 1 };
+    let index_bits = 32 - tag_bits;
+    let max_index = if index_bits == 32 { u32::MAX } else { (1u32 << index_bits) - 1 };
+    if tag > max_tag || index > max_index {
+        return None;
+    }
+    Some(if tag_bits == 0 { index } else { (tag << index_bits) | index })
+}
+
+/// The `(index, tag)` a packed word holds at that width, the inverse of
+/// [`pack_runtime`].
+///
+/// `None` when `tag_bits` is above [`MAX_TAG_BITS`]. Any packed word is
+/// valid at a width this accepts, so there is no other refusal.
+pub fn unpack_runtime(packed: u32, tag_bits: u32) -> Option<(u32, u32)> {
+    if tag_bits > MAX_TAG_BITS {
+        return None;
+    }
+    if tag_bits == 0 {
+        return Some((packed, 0));
+    }
+    let index_bits = 32 - tag_bits;
+    let index_mask = (1u32 << index_bits) - 1;
+    Some((packed & index_mask, packed >> index_bits))
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn the_runtime_pack_agrees_with_the_const_generic_one() {
+        // The two encodings must not drift, so the check is against the
+        // type rather than against a hand-written expectation.
+        assert_eq!(
+            pack_runtime(42, 1, 1),
+            Some(TaggedOffsetPtr::<u64, 1>::new(42, 1).raw())
+        );
+        assert_eq!(
+            pack_runtime(1000, 5, 3),
+            Some(TaggedOffsetPtr::<u64, 3>::new(1000, 5).raw())
+        );
+        assert_eq!(pack_runtime(7, 0, 0), Some(TaggedOffsetPtr::<u64, 0>::new(7, 0).raw()));
+    }
+
+    #[test]
+    fn unpacking_returns_what_was_packed() {
+        for (index, tag, bits) in [(42u32, 1u32, 1u32), (1000, 5, 3), (7, 0, 0), (1, 255, 8)] {
+            let packed = pack_runtime(index, tag, bits).expect("in range");
+            assert_eq!(unpack_runtime(packed, bits), Some((index, tag)));
+        }
+    }
+
+    #[test]
+    fn a_component_that_does_not_fit_is_refused_rather_than_truncated() {
+        // One tag bit holds 0 or 1; two is not a tag it can carry.
+        assert_eq!(pack_runtime(0, 2, 1), None);
+        // Three tag bits leave 29 for the index.
+        assert_eq!(pack_runtime(1 << 29, 0, 3), None);
+        assert_eq!(pack_runtime(0, 0, MAX_TAG_BITS + 1), None);
+        assert_eq!(unpack_runtime(0, MAX_TAG_BITS + 1), None);
+    }
 }
 
 #[cfg(test)]

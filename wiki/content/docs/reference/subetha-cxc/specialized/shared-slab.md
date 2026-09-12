@@ -100,7 +100,7 @@ slot cannot carry at all - against `Mutex<Vec<Record>>` and
   because a 4-byte record would measure `SharedVec`'s territory and
   flatter the slab's stride.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process access.** Both baselines are impossible across a
   process boundary; that is the reason to reach for the slab.

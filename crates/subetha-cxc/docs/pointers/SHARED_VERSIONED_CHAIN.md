@@ -71,7 +71,7 @@ atomic CAS for head updates.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process MVCC**: any process pushes a versioned entry;
   any process reads at any snapshot version.

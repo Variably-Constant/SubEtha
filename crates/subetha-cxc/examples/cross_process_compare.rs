@@ -8,7 +8,7 @@
 //!
 //! - SubEtha pinned SPSC / MPSC / MPMC / Vyukov: a file-backed
 //!   `AdaptiveRing` in each direction, morphed to the target shape
-//!   and pinned via `pin_current_shape()` in BOTH processes, with
+//!   and pinned via `pin_current_shape()` in both processes, with
 //!   the ping-pong running on the pinned native-primitive calls.
 //!   This is the production hot path of the adaptive system - not
 //!   a hand-rolled single-purpose MMF.
@@ -20,7 +20,7 @@
 //! - iceoryx2 (Eclipse zero-copy IPC, Rust port)
 //!
 //! Every SubEtha contender declares `max_producers = 1,
-//! max_consumers = 1` so the four shapes run the SAME 1P/1C
+//! max_consumers = 1` so the four shapes run the same 1P/1C
 //! workload through four different dispatch paths; the deltas
 //! between the four rows are pure shape-dispatch cost, not
 //! peer-count scan overhead.
@@ -172,14 +172,14 @@ fn pinned_pop(pin: &PinnedRing<'_>, shape: RingShape, out: &mut [u8]) -> bool {
 
 /// Pop with the production wait discipline: short bounded spin,
 /// then a budgeted hardware monitor-wait armed on the shape's
-/// publish signal. Raw unbounded PAUSE spinning measures fine on
+/// publish signal. Raw unbounded `PAUSE` spinning measures fine on
 /// Linux/FreeBSD but gets descheduled and migrated by the Windows
 /// scheduler (measured 1.7-2.7 us one-way vs ~100-300 ns); the
 /// armed monitor wakes on the producer's store itself. Hosts
 /// without a monitor family fall back to pure spin (the wait call
 /// returns immediately).
 ///
-/// Lost-wake-free: the signal value is sampled BEFORE the last
+/// Lost-wake-free: the signal value is sampled before the last
 /// pop attempt, so a publish that lands after the sample makes
 /// the wait return instantly (value != sampled).
 #[inline]
@@ -383,7 +383,7 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
 // ==========================================================================
 
 /// Ping-pong through a pair of file-backed AdaptiveRings, both
-/// sides morphed to `shape` and running on PINNED handles. This is
+/// sides morphed to `shape` and running on pinned handles. This is
 /// the adaptive system's production hot path: one Acquire-load
 /// generation check amortized across the run, native-primitive
 /// calls per op.

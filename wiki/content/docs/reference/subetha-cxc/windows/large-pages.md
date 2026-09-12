@@ -12,7 +12,7 @@ weight: 72
 
 Windows large-page memory helpers - the Windows sibling of the
 Linux [hugepages]({{< ref "../linux/hugepages" >}}) module, with
-one extra capability: cross-process NAMED sections.
+one extra capability: cross-process named sections.
 
 | Primitive | Backing | Sharing | Win32 path |
 |---|---|---|---|
@@ -22,14 +22,14 @@ one extra capability: cross-process NAMED sections.
 > **The "huge memory table" primitive.** A multi-GB lookup table
 > mapped with 2MB TLB entries instead of 4KB: a 16MB region is 8
 > TLB entries instead of 4096. `LargePageSection` lets two
-> processes map the SAME large-page-backed physical memory by
+> processes map the same large-page-backed physical memory by
 > section name, so the table is built once and read everywhere.
 
 ## The privilege gate (different from Linux)
 
-Linux gates hugepages on RESERVATION
+Linux gates hugepages on reservation
 (`/proc/sys/vm/nr_hugepages`); Windows gates large pages on an
-ACCOUNT PRIVILEGE: `SeLockMemoryPrivilege` ("Lock pages in
+account privilege: `SeLockMemoryPrivilege` ("Lock pages in
 memory" in Local Security Policy). Two steps:
 
 1. **Grant** (one-time, admin): `secpol.msc` > Local Policies >
@@ -48,7 +48,7 @@ When the privilege is absent, allocation fails with
 4KB allocation exactly as on Linux when no hugepages are
 reserved.
 
-## File-backed mappings can NEVER use large pages on Windows
+## File-backed mappings can never use large pages on Windows
 
 `SEC_LARGE_PAGES` requires the section be pagefile-backed
 (`INVALID_HANDLE_VALUE` as the file handle). A mapping over a
@@ -70,7 +70,7 @@ candidates.
 | `ERROR_PRIVILEGE_NOT_HELD` (1314) / `ERROR_NO_SYSTEM_RESOURCES` (1450) | The two documented failure codes callers match for fallback. |
 
 `ERROR_NO_SYSTEM_RESOURCES` deserves a note: large pages are
-never paged out, so the kernel needs free CONTIGUOUS physical
+never paged out, so the kernel needs free contiguous physical
 RAM at allocation time. On a fragmented host a large allocation
 fails with 1450 even with plenty of total free RAM; retry after
 memory pressure drops or fall back.
@@ -103,11 +103,11 @@ lookup(table.as_slice());
   second view confirming writes.
 - Two-process mode (`create-wait` / `open-verify` subcommands):
   creator process writes 64 pattern points at 64KB strides into a
-  4MB section; a SEPARATE verifier process opens the section by
+  4MB section; a separate verifier process opens the section by
   name and asserts all 64 points - proving the cross-process
   named-section sharing on running binaries.
 - 4 lib tests pin the exact-contract behavior (success with
-  usable memory OR precisely the documented error codes).
+  usable memory or precisely the documented error codes).
 
 ## When to reach for this primitive
 
@@ -117,7 +117,7 @@ lookup(table.as_slice());
   front, so churn-heavy short-lived allocations waste the
   privilege's value.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Small regions (< 1MB): 4KB pages are fine.
 - Hosts where the account cannot be granted "Lock pages in

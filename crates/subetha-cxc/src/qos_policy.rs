@@ -106,12 +106,12 @@ pub enum History {
 ///
 /// Ordering need is semantic - it lives in the application, not in
 /// the traffic - so the substrate never auto-changes a correctness
-/// property on a heuristic. The caller DECLARES the need here; the
+/// property on a heuristic. The caller declares the need here; the
 /// sidecar acts on the declaration: an unstamped
 /// [`AdaptiveRing`](crate::AdaptiveRing) morphs to the Vyukov shape
 /// (the proven global-FIFO structure), a stamped ring flips its
 /// merge flag (the cheap ordered switch). What the substrate
-/// observes on its own is the cross-producer inversion RATE, which
+/// observes on its own is the cross-producer inversion rate, which
 /// it reports - and acts on only when the caller pre-authorized an
 /// automatic response via an `auto_order` threshold.
 #[repr(u32)]
@@ -292,7 +292,7 @@ impl QosPolicy {
 
     /// Snapshot: read all five knobs in one method for sidecar use.
     /// Each load is independently Acquire-ordered; the snapshot is
-    /// NOT a consistent point-in-time view across all five (the
+    /// Not a consistent point-in-time view across all five (the
     /// substrate does not need that property).
     pub fn snapshot(&self) -> QosSnapshot {
         QosSnapshot {

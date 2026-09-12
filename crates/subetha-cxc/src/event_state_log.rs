@@ -12,8 +12,8 @@
 //!
 //! This is the CQRS / event-sourcing shape used by Kafka +
 //! materialized views, EventStore + projections, Akka Persistence -
-//! lifted to shared memory at lock-free MMF cost. The ring file IS
-//! the durable event log (flush() syncs to disk); the cell IS the
+//! lifted to shared memory at lock-free MMF cost. The ring file is
+//! the durable event log (flush() syncs to disk); the cell is the
 //! current-state cache.
 //!
 //! # Two files per log
@@ -21,7 +21,7 @@
 //! - `<base>.events.bin` - the SharedRing
 //! - `<base>.state.bin`  - the SharedCell holding State
 //!
-//! Pass the BASE PATH (without extension) to `create` / `open`;
+//! Pass the base path (without extension) to `create` / `open`;
 //! the wrapper appends the extensions.
 
 use std::marker::PhantomData;

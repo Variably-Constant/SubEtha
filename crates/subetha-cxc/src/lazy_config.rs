@@ -2,7 +2,7 @@
 //!
 //! Composite primitive built on `SharedOnceCell<T>` + (optionally)
 //! the BackgroundScheduler's Pass dispatch. Guarantees that the
-//! config-fetch closure runs EXACTLY ONCE across all participating
+//! config-fetch closure runs exactly once across all participating
 //! processes - no matter how many of them call `get_or_fetch`
 //! concurrently. The losers of the CAS race spin until the winner
 //! publishes, then read the canonical value.
@@ -99,7 +99,7 @@ impl<T: Copy + Send + Sync + 'static> LazyConfig<T> {
     /// canonical value.
     ///
     /// Across all processes mapping this file, `fetcher` runs at
-    /// most once per process AND only one process's result becomes
+    /// most once per process and only one process's result becomes
     /// canonical. (In practice with the CAS-then-fetch protocol
     /// from `SharedOnceCell::get_or_init`, the winner is the
     /// only one to actually run the fetcher.)
@@ -116,7 +116,7 @@ impl<T: Copy + Send + Sync + 'static> LazyConfig<T> {
     /// Force-set the value without going through a fetcher. Useful
     /// for testing or for an admin-set-config workflow. Returns
     /// `true` if this caller's value became canonical (it won the
-    /// CAS), `false` when the cell was already initialised.
+    /// CAS), `false` when the cell was already initialized.
     pub fn force_set(&self, value: T) -> bool {
         let ok = self.cell.set(value);
         self.ring_sidecar.push_op(

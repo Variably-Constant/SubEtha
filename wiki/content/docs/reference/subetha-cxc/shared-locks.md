@@ -2,9 +2,9 @@
 weight: 60
 ---
 
-# Locks and synchronisation
+# Locks and synchronization
 
-Four cross-process synchronisation primitives. Each lifts a
+Four cross-process synchronization primitives. Each lifts a
 classic in-memory shape into an MMF byte layout so two
 processes can coordinate without an IPC channel.
 
@@ -92,7 +92,7 @@ pub fn available(&self) -> u32;
 
 The refill calculation is deterministic across processes
 because both processes see the same `last_refill_ns` field; the
-CAS on the token count is what serialises concurrent
+CAS on the token count is what serializes concurrent
 acquisitions. Op kinds: `OP_TRY_ACQUIRE = 1`, `OP_AVAILABLE = 2`.
 
 Canonical doc:

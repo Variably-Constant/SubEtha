@@ -7,13 +7,13 @@
 //! byte-representation, or a 4-byte hash).
 //!
 //! The architectural win: equality / lookup operations check the
-//! 4-byte prefix in-register BEFORE dereferencing `target`. For
+//! 4-byte prefix in-register before dereferencing `target`. For
 //! workloads where most comparisons fail (HashMap bucket-chain
 //! walks, dedup scans, RDF subject lookups), the prefix short-
 //! circuits the dereference, eliminating the cache miss on the
 //! pointed-to object.
 //!
-//! This is the generic primitive that callers specialise per content
+//! This is the generic primitive that callers specialize per content
 //! type: a string-content overlay (prefix = first 4 bytes of the
 //! UTF-8 bytes) and a bit-sliced N-pointer tile overlay both fit
 //! inside the same 16-byte slot by reinterpreting `prefix` as

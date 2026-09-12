@@ -68,10 +68,10 @@
 //!
 //! # Watermarks (MergeStrict)
 //!
-//! `ProducerLine.watermark` is the producer's last PUBLISHED stamp,
+//! `ProducerLine.watermark` is the producer's last published stamp,
 //! stored with `Release` after the ring push. Items inside a ring
 //! are stamp-ordered per producer, so a non-empty ring's head bounds
-//! everything that producer has in flight. An EMPTY ring's producer
+//! everything that producer has in flight. An empty ring's producer
 //! may hold a stamped-but-unpublished item, bounded below by its
 //! watermark: any future item from producer `j` has stamp
 //! `> watermark[j]`. The strict release gate is therefore
@@ -83,7 +83,7 @@
 //!
 //! With M concurrent consumers, "global FIFO delivery" is
 //! meaningless downstream - two concurrent pops race regardless of
-//! pop order - so merge mode implies ONE active drainer. The lease
+//! pop order - so merge mode implies a single active drainer. The lease
 //! lives in the header (`drainer_token` + heartbeat + epoch) and
 //! follows the [`OwnerLease`](crate::OwnerLease) claim protocol
 //! (CAS-claim when free, heartbeat-grace takeover when the holder
@@ -91,7 +91,7 @@
 //! ShmFs, which `OwnerLease`'s file backing cannot serve - gets the
 //! same mechanism from the same region.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomOrd};
 
@@ -387,11 +387,11 @@ pub struct OrderingHeader {
     _pad: [u8; 8],
 }
 
-/// Second header line: the drainer-lease GENERATION, alone on its
+/// Second header line: the drainer-lease generation, alone on its
 /// own cache line. Bumped only on lease claim / takeover / release
 /// and on epoch ticks - all rare events - so a merge drainer's
-/// per-pop lease verification is one load of a line that is NEVER
-/// written in steady state (an L1 hit with zero coherence traffic),
+/// per-pop lease verification is one load of a line that stays
+/// unwritten in steady state (an L1 hit with zero coherence traffic),
 /// instead of loads on the first header line that every
 /// SharedCounter push fetch_adds. Measured on the Zen3 KVM guest:
 /// per-pop loads of that stamp-hot line cost a cache-to-cache
@@ -407,10 +407,10 @@ pub struct LeaseGenLine {
 /// L1 line.
 #[repr(C, align(64))]
 pub struct ProducerLine {
-    /// Last ISSUED stamp (monotonicity floor: the next stamp is
+    /// Last issued stamp (monotonicity floor: the next stamp is
     /// `max(source_now, issued + 1)`).
     pub issued: AtomicU64,
-    /// Last PUBLISHED stamp (the MergeStrict watermark). `Release`-
+    /// Last published stamp (the MergeStrict watermark). `Release`-
     /// stored after the ring push; 0 = this producer slot has never
     /// published or refreshed.
     pub watermark: AtomicU64,
@@ -491,7 +491,7 @@ unsafe fn init_ordering_layout(ptr: *mut u8, max_producers: usize, kind: StampKi
 }
 
 impl OrderingRegion {
-    /// Anonymous in-process region, initialised.
+    /// Anonymous in-process region, initialized.
     pub fn create_anon(max_producers: usize, kind: StampKind) -> Result<Self, RingError> {
         let total = ordering_region_size(max_producers);
         let mut mmap = MmapOptions::new().len(total).map_anon()?;
@@ -505,16 +505,14 @@ impl OrderingRegion {
         })
     }
 
-    /// File-backed region at `path`, initialised.
+    /// File-backed region at `path`, initialized.
     pub fn create(
         path: impl AsRef<Path>,
         max_producers: usize,
         kind: StampKind,
     ) -> Result<Self, RingError> {
         let total = ordering_region_size(max_producers);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(total as u64)?;
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         unsafe { init_ordering_layout(mmap.as_mut_ptr(), max_producers, kind) };
@@ -528,7 +526,7 @@ impl OrderingRegion {
     }
 
     /// Open an existing file-backed region. Validates the magic and
-    /// adopts the creator's stamp kind; does NOT re-initialise, so
+    /// adopts the creator's stamp kind and leaves the layout as it found it, so
     /// the live mode flag, counters, and watermarks survive the
     /// attach.
     pub fn open(
@@ -536,7 +534,7 @@ impl OrderingRegion {
         max_producers: usize,
     ) -> Result<Self, RingError> {
         let total = ordering_region_size(max_producers);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             return Err(RingError::LayoutMismatch);
         }
@@ -556,8 +554,8 @@ impl OrderingRegion {
         })
     }
 
-    /// Named-shm region, initialised. Mirrors the ring backings'
-    /// `create_from_shm` semantics (the creator initialises).
+    /// Named-shm region, initialized. Mirrors the ring backings'
+    /// `create_from_shm` semantics (the creator initializes).
     pub fn create_shm(
         shm: crate::shm_file::ShmFile,
         max_producers: usize,
@@ -609,7 +607,7 @@ impl OrderingRegion {
     }
 
     /// The drainer-lease generation: bumped on every lease claim /
-    /// takeover / release and on every epoch tick, and NEVER written
+    /// takeover / release and on every epoch tick, and left untouched
     /// otherwise. A merge drainer verifies its lease per pop with one
     /// load of this quiet line (compared against a consumer-local
     /// cache) and runs the full lease handshake only on change - the
@@ -648,7 +646,7 @@ impl OrderingRegion {
     /// Issue the next stamp for `producer_id`: strictly increasing
     /// per producer regardless of source skew.
     ///
-    /// Two-phase: the producer RESERVES first (`issued = floor`, a
+    /// Two-phase: the producer reserves first (`issued = floor`, a
     /// lower bound for the upcoming stamp, with the watermark still
     /// behind), then reads the clock and stores the real stamp.
     /// The reservation is what makes the merge's in-flight gate
@@ -704,7 +702,7 @@ impl OrderingRegion {
     }
 
     /// Watermark heartbeat for an idle producer: advances the
-    /// watermark to a fresh stamp WITHOUT pushing, so MergeStrict
+    /// watermark to a fresh stamp without pushing, so MergeStrict
     /// consumers stop waiting on this producer's silence. Only call
     /// from the producer's own thread between pushes (never while a
     /// stamped item is awaiting publish - the refresh would claim
@@ -744,7 +742,7 @@ impl OrderingRegion {
     /// will never stamp again". MergeStrict consumers stop waiting
     /// on the slot's silence permanently (any candidate passes its
     /// watermark gate) and the in-flight gate reads it as clean.
-    /// A producer MUST NOT push after retiring its slot - the
+    /// A producer that retires its slot stops pushing - the
     /// monotonicity floor is saturated.
     pub fn retire_producer(&self, producer_id: usize) {
         let line = self.line(producer_id);
@@ -796,7 +794,7 @@ impl OrderingRegion {
         loop {
             let cur = header.drainer_token.load(AtomOrd::Acquire);
             if cur == token {
-                // Holder fast path must be WRITE-FREE in steady state:
+                // Holder fast path must be write-free in steady state:
                 // the heartbeat shares a cache line with the shared
                 // stamp counter producers fetch_add on every push, so
                 // an unconditional store here forces that line
@@ -1011,7 +1009,7 @@ mod tests {
         assert_eq!(opened.stamp_kind(), StampKind::SharedCounter,
                    "opener must adopt the creator's stamp kind");
         assert_eq!(opened.mode(), OrderingMode::MergeByStamp,
-                   "open must not re-initialise the live mode flag");
+                   "open must not re-initialize the live mode flag");
         assert!(opened.watermark(1) > 0,
                 "open must not wipe watermarks");
         std::fs::remove_file(&p).ok();

@@ -27,7 +27,7 @@ Composes
 
 - **`SharedSemaphore::acquire`** loops `try_acquire` →
   `yield_now` → `sleep(50µs)` indefinitely. The sleep tail burns
-  CPU on each wake-up tick AND can miss a release by up to 50µs.
+  CPU on each wake-up tick and can miss a release by up to 50µs.
 - **`BlockingSemaphore::acquire_park`** loops `try_acquire`, then
   registers in the waker at the current generation, then parks
   via the platform wait syscall. The kernel returns within

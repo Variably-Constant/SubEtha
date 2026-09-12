@@ -4,11 +4,11 @@
 //!
 //! This forces the stamp kind to `SharedCounter` explicitly (so it does
 //! not depend on the host lacking an invariant TSC) and runs P real
-//! producer PROCESSES into one stamped ring. The consumer pops via the
-//! production `ordered_try_pop_with_stamp` and reports TWO independent
+//! producer processes into one stamped ring. The consumer pops via the
+//! production `ordered_try_pop_with_stamp` and reports two independent
 //! inversion counts for each mode:
 //!
-//!   - `ring.inversions()`  - the LIBRARY's own counter, bumped inside
+//!   - `ring.inversions()`  - the library's own counter, bumped inside
 //!     `note_stamp`/`record_inversion` whenever a merged pop's stamp is
 //!     below the previous one. Not the harness's measurement.
 //!   - observed here        - the harness re-checks `stamp < last` on the
@@ -154,7 +154,7 @@ fn run_mode(self_exe: &std::path::Path, mode: OrderingMode, label: &str) -> Resu
     Ok(())
 }
 
-// The AUTOMATIC path: AdaptiveOrderedReceiver auto-selects the exact
+// The automatic path: AdaptiveOrderedReceiver auto-selects the exact
 // strategy (reorder buffer for this producer count) and must deliver
 // zero out-of-order items.
 fn run_adaptive(self_exe: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

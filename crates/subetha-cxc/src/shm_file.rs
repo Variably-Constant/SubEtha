@@ -466,7 +466,7 @@ mod tests {
     /// `SeCreateGlobalPrivilege`, which an ordinary test process does
     /// not hold, so a refusal is a valid outcome - what must not happen
     /// is a per-session region handed back as though the request had
-    /// been honoured.
+    /// been honored.
     #[test]
     fn machine_namespace_reaches_the_os_and_never_downgrades() {
         let n = unique_name("shm_machine");

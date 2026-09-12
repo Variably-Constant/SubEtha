@@ -46,7 +46,7 @@ pointer through arrays, hash maps, and cross-process MMF storage.
 - **`new()` panics on out-of-range arguments.** Use `try_new()`
   for fallible construction at the API boundary.
 - **`NIL = u32::MAX` collides with `(tag = max_tag, index =
-  max_index)`.** Reserve the top tag value OR the top index slot
+  max_index)`.** Reserve the top tag value or the top index slot
   to keep the sentinel unambiguous.
 
 ---
@@ -152,7 +152,7 @@ tag    = packed >> (32 - TAG_BITS)
 
 The `NIL` sentinel is `u32::MAX` (all bits set). It is
 distinguishable from any meaningful `(tag, index)` pair so long as
-the caller does not construct one with `tag == max_tag` AND
+the caller does not construct one with `tag == max_tag` and
 `index == max_index` simultaneously. Use the `NIL` constant to
 avoid collision.
 
@@ -165,7 +165,7 @@ avoid collision.
 |---|---|
 | `TaggedOffsetPtr::new(index, tag)` | Panics if either component exceeds its range |
 | `TaggedOffsetPtr::try_new(index, tag)` | Returns `Err(TagOutOfRange)` or `Err(IndexOutOfRange)` instead of panicking |
-| `TaggedOffsetPtr::from_raw(packed)` | Caller-supplied raw u32; useful for deserialisation |
+| `TaggedOffsetPtr::from_raw(packed)` | Caller-supplied raw u32; useful for deserialization |
 | `TaggedOffsetPtr::NIL` | All-ones sentinel |
 
 </details>
@@ -275,7 +275,7 @@ Windows x86-64. Each iteration is one operation. Lower is faster.
 <summary><b>construct: 3.4x faster</b></summary>
 
 The tuple version constructs an `OffsetPtr` (which itself
-initialises a `PhantomData<T>` zero-sized field and copies the u32
+initializes a `PhantomData<T>` zero-sized field and copies the u32
 index) plus a `u8` separately, then packs them into a 2-field
 struct with padding. The compiler emits multiple stores and the
 struct's layout demands aligned writes.
@@ -392,7 +392,7 @@ Each limitation below is observable in the source.
 4. **NIL collision risk.** `NIL = u32::MAX` overlaps with the
    pair `(tag = max_tag, index = max_index)`. Most callers will
    never construct that exact pair, but if a workload uses every
-   tag value AND every index, the NIL sentinel becomes ambiguous.
+   tag value and every index, the NIL sentinel becomes ambiguous.
    For safety, treat the bottom slot or top slot as reserved.
 
 5. **`new()` panics on out-of-range arguments.** Use `try_new()`
@@ -456,7 +456,7 @@ chosen `TAG_BITS` out of band.
 <details>
 <summary><b>Pitfall 3: assuming NIL is unique</b></summary>
 
-If your workload uses tag value `max_tag` AND index value
+If your workload uses tag value `max_tag` and index value
 `max_index` legitimately, the resulting packed u32 equals
 `u32::MAX` and collides with `NIL`. Treat one or the other as
 reserved (e.g. reserve `tag = max_tag` for "deleted" and never

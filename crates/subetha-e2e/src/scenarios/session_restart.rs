@@ -1,7 +1,7 @@
 //! A peer restarts; its fresh session must still be delivered.
 //!
 //! The receiver runs in the parent. A sender child delivers a first
-//! batch, advancing the decoder, and is KILLED - so the transport learns
+//! batch, advancing the decoder, and is killed - so the transport learns
 //! of the restart only from the frames of the session that replaces it.
 //! A second sender process then runs against the same receiver, drawing
 //! its own connection id and numbering from the bottom again.
@@ -140,7 +140,7 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
 /// Send datagrams announcing a connection id the receiver has never seen,
 /// from a socket that is then dropped without answering anything.
 ///
-/// Covers an UNANSWERED challenge yielding no adoption, not source-address
+/// Covers an unanswered challenge yielding no adoption, not source-address
 /// spoofing: the datagrams carry this process's real source address, since
 /// forging that needs a raw socket.
 fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {

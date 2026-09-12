@@ -1,5 +1,5 @@
 //! Cross-process async: a `Future` in one process, woken by a push from
-//! ANOTHER process. The consumer `.await`s items over a shared-memory
+//! another process. The consumer `.await`s items over a shared-memory
 //! ring and genuinely sleeps (its driver thread and its reactor thread
 //! both park in the kernel) until the producer process publishes and
 //! signals - no busy-spin, no thread-per-future.

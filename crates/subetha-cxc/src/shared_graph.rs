@@ -13,9 +13,9 @@
 //!
 //! # Concurrency
 //!
-//! SINGLE-WRITER, MULTI-READER. Reads (neighbors, node_value,
+//! Single-writer, multi-reader. Reads (neighbors, node_value,
 //! edge_value, iter) are lock-free. Writes (add_node, add_edge,
-//! remove_edge) require external serialisation.
+//! remove_edge) require external serialization.
 //!
 //! # Safety
 //!
@@ -180,7 +180,7 @@ impl<N: Copy + Default + 'static, E: Copy + Default + 'static>
 
     /// Add an edge from `src` to `dst` carrying `value`. Returns
     /// its index. Single-writer per src node (the linked-list head
-    /// update isn't synchronised internally).
+    /// update isn't synchronized internally).
     pub fn add_edge(
         &self, src: NodeIndex<N>, dst: NodeIndex<N>, value: E,
     ) -> Result<EdgeIndex<E>, GraphError> {

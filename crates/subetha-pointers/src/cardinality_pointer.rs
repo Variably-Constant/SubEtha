@@ -10,7 +10,7 @@
 //!
 //! Database query planners, ECS world walkers, and graph databases
 //! all want a quick estimate of "how big is the thing this points
-//! to" BEFORE deciding the algorithm:
+//! to" before deciding the algorithm:
 //!
 //! - Tiny set (<= 8 elements) -> linear scan
 //! - Medium (<= 1024) -> sort-merge
@@ -84,7 +84,7 @@ impl<T> CardinalityPointer<T> {
     ///
     /// # Safety
     ///
-    /// `target` must be a valid pointer to a `T` AND must remain
+    /// `target` must be a valid pointer to a `T` and must remain
     /// valid for the lifetime of this pointer.
     ///
     /// # Panics
@@ -105,10 +105,10 @@ impl<T> CardinalityPointer<T> {
     }
 
     /// Construct from a raw pointer and a cardinality estimate
-    /// WITHOUT checking the address envelope. The high byte of the
+    /// without checking the address envelope. The high byte of the
     /// address is silently masked off via [`ADDR_MASK`]; if the
     /// caller violates the 56-bit envelope, the resulting pointer
-    /// dereferences to the WRONG address.
+    /// dereferences to the wrong address.
     ///
     /// # Safety
     ///
@@ -117,8 +117,8 @@ impl<T> CardinalityPointer<T> {
     /// On x86-64 with 4-level paging (the canonical configuration)
     /// this holds for any user-space pointer; on 5-level paging
     /// or with hardware MTE/TBI features that occupy the high byte
-    /// it does NOT hold and using this constructor is undefined
-    /// behaviour.
+    /// it does not hold and using this constructor is undefined
+    /// behavior.
     pub unsafe fn from_raw_unchecked(target: *const T, cardinality_hint: u64) -> Self {
         let addr = target as u64;
         let log2_card = if cardinality_hint == 0 {
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn query_planner_branch_without_deref() {
         // Pointers with bogus addresses but real cardinality hints.
-        // The planner branches on size_tier WITHOUT dereferencing.
+        // The planner branches on size_tier without dereferencing.
         let plans: [CardinalityPointer<u64>; 3] = [
             unsafe { CardinalityPointer::from_raw(std::ptr::dangling::<u64>(), 5) },
             unsafe { CardinalityPointer::from_raw(std::ptr::dangling::<u64>(), 500) },

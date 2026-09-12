@@ -4,7 +4,7 @@
 //! The scheduler's architectural claim: cross-process Pass
 //! dispatch with auto-failover (via heartbeat scan), at per-op
 //! cost competitive with the in-process mpsc baseline. The
-//! cross-process visibility, durable ring (file IS the queue),
+//! cross-process visibility, durable ring (file is the queue),
 //! and failover-watchdog are what neither baseline can do at any
 //! cost.
 //!

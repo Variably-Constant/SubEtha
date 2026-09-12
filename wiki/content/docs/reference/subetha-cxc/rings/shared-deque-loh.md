@@ -55,7 +55,7 @@ pre-validates the slot before the CAS.
 | Per-item dispatch, single thief, no batching | `SharedDeque` (Chase-Lev) | Lowest constant per push. |
 | Producer batches K items per call, K small multiple of 3 | `SharedDequeKhpd::publish_batch` | One Release-store per 3 items via the publication line. |
 | Producer batches K items per call, K arbitrary | `SharedDequeLoh::publish_batch` | One `tail.fetch_add(K)` + K Release-stores amortizes the producer-counter atomic over an arbitrary batch size. |
-| Multiple thieves AND the workload is contention-bound at the steal site | `SharedDequeUrd` | Per-thief mailboxes give zero CAS contention. |
+| Multiple thieves and the workload is contention-bound at the steal site | `SharedDequeUrd` | Per-thief mailboxes give zero CAS contention. |
 
 ## Measured throughput (Zen+ R7 2700, Win11, K=64 producer-fast)
 
@@ -63,7 +63,7 @@ SubEtha's LOH carries two SubEtha-native optimizations on top of the
 classical LCRQ-on-LIFO design:
 
 - **No Mutex on the `publish_batch` hot path.** The LIFO Mutex
-  serialises only `stage()` / `flush()` / `pop_local()` calls; the
+  serializes only `stage()` / `flush()` / `pop_local()` calls; the
   batch publish bypasses the LIFO entirely and runs lock-free,
   competing for `tail.fetch_add` only.
 - **`PREFETCHW` via `core::arch::asm!`** in the per-slot publish
@@ -111,7 +111,7 @@ The trade-off vs Chase-Lev MMF:
   on the slot. The wasted-ticket race that pure-XADD LCRQ exhibits
   is avoided by gating the CAS on `head < tail`.
 
-Where LOH does NOT win: single-item request-reply, because there is
+Where LOH does not win: single-item request-reply, because there is
 no batching to amortize against. The per-item
 [`push`](#api-surface) path still goes through a `Mutex<Vec<...>>`
 and an auto-flush trigger; only [`publish_batch`](#api-surface)

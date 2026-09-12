@@ -142,8 +142,8 @@ finer granularity.
 On the hot path, the strategy tag is one Relaxed load and a
 branch. Roughly 300 picoseconds on Zen+. The branch target is
 the concrete strategy implementation; for `T = u64` the
-`TypeId`-monomorphised branch in `AdaptiveIpc::send` resolves
-the specialisation at codegen time, so LTO inlines the body
+`TypeId`-monomorphized branch in `AdaptiveIpc::send` resolves
+the specialization at codegen time, so LTO inlines the body
 directly at the call site and the indirect-dispatch cost goes
 to zero. Only the inline
 tag-check branch remains.

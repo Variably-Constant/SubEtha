@@ -31,7 +31,7 @@ the mapped region; eventually the dirty pages get written back
 to disk by the OS, by an explicit `flush()` call, or by both.
 Restart the process and reopen the file - the bytes are right
 where the writer left them, the writer's data structures are
-already initialised in place, and the reader can pick up.
+already initialized in place, and the reader can pick up.
 
 The same byte layout gives all three. There is no "in-memory
 mode" vs "shared memory mode" vs "disk mode". The MMF *is* the
@@ -97,7 +97,7 @@ field in the file layout: `SharedBroadcastRing` has explicit
 per-consumer cursors, `SharedRateLimiter` has a refill schedule
 in the header, `HeartbeatTable` has a per-process liveness slot
 with TTL. The application reads the field; it does not have to
-serialise-deserialise the field from a byte stream.
+serialize-deserialize the field from a byte stream.
 
 The architectural shape is the same as QUIC over TCP. QUIC
 gives applications transport-layer features (multiplexing, head-
@@ -117,7 +117,7 @@ it probes with `hash % capacity` and accepts any `capacity >= 2`.)
 Three reasons compose.
 
 **Slot index is a mask.** A ring slot is `seq & (capacity - 1)` -
-a single AND instruction - instead of `seq % capacity`, a divide.
+a single `AND` instruction - instead of `seq % capacity`, a divide.
 On the hot path, the difference between one cycle and twenty
 cycles per op matters.
 
@@ -140,14 +140,14 @@ a single multiplication.
 
 The MMF substrate is the bytes plus the file mapping. It is not
 a transaction layer. It is not a replication layer. It is not
-a serialisation layer. It does not negotiate version
+a serialization layer. It does not negotiate version
 compatibility across processes that link different versions of
 the crate.
 
 Per-primitive headers carry a magic constant
 (`MAP_MAGIC`, `RING_MAGIC`, etc.) for type-tag verification, but
 two processes linking different layout versions of the same
-primitive will produce undefined behaviour. Cross-version
+primitive will produce undefined behavior. Cross-version
 compatibility is the application's responsibility - either by
 pinning the crate version across deployments, or by versioning
 the file format and migrating explicitly.

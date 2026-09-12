@@ -339,6 +339,9 @@ impl BlockingMpmcProducer {
 
     pub fn capacity(&self) -> usize { self.ring.capacity() }
     pub fn head(&self) -> u64 { self.ring.head() }
+    /// The waker this producer parks on while its ring is full; the pop
+    /// from that ring by the consumer owning it wakes it.
+    pub fn own_waker(&self) -> &Arc<CrossProcessWaker> { &self.own_waker }
 }
 
 impl BlockingMpmcConsumer {
@@ -409,6 +412,9 @@ impl BlockingMpmcConsumer {
 
     /// Number of rings in this consumer's subset.
     pub fn n_rings(&self) -> usize { self.rings.len() }
+    /// The waker this consumer parks on while its subset is empty; a push
+    /// into any ring of the subset wakes it.
+    pub fn own_waker(&self) -> &Arc<CrossProcessWaker> { &self.own_waker }
 
     /// Approximate pending items across this consumer's subset.
     pub fn approx_subset_len(&self) -> usize {

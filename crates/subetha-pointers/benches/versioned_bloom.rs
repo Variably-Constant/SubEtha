@@ -3,7 +3,7 @@
 //!
 //! Measures the architectural-claim case for each primitive:
 //! visibility checks for VersionedPointer / HlcVersionedPointer,
-//! time-travel reads through VersionedChain, miss-rate amortisation
+//! time-travel reads through VersionedChain, miss-rate amortization
 //! for BloomPointer and BloomCascade, and causal-vs-concurrent
 //! classification for VectorClock. (The upstream merkle_ptr group is
 //! omitted; that type is not part of this crate.)

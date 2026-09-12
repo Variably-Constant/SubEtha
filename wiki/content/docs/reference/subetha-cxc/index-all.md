@@ -5,7 +5,7 @@ weight: 100
 # Alphabetical index
 
 Every primitive that ships a canonical `docs/pointers/*.md` design
-doc, alphabetised, with a link to that doc. The polymorphic-substrate
+doc, alphabetized, with a link to that doc. The polymorphic-substrate
 rings, the blocking/async wrappers, the cross-host bridges, and the
 OS-specific primitives are documented in source rather than a
 `pointers/*.md`; the [master catalog](catalog.md) lists those too.
@@ -172,6 +172,9 @@ links to.
 - `SharedSlab` -
   [SHARED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SLAB.md)
   (see [specialized/shared-slab.md](specialized/shared-slab.md))
+- `SharedArray` -
+  [SHARED_ARRAY.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARRAY.md)
+  (see [specialized/shared-array.md](specialized/shared-array.md))
 - `SharedStringArena` -
   [SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md)
   (see [shared-sketches.md](shared-sketches.md#sharedstringarena))

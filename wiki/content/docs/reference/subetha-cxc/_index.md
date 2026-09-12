@@ -17,9 +17,9 @@ the shared substrate; the other is
 Roughly forty primitives, grouped into the categories below. Each
 primitive ships with its own prose doc in
 `crates/subetha-cxc/docs/pointers/*.md`; the wiki pages below
-summarise each group and link to the canonical source-tree docs.
+summarize each group and link to the canonical source-tree docs.
 
-## How the family is organised
+## How the family is organized
 
 | Category | Page | Primitives |
 |---|---|---|

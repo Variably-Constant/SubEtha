@@ -49,7 +49,7 @@
 //! descriptor always observes its region bytes.
 
 use std::cell::UnsafeCell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -259,7 +259,7 @@ impl FrameRing {
     ) -> Result<Self, RingError> {
         validate_params(capacity, slot_size, region_bytes)?;
         let total = frame_ring_file_size(capacity, slot_size, region_bytes);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             return Err(RingError::LayoutMismatch);
         }

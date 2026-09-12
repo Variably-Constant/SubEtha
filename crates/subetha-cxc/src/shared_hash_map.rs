@@ -26,7 +26,7 @@
 //! |   key_size, value_size    |
 //! +---------------------------+
 //! | Slot[0]  (64B cache line) |
-//! |   state (EMPTY/OCC/TS)    |
+//! |   state (empty/occ/ts)    |
 //! |   version (SeqLock)       |
 //! |   hash (cached)           |
 //! |   payload [u8; 48]: K + V |
@@ -42,7 +42,7 @@
 //! 2. Probe from `hash % capacity`, linearly.
 //! 3. At each slot:
 //!    - **Empty**: CAS state Empty → Occupied. On success, SeqLock-
-//!      write `(K, V)`, THEN store the hash as the publish; bump
+//!      write `(K, V)`, and only then store the hash as the publish; bump
 //!      `count`. Return Inserted.
 //!    - **Occupied & hash 0**: a writer holds the slot and has not
 //!      published it. Spin until the hash lands, then compare.
@@ -87,7 +87,7 @@
 //!
 //! # If you need dynamic sizing, use `SharedUniversal`
 //!
-//! `SharedHashMap` deliberately does NOT implement resize-on-grow.
+//! `SharedHashMap` deliberately leaves resize-on-grow unimplemented.
 //! Cross-process resize requires the same reader-coordination
 //! machinery as MMF-backed migration (atomic file rename, reader
 //! re-open signaling). Rather than reinvent that machinery inside
@@ -97,7 +97,7 @@
 //! handles cross-process resize correctly, with the reader-side
 //! generation-bump protocol that makes wrap-around safe.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -315,7 +315,7 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, MapError> {
         Self::check_layout()?;
         let total = map_file_size(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(MapError::LayoutMismatch);
         }
@@ -494,8 +494,8 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     ///
     /// # Tombstone reuse
     ///
-    /// Insert tracks the FIRST tombstone seen during the probe.
-    /// If the probe terminates at an Empty (key absent) AND a
+    /// Insert tracks the first tombstone seen during the probe.
+    /// If the probe terminates at an Empty (key absent) and a
     /// tombstone was seen, the tombstone slot is reclaimed instead
     /// of consuming the Empty. This eliminates the need for an
     /// explicit `compact()` call in steady-state insert/remove
@@ -878,13 +878,13 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     ///
     /// # Concurrency
     ///
-    /// **NOT concurrency-safe with `insert` / `remove`.** The caller
-    /// MUST guarantee no other writer (in any process holding an
+    /// **Not concurrency-safe with `insert` / `remove`.** The caller
+    /// must guarantee no other writer (in any process holding an
     /// MMF handle to the same file) is mutating the map during
     /// `compact`. Readers calling `get` will see a transient empty
     /// state mid-rebuild and may return spurious `None` for keys
     /// that are about to be re-inserted; if that is unacceptable,
-    /// serialise readers too.
+    /// serialize readers too.
     ///
     /// # Cost
     ///
@@ -921,13 +921,17 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         Ok(reclaimed)
     }
 
-    /// Walk and collect all (K, V) pairs currently present. Best-
-    /// effort snapshot under concurrent writers.
+    /// Walk and collect every (K, V) pair published when the walk reached
+    /// its slot. An insert claims its slot before it writes the payload,
+    /// so a slot claimed and not yet published is passed over rather than
+    /// collected with the zeroed payload of an insert in flight; a caller
+    /// that must see every entry snapshots again once the writers have
+    /// returned.
     pub fn snapshot(&self) -> Vec<(K, V)> {
         let mut out = Vec::with_capacity(self.len());
         for i in 0..self.capacity {
             let slot = self.slot(i);
-            if slot.state.load(Ordering::Acquire) == SLOT_OCCUPIED {
+            if slot.state.load(Ordering::Acquire) == SLOT_OCCUPIED && slot.hash.load(Ordering::Acquire) != HASH_UNSET {
                 out.push(self.read_payload(i));
             }
         }
@@ -1012,7 +1016,7 @@ mod tests {
     }
 
     /// Attaching with a different capacity or key type is refused, and a
-    /// LARGER capacity than the region on disk is refused at once rather
+    /// larger capacity than the region on disk is refused at once rather
     /// than waited on as a creator still initializing.
     #[test]
     fn create_refuses_a_mismatched_region() {
@@ -1117,6 +1121,35 @@ mod tests {
         let mut snap = m.snapshot();
         snap.sort();
         assert_eq!(snap, vec![(1, 10), (3, 30)]);
+    }
+
+    /// An insert claims its slot before it writes the payload and
+    /// publishes the hash, so a snapshot that trusted the state alone
+    /// would collect the zeroed payload of an insert in flight. A
+    /// claimed, unpublished slot is passed over; once published it is
+    /// collected.
+    #[test]
+    fn a_snapshot_passes_over_a_slot_claimed_but_not_yet_published() {
+        let p = tmp("claimed");
+        let m: SharedHashMap<u32, u32> = SharedHashMap::create(&p, 16).unwrap();
+        m.insert(1, 10).unwrap();
+
+        // A second insert held between its claim and its publish, as a
+        // writer descheduled there leaves it.
+        let idx = (0..m.capacity())
+            .find(|&i| m.slot(i).state.load(Ordering::Acquire) == SLOT_EMPTY)
+            .expect("a free slot");
+        m.slot(idx)
+            .state
+            .compare_exchange(SLOT_EMPTY, SLOT_OCCUPIED, Ordering::AcqRel, Ordering::Acquire)
+            .expect("the claim");
+        assert_eq!(m.snapshot(), vec![(1, 10)], "a slot an insert has claimed and not yet written is not an entry");
+
+        m.publish_claimed(idx, SharedHashMap::<u32, u32>::hash_key(&2), &2, &20);
+        m.header().count.fetch_add(1, Ordering::AcqRel);
+        let mut snap = m.snapshot();
+        snap.sort();
+        assert_eq!(snap, vec![(1, 10), (2, 20)], "published, it is collected");
     }
 
     #[test]
@@ -1235,7 +1268,7 @@ mod tests {
         m.remove(&1);
         m.remove(&3);
         assert_eq!(m.tombstone_count(), 2);
-        // Removing absent key does NOT bump tombstone count.
+        // Removing an absent key leaves the tombstone count alone.
         m.remove(&999);
         assert_eq!(m.tombstone_count(), 2);
     }
@@ -1295,7 +1328,7 @@ mod tests {
     #[test]
     fn compact_reclaims_after_heavy_churn() {
         // Many insert/remove cycles accumulate tombstones in the
-        // probe path because insert probes PAST tombstones if the
+        // probe path because insert probes past tombstones if the
         // tombstone-reuse path is not exercised. Compact must
         // reclaim every dead slot exactly.
         let p = tmp("compact-churn");
@@ -1322,7 +1355,7 @@ mod tests {
     #[test]
     fn tombstone_reuse_avoids_full_after_remove() {
         // 8-slot table, fill it, remove one key. The next insert
-        // of a NEW key REUSES the tombstone slot instead of
+        // of a new key reuses the tombstone slot instead of
         // returning Full. This validates the tombstone-reuse-on-
         // insert path.
         let p = tmp("reuse-avoids-full");
@@ -1342,7 +1375,7 @@ mod tests {
 
     #[test]
     fn compact_still_useful_for_remove_heavy_workload() {
-        // Insert N, remove most WITHOUT re-inserting. Tombstones
+        // Insert N, remove most without re-inserting. Tombstones
         // accumulate because there is no insert to trigger reuse.
         // compact() bulk-reclaims them. This covers workloads
         // that lack the insert pressure to trigger reuse
@@ -1394,7 +1427,7 @@ mod tests {
         }
     }
 
-    /// Many writers racing insert_if_absent on ONE absent key: exactly one
+    /// Many writers racing insert_if_absent on a single absent key: exactly one
     /// places it, every other reads the winner's value, and the table ends
     /// with a single entry - a claimed slot not yet published is waited on,
     /// never mistaken for a different key and planted a second time.
@@ -1458,7 +1491,7 @@ mod tests {
         assert_eq!(m.compare_exchange(&1, 11, 12), Err(MapError::KeyAbsent));
     }
 
-    /// Writers contending on ONE key's value through compare_exchange
+    /// Writers contending on a single key's value through compare_exchange
     /// serialize through the slot lock: every successful swap saw the value
     /// it replaced, so the final count of successes equals the increments
     /// applied - a versioned publish with no lost update.

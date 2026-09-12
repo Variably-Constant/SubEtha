@@ -4,7 +4,7 @@
 //! # The cardinal rule
 //!
 //! Heavy setup that allocates [`SidecarBox<T>`](crate::SidecarBox)
-//! lives OUTSIDE `b.iter()`. Only the cheap hot-path op runs inside.
+//! lives outside `b.iter()`. Only the cheap hot-path op runs inside.
 //!
 //! ```ignore
 //! // CORRECT - build once, query many.

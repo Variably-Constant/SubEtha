@@ -162,7 +162,7 @@ flowchart LR
 The 7 bytes of padding are Rust's natural alignment requirement
 for the `*const T` field. The struct could be made smaller via
 `#[repr(packed)]` but at the cost of misaligned pointer access
-which is undefined behaviour on some targets.
+which is undefined behavior on some targets.
 
 ## k_step values
 
@@ -171,7 +171,7 @@ which is undefined behaviour on some targets.
 | 0 | 8 B | 1 B | Tight contiguous Vec / array |
 | 1 | 16 B | 2 B | Every other element |
 | 2 | 32 B | 4 B | Sub-quarter access |
-| 3 | 64 B | 8 B | SIMD lane stride OR cache-line for T=u64 |
+| 3 | 64 B | 8 B | SIMD lane stride or cache-line for T=u64 |
 | 6 | 512 B | 64 B | Cache-line stride for T=u8 |
 | 12 | 32 KB | 4 KB | Page-aligned stride |
 
@@ -442,7 +442,7 @@ runtime stride, including the wrong one.
    byte (which is not expressible in Rust), the cap would still
    be 6 (giving stride 64 = one cache line).
 
-9. **Bench fairness caveat (see above).** The runtime-stride
+9. **Bench fairness (see above).** The runtime-stride
    contender uses a truly-runtime stride (not a compile-foldable
    constant), against which the typed path is ~1.03x faster (and
    within noise of the compile-const baseline).
@@ -481,7 +481,7 @@ let data: Vec<Vec3> = ...;
 ```
 
 Pad `Vec3` to 16 bytes (with `#[repr(C, align(16))]` and a
-trailing `_pad: f32`) so stride 16 = `4 << 2` works, OR use a
+trailing `_pad: f32`) so stride 16 = `4 << 2` works, or use a
 runtime stride.
 
 </details>

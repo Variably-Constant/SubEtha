@@ -45,7 +45,7 @@ implementation against the source paper.
   [`crates/subetha-cxc/src/shared_handle_table.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_handle_table.rs),
   and the free-list inside
   [`crates/subetha-cxc/src/shared_region.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_region.rs).
-- **Role**: lock-free LIFO with ABA defence via a packed
+- **Role**: lock-free LIFO with ABA defense via a packed
   `(counter, head_index)` u64 head; one CAS per push or pop.
 
 ### Bayer-McCreight B-tree
@@ -75,7 +75,7 @@ implementation against the source paper.
   pay no atomic CAS on the fast path (just Relaxed loads / stores on
   the `bottom` index) and thief-side `steal` that pays exactly one CAS
   on the `top` index. Lifting the protocol into a memory-mapped file
-  lets the same primitive serve in-process worker-thread stealing AND
+  lets the same primitive serve in-process worker-thread stealing and
   cross-process work distribution, because the atomics touch physical
   pages whose coherence is identical to the cross-thread case (kernel
   uninvolved on the steal hot path).
@@ -199,7 +199,7 @@ implementation against the source paper.
   [`crates/subetha-cxc/src/heartbeat.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/heartbeat.rs)
   (`HeartbeatTable::snapshot`, the SeqLock-protected slot read),
   [`crates/subetha-cxc/src/event_state_log.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/event_state_log.rs)
-  (the materialised state cell),
+  (the materialized state cell),
   [`crates/subetha-cxc/src/owner_lease.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/owner_lease.rs)
   (the SeqLock-protected payload cell),
   and the per-slot writes in
@@ -272,7 +272,7 @@ implementation against the source paper.
 ### Linear probing (open-addressed hash table)
 
 - **Source**: Donald E. Knuth, *The Art of Computer Programming, Volume
-  3: Sorting and Searching*, section 6.4 (1973; algorithm analysed in
+  3: Sorting and Searching*, section 6.4 (1973; algorithm analyzed in
   the 1962-63 working notes that inform this section).
 - **Used in**:
   [`crates/subetha-cxc/src/shared_hash_map.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_hash_map.rs)

@@ -180,7 +180,7 @@ fn client(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let acked = send.finish();
-    // This counts the pre-FEC payload, NOT the datagrams. The actual wire
+    // This counts the pre-FEC payload, not the datagrams. The actual wire
     // bytes are the FEC datagrams (header + per-block shard length); they
     // are measured externally by capturing the UDP flow (tcpdump).
     println!(

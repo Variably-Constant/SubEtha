@@ -67,7 +67,7 @@ pub fn push(&self, mut obs: Observation) -> bool;
 
 - Auto-stamps `producer_thread_id` if it is `0`.
 - Loads `tail` relaxed (producer is the only writer).
-- Loads `head` acquire (synchronises with the consumer's release
+- Loads `head` acquire (synchronizes with the consumer's release
   on pop).
 - Checks `(tail + 1) - head > capacity` → ring full, return `false`
   (observation dropped silently; sampling, not coordination).
@@ -84,12 +84,12 @@ pub fn pop(&self) -> Option<Observation>;
 ```
 
 - Loads `head` relaxed (consumer is the only writer).
-- Loads `tail` acquire (synchronises with the producer's release on
+- Loads `tail` acquire (synchronizes with the producer's release on
   push).
 - Returns `None` if `head == tail`.
 - Reads `buf[head % capacity]`, stores `head + 1` release.
 
-Single-consumer: the caller must serialise pops. The sidecar's
+Single-consumer: the caller must serialize pops. The sidecar's
 scan thread is the only caller.
 
 ## `thread_id()`

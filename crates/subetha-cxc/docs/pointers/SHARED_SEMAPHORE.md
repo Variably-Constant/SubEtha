@@ -67,7 +67,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
 - **MMF lifecycle managed**: create + ops + drop + cleanup of
   3 files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process permit counting**: any process can acquire
   / release; the mutex baseline cannot.
@@ -146,7 +146,7 @@ Acquire-only-when-N-released for batch fan-out / fan-in.
   rollback counts it in `permit_release_overflows()`, so the
   broken logic can be asked about rather than inferred.
 
-- **Wrapping in a Mutex.** Pointless; the CAS protocol IS the
+- **Wrapping in a Mutex.** Pointless; the CAS protocol is the
   synchronization.
 
 ---

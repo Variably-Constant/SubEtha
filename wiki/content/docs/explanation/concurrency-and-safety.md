@@ -57,7 +57,7 @@ shape re-morphs to the live counts on every join and leave.
 
 Registration has two ceilings, and only one of them is yours. A ceiling you
 pin with `with_contract` refuses past the count you declared. Above that sits
-a substrate-wide ceiling on CONCURRENT peers - `PRODUCER_SLOT_CEILING` is
+a substrate-wide ceiling on concurrent peers - `PRODUCER_SLOT_CEILING` is
 4096 and `CONSUMER_SLOT_CEILING` is 256 - fixed by the size of the shared
 peer-directory region. Both refusals arrive as
 `AdaptiveError::TooManyProducers` / `TooManyConsumers`, so a program that
@@ -85,20 +85,26 @@ never allocates or tears anything down. A morph is a single atomic re-point:
 
 1. `pin_generation.fetch_add(1)` - any caller holding a direct pinned pointer
    sees `is_still_valid() == false` on its next check and re-pins.
-2. the old shape is published as **stale** (a `Release` store) *before* the new
-   shape tag, so any consumer that sees the new shape also sees the stale marker.
-3. new `try_send`s route to the new backing; `try_recv` **drains the stale
-   backing first**, so an item pushed microseconds before the flip is consumed
-   before the new backing is read - nothing is lost, FIFO across the seam holds.
+2. the shape being left joins the **walked set** (an `AcqRel` read-modify-write)
+   *before* the new shape tag, so any consumer that sees the new shape also
+   sees that the old one is still walked.
+3. new `try_send`s route to the new backing; `try_recv` **drains every other
+   walked shape before the current one**, so an item pushed microseconds before
+   the flip is consumed before the new backing is read - nothing is lost, FIFO
+   across the seam holds.
 
-A second morph is refused (`RingError::StaleBacklog`) until the prior stale
-backing empties, so at most one backing is ever draining. No data is copied
-between backings; the old backing keeps its single reader (the stale walk) and
-the new one starts empty.
+A shape that has been used is walked for the life of the ring. The set only
+grows, and that is what makes it correct: a producer resolves the shape tag and
+pushes some instructions later, so a backing can receive a push after it stops
+being current, and nothing can know that push is coming. There are four shapes,
+so never forgetting one costs a bounded walk rather than a race. No data is
+copied between backings; each keeps its single reader and a new one starts
+empty.
 
 This is verified by the test suite, not asserted - among others,
 `morph_preserves_in_flight_items_via_stale_walk`,
-`second_morph_blocked_until_stale_backlog_drains`, and
+`two_morphs_in_a_row_strand_nothing`,
+`a_push_landing_two_morphs_late_is_still_delivered`, and
 `stamped_items_survive_shape_morphs` all exercise shape morphs under live
 traffic. The composed MPMC path (`SharedRingMpmc`) is exercised at 4
 producers x 2 consumers, 40,000 items (`PER_PRODUCER = 10_000`), zero lost

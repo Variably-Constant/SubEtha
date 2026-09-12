@@ -107,7 +107,7 @@ for i in 0..d:
 return min
 ```
 
-`d` atomic loads + a min. The min IS the estimate (overcount
+`d` atomic loads + a min. The min is the estimate (overcount
 bias from collisions cannot decrease min below true count).
 
 ---
@@ -155,7 +155,7 @@ Workload: d=4, w=1024 CMS. Baseline: `Mutex<HashMap<Vec<u8>, u64>>`.
 - **Storage witness reports per-distinct-item growth ratio**
   at a representative scale.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Storage scaling**: CMS is constant; HashMap is linear.
   At 1M distinct items the gap is ~1500x.
@@ -242,7 +242,7 @@ contention between workers (fetch_add is lock-free).
 
 ## Common pitfalls
 
-- **Treating the estimate as exact.** The min IS an upper
+- **Treating the estimate as exact.** The min is an upper
   bound but with overcount bias. For decision-making (e.g.,
   "is this key in the top 10?"), the bias is acceptable; for
   reporting, attach the (epsilon, delta) bounds.
@@ -253,7 +253,7 @@ contention between workers (fetch_add is lock-free).
   point.
 
 - **Assuming distinct-item count affects memory.** It does
-  not. The sketch IS the memory; insertion costs are fixed
+  not. The sketch is the memory; insertion costs are fixed
   regardless of distinct count.
 
 - **Wrapping in a Mutex.** Pointless; the fetch_add per cell

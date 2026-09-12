@@ -31,8 +31,8 @@ per call.
 | Workload | Pick | Why |
 |---|---|---|
 | Multiple thieves (`n_thieves >= 2`) | `Urd` | Per-thief mailbox = zero CAS contention on the steal site. |
-| Single thief AND `wait_idle = true` | `Urd` | Hardware-mediated wake via `UMWAIT` on WAITPKG-capable silicon. |
-| Producer batches K >= 2 items per call, single thief | `Khl` | The three-lever hybrid: KHPD's 3-items-per-Release-store, LOH's per-batch counter amortization, AND Chase-Lev's owner-private tail. Measured 1.55x KHPD at K=64. |
+| Single thief and `wait_idle = true` | `Urd` | Hardware-mediated wake via `UMWAIT` on WAITPKG-capable silicon. |
+| Producer batches K >= 2 items per call, single thief | `Khl` | The three-lever hybrid: KHPD's 3-items-per-Release-store, LOH's per-batch counter amortization, and Chase-Lev's owner-private tail. Measured 1.55x KHPD at K=64. |
 | Per-item dispatch, single thief | `ChaseLev` | Lowest constant per push; no batch to amortize. |
 
 KHPD and LOH stay available as explicitly-configured backends (and

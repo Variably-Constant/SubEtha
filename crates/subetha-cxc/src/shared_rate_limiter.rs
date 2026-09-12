@@ -30,7 +30,7 @@
 //! - `last_refill_us_low` (high 32 bits) holds the low 32 bits of
 //!   the wall-clock-microsecond timestamp at the last refill. Low
 //!   32 bits give a 4295-second (~71 minute) window before
-//!   wrap-around, which is FAR longer than any acquire-to-acquire
+//!   wrap-around, which is far longer than any acquire-to-acquire
 //!   gap in practice. Wrap-around handles correctly via wrapping
 //!   subtraction.
 //!
@@ -43,7 +43,7 @@
 //! the result goes negative, the acquire fails without
 //! modifying state.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -183,7 +183,7 @@ impl SharedRateLimiter {
     pub fn open(
         path: impl AsRef<Path>, capacity: u32, refill_rate_per_sec: u32,
     ) -> Result<Self, RateLimiterError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = size_of::<RateLimiterHeader>();
         if file.metadata()?.len() < total as u64 {
             return Err(RateLimiterError::LayoutMismatch);
@@ -213,7 +213,7 @@ impl SharedRateLimiter {
         refilled.min(u32::MAX as u64) as u32
     }
 
-    /// Read current available tokens (does NOT mutate state).
+    /// Read current available tokens, leaving the state alone.
     /// Returns the count after accounting for refill since the
     /// last update.
     pub fn available(&self) -> u32 {
@@ -237,7 +237,7 @@ impl SharedRateLimiter {
             let (tokens, refill_us) = unpack_state(state);
 
             // Fast path: the bucket already holds enough tokens. Refill
-            // only ever ADDS, so `tokens >= n` guarantees the post-refill
+            // only ever adds, so `tokens >= n` guarantees the post-refill
             // count would also satisfy `n` - we can deduct without reading
             // the clock. `refill_us` is kept unchanged, deferring the
             // refill accounting: the next time the bucket runs short, the
@@ -283,7 +283,7 @@ impl SharedRateLimiter {
     }
 
     /// Blocking acquire with deadline. Spins with backoff until
-    /// enough tokens are available OR the deadline passes.
+    /// enough tokens are available or the deadline passes.
     pub fn acquire_or_wait(
         &self, n: u32, timeout: Duration,
     ) -> Result<(), RateLimiterError> {
@@ -371,7 +371,7 @@ mod tests {
 
         let r2 = SharedRateLimiter::create(&p, 100, 1).unwrap();
         // At 1 token/sec a second between the acquire and this read
-        // refills one, so the claim is that attaching did not REFILL
+        // refills one, so the claim is that attaching did not refill
         // the bucket, not that no time passed.
         let avail = r2.available();
         assert!(
@@ -436,7 +436,7 @@ mod tests {
         // Drain.
         r.try_acquire(100).unwrap();
         assert!(r.available() < 5, "after full drain, available should be ~0");
-        // Expect one token per millisecond of MEASURED elapsed time,
+        // Expect one token per millisecond of measured elapsed time,
         // clamped at capacity. A sleep is a floor, not a duration: a
         // 30ms request that the scheduler turns into 60ms refills 60
         // tokens, which a window built around the requested 30 rejects.

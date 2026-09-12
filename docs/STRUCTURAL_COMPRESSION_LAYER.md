@@ -101,8 +101,8 @@ every slot recovered byte-exact, the compressed payload 41% smaller than
 the raw slot, zero escapes. That 41% is the **payload** reduction (the
 pre-FEC item); with per-block adaptive shard length (the TX egress-gate
 note below) it becomes a 34% reduction in actual UDP wire bytes and a
-1.47x goodput gain, audited cross-host by packet capture. A learning-sample
-caveat is also recorded: a head-only sample
+1.47x goodput gain, audited cross-host by packet capture. A head-only
+learning sample
 mislearns a monotonic counter's high bytes as constant and escapes later;
 sampling across the stream fixes it, and the production template learns
 from a strided sample or re-learns on an escape-rate threshold.
@@ -144,7 +144,7 @@ shard carries an item, so the two compose. The built cross-host example
 [`examples/compressed_sharded_lan.rs`](../crates/subetha-cxc/examples/compressed_sharded_lan.rs)
 (`--shards S --compress 1`) takes the simplest form: one template learned
 over the stream, each slot compressed before the sharded sender round-robins
-the compact items across shard threads - fewer bytes per item AND the
+the compact items across shard threads - fewer bytes per item and the
 recovery path spread across cores at once, real `FatLineItem` slots delivered
 byte-exact against the `--compress 0` baseline. (Because each
 `CompressedSender` carries its own template, a per-shard-template variant -

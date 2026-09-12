@@ -17,6 +17,16 @@ swappable detail (like a cipher suite); a unified endpoint also switches between
 the codes mid-stream on measured loss. It appears below once per code (block
 Reed-Solomon and sliding-window RLC) plus the unified auto-switch.
 
+The **normative** wire specification is `SENS_O_MATIC_WIRE.md` at the
+repository root: both erasure codes, the complete packet-type
+assignment, every frame layout, the compatibility rules and the frozen
+interop vectors. These pages describe how to *use* the transport from
+Rust; the specification describes what goes on the wire, and where the
+two differ the specification governs. It is versioned with the code and
+the code is held to it - `spec_doc.rs` parses the document's tables and
+has each owning module assert its own constants against them, so the
+build fails if the two disagree.
+
 **For an untrusted or lossy real-world WAN, the [unified Sens-O-Matic
 endpoint](unified-code-switch/) is the default choice** - it is encrypted
 (TLS 1.3 on both codes) and its adaptive FEC holds throughput and a bounded

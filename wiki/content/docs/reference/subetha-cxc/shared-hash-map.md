@@ -58,7 +58,7 @@ Ordered keys with range queries. A B-tree with min degree
 fanout `2T` (= 16); a lookup touches `~log_16(N)` nodes and
 binary-searches a contiguous key array per node. `NIL` is the
 sentinel "no node" index. Reads are lock-free against a quiescent
-tree via a global seqlock; a single writer serialises `insert` /
+tree via a global seqlock; a single writer serializes `insert` /
 `remove`.
 
 Use when range queries matter and a `BTreeMap`-shaped API is

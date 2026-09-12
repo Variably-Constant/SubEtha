@@ -1,10 +1,10 @@
-//! The ready queue IS the ring. An async executor where every task's
+//! The ready queue is the ring. An async executor where every task's
 //! handle is scheduled by pushing it into a SubEtha Vyukov MPMC ring
 //! and run by popping it back out - the ring is the scheduler, not a
 //! data channel beside one.
 //!
 //! The point it proves: WORKERS are capped at hardware (one per logical
-//! core), but TASKS are not capped at all. An unbounded task population
+//! core), but tasks are not capped at all. An unbounded task population
 //! is multiplexed onto the fixed worker pool through the ring. A
 //! 44-thread host (e.g. EPYC 9B14 Genoa) would drive this same task set
 //! on 44 workers; here it runs on whatever `available_parallelism`

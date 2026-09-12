@@ -183,7 +183,7 @@ CAS.
   every iter takes the idempotent-success path.
 - **MMF lifecycle managed**.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Multi-process claim race**: bench is single-process. The
   CAS retry loop fires when the current leader's PID changes

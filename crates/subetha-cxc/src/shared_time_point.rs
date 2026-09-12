@@ -27,7 +27,7 @@
 //! +-----------------------------+
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
@@ -154,7 +154,7 @@ impl<T: Copy + 'static> SharedTimePointTile<T> {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TileError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < tile_file_size() as u64 {
             return Err(TileError::LayoutMismatch);
         }
@@ -231,7 +231,7 @@ impl<T: Copy + 'static> SharedTimePointTile<T> {
     }
 
     /// SIMD scan: return a 16-bit lane mask of entries with version
-    /// <= snapshot AND currently occupied. AVX2 uses the unsigned-
+    /// <= snapshot and currently occupied. AVX2 uses the unsigned-
     /// compare-via-sign-XOR trick because cmpgt_epi64 is signed.
     #[inline]
     pub fn visible_mask(&self, snapshot: u64) -> u16 {

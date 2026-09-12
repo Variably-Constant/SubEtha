@@ -22,14 +22,14 @@
 //! - Capacity is 4096 for every contender that takes a capacity;
 //!   `VecDeque` is pre-allocated with `with_capacity(4096)` so
 //!   reallocation is not on the hot path.
-//! - For multi-thread benches, workers are PRE-SPAWNED with a
+//! - For multi-thread benches, workers are pre-spawned with a
 //!   `Barrier`-coordinated batch protocol so we don't create
 //!   100k+ OS threads over the bench's iteration count.
 //!
 //! # Safety / cost discipline
 //!
 //! The multi-thread benches pre-spawn one producer thread and one or
-//! more consumer threads ONCE per bench function and coordinate
+//! more consumer threads once per bench function and coordinate
 //! per-iter work via `std::sync::Barrier`. The naive
 //! `b.iter(|| thread::spawn(...))` pattern creates N threads per
 //! iteration, which under criterion's iteration count produces tens
@@ -69,7 +69,7 @@ struct ProdConsPool {
 }
 
 impl ProdConsPool {
-    /// Spawn one producer thread (its `prod_fn` MUST be ready to run
+    /// Spawn one producer thread (its `prod_fn` must be ready to run
     /// the same per-iter work N times; the closure captures all the
     /// producer-only state) and `n_cons` consumer threads.
     fn spawn<P, C>(n_cons: usize, prod_fn: P, cons_fn: C) -> Self

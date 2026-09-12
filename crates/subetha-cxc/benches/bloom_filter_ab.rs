@@ -19,7 +19,7 @@
 //! where N=number of distinct shapes seen and M=number of decision
 //! points.
 //!
-//! Bench audit (HARD RULE 3):
+//! Bench audit:
 //! - All three contenders perform the same operations: 8 inserts +
 //!   10000 membership checks on the same (key generator, hit pattern).
 //! - Same key types (`(u32, u32)` for HashSet, hashed bytes for both

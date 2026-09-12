@@ -1,7 +1,7 @@
 //! Bench: what the async calling convention costs on the hot path.
 //!
 //! `Channel<T>` answers `recv()` (sync), `recv_blocking()`, and
-//! `recv_async().await` on one handle. Async is NOT a lower-latency
+//! `recv_async().await` on one handle. Async is not a lower-latency
 //! path: the sync recv skips all Waker machinery (one relaxed load on
 //! the `has_recv_waiter` gate), while the async recv constructs a
 //! future and polls it. This bench quantifies that tax on the
@@ -19,8 +19,8 @@
 //!   the crate's runtime-free `block_on`. The future construction +
 //!   single ready-poll is the measured delta.
 //!
-//! Bench audit: all three push and pop the SAME `Channel<u64>` with the
-//! SAME 8-byte payload on the item-available fast path. The only
+//! Bench audit: all three push and pop the same `Channel<u64>` with the
+//! same 8-byte payload on the item-available fast path. The only
 //! difference is the calling convention - no contender pays a surplus
 //! alloc, lock, or syscall the others avoid. `block_on` setup is
 //! amortized: each iteration drives a `BATCH`-item inner loop inside one

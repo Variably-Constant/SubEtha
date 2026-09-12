@@ -1,14 +1,14 @@
 //! End-to-end demo of the Windows large-pages module.
 //!
 //! Probes the host, enables `SeLockMemoryPrivilege` in the
-//! process token, allocates a private `LargePageRegion` AND a
+//! process token, allocates a private `LargePageRegion` and a
 //! cross-process-shareable `LargePageSection`, writes + reads
 //! patterns through both, and reports the exact outcome.
 //!
 //! On hosts where "Lock pages in memory" has not been granted to
 //! the account, the demo reports the documented fallback path
 //! (ERROR_PRIVILEGE_NOT_HELD) and exits rc=0 - the probe and
-//! error classification ARE the product surface on such hosts.
+//! error classification are the product surface on such hosts.
 //! When the privilege is held, both allocations must succeed and
 //! the demo asserts the memory round-trips.
 //!
@@ -16,7 +16,7 @@
 //!     cargo run --release --example large_pages_demo
 //!
 //! Two-process mode (proves the cross-process named-section claim
-//! with two SEPARATE processes; see scripts in the repo):
+//! with two separate processes; see scripts in the repo):
 //!     large_pages_demo create-wait <name> <marker_dir>   # process A
 //!     large_pages_demo open-verify <name> <marker_dir>   # process B
 
@@ -98,7 +98,7 @@ fn main() {
             // HANDLE, different mapped address, same physical
             // large pages. Reading the bytes written through view
             // 1 out of view 2 proves the cross-process sharing
-            // mechanism (the name lookup) works; a second PROCESS
+            // mechanism (the name lookup) works; a second process
             // does exactly this open-by-name.
             let view2 = LargePageSection::open(&name, region_bytes).expect("open view2");
             assert_eq!(view2.as_slice()[0], 0x5A);
@@ -162,7 +162,7 @@ fn xproc_create_wait(name: &str, marker_dir: &str) {
 }
 
 /// Process B: open the named section created by process A, verify
-/// the pattern written by A is visible through THIS process's
+/// the pattern written by A is visible through this process's
 /// mapping, then drop the "verify_done" marker.
 #[cfg(windows)]
 fn xproc_open_verify(name: &str, marker_dir: &str) {
@@ -177,7 +177,7 @@ fn xproc_open_verify(name: &str, marker_dir: &str) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !ready.exists() {
         if Instant::now() > deadline {
-            eprintln!("[verifier] creator never signalled ready; bailing");
+            eprintln!("[verifier] creator never signaled ready; bailing");
             std::process::exit(3);
         }
         std::thread::sleep(Duration::from_millis(50));

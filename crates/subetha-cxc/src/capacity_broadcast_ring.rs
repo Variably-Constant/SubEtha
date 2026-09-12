@@ -23,7 +23,10 @@
 //! every stale backing at their own pace; a stale entry is
 //! reclaimed when [`SharedBroadcastRing::is_fully_drained`]
 //! returns true (every active consumer's seq has caught up to the
-//! frozen producer seq).
+//! frozen producer seq) and the stale list is the entry's last
+//! holder: the producer pushes into the active backing of the state
+//! it loaded, so a backing a loaded snapshot still names stays on
+//! the list for the push that snapshot may yet deliver.
 //!
 //! # Consumer registration model
 //!
@@ -107,7 +110,7 @@ pub struct CapacityBroadcastRing {
     /// backing in order so consumer_idx assignments stay in
     /// lockstep across morphs. Grow-only by design.
     n_consumers: AtomicU64,
-    /// Serialises concurrent `morph_capacity_to` callers.
+    /// Serializes concurrent `morph_capacity_to` callers.
     morph_lock: Mutex<()>,
     /// One-slot warm cache: a fully constructed backing at a
     /// predicted capacity, built off the morph lock by
@@ -256,7 +259,7 @@ impl CapacityBroadcastRing {
     /// the consumer has no slot in that stale.
     ///
     /// FIFO ordering invariant: one ArcSwap load gives a
-    /// consistent snapshot of BOTH stale and active. A concurrent
+    /// consistent snapshot of both stale and active. A concurrent
     /// morph either fully precedes or fully follows this load -
     /// it never slips between two separate observations.
     #[inline]
@@ -340,15 +343,24 @@ impl CapacityBroadcastRing {
 
         self.pin_generation.fetch_add(1, Ordering::AcqRel);
 
-        // Build the new state in one shot: prune fully-drained
-        // stale entries, append the prior active, publish
-        // atomically. Subscribers reading via `self.state.load()`
-        // see either the pre-morph snapshot or the post-morph
-        // snapshot, never a half-state.
+        // Build the new state in one shot: prune the stale list,
+        // append the prior active, publish atomically. Subscribers
+        // reading via `self.state.load()` see either the pre-morph
+        // snapshot or the post-morph snapshot, never a half-state.
+        //
+        // A stale entry leaves the list only when every subscriber
+        // has drained it and this list is its last holder. The
+        // producer pushes into the active backing of the state it
+        // loaded, and that load can predate this morph and the one
+        // before it; its snapshot holds the state, which holds the
+        // backing, so a backing some snapshot can still reach has a
+        // strong count above one and stays on the list for the push
+        // that has not landed yet. With this list the sole holder, no
+        // push can arrive and the drain is final.
         let mut new_stale: Vec<Arc<SharedBroadcastRing>> = old_state
             .stale
             .iter()
-            .filter(|r| !r.is_fully_drained())
+            .filter(|r| !(r.is_fully_drained() && Arc::strong_count(r) == 1))
             .cloned()
             .collect();
         new_stale.push(old);
@@ -516,5 +528,41 @@ mod tests {
         ring.prewarm(128).unwrap();
         ring.clear_warm();
         assert_eq!(ring.warm_capacity(), None);
+    }
+
+    /// The producer pushes into the active backing of the state it
+    /// loaded, and that push can land after two morphs: one that made
+    /// the backing stale and one that would have pruned it as drained.
+    /// The snapshot the producer holds is what keeps the backing on
+    /// the stale list, so every subscriber's stale walk still reaches
+    /// the late item.
+    #[test]
+    fn a_late_push_into_a_snapshot_two_morphs_old_reaches_every_subscriber() {
+        let ring = CapacityBroadcastRing::create_anon(64).unwrap();
+        let first = ring.register_consumer().unwrap();
+        let second = ring.register_consumer().unwrap();
+
+        // The producer's view of the ring, loaded before either morph
+        // exactly as `try_push` loads it.
+        let held = ring.state.load();
+        ring.morph_capacity_to(128).expect("the first morph");
+        ring.morph_capacity_to(256).expect("the second morph");
+
+        held.active
+            .try_push(&7u64.to_le_bytes())
+            .expect("the late push lands in the backing the producer loaded");
+        drop(held);
+
+        let mut out = [0u8; 64];
+        for idx in [first, second] {
+            assert!(
+                ring.try_recv(idx, &mut out).is_ok(),
+                "subscriber {idx} cannot reach the item pushed into a backing two \
+                 morphs old: the second morph pruned that backing from the stale \
+                 list while the producer still held the state naming it"
+            );
+            assert_eq!(u64::from_le_bytes(out[..8].try_into().unwrap()), 7);
+            assert!(ring.try_recv(idx, &mut out).is_err(), "nothing else was pushed");
+        }
     }
 }

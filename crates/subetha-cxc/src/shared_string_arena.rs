@@ -44,7 +44,7 @@
 //! Concurrent interners get distinct slices via fetch_add. Once
 //! the bytes are written, they are never moved (append-only). A
 //! reader holding a StringRef can always resolve it correctly,
-//! provided their `get` happens AFTER the interner returned the
+//! provided their `get` happens after the interner returned the
 //! ref (which is the natural happens-before edge: the interner
 //! does the write, then makes the ref visible to the reader).
 //!
@@ -60,7 +60,7 @@
 //! requires a free-list / compaction protocol that defeats the
 //! point of an arena.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,8 +75,8 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 /// misread.
 pub const ARENA_MAGIC: u64 = 0x4150_5341_524E_4132;
 
-/// The `A1` tag, retained so an old-format region is recognised and named
-/// in the refusal instead of reported as unrecognised bytes.
+/// The `A1` tag, retained so an old-format region is recognized and named
+/// in the refusal instead of reported as unrecognized bytes.
 pub const ARENA_MAGIC_V1: u64 = 0x4150_5341_524E_4131;
 
 /// Bits of a packed [`StringRef`] given to the byte offset, and the
@@ -308,7 +308,7 @@ impl SharedStringArena {
             return Err(ArenaError::LayoutMismatch);
         }
         let total = arena_file_size(expected_capacity_bytes);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(ArenaError::LayoutMismatch);
         }
@@ -333,7 +333,7 @@ impl SharedStringArena {
         path: impl AsRef<Path>, expected_capacity_bytes: usize,
     ) -> Result<Self, ArenaError> {
         let total = arena_file_size(expected_capacity_bytes);
-        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        let file = crate::region_file::open_read_only(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(ArenaError::LayoutMismatch);
         }
@@ -471,7 +471,7 @@ impl SharedStringArena {
         std::str::from_utf8(bytes).map_err(|_| ArenaError::InvalidUtf8)
     }
 
-    /// Convenience: intern AND return a `&str` view into the
+    /// Convenience: intern and return a `&str` view into the
     /// just-written bytes plus the ref.
     pub fn intern_and_get(&self, s: &str) -> Result<(StringRef, &str), ArenaError> {
         let r = self.intern(s)?;
@@ -479,7 +479,7 @@ impl SharedStringArena {
         Ok((r, got))
     }
 
-    /// Reset the arena to empty. NOT concurrency-safe; callers must
+    /// Reset the arena to empty. Not concurrency-safe; callers must
     /// ensure no other threads/processes are interning or reading.
     /// Existing StringRefs become invalid (their bytes may be
     /// overwritten by subsequent interns).
@@ -820,7 +820,7 @@ mod tests {
         // Stamp the previous generation's tag over the header's magic.
         {
             use std::io::{Seek, SeekFrom, Write};
-            let mut f = OpenOptions::new().write(true).open(&p).unwrap();
+            let mut f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
             f.seek(SeekFrom::Start(0)).unwrap();
             f.write_all(&ARENA_MAGIC_V1.to_le_bytes()).unwrap();
             f.flush().unwrap();

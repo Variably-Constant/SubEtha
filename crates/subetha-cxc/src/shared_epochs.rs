@@ -3,7 +3,7 @@
 //!
 //! A writer that supersedes a record leaves the old version in place and
 //! stamps it with the epoch at which it stopped being current. A scan
-//! PINS the epoch it started at and reads, for each record, the version
+//! pins the epoch it started at and reads, for each record, the version
 //! that was current then. A superseded version is reclaimable only once
 //! no pin sits at or below the epoch it was retired in, which
 //! [`SharedEpochs::reclaim_horizon`] reports.
@@ -49,7 +49,7 @@
 //! # Tickets: one epoch for a compound write
 //!
 //! A write that touches several entries - or several structures sharing
-//! one table - stamps them all with ONE epoch, taken from a
+//! one table - stamps them all with a single epoch, taken from a
 //! [`EpochTicket`] returned by [`begin`](SharedEpochs::begin). While the
 //! ticket is open its epoch is reserved and not yet published:
 //! [`now`](SharedEpochs::now), which is what a pin takes, stays at the
@@ -69,7 +69,7 @@
 //! slot once every structure has. Dropping a ticket publishes it: a
 //! caller abandoning a compound removes what it wrote first.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -181,7 +181,7 @@ impl SharedEpochs {
 
     /// Attach to an existing table.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, EpochError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = epoch_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(EpochError::LayoutMismatch);
@@ -309,6 +309,17 @@ impl SharedEpochs {
     /// by [`dead_tickets`](Self::dead_tickets) rather than reused here,
     /// since its epoch may be half-written.
     pub fn begin(&self) -> Result<EpochTicket<'_>, EpochError> {
+        let (slot, epoch) = self.claim_ticket()?;
+        Ok(EpochTicket { epochs: self, epoch, slot })
+    }
+
+    /// [`begin`](Self::begin) without the guard: the ticket's slot and its
+    /// epoch, for a caller that cannot hold a borrow of this table - the C
+    /// ABI, where a ticket is a handle of its own.
+    /// [`publish_ticket`](Self::publish_ticket) is what the guard's drop
+    /// does, and a caller that never calls it holds the published epoch
+    /// below this one until its process ends.
+    pub fn claim_ticket(&self) -> Result<(usize, Epoch), EpochError> {
         // Reserve first, then take the epoch: the reservation is what
         // holds `now` and the horizon below the epoch about to be taken.
         let slot = self.tickets.reserve().ok_or(EpochError::TicketsExhausted)?;
@@ -317,7 +328,13 @@ impl SharedEpochs {
         // `now` and the horizon read it back as `payload - 2`, one below
         // the ticket's own epoch.
         self.tickets.publish(slot, epoch + 1);
-        Ok(EpochTicket { epochs: self, epoch, slot })
+        Ok((slot, epoch))
+    }
+
+    /// Release a ticket slot [`claim_ticket`](Self::claim_ticket) handed
+    /// out, which publishes the write it stamped.
+    pub fn publish_ticket(&self, slot: usize) {
+        self.tickets.release(slot);
     }
 
     /// Epochs whose ticket is held by a process that is gone: compound
@@ -381,11 +398,27 @@ impl SharedEpochs {
     /// live process. A slot left claimed by a process that died is
     /// reclaimed here rather than counting against the table.
     pub fn pin(&self) -> Result<PinGuard<'_>, EpochError> {
-        if let Some(g) = self.try_claim() {
-            return Ok(g);
+        let (slot, at) = self.claim_pin()?;
+        Ok(PinGuard { epochs: self, at, slot })
+    }
+
+    /// [`pin`](Self::pin) without the guard: the pin's slot and the epoch
+    /// it holds, for a caller that cannot hold a borrow of this table -
+    /// the C ABI, where a pin is a handle of its own.
+    /// [`release_pin`](Self::release_pin) is what the guard's drop does,
+    /// and a caller that never calls it holds the reclaim horizon at this
+    /// epoch until its process ends.
+    pub fn claim_pin(&self) -> Result<(usize, Epoch), EpochError> {
+        if let Some(c) = self.try_claim() {
+            return Ok(c);
         }
         self.reap_dead_pins();
         self.try_claim().ok_or(EpochError::PinsExhausted)
+    }
+
+    /// Release a pin slot [`claim_pin`](Self::claim_pin) handed out.
+    pub fn release_pin(&self, slot: usize) {
+        self.release(slot);
     }
 
     /// Reserve a slot, then decide the epoch.
@@ -395,12 +428,12 @@ impl SharedEpochs {
     /// could be computing, and
     /// [`reclaim_horizon`](Self::reclaim_horizon) waits out a
     /// reservation rather than reading past one.
-    fn try_claim(&self) -> Option<PinGuard<'_>> {
+    fn try_claim(&self) -> Option<(usize, Epoch)> {
         let slot = self.pins.reserve()?;
         let at = self.now();
         // Biased by one so epoch 0 is a payload and not the free state.
         self.pins.publish(slot, at + 1);
-        Some(PinGuard { epochs: self, at, slot })
+        Some((slot, at))
     }
 
     /// Epochs at or below this have no reader, so anything superseded in
@@ -415,7 +448,7 @@ impl SharedEpochs {
     pub fn reclaim_horizon(&self) -> Epoch {
         let mut restarts = 0u32;
         loop {
-            // Sample the published epoch BEFORE the pins. A pin that
+            // Sample the published epoch ahead of the pins. A pin that
             // reserves after this load reads its epoch after reserving,
             // so it lands at or above the value returned; and an open
             // ticket holds the published epoch below its own, so nothing
@@ -581,7 +614,7 @@ mod tests {
         assert_eq!(e.reclaim_horizon(), 11, "released, so the horizon catches up");
     }
 
-    /// The horizon follows the OLDEST reader, not the newest.
+    /// The horizon follows the oldest reader, not the newest.
     #[test]
     fn the_oldest_pin_sets_the_horizon() {
         let e = table(8);
@@ -843,7 +876,7 @@ mod tests {
             "the version the compound supersedes at 2 was current at 1, so the pin sees it"
         );
         // A single-entry write after the ticket opens is also held back:
-        // published stays below the OLDEST open ticket.
+        // published stays below the oldest open ticket.
         let single = e.advance();
         assert_eq!(single, 3);
         assert_eq!(e.now(), 1);

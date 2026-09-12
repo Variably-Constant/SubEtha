@@ -13,7 +13,7 @@ exactly-once in-order delivery on that run. Reproduce with the
 The transport treats the erasure code as a swappable detail, like a
 cipher suite. The unified endpoint
 ([`UnifiedSensSender`](../crates/subetha-cxc/src/sens_unified.rs) /
-`UnifiedSensReceiver`) carries BOTH codes on one UDP port and switches
+`UnifiedSensReceiver`) carries both codes on one UDP port and switches
 between them mid-stream on the forward loss the receiver already feeds
 back:
 
@@ -28,8 +28,8 @@ back:
   rate hard-caps at one repair per source symbol.
 
 The loss-driven controller (`CodeSwitchController`, immediate-up /
-conservative-down hysteresis) switches UP to RS at the measured
-crossover (~15% forward loss, `CROSSOVER_LOSS_Q8 = 38`) and back DOWN to
+conservative-down hysteresis) switches up to RS at the measured
+crossover (~15% forward loss, `CROSSOVER_LOSS_Q8 = 38`) and back down to
 RLC at ~10%, with the hysteresis band keeping a loss level at the
 boundary from flapping. A persistent RLC flow-block escapes to RS on its
 own as a backstop. Delivery stays exactly-once and in order across the
@@ -51,7 +51,7 @@ and asserts both arrive exactly-once, the Sens side encrypted and (under
 loss) having switched codes.
 
 The numbers below are the **high-loss RS regime** - selective NAK, raw
-throughput under injected loss, head-of-line behaviour - the regime the
+throughput under injected loss, head-of-line behavior - the regime the
 unified transport runs above the crossover. RLC holds the sub-crossover
 regime for its lower time-to-first-delivery and median latency.
 
@@ -90,7 +90,7 @@ exactly-once in-order delivery on every platform pair.
 
 A reliable transport that delivers in order has to recover a gap before it
 can deliver past it. The question is whether recovering the gap stalls the
-WIRE. Sens-O-Matic recovers every gap the receiver is holding in a single
+wire. Sens-O-Matic recovers every gap the receiver is holding in a single
 round-trip: the receiver re-requests them all at once (selective NAK), the
 retransmits ride the next interleave together, and the delivery frontier
 advances in bulk. The wire never stops - the sender pipelines new blocks
@@ -142,7 +142,7 @@ fully, and throughput holds at the clean rate.
 ## Raw throughput (MTU datagrams, k=8 r=2, interleave 8)
 
 Goodput is delivered application bits per second; every cell asserted
-order + count + sum and PASSED.
+order + count + sum and passed.
 
 | Path | 0% loss | 15% loss | 30% loss |
 |---|---:|---:|---:|
@@ -202,7 +202,7 @@ instead of adding loss on top of the link's own (which FEC and ARQ would
 then have to recover).
 
 **LEDBAT bufferbloat pacer.** Above that floor, a LEDBAT-style pacer
-watches the round-trip delay and clamps the encoder's flow window DOWN
+watches the round-trip delay and clamps the encoder's flow window down
 from its configured maximum toward the bandwidth-delay product whenever a
 self-induced queue forms, holding the queue near a small target delay and
 restoring the window as the queue drains. It only ever clamps below the

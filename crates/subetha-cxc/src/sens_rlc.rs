@@ -17,13 +17,29 @@
 //! Wire formats (first byte is the packet type):
 //!
 //! ```text
-//! DATA     [10] [source_id u32-le] [send_us u32-le] [symbol bytes]
-//! REPAIR   [11] [repair_key u32-le] [first_source_id u32-le]
-//!               [window_size u16-le] [dt u8] [repair payload]
+//! DATA     [10] [conn_id u64-le] [source_id u32-le] [send_us u32-le]
+//!               [symbol bytes]                              (17-byte header)
+//! `REPAIR` [11] [conn_id u64-le] [repair_key u32-le]
+//!               [first_source_id u32-le] [window_size u16-le] [dt u8]
+//!               [repair payload]                            (20-byte header)
 //! NAK      [12] [missing source_id u32-le]*        (receiver -> sender)
-//! ACK      [13] [delivered_through u32-le]          (receiver -> sender)
-//! FEEDBACK [14] [loss_q8 u8] [burst_q8 u8] [cong_q8 u8]  (receiver -> sender)
+//! ACK      [13] [delivered_through u32-le] [sack u64-le]   (13 bytes)
+//! FEEDBACK [14] [loss_q8 u8] [burst_q8 u8] [cong_q8 u8]
+//!               [rate_q16 u16-le] [cap_q16 u16-le]          (8 bytes)
 //! ```
+//!
+//! The connection id follows the type byte on both data-carrying frames so
+//! a session is routed by id rather than by 4-tuple, which is what lets it
+//! survive a peer address change (`frame_conn_id`). The reverse-path
+//! frames carry none: they are matched to a session by the socket they
+//! arrive on.
+//!
+//! The two feedback frames are read by length, so a shorter one from an
+//! older peer is a frame with its tail absent rather than a malformed one.
+//! An `ACK` is acted on from 5 bytes and its selective-acknowledgment
+//! bitmap only from 13; a `FEEDBACK` is acted on from 4 bytes, its rate
+//! only from 6 and its packet-pair capacity only from 8. The sender here
+//! always writes the full length of each.
 //!
 //! A symbol is a fixed `symbol_len` buffer holding a `u16` length prefix, the
 //! item bytes, then zero padding, so the receiver strips padding exactly.
@@ -57,7 +73,7 @@ const PKT_RLC_REPAIR: u8 = 11;
 const PKT_RLC_NAK: u8 = 12;
 const PKT_RLC_ACK: u8 = 13;
 const PKT_RLC_FEEDBACK: u8 = 14;
-/// Path-validation pair (Slice 4): the receiver sends a `PATH_CHALLENGE`
+/// Path-validation pair: the receiver sends a `PATH_CHALLENGE`
 /// (`[type][8 conn-id][8 nonce]`) to a candidate new peer address; the sender
 /// echoes the nonce in a `PATH_RESPONSE` of the same shape, proving it can
 /// receive at the new address. Cleartext-framed (it carries no payload to
@@ -416,7 +432,7 @@ impl HandshakeMachine {
 
     /// The ack for a peer's flight after this side has completed, or `None`
     /// for anything else. This side completes once its keys derive and its
-    /// own flights are acked, which on a server is BEFORE the peer's final
+    /// own flights are acked, which on a server is before the peer's final
     /// flight arrives - so that flight lands here, at the expected sequence,
     /// and is acked without being read, exactly as [`drive_handshake`]'s
     /// grace loop acks it. It touches no TLS state, so it serves a machine
@@ -437,7 +453,7 @@ impl HandshakeMachine {
 
     /// Flights this machine has consumed. A completed server has consumed at
     /// least the ClientHello, so a crypto flight arriving at sequence 0
-    /// afterwards is a NEW handshake from the same address, not a replay.
+    /// afterwards is a fresh handshake from the same address, not a replay.
     pub(crate) fn recv_seq(&self) -> u32 {
         self.next_recv_seq
     }
@@ -525,7 +541,7 @@ fn path_response_conn_id(inner: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(id))
 }
 
-/// The connection id of a DATA / REPAIR inner frame (the `u64` after the type
+/// The connection id of a `DATA` / `REPAIR` inner frame (the `u64` after the type
 /// byte), or `None` for any other frame. Used to route a session by id rather
 /// than 4-tuple, so it survives a peer address change.
 fn frame_conn_id(inner: &[u8]) -> Option<u64> {
@@ -573,7 +589,8 @@ pub struct SensOMaticRlcSender {
     bbr_samples: HashMap<u32, crate::bbr::PacketSample>,
     /// Source symbols held for ARQ retransmission, keyed by source id.
     sent: BTreeMap<u32, Vec<u8>>,
-    /// Last transmit instant per source id, for RETRANSMIT SUPPRESSION. The
+    /// Last transmit instant per source id, so a retransmit can be suppressed.
+    /// The
     /// receiver re-NAKs a still-missing id every ~1ms, but a retransmit takes a
     /// round trip to be confirmed - so an un-suppressed sender resends the same
     /// symbol ~RTT/1ms (~30x) before the ACK clears it, a self-amplifying flood
@@ -585,7 +602,7 @@ pub struct SensOMaticRlcSender {
     /// The source id of the most recently packed item, `u32::MAX`
     /// before the first.
     last_sid: u32,
-    /// Cumulative DATA and REPAIR datagrams handed to the socket layer
+    /// Cumulative `DATA` and `REPAIR` datagrams handed to the socket layer
     /// without error.
     wire_datagrams: u64,
     /// Cumulative NAK frames processed by the pump.
@@ -618,19 +635,19 @@ pub struct SensOMaticRlcSender {
     /// Distinct from `bbr_cwnd` (which paces at BBR's measured rate); when both
     /// are set, BBR wins.
     paced: bool,
-    /// Fixed-rate pacing target in BYTES/sec (0 = off). When set, the sender
+    /// Fixed-rate pacing target in bytes per second (0 = off). When set, the sender
     /// paces the wire at exactly this rate regardless of window/RTT - the
-    /// OFFENSIVE FEC-push lever: drive the wire toward the path's raw capacity
+    /// The offensive FEC-push lever: drive the wire toward the path's raw capacity
     /// (past a loss-based controller's conservative operating point), and let
     /// the FEC recover whatever the bottleneck drops near the ceiling. Takes
     /// priority over `bbr_cwnd` and `paced`; pair with a large `flow_window` so
     /// the window does not gate before the rate does.
     pace_bps: f64,
     /// Adaptive FEC-push: auto-tune `pace_bps` as a closed loop instead of a
-    /// fixed target. Probes the rate UP while the path absorbs what is paced
+    /// fixed target. Probes the rate up while the path absorbs what is paced
     /// (delivered rate keeps up, the FEC recovering the induced loss), and backs
     /// off to the delivered rate the moment the path cannot keep up - so it
-    /// fills the headroom a loss-based controller leaves AND survives a path
+    /// fills the headroom a loss-based controller leaves and survives a path
     /// drop (which sinks the static pacer). The offensive use of FEC: probe
     /// harder than BBR because the coding absorbs the probe loss.
     adaptive_push: bool,
@@ -640,53 +657,53 @@ pub struct SensOMaticRlcSender {
     /// collapse the rate to zero, ceiling so a probe cannot run away unbounded.
     push_min_bps: f64,
     push_max_bps: f64,
-    /// Latest forward-loss fraction the RECEIVER measured and fed back over the
+    /// Latest forward-loss fraction the receiver measured and fed back over the
     /// control plane (FEEDBACK frame). The adaptive push drives the rate from
-    /// THIS real measurement against the FEC's recovery capacity, not from an
+    /// this real measurement against the FEC's recovery capacity, not from an
     /// inferred ack-frontier rate (which lags and backs off prematurely).
     fb_loss: f64,
-    /// Latest delivered (goodput) rate in BYTES/sec the RECEIVER measured and
+    /// Latest delivered (goodput) rate in bytes per second the receiver measured and
     /// fed back. The ground-truth path signal: it plateaus at the path capacity
     /// (the bufferless cliff shows as a rate plateau, not a usable loss
     /// gradient), so the adaptive push paces just above it to fill the path
     /// without the runaway overshoot the binary loss signal caused.
     fb_rate_bps: f64,
-    /// Latest CONGESTION fraction the receiver's Biaz/Spike loss classifier fed
+    /// Latest congestion fraction the receiver's Biaz/Spike loss classifier fed
     /// back (the RFC 9265 signal): the share of loss attributable to congestion
     /// (delay-correlated) rather than random/path loss. The offensive push fills
-    /// THROUGH random loss (the FEC recovers it) but yields to congestion loss
+    /// through random loss (the FEC recovers it) but yields to congestion loss
     /// (the FEC must not hide it), so this gates rate growth vs back-off.
     fb_cong: f64,
-    /// Best delivered (goodput) rate seen, BYTES/sec - the find-then-cruise
+    /// Best delivered (goodput) rate seen, in bytes per second - the find-then-cruise
     /// estimate of the path capacity. The push probes the pace up to locate the
-    /// cliff (where goodput stops rising / collapses), then cruises BELOW it;
+    /// cliff (where goodput stops rising / collapses), then cruises below it;
     /// a goodput collapse vs this best is the overshoot signal that triggers a
     /// hard cut. Decays slowly so a transient high does not pin the cruise rate.
     max_delivered_bps: f64,
-    /// Packet-pair CAPACITY estimate (BYTES/sec) the receiver measured from the
+    /// Packet-pair capacity estimate, in bytes per second, the receiver measured from the
     /// tightest consecutive-id arrival gap and fed back. Independent of loss
     /// (the bottleneck imposes the gap regardless of drops), so the adaptive
-    /// push CRUISES just under it - no rate probing into the sharp cliff, which
+    /// push cruises just under it - no rate probing into the sharp cliff, which
     /// is what every loss-confounded signal collapsed on. 0 until measured.
     fb_capacity_bps: f64,
-    /// Source-symbol counter for the packet-pair PROBE: every `PAIR_PROBE_EVERY`
+    /// Source-symbol counter for the packet-pair probe: every `PAIR_PROBE_EVERY`
     /// symbols the sender ships the next one back-to-back (skips its pacing gap)
     /// so the receiver sees a tight pair and can read the bottleneck dispersion.
     pair_probe_ctr: u32,
-    /// Cruise target as a fraction of the measured RAW capacity. The bufferless
+    /// Cruise target as a fraction of the measured raw capacity. The bufferless
     /// cliff sits at ~0.79x the raw rate, so this stays below it; default 0.70
     /// (proven-safe pace under the cliff), overridable via `SUBETHA_PAIR_FRACTION`
     /// for path tuning. Clamped to [0.30, 0.78] so it can never target the cliff.
     push_fraction: f64,
     /// Post-cut cooldown (adaptive steps): after a goodput collapse the push
-    /// CRUISES (holds the cut rate, no probe) for this many steps before gently
+    /// cruises (holds the cut rate, no probe) for this many steps before gently
     /// probing again, so it does not sawtooth straight back into the sharp cliff
     /// - on a knife-edge path, re-probing every RTT just re-collapses.
     push_cooldown: u32,
     /// NAK'd source ids received since the last adaptive step - a NAK is a
-    /// direct FEC-MISS signal (the coding could not recover a loss), so this
+    /// direct FEC-miss signal (the coding could not recover a loss), so this
     /// drives the coordinated loss-aware control: NAKs => parity too thin =>
-    /// raise parity AND back off the pace together.
+    /// raise parity and back off the pace together.
     naks_recv_window: u32,
     /// Source symbols sent since the last adaptive step (the NAK-rate
     /// denominator).
@@ -743,13 +760,13 @@ pub struct SensOMaticRlcSender {
     /// end-of-stream tail, but mid-stream when the sender is flow-blocked).
     last_ack_advance: Instant,
     last_rto_rtx: Instant,
-    /// Connection id stamped into every DATA / REPAIR, so the session survives a
+    /// Connection id stamped into every `DATA` / `REPAIR`, so the session survives a
     /// local-address change ([`migrate`](Self::migrate)).
     conn_id: u64,
-    /// Slice 4 proactive migration. The OS path-event observer (item 12) fires
+    /// Proactive migration. The OS path-event observer fires
     /// the instant the kernel re-routes / an interface roams / the path MTU
     /// drops - ahead of any loss. When its event count advances past
-    /// `last_event_count`, the sender migrates PROACTIVELY (rebinds + lets the
+    /// `last_event_count`, the sender migrates proactively (rebinds + lets the
     /// receiver pre-validate the new path) so the switch is covered before the
     /// old path fails - the migration QUIC's reactive design cannot do.
     net_obs: Option<crate::net_events::NetEventObserver>,
@@ -798,10 +815,10 @@ impl SensOMaticRlcSender {
             challenges_seen: 0,
             other_seen: 0,
             last_other_byte: 0,
-            // The flow window caps OUTSTANDING (sent-but-not-yet-received)
+            // The flow window caps outstanding (sent-but-not-yet-received)
             // symbols, which is what paces the sender so a burst cannot overrun
             // the kernel receive buffer and manufacture loss. Crucially this
-            // counts genuinely-unconfirmed symbols (holes + on-wire), NOT
+            // counts genuinely-unconfirmed symbols (holes + on-wire), rather than
             // symbols ahead of the in-order delivery frontier - so a single hole
             // costs one slot, not the whole window, and the sender keeps the
             // pipe full while the receiver buffers out-of-order and recovers.
@@ -1031,10 +1048,10 @@ impl SensOMaticRlcSender {
     }
 
     /// One step of the adaptive FEC-push loop, driven by the control plane's
-    /// ground-truth signal: the receiver's REAL delivered (goodput) rate. On a
+    /// ground-truth signal: the receiver's measured delivered (goodput) rate. On a
     /// bufferless path the loss signal is binary (zero below the cliff, a
     /// catastrophic burst at it) and useless for probing, but the delivered rate
-    /// PLATEAUS at the path capacity, so it is safe to ride. Pace just above the
+    /// plateaus at the path capacity, so it is safe to ride. Pace just above the
     /// delivered rate to fill the path (the FEC recovers the small probe loss);
     /// because the delivered rate cannot exceed the path, the loop self-limits
     /// instead of running away. The receiver's measured loss is the safety
@@ -1052,46 +1069,46 @@ impl SensOMaticRlcSender {
         }
         self.last_push_adapt = now;
         // The NAK rate (FEC misses since the last step) is the cliff-proximity
-        // signal for the RATE: a burst of misses past the FEC's recovery capacity
-        // means we overshot the cliff, so back the cruise fraction off. The CODING
-        // itself (window / step / density / disable-on-clean) is NOT sized here -
+        // signal for the rate: a burst of misses past the FEC's recovery capacity
+        // means we overshot the cliff, so back the cruise fraction off. The coding
+        // itself (window / step / density / disable-on-clean) is sized elsewhere -
         // the sensing controller in apply_feedback owns it, provisioning the FEC
-        // PROACTIVELY from the receiver's directly-measured loss and burstiness
+        // proactively from the receiver's directly-measured loss and burstiness
         // rather than reactively from these post-miss NAKs. Rate and coding are
         // orthogonal knobs; this loop drives only the pace.
         let nak_rate = self.naks_recv_window as f64 / self.sent_window.max(1) as f64;
         self.naks_recv_window = 0;
         self.sent_window = 0;
 
-        // RATE: packet-pair CRUISE (the loss-independent controller). The path
-        // is a sharp goodput CLIFF (clean below it, collapse on it) well under
+        // Rate: the packet-pair cruise, which is the loss-independent controller. The path
+        // is a sharp goodput cliff (clean below it, collapse on it) well under
         // the raw link rate, and every loss-derived rate signal (goodput, NAKs,
         // the congestion classifier) is confounded - random loss looks exactly
         // like a cliff overshoot, so a controller driven by them cuts when it
-        // should hold and spirals. The receiver's packet-pair CAPACITY estimate
+        // should hold and spirals. The receiver's packet-pair capacity estimate
         // is the one signal random loss cannot confound: the bottleneck imposes
         // the consecutive-id dispersion gap regardless of how many packets drop.
-        // Cruise just UNDER that measured capacity and let the FEC cover the
+        // Cruise just under that measured capacity and let the FEC cover the
         // residual loss - never probe into the cliff. (fb_cong stays captured
         // for telemetry only; the path's classifier mis-reads netem loss.)
         if self.fb_capacity_bps > 0.0 {
-            // PRIMARY: cruise at a FRACTION of the measured RAW capacity. The
+            // The primary path: cruise at a fraction of the measured raw capacity. The
             // pair dispersion reads the raw bottleneck rate (~the link), but the
             // operational cliff sits below it (the bufferless bottleneck collapses
             // before raw capacity), so the fraction stays under it.
             //
-            // The fraction itself adapts within a SAFE BAND from the FEC-miss
+            // The fraction itself adapts within a bounded safe band from the FEC-miss
             // (NAK) signal: push toward the cliff when the coding is comfortably
             // covering (the path is clean, spend the headroom), back off when it
             // strains (loss is eating into the FEC, widen the margin). Because the
-            // cruise is anchored to the loss-INDEPENDENT capacity and the fraction
+            // cruise is anchored to the loss-independent capacity and the fraction
             // is clamped to a band that never reaches the cliff, this cannot
             // spiral - the worst case is the bottom of the band, still a safe
             // sub-cliff pace. That is the difference from every loss-confounded
             // controller that collapsed: bounded fine-tuning, not unbounded chase.
             // Climb only when the path is genuinely clean (FEC misses near zero);
-            // HOLD at the start fraction under moderate loss the FEC is covering;
-            // back off ONLY on a near-cliff NAK spike (> 2% of sends missed), not
+            // Hold at the start fraction under moderate loss the FEC is covering;
+            // back off only on a near-cliff NAK spike (> 2% of sends missed), not
             // on routine FEC-recoverable loss - backing off there just sheds
             // throughput the coding was handling fine.
             if nak_rate < 0.002 {
@@ -1103,7 +1120,7 @@ impl SensOMaticRlcSender {
                 .clamp(self.push_min_bps, self.push_max_bps);
             self.pace_bps += 0.25 * (target - self.pace_bps);
         } else {
-            // BOOTSTRAP (no capacity sample yet, ~first feedback interval):
+            // Bootstrap, before any capacity sample (about the first feedback interval):
             // find-then-cruise on goodput until the first packet-pair lands.
             if self.fb_rate_bps > self.max_delivered_bps {
                 self.max_delivered_bps = self.fb_rate_bps;
@@ -1151,7 +1168,7 @@ impl SensOMaticRlcSender {
         Ok(())
     }
 
-    /// The connection id stamped into every DATA / REPAIR.
+    /// The connection id stamped into every `DATA` / `REPAIR`.
     pub fn conn_id(&self) -> u64 {
         self.conn_id
     }
@@ -1167,8 +1184,8 @@ impl SensOMaticRlcSender {
         self.sock.backend()
     }
 
-    /// Arm the OS path-event observer (item 12) so a route / carrier / MTU change
-    /// drives a PROACTIVE migration. `iface` names the interface to watch; `None`
+    /// Arm the OS path-event observer so a route / carrier / MTU change
+    /// drives a proactive migration. `iface` names the interface to watch; `None`
     /// auto-detects the first non-loopback up interface. With the observer armed,
     /// [`poll_path_event`](Self::poll_path_event) (called from `send_item`)
     /// rebinds the moment the kernel announces a path change - before loss.
@@ -1179,7 +1196,7 @@ impl SensOMaticRlcSender {
         self
     }
 
-    /// Synthesise a path event, as if the OS had announced a route / carrier
+    /// Synthesize a path event, as if the OS had announced a route / carrier
     /// change - drives the `--sim-path-event` demo and the tests on a host where
     /// flapping a real interface is impractical. The production trigger is the
     /// armed observer firing on a real OS event.
@@ -1270,7 +1287,7 @@ impl SensOMaticRlcSender {
     }
 
     /// Re-base this sender's source-id stream to `base` for a cross-code resync.
-    /// The unified layer calls this when handing the stream BACK to RLC after
+    /// The unified layer calls this when handing the stream back to RLC after
     /// another code carried the ids in between: RLC's running source id has
     /// diverged from the global item index (it only advanced for RLC-phase items),
     /// so the next source symbol must be re-aligned to the global boundary `base`.
@@ -1332,7 +1349,7 @@ impl SensOMaticRlcSender {
     }
 
     pub fn send_item(&mut self, item: &[u8]) -> io::Result<()> {
-        // Proactive migration (item 12): if the OS announced a path change since
+        // Proactive migration: if the OS announced a path change since
         // the last item, migrate now - before loss - so the receiver pre-validates
         // the new path while the old one still carries data. A no-op when no
         // observer is armed or none has fired.
@@ -1364,8 +1381,8 @@ impl SensOMaticRlcSender {
         // Adaptive FEC-push: retune the pacing rate from the delivered-rate
         // signal (~once per RTT) before pacing this symbol.
         self.adapt_push_rate();
-        // Packet-pair PROBE: every Nth symbol under the adaptive push, ship this
-        // one WITHOUT its pacing gap so it lands back-to-back with the previous -
+        // Packet-pair probe: every Nth symbol under the adaptive push, ship this
+        // one without its pacing gap so it lands back-to-back with the previous -
         // a tight pair from which the receiver reads the bottleneck dispersion
         // (capacity). Roughly 6% of symbols; the cruise targets 82% of capacity,
         // so the small over-rate from the un-paced symbol stays under the cliff.
@@ -1464,11 +1481,10 @@ impl SensOMaticRlcSender {
         self.last_sid = sid;
         self.sent.insert(sid, sym.clone());
         self.sent_window = self.sent_window.saturating_add(1);
-        // Feed BBR the per-symbol rate-sample snapshot (consumed when this symbol
-        // is delivered, in the ACK handler). BBR measures and exposes BtlBw /
-        // RTprop as telemetry; the flow window governs the in-flight bound.
-        // Driving pace/cwnd from BBR on this pace-limited FEC flow under-measures
-        // the bottleneck and oscillates (the open work is bead SubEtha-i4f).
+        // Feed BBR the per-symbol rate-sample snapshot, consumed when the ACK
+        // handler delivers this symbol. BBR measures BtlBw and RTprop and
+        // exposes them as telemetry; the flow window, not BBR, bounds what is
+        // in flight.
         let sample = self.bbr.on_send(Instant::now(), false);
         self.bbr_samples.insert(sid, sample);
         // Start an RTprop probe if none is in flight: time this id from send to
@@ -1485,8 +1501,8 @@ impl SensOMaticRlcSender {
         Ok(())
     }
 
-    /// Like [`Self::send_item`] but NEVER blocks on the flow window: returns
-    /// `Ok(false)` without sending when the window is full, so the CALLER owns the
+    /// Like [`Self::send_item`] but never blocks on the flow window: returns
+    /// `Ok(false)` without sending when the window is full, so the caller owns the
     /// wait (and can escape to a stronger code instead of stalling inside a
     /// blocking send the unified layer cannot see). `Ok(true)` when the item was
     /// sent. Pacing is skipped (the unified caller drives cadence and leaves
@@ -1509,7 +1525,7 @@ impl SensOMaticRlcSender {
     /// Transmit-side probe: `(last_sid, wire_datagrams, acked_through,
     /// outstanding)`. `last_sid` is the source id of the most recently
     /// packed item (`u32::MAX` before the first); `wire_datagrams`
-    /// counts DATA and REPAIR datagrams handed to the socket layer
+    /// counts `DATA` and `REPAIR` datagrams handed to the socket layer
     /// without error; `outstanding` is the in-flight window occupancy.
     pub fn tx_probe(&self) -> (u32, u64, u32, usize) {
         (self.last_sid, self.wire_datagrams, self.acked_through, self.sent.len())
@@ -1719,7 +1735,7 @@ impl SensOMaticRlcSender {
                     let rate_mbit = u16::from_le_bytes([m[4], m[5]]) as f64;
                     self.fb_rate_bps = rate_mbit * 1.0e6 / 8.0;
                 }
-                // Packet-pair CAPACITY (loss-independent): the bottleneck
+                // Packet-pair capacity, which is loss-independent: the bottleneck
                 // dispersion the receiver read from the tightest consecutive-id
                 // gap. The adaptive push cruises just under it instead of
                 // probing the cliff. 0 means "not measured yet" - ignore it.
@@ -1753,18 +1769,18 @@ impl SensOMaticRlcSender {
     /// controller, and apply any new coding parameters to the live encoder. A
     /// no-op when pinned static.
     fn apply_feedback(&mut self, loss_q8: u8, burst_q8: u8, cong_q8: u8) {
-        // Capture the receiver's real measured loss AND congestion fraction for
-        // the adaptive-push loop FIRST - they drive it even when the coding is
+        // Capture the receiver's real measured loss and congestion fraction for
+        // the adaptive-push loop before anything else - they drive it even when the coding is
         // static. fb_cong (the Biaz/Spike classifier's congestion share) is the
-        // RFC 9265 signal: the FEC recovers RANDOM loss (push through it), but
-        // the rate must still YIELD to CONGESTION loss (the FEC must not hide
+        // RFC 9265 signal: the FEC recovers random loss (push through it), but
+        // the rate must still yield to congestion loss (the FEC must not hide
         // it). Random loss => keep filling; congestion loss => back off.
         self.fb_loss = loss_q8 as f64 / 255.0;
         self.fb_cong = cong_q8 as f64 / 255.0;
         // The static baseline never changes the coding. Otherwise the sensing
-        // controller below owns the CODING (window / step / density / disable-on-
-        // clean) from the fused loss + burstiness + congestion signal - INCLUDING
-        // in adaptive-push mode, where the packet-pair loop owns only the RATE
+        // controller below owns the coding (window / step / density / disable-on-
+        // clean) from the fused loss + burstiness + congestion signal - including
+        // in adaptive-push mode, where the packet-pair loop owns only the rate
         // (pace). The two compose without fighting: pace and coding are orthogonal
         // knobs, so the push fills the wire while the sensing controller sizes the
         // FEC to the channel the receiver actually measured (proactive provision
@@ -1775,12 +1791,12 @@ impl SensOMaticRlcSender {
         let snapshot = SensorSnapshot {
             loss: loss_q8 as f32 / 255.0,
             burstiness: burst_q8 as f32 / 255.0,
-            // KEEP the congestion term in the FEC sizing even though the
-            // classifier is unreliable as a CONGESTION signal here. Measured on
+            // Keep the congestion term in the FEC sizing even though the
+            // classifier is unreliable as a congestion signal here. Measured on
             // the WAN path: neutralizing it regressed under-loss throughput (5%
             // 306->281, 8% 291->237). FEC strength and rate are coupled through
             // the NAK signal - the rate controller backs off on NAK spikes, so
-            // the extra parity the congestion term provisions functions as MARGIN
+            // the extra parity the congestion term provisions functions as margin
             // that keeps FEC misses (and thus NAKs, and thus rate backoff) down.
             // The over-provision is net-positive, not waste. (Hard data, not
             // theory: lighter parity -> more misses -> more backoff -> lower rate.)
@@ -1818,9 +1834,9 @@ impl SensOMaticRlcSender {
     /// Pump NAK / ACK until the receiver has delivered every source id below
     /// `total`, or the timeout elapses. Returns whether full delivery was acked.
     ///
-    /// End-of-stream delivery is SENDER-driven, not NAK-driven. A NAK-only
+    /// End-of-stream delivery is sender-driven, not NAK-driven. A NAK-only
     /// scheme cannot recover a lost tail: the receiver only NAKs gaps below
-    /// its `highest_seen`, and when the final source symbols AND any trailing
+    /// its `highest_seen`, and when the final source symbols and any trailing
     /// repair are all lost, `highest_seen` never reaches them - so the
     /// receiver requests nothing and delivery deadlocks until this timeout.
     /// (The matrix bench surfaced this as an intermittent ~96%-complete stall
@@ -1895,11 +1911,11 @@ struct RlcSession {
     /// Next source id to deliver (everything below is delivered, in order).
     delivered_through: u32,
     /// `delivered_through` snapshot at the last FEEDBACK, so the feedback can
-    /// carry the receiver's REAL delivered (goodput) rate over the control
+    /// carry the receiver's measured delivered (goodput) rate over the control
     /// plane. That rate is the ground-truth signal the sender's adaptive push
     /// rides: the cliff shows as a delivered-rate plateau, unlike binary loss.
     last_fb_delivered: u32,
-    /// Highest source id seen on any DATA / REPAIR, to know a gap is real.
+    /// Highest source id seen on any `DATA` / `REPAIR`, to know a gap is real.
     highest_seen: u32,
     peer: Option<SocketAddr>,
     last_nak: Instant,
@@ -1924,7 +1940,7 @@ struct RlcSession {
     /// Gilbert-Elliott burst-loss injection (per-10000 transition probabilities
     /// `p` Good->Bad and `r` Bad->Good). Mean burst `10000 / r`, steady loss
     /// `p / (p + r)`. `r = 0` disables it (the Bernoulli `drop_pct` path is used
-    /// instead). The erasure is a deterministic function of the SOURCE ID, not
+    /// instead). The erasure is a deterministic function of the source id, not
     /// of arrival timing, so two different codes (adaptive vs static) experience
     /// the identical loss process - a fair A/B - and a retransmit of an erased
     /// id is never erased a second time, so ARQ always converges.
@@ -1947,22 +1963,22 @@ struct RlcSession {
     /// clock the drain measures them with.
     start: Instant,
     /// Arrival time (microseconds since `start`) of the previous DATA, stamped in
-    /// the receive drain loop BEFORE any decode, for inter-arrival spacing and
+    /// the receive drain loop ahead of any decode, for inter-arrival spacing and
     /// the relative one-way trip time - so neither is polluted by the Gaussian
     /// solve, which runs once after the whole batch is drained.
     last_arrival_us: Option<f64>,
     /// Last DATA source id seen, for the packet-pair (dispersion) capacity
     /// probe: when the next consecutive id arrives, the gap between the two is
     /// the bottleneck's transmission time for one packet - which the bottleneck
-    /// imposes regardless of how many OTHER packets are dropped, so it measures
-    /// path capacity INDEPENDENTLY of loss (the one signal random loss cannot
+    /// imposes regardless of how many other packets are dropped, so it measures
+    /// path capacity independently of loss (the one signal random loss cannot
     /// confound). The sender ships occasional back-to-back pairs to drive it.
     last_data_sid: Option<u32>,
-    /// Recent consecutive-id arrival gaps (microseconds) ABOVE the NAPI floor,
+    /// Recent consecutive-id arrival gaps (microseconds) above the NAPI floor,
     /// a circular window. The raw distribution is bimodal: a near-zero mass from
     /// NAPI/GRO batching (multiple packets drained in one softirq poll share a
     /// timestamp) and the real bottleneck-dispersion cluster at ~18-26us. The
-    /// `min` is poison (it grabs the batch noise); a LOW PERCENTILE of the
+    /// `min` is poison (it grabs the batch noise); a low percentile of the
     /// floor-filtered gaps isolates the true dispersion robustly. Capacity =
     /// wire_bytes*8 / percentile_gap. Empty until enough gaps land.
     pair_ring: Vec<f64>,
@@ -1985,7 +2001,7 @@ struct RlcSession {
     loss_ewma: f32,
     /// Sliding window of the last `LOSS_WINDOW` lost-indicators, and the count of
     /// losses within it. The loss rate the controller provisions FEC against is
-    /// `lost / max(len, LOSS_WINDOW_MIN_FILL)`. A WINDOWED rate (not the burst
+    /// `lost / max(len, LOSS_WINDOW_MIN_FILL)`. A windowed rate (not the burst
     /// model's cumulative `losses/n`, which is anchored by startup samples and
     /// never forgets - it read 44% during a 6% transfer and only relaxed at the
     /// very end) tracks the true sustained loss quickly; the MIN_FILL denominator
@@ -2021,7 +2037,7 @@ struct RlcSession {
     /// Whether the delivery frontier has been anchored to an observed source
     /// id. False until the first DATA of a session arrives.
     frontier_anchored: bool,
-    /// Slice 4 path validation. When the session appears at a NEW address the
+    /// Path validation. When the session appears at a fresh address the
     /// receiver migrates optimistically (it keeps delivering - the AEAD / id
     /// already authenticate the frame) but marks the new address unvalidated and
     /// challenges it: `pending_challenge` holds `(addr, nonce, sent_at)` and the
@@ -2042,7 +2058,7 @@ struct RlcSession {
     /// Successful path validations and validation timeouts (reverts). Telemetry.
     path_validations: u64,
     path_validation_failures: u64,
-    /// DATA / REPAIR frames too short for their header, dropped without a
+    /// `DATA` / `REPAIR` frames too short for their header, dropped without a
     /// decode. Telemetry.
     malformed_frames: u64,
     /// The 1-RTT keys for this peer, shared with the receiver when the session
@@ -2133,7 +2149,7 @@ impl RlcSession {
     ) -> Self {
         Self {
             sock,
-            // Horizon is sized to the CODING window (the adaptive RLC window
+            // Horizon is sized to the coding window (the adaptive RLC window
             // caps at 64), not the flow window: a sliding-window repair can only
             // span its own window, so a gap older than ~one window has no repair
             // covering it and is unrecoverable by RLC regardless of horizon -
@@ -2205,7 +2221,7 @@ impl RlcSession {
     }
 
     /// How many new peer addresses were confirmed reachable by the
-    /// PATH_CHALLENGE / PATH_RESPONSE exchange (Slice 4). Telemetry.
+    /// PATH_CHALLENGE / PATH_RESPONSE exchange. Telemetry.
     pub fn path_validations(&self) -> u64 {
         self.path_validations
     }
@@ -2216,7 +2232,7 @@ impl RlcSession {
         self.path_validation_failures
     }
 
-    /// DATA / REPAIR frames too short for their header; each was dropped
+    /// `DATA` / `REPAIR` frames too short for their header; each was dropped
     /// without a decode.
     pub fn malformed_frames(&self) -> u64 {
         self.malformed_frames
@@ -2270,7 +2286,7 @@ impl RlcSession {
     }
 
     /// The receiver's current measured channel assessment: `(loss, mean_burst,
-    /// congestion_fraction)`. `loss` here is the STABLE lifetime loss rate (lost
+    /// congestion_fraction)`. `loss` here is the stable lifetime loss rate (lost
     /// ids over delivered) for honest telemetry; the controller is fed the
     /// recency-weighted EWMA instead. Mean burst is `-1.0` before the
     /// Gilbert-Elliott fit converges.
@@ -2296,7 +2312,7 @@ impl RlcSession {
         ((self.drop_rng >> 33) % 100) < self.drop_pct as u64
     }
 
-    /// Gilbert-Elliott erasure decision for the FIRST transmission of `sid`. The
+    /// Gilbert-Elliott erasure decision for the first transmission of `sid`. The
     /// two-state chain is advanced in source-id order and memoized, so the
     /// erasure pattern is a deterministic function of the id sequence and the
     /// seed - identical across codes - and a retransmit of an erased id (already
@@ -2369,7 +2385,7 @@ impl RlcSession {
         let grace = (2.0 * self.loss_class.recent_owd_spread_us()).clamp(1000.0, 50_000.0);
         self.deliver(out, now_us, grace);
         self.flush_loss_accounting(now_us);
-        // Path validation (Slice 4): retire a stale challenge (revert a spoofed
+        // Path validation: retire a stale challenge (revert a spoofed
         // move) and (re)issue the outstanding one now that the drain has credited
         // the anti-amplification budget.
         self.expire_stale_challenge();
@@ -2564,7 +2580,7 @@ impl RlcSession {
                 // last DATA, the gap to it is the bottleneck's per-packet
                 // transmission time (the sender ships occasional back-to-back
                 // pairs to surface the tight gaps). Keep the minimum - the
-                // bottleneck imposes it regardless of how many OTHER ids drop,
+                // bottleneck imposes it regardless of how many other ids drop,
                 // so it measures capacity independently of loss.
                 if self.last_data_sid == Some(sid.wrapping_sub(1))
                     && let Some(prev) = self.last_arrival_us
@@ -2627,7 +2643,7 @@ impl RlcSession {
     fn deliver(&mut self, out: &mut Vec<Vec<u8>>, now_us: f64, grace: f64) {
         while let Some(sym) = self.dec.get(self.delivered_through) {
             out.push(unpack_symbol(sym));
-            // Deliver the data immediately (no added latency), but DEFER the loss
+            // Deliver the data immediately (no added latency), but defer the loss
             // accounting by the reorder grace: a FEC-recovered id whose original
             // arrives within the grace was reordered, not lost.
             let sid = self.delivered_through;
@@ -2646,7 +2662,7 @@ impl RlcSession {
 
     /// Fold the deferred loss accounting for delivered ids whose reorder grace
     /// has elapsed, in delivery order. An id is lost when it had to be NAK'd, or
-    /// the FEC recovered it AND its original DATA never arrived (a recovered id
+    /// the FEC recovered it and its original `DATA` never arrived (a recovered id
     /// whose original later arrived was merely reordered).
     fn flush_loss_accounting(&mut self, now_us: f64) {
         while let Some(&(sid, account_at, was_fec, was_nak)) = self.loss_pending.front() {
@@ -2656,9 +2672,9 @@ impl RlcSession {
             self.loss_pending.pop_front();
             let lost = was_nak || (was_fec && !self.data_arrived.contains(&sid));
             self.burst_model.observe(lost);
-            // Smooth (1/128) so the loss the sender provisions the RATE against
-            // tracks the SUSTAINED loss, not per-burst spikes (the burst length,
-            // which the WINDOW provisions against, comes from the burst model).
+            // Smooth (1/128) so the loss the sender provisions the rate against
+            // tracks the sustained loss, not per-burst spikes (the burst length,
+            // which the window provisions against, comes from the burst model).
             let x = if lost { 1.0 } else { 0.0 };
             self.loss_ewma += (x - self.loss_ewma) * (1.0 / 128.0);
             // Sliding-window loss counter: push this outcome, evict the oldest.
@@ -2742,7 +2758,7 @@ impl RlcSession {
     fn send_ack(&mut self) -> io::Result<()> {
         // An ACK goes out immediately whenever the delivery frontier advanced,
         // so a live flow's window releases at wire latency. A frontier that
-        // has NOT moved re-acks at most once per interval: the cumulative
+        // has not moved re-acks at most once per interval: the cumulative
         // frontier + SACK bitmap carries the full receive state, so each ACK
         // supersedes every prior one and the idle re-ack is pure keep-current.
         if self.delivered_through == self.last_acked_through
@@ -2752,7 +2768,7 @@ impl RlcSession {
         }
         if self.peer.is_some() {
             // Cumulative in-order received frontier plus a 64-bit SACK bitmap of
-            // ids received ABOVE the current hole (`delivered_through` is the
+            // ids received above the current hole (`delivered_through` is the
             // first missing id). The sender releases each SACK'd id from its
             // retransmit buffer, so a hole does not stall the outstanding window.
             let mut sack = 0u64;
@@ -2790,9 +2806,9 @@ impl RlcSession {
         if self.last_feedback.elapsed() < Duration::from_millis(10) || self.peer.is_none() {
             return Ok(());
         }
-        // The loss the sender provisions the RATE against is a WINDOWED rate over
+        // The loss the sender provisions the rate against is a windowed rate over
         // recent deliveries. The burst model's `p/(p+r)` reduces algebraically to
-        // the CUMULATIVE `losses/n` - anchored by startup samples, it never
+        // the cumulative `losses/n` - anchored by startup samples, it never
         // forgets, so an early loss cluster (or small-sample noise) read 44% loss
         // during a true-6% transfer and held FEC at its heaviest until the very
         // end. The windowed rate tracks the sustained loss quickly; the burst
@@ -2808,7 +2824,7 @@ impl RlcSession {
             .unwrap_or(0.0);
         let burst_q8 = (burstiness * 255.0).round() as u8;
         let cong_q8 = (self.loss_class.congestion_fraction().clamp(0.0, 1.0) * 255.0).round() as u8;
-        // The receiver's REAL delivered (goodput) rate since the last feedback:
+        // The receiver's measured delivered (goodput) rate since the last feedback:
         // source symbols delivered in-order over the interval. This is the
         // ground-truth signal the sender's adaptive push rides - it plateaus at
         // the path capacity (unlike the binary loss signal), so it is safe to
@@ -2819,7 +2835,7 @@ impl RlcSession {
             (delivered * self.symbol_len as f64 * 8.0 / interval_s / 1.0e6).clamp(0.0, 65535.0);
         let rate_q16 = (rate_mbit.round() as u16).to_le_bytes();
         self.last_fb_delivered = self.delivered_through;
-        // Packet-pair CAPACITY estimate (Mbit/s): on-wire bytes / the tightest
+        // Packet-pair capacity estimate (Mbit/s): on-wire bytes / the tightest
         // consecutive-id gap. The bottleneck imposes that gap independently of
         // loss, so this is the one rate signal random loss cannot confound - the
         // sender cruises just under it. 0 until a pair has been seen. Decay the
@@ -2935,7 +2951,7 @@ impl SensOMaticRlcReceiver {
     /// Arm the optional TLS record layer as the server. Call
     /// [`handshake`](Self::handshake) before polling for data.
     ///
-    /// A TLS receiver serves ONE peer: there is a single handshake, so exactly
+    /// A TLS receiver serves one peer: there is a single handshake, so exactly
     /// one session can hold the resulting keys. A second connection id arriving
     /// on a TLS receiver is refused rather than admitted unsealed.
     #[cfg(feature = "tls")]
@@ -3019,21 +3035,21 @@ impl SensOMaticRlcReceiver {
     /// Read whatever has arrived and deliver in-order items, each tagged with
     /// the connection id of the peer that sent it.
     ///
-    /// This is the call a node receiving from SEVERAL peers wants: ordering is
+    /// This is the call a node receiving from several peers wants: ordering is
     /// guaranteed within a connection id, and nothing orders one peer against
     /// another. [`poll`](Self::poll) is the same drain with the tag dropped.
     ///
-    /// With TLS armed the receiver serves ONE peer: there is a single
+    /// With TLS armed the receiver serves one peer: there is a single
     /// handshake, so concurrent senders cannot each establish keys.
     pub fn poll_from(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>> {
         let mut out: Vec<(u64, Vec<u8>)> = Vec::new();
-        // Room for the inner DATA/REPAIR plus the AEAD envelope (type + pn + tag)
+        // Room for the inner `DATA` / `REPAIR` plus the AEAD envelope (type + pn + tag)
         // when TLS is on.
         let mut buf = vec![0u8; self.symbol_len + 64];
         let mut received = 0usize;
         let mut resets = 0usize;
         // Drain pass: pull every available datagram, stamping its arrival time
-        // and routing it to the session that owns its id, with NO Gaussian solve
+        // and routing it to the session that owns its id, with no Gaussian solve
         // in the loop - so the arrival stamp the congestion classifier reads
         // reflects the network, not the decode backlog.
         loop {
@@ -3073,7 +3089,7 @@ impl SensOMaticRlcReceiver {
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(ref e) if e.kind() == io::ErrorKind::TimedOut => break,
                 // Windows reports an ICMP port-unreachable provoked by a
-                // PREVIOUS send as ConnectionReset on the next receive. It
+                // preceding send as ConnectionReset on the next receive. It
                 // describes that send, not the datagrams queued behind it, so
                 // the drain continues: ending it here strands every peer whose
                 // datagrams sit after the reset while the receiver keeps
@@ -3124,13 +3140,13 @@ impl SensOMaticRlcReceiver {
 
     /// Route one cleartext datagram to the session that owns its connection id.
     ///
-    /// The FIRST id a receiver sees is admitted outright: there is no
+    /// The first id a receiver sees is admitted outright: there is no
     /// established session for a forgery to disturb, and this is the ordinary
     /// point-to-point case. Every id after that is challenged before a decode
     /// window is opened for it, so an off-path attacker cannot make a receiver
     /// allocate state by spraying connection ids it cannot receive answers for.
     ///
-    /// Only DATA and REPAIR carry a connection id, and a PATH_RESPONSE carries
+    /// Only `DATA` and `REPAIR` carry a connection id, and a `PATH_RESPONSE` carries
     /// the id of the window it answers. Nothing else has an owner here: such a
     /// frame is counted in [`unattributed_frames`](Self::unattributed_frames)
     /// and reaches no session, so no session's address moves on the word of a
@@ -3171,6 +3187,12 @@ impl SensOMaticRlcReceiver {
     /// Read whatever has arrived and deliver in-order items. Peer attribution is
     /// dropped; use [`poll_from`](Self::poll_from) when a node receives from
     /// several peers and needs to know which sent what.
+    /// Datagrams this receiver's kernel dropped because the receive buffer
+    /// was full, and what the count is worth on this host.
+    pub fn kernel_drops(&self) -> (u64, crate::dgram::DropReport) {
+        self.sock.kernel_drops()
+    }
+
     pub fn poll(&mut self) -> io::Result<Vec<Vec<u8>>> {
         Ok(self.poll_from()?.into_iter().map(|(_, item)| item).collect())
     }
@@ -3227,7 +3249,7 @@ impl SensOMaticRlcReceiver {
         (self.unattributed_frames, self.last_unattributed_byte)
     }
 
-    /// DATA / REPAIR frames too short for their header, summed over every
+    /// `DATA` / `REPAIR` frames too short for their header, summed over every
     /// session; each was dropped without a decode.
     pub fn malformed_frames(&self) -> u64 {
         self.sessions.values().map(|s| s.malformed_frames()).sum()
@@ -3427,6 +3449,37 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// Every RLC packet type this module puts on the wire has a row in the
+    /// specification's packet-type table.
+    #[test]
+    fn the_rlc_packet_types_are_all_in_the_wire_specification() {
+        let mut types = vec![
+            (PKT_RLC_DATA, "source symbol"),
+            (PKT_RLC_REPAIR, "repair symbol"),
+            (PKT_RLC_NAK, "negative acknowledgment"),
+            (PKT_RLC_ACK, "acknowledgment"),
+            (PKT_RLC_FEEDBACK, "feedback"),
+            (PKT_RLC_PATH_CHALLENGE, "path challenge"),
+            (PKT_RLC_PATH_RESPONSE, "path response"),
+        ];
+        // Spent whether or not this build compiles the record layer, so
+        // they are asserted unconditionally and named by their numbers
+        // where the constants do not exist.
+        #[cfg(feature = "tls")]
+        types.extend_from_slice(&[
+            (PKT_RLC_CRYPTO, "handshake flight"),
+            (PKT_RLC_CRYPTO_ACK, "handshake flight acknowledgment"),
+            (PKT_RLC_SECURE, "sealed envelope"),
+        ]);
+        #[cfg(not(feature = "tls"))]
+        types.extend_from_slice(&[
+            (15, "handshake flight"),
+            (16, "handshake flight acknowledgment"),
+            (17, "sealed envelope"),
+        ]);
+        crate::spec_doc::assert_listed("sens_rlc", &types);
+    }
+
     /// Telemetry a loopback round-trip returns: RLC recoveries and NAKs (the
     /// receiver's ARQ floor), plus the sender's adaptation count and feedback
     /// received.
@@ -3505,13 +3558,13 @@ mod tests {
     }
 
     /// Two independent senders, each with its own connection id, delivering to
-    /// ONE receiver at the same time - the replication-mesh shape, where a node
+    /// one receiver at the same time - the replication-mesh shape, where a node
     /// receives from several peers concurrently rather than from one peer that
     /// restarted. Every item of both streams must arrive.
     ///
     /// Each sender tags its items with its own index in the high byte so the
     /// two streams stay distinguishable after interleaving; ordering is asserted
-    /// WITHIN a stream, since nothing orders one sender against another.
+    /// within a stream, since nothing orders one sender against another.
     /// A peer that dies with unrecovered gaps leaves the receiver sending
     /// NAKs and feedback to a closed port. On Windows each of those provokes
     /// an ICMP that surfaces as ConnectionReset on the receiver's next
@@ -3555,7 +3608,7 @@ mod tests {
                         .unwrap();
                 // Stagger the first item so the receiver's first-seen order is
                 // peer 0, then the dying peer 1, then peer 2. A survivor has to
-                // sit BEHIND the dead session in service order for its fate to
+                // sit behind the dead session in service order for its fate to
                 // depend on how the receiver treats the dead one.
                 std::thread::sleep(Duration::from_millis(150 * p));
                 if p == 1 {
@@ -3612,7 +3665,7 @@ mod tests {
         assert_eq!(ids.len(), 1000, "only {} distinct ids in 1000 draws", ids.len());
     }
 
-    /// Three peers sending SPARSELY - one small item every 300ms, the shape a
+    /// Three peers sending sparsely - one small item every 300ms, the shape a
     /// heartbeat has - with one going silent partway. The surviving two must
     /// keep delivering.
     ///
@@ -3789,7 +3842,7 @@ mod tests {
     fn loopback_heavy_loss_arq_floor() {
         // Pinned at the static initial code (window 16), a Gilbert-Elliott
         // channel with mean burst 25 (r=400 -> 10000/400) exceeds the window, so
-        // the longest bursts CANNOT be FEC-recovered and must fall to the ARQ
+        // the longest bursts cannot be FEC-recovered and must fall to the ARQ
         // floor. Deterministic erasure passes retransmits, so ARQ converges and
         // delivery is exact (asserted inside the harness).
         let rt = run_loopback(600, Loss::Gilbert(100, 400), 1234, true);
@@ -3879,7 +3932,7 @@ mod tests {
         );
     }
 
-    /// Slice 4: an OS path event (item 12) drives a PROACTIVE migration, and the
+    /// An OS path event drives a proactive migration, and the
     /// receiver validates the new address by challenge / response before trusting
     /// it - every item still delivered, the move validated, no revert.
     #[test]
@@ -3961,10 +4014,14 @@ mod tests {
             item[..8].copy_from_slice(&i.to_le_bytes());
             send.send_item(&item).unwrap();
         }
+        // The receiver polls while the sender pumps its own tail recovery,
+        // which is what carries a datagram the kernel dropped under load,
+        // loopback included, as a retransmit rather than a missing item.
         let start = Instant::now();
         let mut got = 0u64;
         while got < 20 && start.elapsed() < Duration::from_secs(5) {
             got += recv.poll().unwrap().len() as u64;
+            send.drain_until_acked(20, Duration::from_millis(2)).unwrap();
         }
         assert_eq!(got, 20, "the first batch must be delivered");
         assert_eq!(recv.peer_of(cid), Some(real_peer), "bound to the real peer first");
@@ -4005,6 +4062,7 @@ mod tests {
         let mut got = 0u64;
         while got < 20 && start.elapsed() < Duration::from_secs(5) {
             got += recv.poll().unwrap().len() as u64;
+            send.drain_until_acked(40, Duration::from_millis(2)).unwrap();
         }
         assert_eq!(got, 20, "the second batch must be delivered after the stray frames");
         assert!(
@@ -4014,7 +4072,7 @@ mod tests {
         assert_eq!(recv.malformed_frames(), 0);
     }
 
-    /// With two peers live, the OLDER one migrates: its PATH_RESPONSE names its
+    /// With two peers live, the older one migrates: its PATH_RESPONSE names its
     /// own window and validates it, whichever peer was admitted last.
     #[test]
     fn an_older_peer_validates_its_migration_while_a_newer_peer_is_live() {
@@ -4102,9 +4160,9 @@ mod tests {
         assert_eq!(unattributed, (0, 0), "every frame named its window");
     }
 
-    /// Slice 4 security property: a forged DATA frame from an unrelated address
+    /// Security property: a forged DATA frame from an unrelated address
     /// (correct connection id, but an address that cannot answer the challenge)
-    /// must NOT permanently hijack the session - the receiver challenges the new
+    /// must not permanently hijack the session - the receiver challenges the new
     /// address, gets no response, and reverts to the real peer, which keeps
     /// delivering.
     #[test]

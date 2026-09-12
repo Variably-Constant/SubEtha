@@ -17,7 +17,7 @@
 //! BackgroundScheduler). Each worker independently computes `f()`
 //! and CAS-attempts to publish the result via the underlying
 //! SharedOnceCell. The first to win the CAS becomes the canonical
-//! result; losers see the cell already filled and DISCARD their
+//! result; losers see the cell already filled and discard their
 //! result.
 //!
 //! This is the architectural novelty: redundant cross-process
@@ -31,7 +31,7 @@
 //!
 //! Failover within 1 epoch: if a resolver dies mid-compute, the
 //! others are unaffected; the first survivor publishes. No
-//! coordinator needed - the CAS protocol IS the coordination.
+//! coordinator needed - the CAS protocol is the coordination.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -81,7 +81,7 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
     );
 
     /// Create a new shared async pointer backed by an MMF cell at
-    /// `path`. The cell starts EMPTY.
+    /// `path`. The cell starts empty.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, SharedAsyncError> {
         let cell = Arc::new(SharedOnceCell::create(path)?);
         Ok(Self {
@@ -101,7 +101,7 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
         })
     }
 
-    /// True when the underlying cell is initialised.
+    /// True when the underlying cell is initialized.
     pub fn is_resolved(&self) -> bool {
         self.cell.is_initialized()
     }
@@ -118,12 +118,12 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
 
     /// Pre-resolve by setting the value. Returns `true` if this
     /// caller won the init race, `false` if the cell was already
-    /// initialised.
+    /// initialized.
     pub fn set_resolved(&self, value: T) -> bool {
         self.cell.set(value)
     }
 
-    /// Lazy resolution: if the cell is initialised, return its
+    /// Lazy resolution: if the cell is initialized, return its
     /// value. Otherwise, the caller runs `f` once and attempts to
     /// publish the result. If another concurrent caller wins the
     /// publish race, the caller still returns the canonical value
@@ -221,7 +221,7 @@ impl<T: Copy + Send + Sync + 'static> SharedAsyncPointer<T> {
     /// Speculative resolution that tolerates worker panics: closures
     /// that panic do not propagate; the race continues among
     /// survivors. Returns `Err(AllWorkersDied)` if every worker
-    /// panicked AND no value was published.
+    /// panicked and no value was published.
     pub fn get_or_speculative_resilient<F>(&self, n: usize, f: F) -> Result<T, SharedAsyncError>
     where F: Fn() -> T + Send + Sync + 'static + Clone,
     {
@@ -319,12 +319,10 @@ mod tests {
         let runs = counter.load(Ordering::Acquire);
         assert!((1..=8).contains(&runs),
                 "closure runs should be between 1 and 8 (one per non-fast-pathed thread); got {runs}");
-        // Actually we expect exactly 1 because get_or_lazy() ALWAYS runs
-        // the closure on the first call; subsequent threads see the
-        // cell filled before running. With 8 threads racing the
-        // closure could run multiple times (if all check is_init
-        // before any has filled), but at most once per thread. The
-        // CAS publish ensures only one value is canonical.
+        // A thread that finds the cell filled skips the closure, while
+        // threads that check before any has filled each run it once, so
+        // the count is between 1 and 8. The CAS publish makes one value
+        // canonical.
         drop(sap);
         std::fs::remove_file(&p).expect("every thread's handle is dropped and the file removable");
     }
@@ -354,7 +352,7 @@ mod tests {
     fn speculative_first_publisher_wins_and_the_loser_is_dropped() {
         let p = tmp("first-wins");
         let sap: SharedAsyncPointer<u64> = SharedAsyncPointer::create(&p).unwrap();
-        // The contract is that the first PUBLISHER wins, so the loser
+        // The contract is that the first publisher wins, so the loser
         // waits on the cell being resolved rather than on a flag its
         // rival sets before publishing. A flag only orders the flag
         // store: the waiter can observe it, return, and reach the CAS
@@ -408,7 +406,7 @@ mod tests {
         let p = tmp("cached");
         let sap: SharedAsyncPointer<u64> = SharedAsyncPointer::create(&p).unwrap();
         let _r1 = sap.get_or_lazy(|| 5);
-        // Second call must NOT run a new closure; verify by ensuring
+        // Second call must not run a new closure; verify by ensuring
         // the closure body would change the value.
         let r2 = sap.get_or_lazy(|| panic!("must not run after resolution"));
         assert_eq!(r2, 5);

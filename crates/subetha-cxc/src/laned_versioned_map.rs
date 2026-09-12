@@ -13,7 +13,7 @@
 //! A lane is a whole `VersionedBTreeMap` with its own arena and its own
 //! single writer. A statement claims a lane for its duration and writes
 //! only there, so `n` statements run at once with no mutex between
-//! them. Every lane shares ONE epoch table, so a pin is one view across
+//! them. Every lane shares a single epoch table, so a pin is one view across
 //! all of them and one horizon reclaims all of them.
 //!
 //! What this costs is ordered reads. A `range_at` must merge `n` lanes,
@@ -33,7 +33,7 @@
 //! for: keys that are born and die but do not change, such as a
 //! composite of key and record id. A statement that inserts fresh keys
 //! claims any free lane with [`claim_lane`](LanedVersionedMap::claim_lane).
-//! A statement that must touch keys that already exist claims THEIR
+//! A statement that must touch keys that already exist claims their
 //! lane with
 //! [`claim_lane_for`](LanedVersionedMap::claim_lane_for).
 //!
@@ -48,7 +48,7 @@
 //!
 //! A lane asked for a chunk reports the last key its walk examined. It
 //! may hold keys past that, so the merged output can only be trusted up
-//! to the SMALLEST cursor any lane reported: emitting beyond it would
+//! to the smallest cursor any lane reported: emitting beyond it would
 //! publish a key ahead of a smaller one that some lane has not been
 //! asked for yet. A lane whose cursor is `None` reached the end of the
 //! range and bounds nothing.
@@ -155,7 +155,7 @@ where
     /// Obtain a laned map under `dir`: one tree per lane, one shared
     /// epoch table, and the claims table beside them.
     ///
-    /// `nodes_per_lane` is a NODE count, as `VersionedBTreeMap::create`
+    /// `nodes_per_lane` is a node count, as `VersionedBTreeMap::create`
     /// takes, and each lane gets its own arena of that size. `max_pins`
     /// is how many scans may hold a pin at once, across all lanes.
     pub fn create(
@@ -198,7 +198,7 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?;
         let path = dir.join("lanes.claims");
-        let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+        let file = crate::region_file::open_existing(&path)?;
         let total = lanes_file_size(lanes);
         if file.metadata()?.len() < total as u64 {
             return Err(LanedError::LayoutMismatch);
@@ -306,7 +306,7 @@ where
     }
 
     /// Entries current at `pin` across every lane, in key order, at most
-    /// `limit` EXAMINED per lane.
+    /// `limit` examined per lane.
     pub fn range_at(
         &self,
         low: Bound<&K>,
@@ -322,7 +322,7 @@ where
     /// every lane reached the end of the range.
     ///
     /// Resume from `Bound::Excluded(frontier)`. Rows past the frontier
-    /// are NOT returned even when a lane already walked them, because a
+    /// stay unreturned even when a lane already walked them, because a
     /// lane that stopped earlier may still hold a smaller key.
     pub fn range_at_with_cursor(
         &self,

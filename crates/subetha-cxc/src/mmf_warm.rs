@@ -27,10 +27,10 @@
 //! - **Linux**: `MADV_POPULATE_WRITE` moves the fault storm out of
 //!   the traffic path - first full drain drops from 54-63 ms
 //!   (lazy) to 7-13 ms (populated), with the cost paid once at
-//!   attach. ENABLED by default.
+//!   attach. Enabled by default.
 //! - **Windows**: `PrefetchVirtualMemory` on a page-cache-hot
 //!   backing measured pure overhead (+6 ms on open, no drain win),
-//!   so the automatic path SKIPS it. `SUBETHA_MMF_WARM=1` forces
+//!   so the automatic path skips it. `SUBETHA_MMF_WARM=1` forces
 //!   it on for the case the API is documented for: cold files
 //!   paged out to disk, where one large batched I/O beats
 //!   per-page demand faults.

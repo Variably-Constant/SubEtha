@@ -8,7 +8,7 @@
 
 Cross-process probabilistic set membership, cache-blocked. The bit
 array is split into 512-bit (one cache-line) blocks; every probe for
-a single item lands in ONE block, so `contains` touches a single
+a single item lands in one block, so `contains` touches a single
 cache line regardless of `n_hashes`. A standard Bloom filter scatters
 its `n_hashes` probes across the whole bit array, up to `n_hashes`
 separate cache lines per query. The block for an item is chosen by
@@ -39,7 +39,7 @@ rate tracks the standard formula.
   register with the global sidecar; raw `create()` / `open()` return
   the unregistered type unchanged.
 - **Probabilistic**: false positives are possible at the configured
-  rate; **false negatives are NOT** (a present item always tests
+  rate; **false negatives are not** (a present item always tests
   positive).
 - **`insert` and `contains` take `&[u8]`** and are lock-free; many
   processes may query concurrently.
@@ -106,7 +106,7 @@ suggested config (same FPR target).
 - **MMF lifecycle managed**: per-bench create + fill + query + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process membership**: any process opens the filter and
   queries it; the bit array is shared, not per-process.

@@ -9,7 +9,7 @@
 //! local-pop fast path costs roughly one cache-line write.
 //!
 //! Lifting this protocol into a memory-mapped file lets the *same*
-//! deque serve in-process worker-thread stealing AND cross-process
+//! deque serve in-process worker-thread stealing and cross-process
 //! work distribution. A second process opens the same file via
 //! [`SharedDeque::open_as_thief`] and steals from a remote owner with
 //! the identical CAS protocol, because the atomics touch physical
@@ -43,7 +43,7 @@
 //! |   top: AtomicI64            |
 //! |   bottom: AtomicI64         |
 //! +-----------------------------+
-//! | Slot[0]  (slot_bytes)       |  marshalled T payload
+//! | Slot[0]  (slot_bytes)       |  marshaled T payload
 //! | Slot[1]                     |
 //! | ...                         |
 //! | Slot[capacity - 1]          |
@@ -54,7 +54,7 @@
 //! computation is `b & (capacity - 1)`. Each slot stores exactly
 //! `T::PAYLOAD_BYTES` rounded up to 8-byte alignment.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{fence, AtomicI64, AtomicU64, Ordering};
@@ -72,7 +72,7 @@ use subetha_core::Marshal;
 /// the PRFCHW feature flag (3DNow-era AMD has it natively; Intel
 /// since Broadwell), so it is safe to unconditionally emit.
 #[inline(always)]
-fn prefetchw_line(addr: *const u8) {
+pub(crate) fn prefetchw_line(addr: *const u8) {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: `prefetchw` is a hardware hint and never faults on
@@ -127,12 +127,16 @@ pub struct DequeHeader {
     pub magic: u64,
     pub capacity: u64,
     pub slot_bytes: u32,
-    pub _reserved_a: u32,
+    /// The element alignment the creator declared: `align_of::<T>()`
+    /// from a typed deque, the caller's value from a raw one.
+    pub alignment: u32,
     pub owner_pid: u64,
     pub top: AtomicI64,
     pub bottom: AtomicI64,
     pub epoch: AtomicU64,
-    pub _reserved_b: [u8; 8],
+    /// The caller-chosen layout tag the creator declared, zero from a
+    /// typed deque; a raw attacher refuses a region whose tag differs.
+    pub layout_tag: u64,
 }
 
 const _: () = assert!(std::mem::size_of::<DequeHeader>() == 64);
@@ -156,7 +160,7 @@ pub const fn deque_file_size<T: Marshal>(capacity: usize) -> usize {
 ///
 /// See the [module docs](self) for the protocol description and
 /// citation. Drop semantics: dropping the handle unmaps the file but
-/// does NOT delete it (in keeping with the rest of `subetha-cxc`'s
+/// leaves it in place (in keeping with the rest of `subetha-cxc`'s
 /// MMF-backed primitives).
 pub struct SharedDeque<T: Marshal> {
     mmap: MmapMut,
@@ -167,7 +171,7 @@ pub struct SharedDeque<T: Marshal> {
 }
 
 // SAFETY: the underlying mmap is `Send` and `Sync` (memmap2 guarantees
-// this for MmapMut), and the Chase-Lev protocol is the synchronisation.
+// this for MmapMut), and the Chase-Lev protocol is the synchronization.
 // PhantomData<T> carries no runtime data.
 unsafe impl<T: Marshal + Send> Send for SharedDeque<T> {}
 unsafe impl<T: Marshal + Send> Sync for SharedDeque<T> {}
@@ -186,14 +190,12 @@ impl<T: Marshal> SharedDeque<T> {
         }
         let slot_bytes = slot_bytes_for::<T>() as usize;
         let total = std::mem::size_of::<DequeHeader>() + capacity * slot_bytes;
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(total as u64)?;
         // SAFETY: a fresh file of the right size is exclusive to this
-        // process while we initialise the header.
+        // process while we initialize the header.
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        // Initialise header in place.
+        // Initialize header in place.
         // SAFETY: the mapped region is exactly `total` bytes; the
         // first sizeof(DequeHeader) bytes are aligned because mmap
         // returns page-aligned memory.
@@ -202,12 +204,12 @@ impl<T: Marshal> SharedDeque<T> {
             (*header_ptr).magic = DEQUE_MAGIC;
             (*header_ptr).capacity = capacity as u64;
             (*header_ptr).slot_bytes = slot_bytes as u32;
-            (*header_ptr)._reserved_a = 0;
+            (*header_ptr).alignment = std::mem::align_of::<T>() as u32;
             (*header_ptr).owner_pid = std::process::id() as u64;
             (*header_ptr).top.store(0, Ordering::Relaxed);
             (*header_ptr).bottom.store(0, Ordering::Relaxed);
             (*header_ptr).epoch.store(0, Ordering::Relaxed);
-            (*header_ptr)._reserved_b = [0; 8];
+            (*header_ptr).layout_tag = 0;
         }
         mmap.flush()?;
         Ok(Self { mmap, capacity, slot_bytes, _file: file, _phantom: PhantomData })
@@ -222,7 +224,7 @@ impl<T: Marshal> SharedDeque<T> {
     /// slot width does not match `T` returns
     /// [`DequeError::SlotBytesMismatch`].
     pub fn open_as_thief(path: impl AsRef<Path>) -> Result<Self, DequeError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let len = file.metadata()?.len() as usize;
         // SAFETY: the file's bytes back this process's view; the
         // owner process is the only writer of slot payloads, and we
@@ -250,7 +252,7 @@ impl<T: Marshal> SharedDeque<T> {
     }
 
     fn header(&self) -> &DequeHeader {
-        // SAFETY: header was initialised at create time; layout is
+        // SAFETY: header was initialized at create time; layout is
         // stable across the lifetime of the mmap.
         unsafe { &*(self.mmap.as_ptr() as *const DequeHeader) }
     }
@@ -283,7 +285,7 @@ impl<T: Marshal> SharedDeque<T> {
         let h = self.header();
         let b = h.bottom.load(Ordering::Relaxed);
         // Issue `PREFETCHW` on the slot the marshal is about to write
-        // BEFORE the `top.load(Acquire)`. The Acquire-load hides the
+        // ahead of the `top.load(Acquire)`. The Acquire-load hides the
         // prefetch's latency: by the time we drop into `value.marshal`
         // the slot's cache line is already arriving in M-state, so the
         // write does not pay a cross-core RFO upgrade.
@@ -303,9 +305,9 @@ impl<T: Marshal> SharedDeque<T> {
     }
 
     /// Owner-side batched push via a per-slot fill closure.
-    /// Reserves `n` contiguous slots under ONE `top.load(Acquire)`,
-    /// then calls `fill(i, slot_bytes)` for each slot, then ONE
-    /// Release fence and ONE `bottom.store(Relaxed)` publishes all
+    /// Reserves `n` contiguous slots under a single `top.load(Acquire)`,
+    /// then calls `fill(i, slot_bytes)` for each slot, then one
+    /// Release fence and one `bottom.store(Relaxed)` publishes all
     /// `n` slots atomically from the thieves' perspective.
     ///
     /// The closure writes directly into the slot's raw bytes,
@@ -348,8 +350,8 @@ impl<T: Marshal> SharedDeque<T> {
         Ok(())
     }
 
-    /// Owner-side batched push. Amortizes ONE `top.load(Acquire)`,
-    /// ONE Release fence, and ONE `bottom.store(Relaxed)` across the
+    /// Owner-side batched push. Amortizes a single `top.load(Acquire)`,
+    /// one Release fence, and one `bottom.store(Relaxed)` across the
     /// whole batch instead of paying them per item. Critical for
     /// producer-fast workloads where the per-item `top` load goes
     /// cross-core to the thief and dominates per-push cost.
@@ -385,10 +387,10 @@ impl<T: Marshal> SharedDeque<T> {
             };
             v.marshal(slot);
         }
-        // ONE Release fence + ONE bottom store publishes all N slots
+        // One Release fence and one bottom store publish all N slots
         // atomically from the thief's perspective: after the store,
         // bottom advanced by N and every slot in [b, b+N) carries
-        // the marshalled bytes (Release-fence ordered them all
+        // the marshaled bytes (Release-fence ordered them all
         // before this store).
         fence(Ordering::Release);
         h.bottom.store(b + values.len() as i64, Ordering::Relaxed);
@@ -414,7 +416,7 @@ impl<T: Marshal> SharedDeque<T> {
             return None;
         }
         let idx = (b as usize) & (self.capacity - 1);
-        // SAFETY: idx is in [0, capacity); slot is fully marshalled.
+        // SAFETY: idx is in [0, capacity); slot is fully marshaled.
         let slot = unsafe { std::slice::from_raw_parts(self.slot_ptr(idx) as *const u8, self.slot_bytes) };
         let v = T::unmarshal(slot).ok()?;
         if b > t {
@@ -518,7 +520,7 @@ mod tests {
 
     #[test]
     fn second_handle_steals_fifo() {
-        // Steals take from the TOP (oldest first), so a sequence of
+        // Steals take from the top (oldest first), so a sequence of
         // pushes then steals reads FIFO order.
         let path = tmp("steal-fifo");
         let owner = SharedDeque::<u64>::create(&path, 16).unwrap();

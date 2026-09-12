@@ -1,7 +1,7 @@
 //! `FailoverWatchdog` - scans the heartbeat table and reclaims
 //! in-flight work whose owning process has stopped beating.
 //!
-//! Architectural contract: failover happens within ONE epoch of the
+//! Architectural contract: failover happens within a single epoch of the
 //! peer's last beat. The watchdog advances the global epoch on each
 //! scan; any process whose `last_seen_epoch < global - grace_epochs`
 //! is presumed dead and its `in_flight_bitmap` is returned to the

@@ -724,7 +724,7 @@ mod windows_watch {
             let mut route_handle: HANDLE = ptr::null_mut();
             let mut iface_handle: HANDLE = ptr::null_mut();
             // SAFETY: valid callback pointers and a stable context; the output
-            // handles are owned by this Watcher and cancelled in Drop. The
+            // handles are owned by this Watcher and canceled in Drop. The
             // `FALSE` initial-notification flag means no callback fires before
             // a real change.
             unsafe {
@@ -756,7 +756,7 @@ mod windows_watch {
 
     impl Drop for Watcher {
         fn drop(&mut self) {
-            // Cancel both notifications FIRST, so no in-flight callback can run
+            // Cancel both notifications first, so no in-flight callback can run
             // after the Arc'd state is released. CancelMibChangeNotify2 blocks
             // until any running callback returns. `_state` then drops once the
             // callbacks are guaranteed quiesced.

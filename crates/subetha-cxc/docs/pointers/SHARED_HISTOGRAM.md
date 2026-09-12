@@ -103,7 +103,7 @@ record value 500 (bucket 3).
   config); record 1000 then percentile.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process recording**: N processes each record into the
   same histogram via lock-free fetch_add; observers query

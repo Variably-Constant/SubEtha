@@ -72,7 +72,7 @@ global-FIFO structure here even though it pays the shared CAS.
   line would make each side's CAS invalidate the other's copy.
   Separating them keeps producer and consumer coherence traffic
   apart, the same split the SPSC ring uses for `head`/`tail`.
-- **Vyukov MPMC protocol**: the per-slot sequence value IS the
+- **Vyukov MPMC protocol**: the per-slot sequence value is the
   state. `seq == pos` means free for the producer at `pos`;
   `seq == pos + 1` means published for the consumer at `pos`;
   the consumer's release stores `seq = pos + capacity`, handing
@@ -90,7 +90,7 @@ global-FIFO structure here even though it pays the shared CAS.
   `create_in_region` / `open_in_region` (caller-owned memory - huge / large
   pages or any `RegionOwner`; this is the global-FIFO MPMC primitive on large
   pages). `open` / `open_from_shm` / `open_in_region` validate magic +
-  capacity + slot size and do NOT re-initialize. `into_lazy(path, cap)` hands
+  capacity + slot size and do not re-initialize. `into_lazy(path, cap)` hands
   back a [`LazySharedRing`](#deferred-setup-lazysharedring) that defers the
   file create + mmap + init to the first `try_push` / `try_pop`.
 - **`flush` / `flush_async`** for durable disk persistence
@@ -205,7 +205,7 @@ is putting it in an MMF for cross-process visibility.
 |---|---|
 | Cross-thread | Single process; multiple threads share `Arc<SharedRing<P>>` |
 | Cross-process | Multiple processes call `SharedRing::open(path)` on the same file |
-| Disk-persistent | The MMF backing IS a real file; kernel writes dirty pages on its own schedule; `flush` forces sync |
+| Disk-persistent | The MMF backing is a real file; kernel writes dirty pages on its own schedule; `flush` forces sync |
 
 The same byte layout serves all three. The deployment choice is
 purely how the MMF handle is shared, not a different protocol.
@@ -232,7 +232,7 @@ Two harnesses on the same Zen+ R7 2700 / Windows 11 box:
 
 SharedRing leads crossbeam by ~1.3x on round-trip latency
 (Vyukov MPMC has lower per-op overhead than crossbeam's
-SPMC-optimised channel) and edges `sync_channel`.
+SPMC-optimized channel) and edges `sync_channel`.
 
 **SPSC sustained throughput (1M items, best-of-5; same captured
 run as the [Lamport SPSC page](../shared-ring-spsc/)):**
@@ -343,7 +343,7 @@ producer's rings, calling `heal_stuck_slot` for every `next_stuck_slot`.
 `SharedRing::into_lazy(path, cap)` (or `LazySharedRing::new`) defers the file
 create + ftruncate + mmap + layout init until the first op, for speculative
 channels that may never send. `get() -> Result<&SharedRing>` materializes
-once (race-safe via `OnceLock`) and caches; `is_initialised()` reports
+once (race-safe via `OnceLock`) and caches; `is_initialized()` reports
 whether it has; `try_push` / `try_pop` forward through `get()`. For an
 always-sending hot loop, materialize once outside the loop and reuse the
 `&SharedRing` so the lazy branch (one extra atomic load) stays out of it.
@@ -445,7 +445,7 @@ loop {
 ### Pattern: cross-process work queue
 
 Producer process generates jobs; worker process(es) pop and
-execute. No coordinator daemon; the MMF IS the queue.
+execute. No coordinator daemon; the MMF is the queue.
 
 ### Pattern: telemetry / log shipping
 

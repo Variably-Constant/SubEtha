@@ -4,7 +4,7 @@
 //! Architectural claim: SharedRegion provides typed cross-process
 //! arena allocation at lock-free fetch_add + Treiber-CAS cost.
 //! The Mutex-based baseline pays Mutex lock+unlock per allocate
-//! AND per free. Plus only the MMF version provides position-
+//! and per free. Plus only the MMF version provides position-
 //! independent OffsetPtr<T> resolvable across processes.
 //!
 //! Workloads:

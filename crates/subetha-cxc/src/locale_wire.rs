@@ -3,7 +3,7 @@
 //! The lowest byte locale, whose "other side" is the NIC hardware: bytes
 //! flow producer -> TX ring -> NIC, or NIC -> RX ring -> consumer, with
 //! the socket stack bypassed. Both OSes use the same architecture - a
-//! UMEM frame area plus FILL / COMPLETION / RX / TX rings shared with the
+//! UMEM frame area plus fill / completion / RX / TX rings shared with the
 //! kernel, and an XDP redirect program steering matching ingress frames
 //! into the RX ring. Only the OS plumbing is gated; the [`WireSocket`]
 //! `send_frame` / `recv_frame` surface is shared:
@@ -182,7 +182,7 @@ impl WireSocket {
 
     /// Receive one raw Ethernet frame from the AF_XDP RX ring into `out`,
     /// bypassing the socket recv path. Blocks up to `timeout_ms`; returns
-    /// `Ok(0)` on timeout. Recycles consumed frames back to the FILL ring.
+    /// `Ok(0)` on timeout. Recycles consumed frames back to the fill ring.
     pub fn recv_frame(&mut self, out: &mut [u8], timeout_ms: i32) -> io::Result<usize> {
         let n = unsafe { self.rx_q.poll_and_consume(&mut self.rx_descs, timeout_ms)? };
         if n == 0 {
@@ -279,7 +279,7 @@ mod windows_impl {
     }
 
     // XDP_RULE and its nested match-pattern union, laid out field-for-field
-    // so repr(C) reproduces the C ABI exactly. Only MATCH_UDP_DST + REDIRECT
+    // so repr(C) reproduces the C ABI exactly. Only `MATCH_UDP_DST` + `REDIRECT`
     // are used, but the whole shape must match for the offsets to be right.
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -745,7 +745,7 @@ mod windows_impl {
             }
 
             // Attach the redirect program: ingress UDP frames to udp_dst_port
-            // are redirected into this XSK (the Windows analogue of libxdp's
+            // are redirected into this XSK (the Windows analog of libxdp's
             // redirect program).
             let hook = XdpHookId {
                 layer: XDP_HOOK_L2,

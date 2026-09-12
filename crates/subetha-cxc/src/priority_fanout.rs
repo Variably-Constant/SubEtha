@@ -8,8 +8,8 @@
 //! # Why O(1) priority selection matters
 //!
 //! Naive priority queues either:
-//! - Use ONE ring with a priority field and scan linearly: O(K) per drain.
-//! - Use a binary heap: O(log K) per submit AND drain, plus heap reorg
+//! - Use a single ring with a priority field and scan linearly: O(K) per drain.
+//! - Use a binary heap: O(log K) per submit and per drain, plus heap reorg
 //!   under contention is hard to make lock-free.
 //!
 //! PriorityFanout pays O(1) on both sides: one fetch_or to set a bit
@@ -40,7 +40,7 @@
 //!      - Err(Empty): another consumer drained it first; clear bit and
 //!        retry the scan.
 //!
-//! The bitmap is a HINT (set after push, cleared on observed-empty
+//! The bitmap is a hint (set after push, cleared on observed-empty
 //! pop), not a source of truth; the ring is authoritative.
 //!
 //! # Race analysis
@@ -141,7 +141,7 @@ impl PriorityFanout {
         })
     }
 
-    /// Open an existing fanout. Pass the SAME `n_priorities` and
+    /// Open an existing fanout. Pass the same `n_priorities` and
     /// `ring_capacity` the creator used.
     pub fn open(
         base_path: impl AsRef<Path>,
@@ -192,9 +192,9 @@ impl PriorityFanout {
         Ok(())
     }
 
-    /// Drain ONE item from the highest non-empty priority. Returns
+    /// Drain one item from the highest non-empty priority. Returns
     /// the priority of the item that was drained. Returns
-    /// `Err(Empty)` only when ALL rings are empty.
+    /// `Err(Empty)` only when every ring is empty.
     pub fn try_drain_highest(&self, out: &mut [u8]) -> Result<usize, FanoutError> {
         // Bounded retry: in the absolute worst case we scan and clear
         // every priority bit once. Don't loop forever; a malicious
@@ -244,7 +244,7 @@ impl PriorityFanout {
         Err(FanoutError::Empty)
     }
 
-    /// Drain ONE item from a specific priority. Returns
+    /// Drain one item from a specific priority. Returns
     /// `Err(Ring(Empty))` when that ring is empty. Useful for
     /// dedicated workers that only handle a specific class.
     pub fn try_drain_priority(
@@ -514,9 +514,9 @@ mod tests {
     fn observer_sees_bitmap_update_during_workload() {
         let base = tmp_base("observer-bitmap");
         let f = Arc::new(PriorityFanout::create(&base, 8, 64).unwrap());
-        // Submit synchronously BEFORE spawning the observer loop so
+        // Submit synchronously before spawning the observer loop so
         // we test the visibility property, not a scheduler race
-        // between two unsynchronised threads.
+        // between two unsynchronized threads.
         f.submit(5, &payload_of(1)).unwrap();
         let f2 = f.clone();
         let stop = Arc::new(AtomicU32::new(0));

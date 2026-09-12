@@ -4,7 +4,7 @@
 //! Composes one [`SharedAtomicU64`] (the
 //! packed state) with an external
 //! [`HeartbeatTable`] (the live-peer source).
-//! Releases when all LIVE peers (per the heartbeat) have called
+//! Releases when all live peers (per the heartbeat) have called
 //! `wait` at the current epoch.
 //!
 //! # Why this exists
@@ -19,7 +19,7 @@
 //!
 //! # State encoding
 //!
-//! ONE SharedAtomicU64 holds both the current epoch and the arrived
+//! A single SharedAtomicU64 holds both the current epoch and the arrived
 //! count, packed as `(epoch << 32) | arrived`. This makes the entire
 //! protocol single-atomic: register-as-arrived and release-the-
 //! barrier are both single CAS operations, so there's no ordering
@@ -159,7 +159,7 @@ impl EpochBarrier {
         count
     }
 
-    /// Wait for ALL live peers to reach `my_epoch`. Blocks; uses an
+    /// Wait for all live peers to reach `my_epoch`. Blocks; uses an
     /// adaptive spin / yield / sleep backoff between releaser checks.
     pub fn wait(&self, my_epoch: u32) -> Result<(), BarrierError> {
         let r = self.wait_inner(my_epoch, None, None);
@@ -189,7 +189,7 @@ impl EpochBarrier {
         self.wait_inner(my_epoch, None, Some(Instant::now() + timeout))
     }
 
-    /// Wait with a deadline AND a quorum threshold.
+    /// Wait with a deadline and a quorum threshold.
     pub fn wait_quorum_timeout(
         &self, my_epoch: u32, quorum: u32, timeout: Duration,
     ) -> Result<(), BarrierError> {
@@ -399,7 +399,7 @@ mod tests {
             r1.store(true, O::Release);
         });
 
-        // Wait for the early arriver to be IN the barrier, then check
+        // Wait for the early arriver to be in the barrier, then check
         // it has not passed while it is the only one there.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !entered.load(O::Acquire) {

@@ -8,7 +8,7 @@
 # CI deploy: .github/workflows/wiki-deploy.yml.
 
 # Case matters: GitHub Pages project paths are case-sensitive and GitHub
-# does NOT case-redirect them, so this must match the repository slug
+# does not case-redirect them, so this must match the repository slug
 # `SubEtha` exactly. The deploy workflow overrides it with a slug-derived
 # --baseURL at build time; this value is the local-build fallback.
 baseURL: https://variably-constant.github.io/SubEtha/

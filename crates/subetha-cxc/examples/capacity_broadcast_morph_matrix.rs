@@ -1,4 +1,4 @@
-//! Parameterised end-to-end demonstration of
+//! Parameterized end-to-end demonstration of
 //! `CapacityBroadcastRing` across the Subscribers x Locale x Size
 //! matrix.
 //!
@@ -93,7 +93,7 @@ fn main() {
     }
 
     // Morph thread: cycle MORPH_TARGETS at 200us until producer
-    // finishes AND every subscriber has fully drained.
+    // finishes and every subscriber has fully drained.
     let r_morph = Arc::clone(&ring);
     let morphs_c = Arc::clone(&morphs_completed);
     let drained_check = Arc::clone(&drained_per_sub);

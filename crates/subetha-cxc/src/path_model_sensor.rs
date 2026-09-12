@@ -306,16 +306,16 @@ impl PathModel {
 
     /// Estimated number of Wi-Fi backhaul hops (0..=3) behind the first hop.
     ///
-    /// A single-radio repeater receives then retransmits on the SAME channel;
+    /// A single-radio repeater receives then retransmits on the same channel;
     /// carrier-sense self-interference roughly halves throughput per hop. So
     /// with `nominal_bps` the single-hop PHY rate (the first-hop MCS, item 5)
-    /// and `BtlBw` the measured end-to-end bottleneck (item 6),
+    /// and `BtlBw` the measured end-to-end bottleneck,
     /// `round(log2(nominal / BtlBw))` is the backhaul-hop count - 2x for one
     /// hop, 4x for two, 8x for three.
     ///
     /// Gated so real congestion does not read as a mesh hop: the first hop must
     /// be healthy (`mcs_norm` high - the local radio is fine, so the reduction
-    /// is downstream) AND the loss must NOT be congestion-classed
+    /// is downstream) and the loss must fall outside the congestion class
     /// (`congestion_fraction` low). A single-radio repeater's penalty is a
     /// structural bandwidth halving with no extra loss, whereas a congested
     /// shared link shows the rising-delay, congestion-classed loss the item-3
@@ -373,8 +373,8 @@ mod tests {
         assert_eq!(m.bdp_blocks(), 50, "BDP in blocks = BtlBw * RTprop");
     }
 
-    /// A queue that inflates RTT must NOT lower `BtlBw` (the max filter holds
-    /// the bottleneck peak) and must NOT lift `RTprop` (the min filter holds
+    /// A queue that inflates RTT leaves `BtlBw` where it is (the max filter holds
+    /// the bottleneck peak) and leaves `RTprop` where it is (the min filter holds
     /// the bloat-free path). This is the capacity/delay separation.
     #[test]
     fn queue_does_not_corrupt_estimates() {
@@ -433,7 +433,7 @@ mod tests {
     }
 
     /// Backhaul-hop count is `round(log2(nominal / BtlBw))`, clamped 0..=3, but
-    /// only when the first hop is healthy AND the loss is not congestion-classed
+    /// only when the first hop is healthy and the loss is not congestion-classed
     /// - so a congested shared link does not read as a mesh hop.
     #[test]
     fn backhaul_hops_from_capacity_ratio_gated() {
@@ -474,7 +474,7 @@ mod tests {
     }
 
     /// A run of coalesced ACKs that reports a large delivered jump over a
-    /// near-zero inter-ACK gap must NOT explode `BtlBw`. The anchor-based
+    /// near-zero inter-ACK gap leaves `BtlBw` intact. The anchor-based
     /// minimum window means the burst alone (before the window elapses) emits
     /// nothing, and the eventual sample divides by the real window, not the
     /// near-zero gap - so the estimate stays bounded instead of latching a
@@ -533,7 +533,7 @@ mod tests {
     /// An in-order frontier leap - a head-of-line loss stalls `ack_through`,
     /// then a retransmit unblocks a buffered backlog so the delivered count
     /// jumps hundreds of blocks in one ACK window - must be capped at the rate
-    /// the blocks were actually SENT, not the narrow ACK window the leap landed
+    /// the blocks were actually sent, not the narrow ACK window the leap landed
     /// in. This is the contaminant that fabricated a 45 Gbit/s `BtlBw` over
     /// real lossy Wi-Fi.
     #[test]
@@ -541,7 +541,7 @@ mod tests {
         let mut m = PathModel::new(1000);
         m.on_ack(0, 0, 5000, 0); // anchor: delivered 0, sent at t=0
         // 500 buffered blocks unblock at once: delivered leaps 0 -> 500 inside a
-        // 20 ms ACK window, but those blocks were SENT over 100 ms. The ACK
+        // 20 ms ACK window, but those blocks were sent over 100 ms. The ACK
         // window alone would read 500 * 1000 B / 20 ms = 2.5e7 B/s; the send
         // span caps it at 500 * 1000 B / 100 ms = 5e6 B/s = 40 Mbit/s.
         m.on_ack(500, 20_000, 5000, 100_000);

@@ -52,7 +52,7 @@ re-open the new backing atomically.
   creates a new backing file at the next version, restores the
   snapshot, then publishes the new (version, generation,
   strategy) with a single Release CAS. Old readers re-open via
-  the generation-check on their next access. SINGLE-WRITER only
+  the generation-check on their next access. single-writer only
   (concurrent migrators race the CAS; the loser orphans its
   backing file).
 - **`maybe_migrate_by_policy(contains_to_insert_ratio,
@@ -114,7 +114,7 @@ re-open the new backing atomically.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   cleanup of all backing files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process migration**: when one process migrates,
   other processes' next access re-opens the new backing via
@@ -188,7 +188,7 @@ coordination needed.
 - **Migration costs O(N)**: amortize over hot workload.
 - **Migration ceiling at 2^48 (~281 trillion)**: a migration
   bumps the u32 version; on version-wrap the u16 generation
-  bumps. Only when BOTH saturate does `migrate_to` refuse with
+  bumps. Only when both saturate does `migrate_to` refuse with
   `VersionExhausted` (practically unreachable).
 - **Two backings only**: Vec and Map. (The module documents the
   extension to more backings as out-of-scope for the current

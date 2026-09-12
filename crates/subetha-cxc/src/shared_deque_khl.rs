@@ -1,6 +1,6 @@
 //! `SharedDequeKhl` - K-axis Hierarchical LCRQ deque, MMF-backed.
 //!
-//! Novel SubEtha-native hybrid that pulls THREE amortization levers
+//! SubEtha-native hybrid that pulls three amortization levers
 //! the four prior primitives pull individually:
 //!
 //! 1. **KHPD's 3-items-per-Release-store** - each ring slot carries
@@ -10,7 +10,7 @@
 //!    line bounce per 3 items.
 //! 2. **LOH's K-slots-per-counter-update** -
 //!    [`SharedDequeKhl::publish_batch`] reserves
-//!    `ceil(K / KHL_ITEMS_PER_SLOT)` slots with ONE update of the
+//!    `ceil(K / KHL_ITEMS_PER_SLOT)` slots with a single update of the
 //!    producer tail counter, amortizing the producer-counter cost
 //!    across the whole batch.
 //! 3. **Chase-Lev's owner-private tail counter** - the producer's
@@ -41,7 +41,7 @@
 //!
 //! KHL matches KHPD's per-slot count, matches LOH's per-batch
 //! counter amortization, and adds Chase-Lev's owner-private counter
-//! to save the LOCK XADD on top of that.
+//! to save the `LOCK XADD` on top of that.
 //!
 //! ## Layout
 //!
@@ -81,7 +81,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{fence, AtomicI64, AtomicU64, Ordering};
@@ -223,8 +223,8 @@ pub struct KhlHeader {
 /// `n_items` is always in `1..=KHL_ITEMS_PER_SLOT = 3`, which fits
 /// in 2 bits. Instead of paying a separate store to publish
 /// `n_items` alongside the sequence number, we encode it in the low
-/// 2 bits of `packed_sequence`. The producer's ONE Release-store on
-/// `packed_sequence` publishes BOTH the protocol state AND the
+/// 2 bits of `packed_sequence`. The producer's single Release-store on
+/// `packed_sequence` publishes both the protocol state and the
 /// payload count - saving one store per slot, which fuses the
 /// `K_inner` axis (items per slot) with the `K_gating` axis
 /// (per-slot atomic) at the slot's cache line.
@@ -318,18 +318,13 @@ unsafe impl Sync for SharedDequeKhl {}
 
 impl SharedDequeKhl {
     /// Create a fresh KHL file. `capacity` rounds up to the next
-    /// power of two (min 2). Capacity is in SLOTS; total item
+    /// power of two (min 2). Capacity is in slots; total item
     /// capacity is `capacity * KHL_ITEMS_PER_SLOT`.
     pub fn create<P: AsRef<Path>>(path: P, capacity: usize) -> io::Result<Self> {
         let capacity = capacity.max(2).next_power_of_two();
         let size = khl_file_size(capacity);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(size as u64)?;
 
         // SAFETY: `map_mut` soundness contract is upheld by writing
@@ -353,7 +348,7 @@ impl SharedDequeKhl {
             std::ptr::write_bytes((*header_ptr)._pad_head.as_mut_ptr(), 0, 56);
         }
 
-        // Initialise each slot's sequence to its index. On first
+        // Initialize each slot's sequence to its index. On first
         // producer touch, `sequence == idx`, so the publisher knows
         // the slot is ready.
         let slots_start = std::mem::size_of::<KhlHeader>();
@@ -386,10 +381,7 @@ impl SharedDequeKhl {
 
     /// Open an existing KHL file.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let size = file.metadata()?.len() as usize;
         if size < std::mem::size_of::<KhlHeader>() {
             return Err(io::Error::new(
@@ -494,7 +486,7 @@ impl SharedDequeKhl {
 
     /// Owner-side batch publish. Packs `items` into
     /// `ceil(items.len() / KHL_ITEMS_PER_SLOT)` slots, advances the
-    /// owner-private tail by that many slots via ONE Release-store
+    /// owner-private tail by that many slots via a single Release-store
     /// (no atomic fetch_add), and writes each slot's payload with one
     /// Release-store on the per-slot Vyukov sequence number.
     ///
@@ -545,7 +537,7 @@ impl SharedDequeKhl {
         // is overkill for the protocol (the per-slot Release on
         // sequence is what publishes the slot bytes; tail is just a
         // high-watermark hint to thieves), but Release lets the thief
-        // Acquire-load on tail synchronise reliably even on weakly-
+        // Acquire-load on tail synchronize reliably even on weakly-
         // ordered architectures. On x86 a Release store costs the
         // same as a Relaxed store.
         h.tail.store(base + n_slots as i64, Ordering::Release);
@@ -596,8 +588,8 @@ impl SharedDequeKhl {
         match self.publish_radius {
             PublishRadius::Local => {
                 // SAFETY: producer owns the slot for this round.
-                // ONE Release-store on packed_sequence publishes
-                // BOTH the protocol state AND `n_items` together
+                // A single Release-store on packed_sequence publishes
+                // both the protocol state and `n_items` together
                 // (cross-axis fusion: K_inner + K_gating).
                 unsafe {
                     let n = items.len();
@@ -668,8 +660,8 @@ impl SharedDequeKhl {
             // drains the WC store buffer so the publish is globally
             // visible. The MOVDIR64B atomically publishes the
             // sequence + n_items + items together, so the consumer
-            // observes either the OLD slot (seq != idx + 1) or the
-            // NEW slot (seq == idx + 1) with no partial publish
+            // observes either the old slot (seq != idx + 1) or the
+            // new slot (seq == idx + 1) with no partial publish
             // visible.
             unsafe {
                 core::arch::asm!(
@@ -709,8 +701,8 @@ impl SharedDequeKhl {
         let packed = unsafe {
             (*slot).packed_sequence.load(Ordering::Acquire)
         };
-        // Cross-axis fusion: the ONE Acquire-load above reads BOTH
-        // the protocol state (idx_value) AND the payload count
+        // Cross-axis fusion: the single Acquire-load above reads both
+        // the protocol state (idx_value) and the payload count
         // (n_items) packed into the same atomic word.
         let idx_value = unpack_idx(packed);
         if idx_value != head + 1 {
@@ -735,7 +727,7 @@ impl SharedDequeKhl {
         };
         // Release the slot for the next round at head + capacity.
         // n_items=0 in the released state (consumed).
-        // SAFETY: still our slot; the Release synchronises with the
+        // SAFETY: still our slot; the Release synchronizes with the
         // next producer's Acquire-spin in publish_slot_at.
         unsafe {
             (*slot).packed_sequence.store(

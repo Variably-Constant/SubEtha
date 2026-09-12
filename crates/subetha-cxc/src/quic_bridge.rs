@@ -12,7 +12,7 @@
 //!
 //! A per-slot `write_all` await (one stream write per 64-byte item)
 //! serializes the bridge on reactor latency - microseconds per item
-//! regardless of wire speed - so the client BURST-DRAINS the ring:
+//! regardless of wire speed - so the client burst-drains the ring:
 //! every already-available slot (up to [`EGRESS_BATCH_SLOTS`]) is
 //! copied into one contiguous buffer and handed to quinn in a
 //! single write. The 64-byte memcpy per slot is noise next to the
@@ -287,7 +287,7 @@ impl QuicBridgeServer {
 
 /// Generate a self-signed certificate for `sni_name`, returned as
 /// raw DER bytes: `(cert_der, pkcs8_key_der)`. The cross-host
-/// building block: generate ONCE, ship both files to the host(s)
+/// building block: generate once, ship both files to the host(s)
 /// that run servers and the cert alone to the host(s) that run
 /// clients, then rebuild the configs from bytes with
 /// [`make_server_config_from_der`] / [`make_client_config_from_der`].

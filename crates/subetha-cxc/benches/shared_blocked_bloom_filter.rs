@@ -2,7 +2,7 @@
 //!
 //! Architectural claim: a blocked Bloom filter packs every probe for one
 //! item into a single 512-bit (one cache-line) block, so `contains` touches
-//! ONE line regardless of `n_hashes`. The standard filter scatters its
+//! one line regardless of `n_hashes`. The standard filter scatters its
 //! `n_hashes` probes across the whole bit array - up to `n_hashes` separate
 //! cache lines per query. That difference is invisible while the whole
 //! filter fits in cache (every line is warm); it pays off at the blocked

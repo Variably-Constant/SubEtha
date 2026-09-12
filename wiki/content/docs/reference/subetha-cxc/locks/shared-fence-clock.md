@@ -25,7 +25,7 @@ what distributed snapshot isolation needs.
 > (**1.50x faster**) and naive `SystemTime` 49.24 ns. get_local
 > at **2.01 ns** vs `Mutex<Hlc>` 17.54 ns (**8.72x faster**).
 > compute_global_fence walks 16 slots in 71.28 ns (~4.5 ns/slot).
-> Architectural lever: lock-free HLC AND cross-process AND
+> Architectural lever: lock-free HLC and cross-process and
 > O(1) fence-publish for dashboards.
 
 **Constraints (read first):**
@@ -149,7 +149,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
 
 1. **tick 1.50x faster** than `Mutex<Hlc>`. Acquire-load + max
    + Release-store vs Mutex full cycle. The naive `SystemTime`
-   baseline at 49 ns is NOT an HLC: no logical-counter
+   baseline at 49 ns is not an HLC: no logical-counter
    causality. Comparison only shows HLC adds ~3% over wall
    clock.
 2. **get_local 8.72x faster.** One atomic load vs full lock
@@ -170,7 +170,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
   64-slot for compute_global_fence (with 16 active).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process tick + fence**: N processes each tick their
   own slot; any process computes the global fence. The mutex

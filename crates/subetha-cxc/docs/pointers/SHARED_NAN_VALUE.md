@@ -10,7 +10,7 @@ A 64-bit NaN-boxed value that packs `f64 | i32 | u32 | bool | nil
 | OffsetPtr<T>` into a single `u64` slot via the IEEE-754 NaN bit
 patterns the FPU never produces during normal computation. Same
 shape as V8 / SpiderMonkey NaN boxing but cross-process safe:
-the `OffsetPtr` variant carries a 32-bit INDEX into a
+the `OffsetPtr` variant carries a 32-bit index into a
 `SharedRegion`, not a virtual address, so the same `u64` bit
 pattern resolves to the same logical pointer in every process
 that has the region mapped.
@@ -28,7 +28,7 @@ that has the region mapped.
 - **Boxed-prefix `0xFFF8_0000_0000_0000`.** Sign bit 1 + all-ones
   exponent + quiet-NaN bit. The FPU's normal-computation NaNs use
   sign 0, so the prefix doesn't collide; any NaN passed to
-  `from_f64` is CANONICALISED to the positive canonical qNaN
+  `from_f64` is canonicalized to the positive canonical qNaN
   (`0x7FF8_0000_0000_0000`) so the stored bits never look boxed.
 - **3-bit tag field (8 slots; 6 used, 2 reserved).**
   Adding a new tag value requires reserving one of the
@@ -47,7 +47,7 @@ that has the region mapped.
 - **`from_f64(NaN)` is lossy.** Any NaN input
   (positive, negative, signaling, quiet, with specific payload
   bits) is collapsed to `CANONICAL_QNAN`. The original NaN bit
-  pattern is NOT recoverable.
+  pattern is not recoverable.
 - **`#[repr(C)]` 8-byte slot.** Layout-stable for
   cross-process bit patterns.
 - **Boolean payload uses only the lowest bit**.
@@ -89,7 +89,7 @@ pub struct SharedNaNValue {
 One `u64` slot. The high 13 bits act as the discriminator: if they
 match the boxed-prefix `0xFFF8_0000_0000_0000`, the next 3 bits
 hold the tag (`nil | i32 | u32 | bool | OffsetPtr | reserved`) and
-the low 48 bits hold the payload. If the high 13 bits do NOT match
+the low 48 bits hold the payload. If the high 13 bits do not match
 the prefix, the whole `u64` is interpreted as an IEEE-754 `f64`
 bit pattern.
 
@@ -124,8 +124,8 @@ The prefix `sign=1 + exp=0x7FF + qNaN=1` is
 they don't collide with the boxed prefix. To be safe against
 caller-supplied NaNs (e.g. from manual
 `f64::from_bits(0xFFF8_FFFF_FFFF_FFFF)`), `from_f64(NaN)`
-canonicalises the bit pattern to `0x7FF8_0000_0000_0000`
-(positive canonical qNaN, NOT boxed).
+canonicalizes the bit pattern to `0x7FF8_0000_0000_0000`
+(positive canonical qNaN, not boxed).
 
 `✶ Insight ────────────────────────────────`
 
@@ -133,7 +133,7 @@ The NaN-box pattern is what makes interpreters like V8 and
 SpiderMonkey efficient: every JavaScript value (number / string
 ptr / object ptr / undefined / null / boolean) fits in 8 bytes.
 Adding cross-process semantics is the additional move:
-SharedNaNValue stores INDICES (OffsetPtr) instead of virtual
+SharedNaNValue stores indices (OffsetPtr) instead of virtual
 addresses, so the 8-byte bit pattern is portable across
 processes that share the SharedRegion.
 
@@ -281,7 +281,7 @@ contender groups; SharedNaNValue vs Rust enum baseline.
 | `construct_f64` | **1.23 ns** | 3.69 ns | **3.0x faster** |
 
 The construct path is simple shift + OR for SharedNaNValue; the
-enum path writes the discriminant byte AND the payload, then
+enum path writes the discriminant byte and the payload, then
 returns the larger 16-byte value (more work + more bytes to
 zero).
 
@@ -294,8 +294,8 @@ zero).
 
 i32 extraction is at parity: both paths check the discriminator
 and mask the low bits. f64 extraction is faster on the NaN-box
-because there's no tag check (the boxed-prefix test fails AND
-the whole u64 IS the f64 bit pattern), whereas the enum path
+because there's no tag check (the boxed-prefix test fails and
+the whole u64 is the f64 bit pattern), whereas the enum path
 walks the discriminant.
 
 ### Storage size
@@ -321,10 +321,10 @@ Within 4% of each other. Filter-then-sum is dominated by the
 extraction logic at each slot; the storage density doesn't help
 here because the 4 K slots fit in L1 either way (32 KiB for
 NaN-box vs 64 KiB for enum, both L1-resident on commodity
-hardware). The win compounds for collections that EXCEED
+hardware). The win compounds for collections that exceed
 L1 / L2 / L3 boundaries.
 
-**The bench audit (rule 3b) confirms the bench is fair:** each
+**The bench audit confirms the bench is fair:** each
 contender does the same logical work (construct, extract, filter,
 sum) with the only difference being the storage representation.
 Both paths are inlined; both compile to similar shift+mask
@@ -349,7 +349,7 @@ overhead, not algorithmic differences.
 
 All confirmed against the source or the bench:
 
-- **NaN payloads are LOSSY.** `from_f64(NaN)` canonicalises to
+- **NaN payloads are lossy.** `from_f64(NaN)` canonicalizes to
   `0x7FF8_0000_0000_0000`. The specific NaN
   bit pattern (sNaN vs qNaN, NaN payload bits) is not preserved.
   Test `f64_nan_canonicalised` exercises this.
@@ -362,12 +362,12 @@ All confirmed against the source or the bench:
   encoding.
 - **48-bit payload caps `OffsetPtr` index at 2^32 (u32 max).**
   `p.index as u64` is the encoding. The full 48-bit payload is
-  NOT used by `from_offset_ptr`; only the low 32 bits.
+  not used by `from_offset_ptr`; only the low 32 bits.
 - **No `from_negative_f64_nan` path.** A caller that constructs
   a NaN with `sign=1` and passes it via `from_raw(...)` (bypassing
-  `from_f64`) WILL produce a value that decodes as "boxed". This
+  `from_f64`) will produce a value that decodes as "boxed". This
   is a constraint on `from_raw` callers: validate before
-  insertion or rely on `from_f64` to canonicalise.
+  insertion or rely on `from_f64` to canonicalize.
 - **`raw()` returns the underlying u64.** Cross-process callers
   must agree on endianness if they transit the value via raw
   bytes outside the MMF (e.g. over a network socket). On a single
@@ -385,7 +385,7 @@ All confirmed against the source or the bench:
   The encoding masks to 32 bits; high bits are silently dropped.
 - **Don't use `from_raw(...)` with hand-constructed bit patterns
   unless you understand the boxed prefix.** A `from_raw(0xFFF8_...)`
-  with `tag = 0` IS a `Nil`; a `from_raw(0xFFF8_...)` with a
+  with `tag = 0` is a `Nil`; a `from_raw(0xFFF8_...)` with a
   reserved tag returns `NaNValueType::Reserved`.
 - **Don't expect to round-trip a specific NaN payload through
   `from_f64`.** Use `from_raw(specific_nan_bits)` if you need

@@ -1,7 +1,7 @@
 //! Top-level user-facing IPC API.
 //!
 //! Wraps the [`MmfDispatcher`] family pick behind one type per
-//! access pattern, so callers express WHAT they want (streaming,
+//! access pattern, so callers express what they want (streaming,
 //! work-stealing, key-value) and the dispatcher decides which
 //! MMF-backed primitive to use under the hood. The shape of the
 //! API mirrors `std::sync::mpsc::channel` but adds:
@@ -267,7 +267,7 @@ impl<T: Marshal> Channel<T> {
         ))
     }
 
-    /// Wake whoever waits to RECEIVE: the awaiting task's `Waker` and
+    /// Wake whoever waits to receive: the awaiting task's `Waker` and
     /// any thread parked in `recv_blocking`. A pure-sync channel never
     /// trips `has_recv_waiter`, so this returns on one relaxed load.
     fn signal_consumer(&self) {
@@ -280,7 +280,7 @@ impl<T: Marshal> Channel<T> {
         self.consumer_waker.wake_up_to(self.ring.producer_seq());
     }
 
-    /// Wake whoever waits to SEND.
+    /// Wake whoever waits to send.
     fn signal_producer(&self) {
         if !self.has_send_waiter.load(Ordering::Relaxed) {
             return;
@@ -783,7 +783,7 @@ impl AutoIpc {
                 n_consumers: self.n_consumers,
             };
         }
-        // n_producers >= 2 OR n_consumers >= 2 with no batch +
+        // n_producers >= 2 or n_consumers >= 2 with no batch +
         // streaming intent -> streaming MPMC.
         // single-producer + batch_size hint -> work-stealing.
         // wait_idle -> work-stealing (URD).

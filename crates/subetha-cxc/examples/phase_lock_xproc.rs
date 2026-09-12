@@ -2,7 +2,7 @@
 //!
 //! Elevates the in-process `phase_lock_probe` to the same rigor as
 //! the flagship cross-process IPC bench (`cross_process_compare`): a
-//! REAL two-process setup over a file-backed `BlockingSpscRing`, with
+//! real two-process setup over a file-backed `BlockingSpscRing`, with
 //! machine-readable JSON output. A child process is the producer
 //! (paced at a regular period); the parent is the consumer, running
 //! `recv_blocking` with phase-locking OFF then ON. Wake-to-item

@@ -6,7 +6,7 @@
 //! denominator), [`SharedAtomicBool`] (the
 //! done flag), and [`SharedCell<R>`](crate::SharedCell) (the result
 //! payload). The work closure receives a [`ProgressReporter`] handle
-//! that increments the progress counter as it proceeds; any OTHER
+//! that increments the progress counter as it proceeds; any other
 //! process or thread can call `fraction_complete` / `current_progress`
 //! / `is_done` / `read_result` at O(1) atomic cost without blocking
 //! or polling a result queue.
@@ -29,12 +29,12 @@
 //! - `<base>.done.bin`     - SharedAtomicBool, set true on completion
 //! - `<base>.result.bin`   - `SharedCell<R>`, written once at completion
 //!
-//! Pass the BASE PATH (without extension) to `create` / `open`; the
+//! Pass the base path (without extension) to `create` / `open`; the
 //! wrapper appends the extensions.
 //!
 //! # Composition with the scheduler
 //!
-//! ProgressTask is INDEPENDENT of `BackgroundScheduler`; it works
+//! ProgressTask is independent of `BackgroundScheduler`; it works
 //! standalone via `run` / `spawn`. To integrate with the scheduler,
 //! a Pass closure can `ProgressTask::open(base)` to obtain a handle
 //! and call `begin(total)` to get a reporter. The worker side only
@@ -137,7 +137,7 @@ impl<R: Copy + Send + Sync + 'static> subetha_sidecar::AdaptiveInstance for Prog
 
 impl<R: Copy + 'static> ProgressTask<R> {
     /// Create a new ProgressTask at `base_path`. Allocates four MMF
-    /// files; initialises progress=0, total=0, done=false, result=
+    /// files; initializes progress=0, total=0, done=false, result=
     /// `initial_result`.
     pub fn create(
         base_path: impl AsRef<Path>,
@@ -223,7 +223,7 @@ impl<R: Copy + 'static> ProgressTask<R> {
     }
 
     /// Read the most-recently-published result. Returns None when
-    /// `is_done` is false (a result MAY still be there from a prior
+    /// `is_done` is false (a result may still be there from a prior
     /// completed run, but the current run is not yet finished).
     pub fn read_result(&self) -> Option<R> {
         let r = if self.is_done() {

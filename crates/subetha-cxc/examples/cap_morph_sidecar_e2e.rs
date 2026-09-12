@@ -18,7 +18,7 @@
 //! 3. Repeat several cycles.
 //!
 //! The harness prints capacity changes as they happen so a human
-//! can SEE the sidecar's decisions reflected in the ring state.
+//! can see the sidecar's decisions reflected in the ring state.
 //! At the end it asserts at least one grow and one shrink fired
 //! to prove the auto-morph path is wired end-to-end.
 //!
@@ -105,7 +105,7 @@ fn main() {
                 }
             }
             // Pause to let the consumer drain. The drop in
-            // fill_ratio is what triggers the SHRINK decision.
+            // fill_ratio is what triggers the shrink decision.
             thread::sleep(Duration::from_millis(DRAIN_PAUSE_MS));
         }
     });

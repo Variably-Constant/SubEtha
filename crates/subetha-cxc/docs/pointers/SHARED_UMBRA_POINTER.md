@@ -6,8 +6,8 @@
 ![Layout](https://img.shields.io/badge/layout-OffsetPtr_%2B_prefix_%2B_ext-success)
 ![Scope](https://img.shields.io/badge/Scope-cross--process-brightgreen)
 
-A 16-byte cross-process pointer that carries a 4-byte CONTENT
-PREFIX inline. Filter scans match on the prefix in-register
+A 16-byte cross-process pointer that carries a 4-byte content
+prefix inline. Filter scans match on the prefix in-register
 before touching the underlying value in the SharedRegion. The
 direct cross-process lift of in-process `UmbraPointer<T>` (one
 field swap: `*const T` becomes `OffsetPtr<T>`); everything else
@@ -32,7 +32,7 @@ extension API (tag + payload) for caller metadata.
 - **`T: Copy + 'static` required.** The
   SharedRegion stores `T` by value in fixed-size slots; non-Copy
   types are not supported.
-- **16-byte alignment is REQUIRED** (`#[repr(C, align(16))]`).
+- **16-byte alignment is required** (`#[repr(C, align(16))]`).
   The layout is verified by a `const _:()` assertion block. SIMD scans depend
   on the prefix being at a stable byte offset.
 - **`#[repr(C)]` layout, PoD.** Source confirms 16 bytes (4
@@ -41,8 +41,8 @@ extension API (tag + payload) for caller metadata.
 - **NIL is all zero.** `target =
   OffsetPtr::NIL` (u32::MAX), `prefix = 0`, `ext_tag = 0`,
   `ext_payload = [0; 7]`. A freshly-zeroed 16-byte MMF slot
-  IS NIL (technically, `target.is_nil()` is the right check).
-- **Prefix is caller-supplied OR caller-computed.** Source
+  is NIL (technically, `target.is_nil()` is the right check).
+- **Prefix is caller-supplied or caller-computed.** Source
   exposes three constructors: explicit prefix (`from_region_alloc`),
   content-prefix (`from_region_alloc_content_prefix`, first 4
   bytes of T in native endian), or hash-prefix
@@ -68,9 +68,9 @@ extension API (tag + payload) for caller metadata.
   region read per call; use only after a prefix check unless
   the value is needed unconditionally.
 - **In-process only via heap pointers.** A `SharedUmbraPointer`
-  written by process A and read by process B works ONLY when
+  written by process A and read by process B works only when
   both have the same `SharedRegion` mapped. The OffsetPtr is an
-  index into THAT region; without the region, the pointer is
+  index into that region; without the region, the pointer is
   meaningless.
 
 ---
@@ -256,7 +256,7 @@ TAG 0 is reserved for "no extension set". TAG values 1..=255 are
 caller-defined; allocate them in your application by a central
 registry (doc comment, constants module, etc.).
 
-`set_ext<E>` and `ext<E>` are NOT atomic. Don't share a
+`set_ext<E>` and `ext<E>` are not atomic. Don't share a
 SharedUmbraPointer mutably across threads without synchronization.
 
 ---
@@ -394,7 +394,7 @@ L1-resident prefix compare.
 **2.12x speedup.** The architectural sweet spot. The
 resolve-every path is dominated by the 9 999 unnecessary region
 reads. The prefix-filter path pays the in-register check for all
-entries and ONE region read for the actual hit.
+entries and one region read for the actual hit.
 
 For larger T (the bench uses `Wide = 32 bytes`; real-world rows
 or packets can be hundreds of bytes), the gap widens: the
@@ -411,7 +411,7 @@ stays at `N * 16 bytes` plus a constant for the few matches.
 The construction cost is dominated by the region allocation
 itself; the prefix-copy is a single 4-byte read.
 
-**The bench audit (rule 3b) confirms the bench is fair:** each
+**The bench audit confirms the bench is fair:** each
 pair of contenders does the same logical work (scan, compare,
 count matches) with the only difference being whether the prefix
 filter is applied. The 2.12x speedup is the prefix-filter
@@ -449,11 +449,11 @@ All confirmed against the source or the bench:
   central tag registry is essential at the application level.
 - **7-byte extension limit.** Larger
   metadata needs an OffsetPtr to a separate region.
-- **Extensions are NOT atomic.** `set_ext` and `ext` write /
+- **Extensions are not atomic.** `set_ext` and `ext` write /
   read across the tag + payload boundary without
   synchronization. For concurrent writers use external locking
   (e.g. SharedRwLock).
-- **`Hash` and `Eq` are over (target, prefix), NOT including
+- **`Hash` and `Eq` are over (target, prefix), not including
   extensions.** Two pointers with the same
   target+prefix but different extensions compare equal. This is
   by design (the extension is metadata, not identity).

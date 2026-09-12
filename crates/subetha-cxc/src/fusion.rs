@@ -43,7 +43,7 @@ pub struct SensorSnapshot {
     pub rev_loss: f32,
     /// Self-induced queue delay in milliseconds: `RTT_now - RTprop` from the
     /// BBR path model. A sustained value above [`QUEUE_BLOAT_MS`] is bufferbloat
-    /// WE are causing - the rising delay is our own standing queue, not external
+    /// we are causing - the rising delay is our own standing queue, not external
     /// congestion, so the answer is to pace down (drain the queue), not to add
     /// FEC parity (which only deepens it).
     pub queue_delay_ms: f32,
@@ -105,8 +105,8 @@ pub fn is_clean(s: &SensorSnapshot) -> bool {
 /// The effective loss the controller protects against: measured loss plus the
 /// feed-forward predictors (congestion share, rising delay trend, path shift,
 /// backhaul hops, link stress, ECN, reverse loss), clamped to `0..=1`. A rising
-/// delay trend that is OUR OWN standing queue (self-induced bufferbloat) does
-/// NOT add protection - the flow-window pacer drains it; adding redundancy would
+/// delay trend that is this sender's own standing queue (self-induced bufferbloat)
+/// leaves protection where it is - the flow-window pacer drains it; adding redundancy would
 /// only deepen the queue - so that bump is suppressed above [`QUEUE_BLOAT_MS`].
 /// Both the block-RS parity map and the RLC rate law consume this single number,
 /// so the two codes assess the channel identically and differ only in how they
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn congestion_share_raises_parity_over_wireless() {
-        // The SAME measured loss, classed wireless vs congestion. The wireless
+        // One measured loss figure, classed wireless vs congestion. The wireless
         // case stays at the base FEC level (recover locally); the congestion
         // case must raise parity (broad protection), since over-driving or
         // under-protecting a congested path is the costlier miss.
@@ -493,10 +493,10 @@ mod tests {
     #[test]
     fn self_induced_bloat_suppresses_delay_parity_bump() {
         // A rising delay trend normally pre-arms parity. But when the rising
-        // delay is our OWN standing queue (self-induced bufferbloat), adding FEC
-        // would only add wire traffic and deepen the queue - the flow-window
-        // pacer drains it instead. So the same rising trend must NOT bump parity
-        // once queue_delay crosses the bloat threshold.
+        // delay is this sender's own standing queue (self-induced bufferbloat),
+        // adding FEC would only add wire traffic and deepen the queue - the
+        // flow-window pacer drains it instead. So the same rising trend leaves
+        // parity alone once queue_delay crosses the bloat threshold.
         let rising_external =
             raw_target(&SensorSnapshot { owd_trend: 0.1, queue_delay_ms: 0.0, ..clean() });
         let rising_self_induced =
@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn sustained_clean_drops_to_passthrough_after_clean_hold() {
         let mut p = ImmediateUpConservativeDown::with_holds(2, 10);
-        // The first feedback is clean but the policy starts at Fec; it must
-        // NOT drop to Passthrough until clean_hold consecutive clean ticks.
+        // The first feedback is clean but the policy starts at Fec; it stays
+        // there until clean_hold consecutive clean ticks.
         for i in 0..9 {
             let d = p.decide(&clean());
             assert_ne!(d.level, CodingLevel::Passthrough, "dropped too early at tick {i}");

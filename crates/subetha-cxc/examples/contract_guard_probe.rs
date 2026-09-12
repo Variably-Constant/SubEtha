@@ -13,7 +13,7 @@
 //!     `Vyukov` instead. A control arm with no contract morphs to
 //!     `Mpmc` as usual.
 //!  3. **Feasible-region filter (enablement).** Under a
-//!     `FifoPerProducer` contract the sharded `Mpmc` IS legal, so the
+//!     `FifoPerProducer` contract the sharded `Mpmc` is legal, so the
 //!     ring auto-morphs straight to it.
 //!  4. **Cross-process admission contract.** A second OS process
 //!     registers producers against a shared admission counter bounded
@@ -73,7 +73,7 @@ fn run_morph_arm(label: &str, contract: Option<RingContract>, expect: RingShape)
     let shape = ring.current_shape();
 
     // Round-trip a batch on whatever shape it settled on, producer and
-    // consumer CONCURRENT (the ring is smaller than the batch, so a
+    // consumer concurrent (the ring is smaller than the batch, so a
     // serial fill-then-drain would deadlock on a full ring). Producer 0's
     // lane is in consumer 0's drain subset under the round-robin.
     let n = 2000u64;
@@ -107,7 +107,7 @@ fn run_morph_arm(label: &str, contract: Option<RingContract>, expect: RingShape)
 }
 
 /// Cross-process child: register producers against the shared admission
-/// counter, enforcing the contract's max_concurrent_push GLOBALLY.
+/// counter, enforcing the contract's max_concurrent_push globally.
 fn admission_child(counter_path: &str, max_push: u8, attempts: usize) {
     let counter = SharedAtomicU64::open(counter_path).expect("open counter");
     let contract = RingContract {

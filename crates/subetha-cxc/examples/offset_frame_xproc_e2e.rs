@@ -1,17 +1,16 @@
-//! Multi-process proof that OFFSET-class frames cross a shmfs process
-//! boundary - the gap my earlier `open_shmfs` proof missed because it
-//! used 8-byte inline items that never touched the payload region.
+//! Multi-process proof that offset-class frames, whose payload lives
+//! outside the slot, cross a shmfs process boundary.
 //!
 //! A `send_frame` payload above the tiny inline budget spills to the
 //! frame payload region and the slot carries only an offset descriptor.
-//! Before the fix that region was a PRIVATE anon mmap, so the descriptor
-//! crossed but the payload did not; now a shm-backed ring names a SHARED
-//! `{prefix}_frames` region both processes map.
+//! A shm-backed ring names a shared `{prefix}_frames` region that both
+//! processes map, so the payload the descriptor names is there for the
+//! worker to read.
 //!
 //! The parent enqueues a mix of inline + offset frames (including a
 //! 4670-byte payload and an 8000-byte near-block payload);
 //! the worker attaches via `open_shmfs` and must recover every frame's
-//! exact bytes AND its class.
+//! exact bytes and its class.
 //!
 //! Run: cargo run --release -p subetha-cxc --example offset_frame_xproc_e2e
 
@@ -38,8 +37,8 @@ fn payload(seq: usize, len: usize) -> Vec<u8> {
     (0..len).map(|j| (seq.wrapping_mul(31).wrapping_add(j)) as u8).collect()
 }
 
-// --big: a single frame ABOVE the default 8192 block, carried by a
-// with_frames-sized region on BOTH sides, for a payload that exceeds
+// --big: a single frame above the default 8192 block, carried by a
+// with_frames-sized region on both sides, for a payload that exceeds
 // 8 KB.
 const BIG_BLOCK: usize = 16384;
 const BIG_COUNT: usize = 64;

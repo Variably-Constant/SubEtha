@@ -9,7 +9,7 @@
 
 Single-producer, multi-consumer pub/sub ring backed by an MMF.
 Distinct from [`SharedRing`](./SHARED_RING.md) (MPMC; each slot
-consumed once); here EVERY registered consumer sees EVERY
+consumed once); here every registered consumer sees every
 message independently with its own cursor. This is the
 Kafka-topic / log-tail / pub-sub shape. Each slot is a SeqLock
 cell - producer writes under odd version + bumps to even on
@@ -22,7 +22,7 @@ commit; consumers spin on the version to read.
 > (**2.47x faster**). `lag` observer at **1.06 ns vs 48.85 ns
 > (46.3x faster)** - one atomic load minus the consumer cursor
 > vs 3 mutex acquires. The architectural lever stacks:
-> cross-process pub/sub AND lock-free dispatch AND per-consumer
+> cross-process pub/sub and lock-free dispatch and per-consumer
 > independent progress.
 
 **Constraints (read first):**
@@ -40,7 +40,7 @@ commit; consumers spin on the version to read.
 - **Producer waits for slowest consumer**: `try_push` returns
   `BroadcastFull` when the slowest active consumer's cursor is
   capacity-behind. Slow consumer = blocked producer.
-- **`register_consumer` starts AT current `producer_seq`**: new
+- **`register_consumer` starts at current `producer_seq`**: new
   consumers see only post-registration messages, not history.
 - **`unregister` removes from min calc**: producer no longer
   waits for that consumer's cursor.
@@ -191,7 +191,7 @@ implementing the same protocol shape.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process pub/sub**: producer in process A, consumers
   in processes B, C, D. The mutex baseline cannot do this at
@@ -314,7 +314,7 @@ coordinator only blocks if ALL caches fall behind.
   pattern to detect dead consumers externally.
 
 - **Treating `register` as starting from history.** New
-  consumers start at CURRENT `producer_seq`; messages produced
+  consumers start at current `producer_seq`; messages produced
   before registration are not delivered.
 
 - **Multi-producer assumption.** The ring is single-producer.

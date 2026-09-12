@@ -14,7 +14,7 @@ Hosts: native Windows 11 and WSL2 share one Ryzen 7 2700 (Zen+); the Ubuntu 24.0
 
 | Method | Windows | WSL2 | Linux VM | FreeBSD VM | macOS (Intel) | EPYC VPS |
 |---|---:|---:|---:|---:|---:|---:|
-| **SubEtha pinned shapes (MMF, kernel-bypass)** | **71-93 ns** | **88-109 ns** | **50-80 ns** | **50-75 ns** | **41-115 ns** | **37-50 ns** |
+| **SubEtha pinned shapes (MMF, kernel-bypass)** | **71.4-92.6 ns** | **87.5-109.4 ns** | **50.1-80.2 ns** | **49.5-75.5 ns** | **41.5-114.9 ns** | **36.8-50.0 ns** |
 | iceoryx2 (Eclipse, shared-memory zero-copy) | n/a (POSIX user info) | 437 ns | 258 ns | n/a (libclang build dep) | n/a (MSG_NOSIGNAL) | 421 ns |
 | Named pipe (`interprocess` crate) | 12,168 ns | 43,622 ns | 16,591 ns | 11,511 ns | 6,793 ns | 4,659 ns |
 | `ipc-channel` (Mozilla) | 13,585 ns | 56,415 ns | 20,157 ns | 12,383 ns | 8,241 ns | 6,100 ns |
@@ -35,7 +35,7 @@ On every platform the pinned rings beat the fastest kernel transport by two orde
 
 ## Ring backing matters: shared-memory sections, not real files
 
-The SubEtha contenders back their rings with NAMED ANONYMOUS SHARED-MEMORY sections (`AdaptiveRing::create_shmfs`: pagefile-backed sections on Windows, shmfs on unix). Backing the same rings with a real file in the temp directory is invisible on Linux (`/tmp` is tmpfs - memory either way) but costs native Windows **1.5-2.7 µs one-way against ~75-100 ns section-backed**: NTFS's mapped-file dirty-page machinery sits on the store path of every cross-process handoff. The effect survives affinity pinning, power-plan changes, and wait-discipline changes - it is purely the backing.
+The SubEtha contenders back their rings with named anonymous shared-memory sections (`AdaptiveRing::create_shmfs`: pagefile-backed sections on Windows, shmfs on unix). Backing the same rings with a real file in the temp directory is invisible on Linux (`/tmp` is tmpfs - memory either way) but costs native Windows **1.5-2.7 µs one-way against ~75-100 ns section-backed**: NTFS's mapped-file dirty-page machinery sits on the store path of every cross-process handoff. The effect survives affinity pinning, power-plan changes, and wait-discipline changes - it is purely the backing.
 
 Guidance: on Windows, latency-critical rings use `create_shmfs` / `ShmFile` backings; reserve real-file backings for rings that need persistence or attach-by-path. `SUBETHA_COMPARE_FILE=1` re-runs this bench file-backed to measure the penalty on a given host.
 
@@ -43,27 +43,27 @@ The pop wait in the bench is the production discipline: a short bounded spin, th
 
 ## What the SubEtha rows measure
 
-Each SubEtha contender is an `AdaptiveRing` pair (one per direction), backed by default by named shared-memory sections - the backing the leaderboard above measures, per *Ring backing matters* above - morphed to the target shape and PINNED via `pin_current_shape()` in BOTH processes - the production hot path of the adaptive system, not a hand-rolled single-purpose MMF. Both sides name the same section: the parent calls `create_shmfs` and each child calls `create_shmfs` too. The shm region itself is open-or-create, but `create_shmfs` re-lays-out the ring on every call, so this ping-pong is only safe because the rings are EMPTY at attach time - the re-init writes the same zero state and loses nothing. A child that must attach to a region the parent has already ENQUEUED into calls `AdaptiveRing::open_shmfs` instead, which validates each backing's magic and attaches WITHOUT re-initialising ([`examples/open_shmfs_attach_e2e.rs`](../crates/subetha-cxc/examples/open_shmfs_attach_e2e.rs) proves the snapshot survives). (The `SUBETHA_COMPARE_FILE=1` A/B instead has the parent `AdaptiveRing::create` a temp-file backing and the child `AdaptiveRing::open` it - the file-locale attach that always validated magic rather than re-initialising.) Every contender declares `max_producers = 1, max_consumers = 1`, so all four shapes run the same 1P/1C workload through four different dispatch paths: the deltas between the four rows are pure shape-dispatch cost, not peer-count scan overhead.
+Each SubEtha contender is an `AdaptiveRing` pair (one per direction), backed by default by named shared-memory sections - the backing the leaderboard above measures, per *Ring backing matters* above - morphed to the target shape and pinned via `pin_current_shape()` in both processes - the production hot path of the adaptive system, not a hand-rolled single-purpose MMF. Both sides name the same section: the parent calls `create_shmfs` and each child calls `create_shmfs` too. The shm region itself is open-or-create, but `create_shmfs` re-lays-out the ring on every call, so this ping-pong is only safe because the rings are empty at attach time - the re-init writes the same zero state and loses nothing. A child that must attach to a region the parent has already enqueued into calls `AdaptiveRing::open_shmfs` instead, which validates each backing's magic and attaches without re-initializing ([`examples/open_shmfs_attach_e2e.rs`](../crates/subetha-cxc/examples/open_shmfs_attach_e2e.rs) proves the snapshot survives). (The `SUBETHA_COMPARE_FILE=1` A/B instead has the parent `AdaptiveRing::create` a temp-file backing and the child `AdaptiveRing::open` it - the file-locale attach that always validated magic rather than re-initializing.) Every contender declares `max_producers = 1, max_consumers = 1`, so all four shapes run the same 1P/1C workload through four different dispatch paths: the deltas between the four rows are pure shape-dispatch cost, not peer-count scan overhead.
 
 The two MPMC rows are different algorithms, not duplicates:
 
 - **MPMC (composed)** is N independent Lamport SPSC rings (one per producer) with consumers statically partitioned across them. Zero CAS anywhere; per-producer FIFO only.
-- **Vyukov MPMC** is the classic Dmitry Vyukov bounded queue (`SharedRing`): one ring, per-slot sequence numbers, producers CAS a shared head and consumers CAS a shared tail. Global FIFO across all producers; any consumer can take any item. On these runs the single-ring Vyukov is the fastest pinned shape on both guests - 49.7 vs 74.3 ns against composed MPMC on the Linux VM, and 69 vs 121 ns on the Intel Mac - so the per-slot CAS is outweighed by the composed shape's ring-array indexing here; the four rows still sit within a small band and their internal ordering varies run to run, which is why the leaderboard note flags it.
+- **Vyukov MPMC** is the classic Dmitry Vyukov bounded queue (`SharedRing`): one ring, per-slot sequence numbers, producers CAS a shared head and consumers CAS a shared tail. Global FIFO across all producers; any consumer can take any item. On these runs the single-ring Vyukov is the fastest pinned shape on both guests - 50.2 vs 79.1 ns against composed MPMC on the Linux VM, and 58.7 vs 114.8 ns on the Intel Mac - so the per-slot CAS is outweighed by the composed shape's ring-array indexing here; the four rows still sit within a small band and their internal ordering varies run to run, which is why the leaderboard note flags it.
 
 ## Reading the results
 
-- **SubEtha 49-121 ns**: cross-core MESI cache-line handoff (~50-120 ns) plus an Acquire/Release atomic pair. After mapping, the data path never enters the kernel. The four shapes differ only in dispatch structure (direct Lamport pair vs ring-array indexing vs Vyukov per-slot sequence CAS).
-- **iceoryx2 268-471 ns**: also shared-memory zero-copy, with publish/subscribe bookkeeping on top of the slot handoff.
-- **Named pipe 5-43 µs**: kernel pipe buffer; two syscalls per round-trip; data copy through kernel space. This is what most Rust users reach for when they think "fast local IPC" via the `interprocess` crate.
-- **Stdio pipe 5-50 µs**: anonymous pipe via `std::process::Command` stdin/stdout, plus text-encoding overhead.
-- **ipc-channel 6-57 µs**: Mozilla's IPC channel, used in Servo and Firefox. Wraps the kernel pipe and adds bincode serialization.
-- **UDP / TCP loopback 8-65 µs**: kernel network stack overhead, irreducible even with `TCP_NODELAY` on the loopback device.
+- **SubEtha 36.8-114.9 ns**: cross-core MESI cache-line handoff (~50-120 ns) plus an Acquire/Release atomic pair. After mapping, the data path never enters the kernel. The four shapes differ only in dispatch structure (direct Lamport pair vs ring-array indexing vs Vyukov per-slot sequence CAS).
+- **iceoryx2 258.4-437.4 ns**: also shared-memory zero-copy, with publish/subscribe bookkeeping on top of the slot handoff.
+- **Named pipe 4.6-43.7 µs**: kernel pipe buffer; two syscalls per round-trip; data copy through kernel space. This is what most Rust users reach for when they think "fast local IPC" via the `interprocess` crate.
+- **Stdio pipe 4.9-49.7 µs**: anonymous pipe via `std::process::Command` stdin/stdout, plus text-encoding overhead.
+- **ipc-channel 6.1-56.5 µs**: Mozilla's IPC channel, used in Servo and Firefox. Wraps the kernel pipe and adds bincode serialization.
+- **UDP / TCP loopback 8.3-63.0 µs**: kernel network stack overhead, irreducible even with `TCP_NODELAY` on the loopback device.
 
 ## Why SubEtha is so much faster
 
 Every kernel-mediated contender forces every byte through two syscalls per round-trip, kernel-space data copies, and scheduler wakeups. That syscall floor is single-digit to tens of microseconds even for the fastest pipe implementations.
 
-SubEtha's MMF design pays the kernel cost ONCE at construction (`mmap()`) and then runs the entire data path in user space: atomic ops on memory shared by mapping the same file in both processes. The "sync point" between producer and consumer is a Release-store followed by an Acquire-load on a shared atomic, which is a single MOV instruction on x86 TSO. No syscalls, no scheduler wakeups, no kernel data copies.
+SubEtha's MMF design pays the kernel cost once at construction (`mmap()`) and then runs the entire data path in user space: atomic ops on memory shared by mapping the same file in both processes. The "sync point" between producer and consumer is a Release-store followed by an Acquire-load on a shared atomic, which is a single MOV instruction on x86 TSO. No syscalls, no scheduler wakeups, no kernel data copies.
 
 ## Bench methodology
 
@@ -94,7 +94,7 @@ The binary writes `docs/cross_process_ipc_results.json` (machine-readable, times
 
 | Contender | Note |
 |---|---|
-| iceoryx2 (Eclipse zero-copy) | Requires POSIX user info (`/etc/passwd`); initialises on Linux/WSL, exits silently on native Windows, and is excluded from the FreeBSD build (libclang/bindgen) and the macOS build (its platform layer needs `MSG_NOSIGNAL`, absent on Darwin). |
+| iceoryx2 (Eclipse zero-copy) | Requires POSIX user info (`/etc/passwd`); initializes on Linux/WSL, exits silently on native Windows, and is excluded from the FreeBSD build (libclang/bindgen) and the macOS build (its platform layer needs `MSG_NOSIGNAL`, absent on Darwin). |
 | ZeroMQ (`ipc://` REQ/REP) | Optional, behind the `zmq-bench` feature; links the system `libzmq` (a C dependency), so it is a single-host Linux contender rather than part of the cross-platform sweep. A full messaging framework, not a minimal channel: its framing and socket round-trip land it well behind the kernel pipes on an 8-byte ping-pong. |
 | SubEtha shmfs on macOS | Darwin caps POSIX `shm_open` names at `PSHMNAMLEN` (31 chars) and permits `ftruncate` on a region only once, at creation. `ShmFile` hashes an over-long name to a short fixed form and sizes the region only when it is not already sized, so the create-then-open handshake (parent creates, child opens the same region) works cross-process. Without those two the bench masked the failures as `PayloadTooLarge`. |
 

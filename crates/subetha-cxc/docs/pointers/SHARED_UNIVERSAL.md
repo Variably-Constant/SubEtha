@@ -70,7 +70,7 @@ re-open the new backing atomically.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   cleanup of all backing files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process migration**: when one process migrates,
   other processes' next access re-opens the new backing via

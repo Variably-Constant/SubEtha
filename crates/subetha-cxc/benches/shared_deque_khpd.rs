@@ -6,7 +6,7 @@
 //! store on its `bottom` index. The producer-fast bench measures
 //! the pure producer-side throughput: K=64 items dispatched per
 //! iter, drain runs in the background, and the wait-for-drain-catch-up
-//! happens via `iter_custom` OUTSIDE the timed window. This isolates
+//! happens via `iter_custom` outside the timed window. This isolates
 //! the per-item amortization shape that KHPD targets.
 //!
 //! # Bench-audit notes
@@ -83,7 +83,7 @@ fn khpd_producer_fast(c: &mut Criterion) {
 
                 // Canonical KHPD producer-fast shape: build the K
                 // items in a caller-side buffer, then call
-                // publish_batch() ONCE to publish all of them into
+                // publish_batch() once to publish all of them into
                 // ceil(K/LINE_ITEMS) publication lines under one
                 // Mutex acquire + one `tail.fetch_add(n_lines)`. The
                 // amortization lever is "one Release-store on the
@@ -105,7 +105,7 @@ fn khpd_producer_fast(c: &mut Criterion) {
                 }
                 total += start.elapsed();
 
-                // Drain catch-up OUTSIDE the timed window.
+                // Drain catch-up outside the timed window.
                 while drained.load(Ordering::Acquire) < target {
                     std::hint::spin_loop();
                 }

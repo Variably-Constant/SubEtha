@@ -1,8 +1,8 @@
 //! `KTowerPointer<T>` - recursive pow2-of-pow2 address decomposition.
 //!
 //! A tower of pow2 blocks, `Tower<T, [K_a, K_b, ...]>`, lifted to
-//! pointers. The key idea is RECURSIVE: a pointer is a pow2 block
-//! split into segments where each segment can ITSELF be a pow2 block
+//! pointers. The key idea is recursion: a pointer is a pow2 block
+//! split into segments where each segment can in turn be a pow2 block
 //! split into further segments, all the way down. The hardware MMU
 //! does exactly this (x86_64 page tables are PML4 -> PDPT -> PD -> PT,
 //! four levels of 9-bit indices into nested tables). KTower lifts the
@@ -34,7 +34,7 @@
 //!                = KTower2<KTower2<KTower2<KTower2<T>>>>  // 4 levels
 //! ```
 //!
-//! Each region_id at level N indexes into a TABLE OF KTower2 pointers
+//! Each region_id at level N indexes into a table of KTower2 pointers
 //! at level N-1. At the leaf (level 0), the offset is the actual byte
 //! offset within a physical region. The depth is a runtime / type-
 //! level choice: shallow towers for dense address spaces, deep towers
@@ -66,7 +66,7 @@
 //!
 //! 4. **Position independence is preserved through composition**: a
 //!    `KTower2<KTower2<T>>` is still 8 bytes total because each level's
-//!    region_id is a u32 INDEX into the previous level's table. No
+//!    region_id is a u32 index into the previous level's table. No
 //!    virtual addresses at any level, so the whole tower resolves
 //!    identically in any process that holds the same region tables.
 

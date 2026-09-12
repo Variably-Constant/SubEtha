@@ -33,17 +33,17 @@ and `OwnedWritableCapability<T>` are RAII wrappers that own a
 
 - **Software-only enforcement.** Bounds and permissions are checked
   in Rust code, not by hardware. This is a memory-safety layer
-  ABOVE the existing virtual-memory protection, not a replacement
+  above the existing virtual-memory protection, not a replacement
   for it. A capability cannot prevent the OS or another process
   from accessing the same memory.
 - **`ReadableCapability::new` and `WritableCapability::new` are
   `unsafe`.** The caller asserts the `[base, base+length)` region
-  is valid memory for the capability's lifetime AND that the
+  is valid memory for the capability's lifetime and that the
   initial `ptr` lies inside that region.
 - **Safe constructors (`from_slice`, `from_slice_mut`) carry a
   lifetime.** The returned tuple includes a re-anchored borrow of
   the original slice. The borrow keeps the slice alive while the
-  capability is in use; the capability does NOT extend the
+  capability is in use; the capability does not extend the
   slice's lifetime on its own.
 - **`ReadableCapability<T>` strips the Write bit at construction.**
   Both `new` and `from_slice` apply `perms & !WRITE_BIT`. If you
@@ -82,7 +82,7 @@ and `OwnedWritableCapability<T>` are RAII wrappers that own a
 - **In-process only.** The pointer + base fields are real virtual
   addresses. Cross-process sharing needs composition with a
   region-table primitive (e.g. `KTower2`).
-- **Owned* variants take ownership of a Box.** They are NOT RAII
+- **Owned* variants take ownership of a Box.** They are not RAII
   wrappers around an arbitrary `*mut T`; the Drop impl assumes
   Box ownership and calls `Box::from_raw`. Using `into_box()`
   consumes the wrapper (via `std::mem::forget`) and returns the
@@ -153,7 +153,7 @@ This is "make illegal states unrepresentable" applied to memory
 capabilities. The CHERI hardware model has a single
 `capability_t` type with a permission word; a Read perm and a
 Write perm are runtime checks. Lifting them to the type system
-turns runtime checks into compile-time guarantees AND gives the
+turns runtime checks into compile-time guarantees and gives the
 borrow checker something to enforce (the !Clone on Writable).
 
 `──────────────────────────────────────────`
@@ -180,7 +180,7 @@ The `perms` field is a bitmask, so a cap can carry combinations
 - A sealed cap returns `CapabilityError::Sealed` on every access.
 - `cap.sealed()` consumes the cap and returns a sealed version.
 - `cap.unsealed()` consumes the cap and returns an unsealed version.
-- Sealing is INDEPENDENT of the permission bits: a sealed cap with
+- Sealing is independent of the permission bits: a sealed cap with
   Read+Write perms is still unreadable.
 
 The architectural use case for sealing: temporarily disable a
@@ -436,7 +436,7 @@ All confirmed against the source or the bench:
 
 - **Software-only.** The module docs are explicit that there is no
   hardware enforcement; the OS still owns virtual-memory
-  protection. A capability does NOT protect against other
+  protection. A capability does not protect against other
   processes or against syscalls that bypass the Rust borrow
   checker.
 - **`length: u32` caps a region at 4 GiB.** The `length` field is
@@ -458,7 +458,7 @@ All confirmed against the source or the bench:
   `Box::from_raw` on Drop. Using these to wrap a non-Box pointer
   would be UB. The safe constructors guarantee Box ownership; the
   unsafe `new` constructors on the underlying Readable / Writable
-  do NOT promote to an Owned wrapper.
+  do not promote to an Owned wrapper.
 - **`OwnedReadableCapability::into_box`** uses `std::mem::forget`
   to suppress Drop and reclaim the raw pointer as a Box. The
   same pattern is in `OwnedWritableCapability::into_box`. Both
@@ -489,11 +489,11 @@ All confirmed against the source or the bench:
   `let (cap, _anchor) = ReadableCapability::from_slice(...)`,
   keeping `_anchor` alive for the cap's lifetime.
 - **Don't `Box::from_raw(owned.as_raw())`.** Use `owned.into_box()`
-  instead. The former does NOT suppress the wrapper's Drop, which
+  instead. The former does not suppress the wrapper's Drop, which
   will then double-free.
 - **Don't compose a sealed cap with `narrow`.** The narrow methods
   mask the new perms with `& !SEALED_BIT`. A sealed parent yields
-  an unsealed child; the seal does NOT propagate.
+  an unsealed child; the seal does not propagate.
 - **Don't wrap a non-Box pointer with OwnedReadable / OwnedWritable.**
   Their Drop impls call `Box::from_raw`. If the pointer wasn't
   obtained from `Box::into_raw`, the Drop is UB.

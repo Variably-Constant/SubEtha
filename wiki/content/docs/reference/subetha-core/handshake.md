@@ -89,8 +89,8 @@ impl HandshakeHeader {
 
 | Method | When to use |
 |---|---|
-| `set_tag(new_tag)` | Switching strategy that does NOT require data-layout migration (e.g., wait-strategy in a once-shot primitive). PIC-only update. |
-| `migrate(new_tag)` | Switching strategy that DOES require data-layout migration. Bumps generation AND swaps tag atomically. Returns the old gen so the caller can drain it. |
+| `set_tag(new_tag)` | Switching strategy that does not require data-layout migration (e.g., wait-strategy in a once-shot primitive). PIC-only update. |
+| `migrate(new_tag)` | Switching strategy that does require data-layout migration. Bumps generation and swaps tag atomically. Returns the old gen so the caller can drain it. |
 | `bump_generation()` | Data-layout migration with no strategy change (the primitive swaps its internal storage but keeps the same tag). Tag unchanged; returns old gen. |
 | `drain(old_gen)` | After `migrate` or `bump_generation`, wait for in-flight readers on the old gen to complete. Spins. |
 
@@ -121,7 +121,7 @@ The unit tests in `crates/subetha-core/src/handshake.rs` assert:
 - `size_of::<HandshakeHeader>() == 128` and `align_of == 64`
   (the two-cache-line invariant is structural, not a comment).
 - `enter_op` + `exit_op` leave `in_flight[0]` at zero.
-- `migrate(new_tag)` bumps generation by 1 AND swaps tag.
+- `migrate(new_tag)` bumps generation by 1 and swaps tag.
 - `bump_generation()` bumps generation but leaves tag unchanged.
 - `set_tag(new_tag)` swaps tag but leaves generation unchanged.
 - `drain(gen)` returns immediately when `in_flight[gen & 1]` is zero.

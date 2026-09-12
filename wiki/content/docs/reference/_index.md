@@ -8,10 +8,11 @@ sidebar:
 
 Per-crate type / trait / op-kind reference.
 
-- [`subetha-cxc`](subetha-cxc/) - the principal user-facing crate: `Channel<T>`, `AdaptiveIpc<T>`, `AutoIpc`, the MMF dispatcher, and ~40 MMF-backed primitives.
+- [`subetha-cxc`](subetha-cxc/) - the principal user-facing crate: `Channel<T>`, `AdaptiveIpc<T>`, `AutoIpc`, the MMF dispatcher, and more than sixty MMF-backed primitives.
 - [`subetha-pointers`](subetha-pointers/) - exotic pointer types for CXC payloads.
 - [`subetha-core`](subetha-core/) - the substrate (handshake, observation ring, migration, `Marshal`).
 - [`subetha-sidecar`](subetha-sidecar/) - the control plane (policy, scan thread, `SidecarBox`).
+- [`subetha-ffi`](subetha-ffi/) - the C ABI: `subetha.h` over generation-checked handles, for every language that binds through C.
 
 For machine-generated API docs (every signature, every type), the
 canonical source is the per-crate `docs.rs` page:

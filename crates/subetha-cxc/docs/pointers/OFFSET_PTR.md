@@ -93,7 +93,7 @@ Reach for `OffsetPtr<T>` + `SharedRegion<T>` when **all** of these
 hold:
 
 - The pointer or the value it points to needs to be visible to more
-  than one process, OR persisted to disk and reloaded later.
+  than one process, or persisted to disk and reloaded later.
 - The payload `T` is `Copy + 'static` (no `Drop` glue, no
   lifetimes).
 - The slot count can be picked at allocation time (capacity is
@@ -377,7 +377,7 @@ single-allocation overhead amortizes across thousands of reads.
 | `free` | yes (lock-free Treiber push) |
 | `get` (typed `T: Copy`) | yes (slot indices are stable; payload writes are aligned for T) |
 | `set` | yes for `T: Copy + Sized` with aligned writes |
-| `clear` | NO (resets cursor and head without coordinating with concurrent ops) |
+| `clear` | no (resets cursor and head without coordinating with concurrent ops) |
 | `flush` | yes (msync is atomic from the OS perspective) |
 
 `clear` is the explicit exception. It is intended for single-
@@ -488,7 +488,7 @@ where process A creates with `SharedRegion<u64>` and process B
 opens with `SharedRegion<u32>`: bytes are there but the typed view
 is wrong.
 
-It does NOT catch the case where two different 8-byte types share
+It does not catch the case where two different 8-byte types share
 the file accidentally. The crate has no Rust-type identity in the
 header.
 

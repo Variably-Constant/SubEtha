@@ -96,7 +96,7 @@ only, `first()` as the horizon.
 - **The horizon is measured loaded as well as idle**, because an idle
   table hides the slot scan that is the whole cost.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process visibility.** The baseline cannot do it at any price;
   a pin it holds is invisible to a reclaimer in another process.
@@ -227,7 +227,7 @@ t.publish();
   pins.** A reader holding a pin across two scans holds two slots.
 
 - **Treating the horizon as a bound on retention.** It is bounded by
-  the OLDEST live pin, so retention is set by the slowest reader, not
+  the oldest live pin, so retention is set by the slowest reader, not
   by the write rate.
 
 - **Reclaiming against `now()` instead of `reclaim_horizon()`.** They

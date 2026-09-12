@@ -18,7 +18,7 @@ Sibling of [`CapacityAdaptiveRing`](../capacity-adaptive-ring/) and
 broadcast wrapper relies on the underlying ring's per-consumer
 header state to track subscribers across morphs,
 `CapacityPubSubRing` uses a chain-of-backings model because
-`PubSubRing`'s per-subscriber position state lives OUTSIDE the ring
+`PubSubRing`'s per-subscriber position state lives outside the ring
 (in `SubscriberPosition` / on the `PubSubSubscriber` wrapper).
 
 ## Chain-of-backings invariant
@@ -32,7 +32,7 @@ the end. A `CapacityPubSubSubscriber` holds:
 - `position: u64` (position within `backings[backing_idx]`)
 
 On `try_next`, the subscriber reads at its current
-`(backing_idx, position)`. On `Pending` AND when not on the
+`(backing_idx, position)`. On `Pending` and when not on the
 most-recent backing, it transparently advances `backing_idx` and
 resets `position` to 0 (every stale backing's prior content drains
 before the subscriber crosses into the next).
@@ -73,7 +73,7 @@ lock, then reads via the cloned Arc.
 | `ring.current_capacity() -> usize` | Acquire-load the active capacity. |
 | `ring.pin_generation() -> u64` | Acquire-load the current pin generation. |
 | `ring.publish(payload) -> u64` | Holds chain lock through inner publish. Returns position within the active backing. |
-| `ring.subscribe_from_now() -> CapacityPubSubSubscriber` | Subscribe starting from the active backing's CURRENT head. Late joiners see no history. |
+| `ring.subscribe_from_now() -> CapacityPubSubSubscriber` | Subscribe starting from the active backing's current head. Late joiners see no history. |
 | `ring.subscribe_from_oldest() -> CapacityPubSubSubscriber` | Subscribe starting from position 0 of the oldest chain entry. Subscriber drains every still-resident item. |
 | `ring.morph_capacity_to(new_capacity) -> Result<(), PubSubCapacityMorphError>` | Append a fresh (or warm-cached) backing to the chain at the new capacity, atomic-bump pin_generation. |
 | `ring.prewarm(capacity) -> Result<(), PubSubCapacityMorphError>` | Speculatively build a backing into the one-slot warm cache, off the morph lock. |
@@ -95,7 +95,7 @@ value (it is bumped on every successful morph).
 
 ### Warm cache (predictive prebuild)
 
-`prewarm(capacity)` builds the next backing in a one-slot cache OFF the morph
+`prewarm(capacity)` builds the next backing in a one-slot cache off the morph
 lock; the next `morph_capacity_to(capacity)` consumes it (bumping `warm_hits`)
 and skips allocation, exactly as in `CapacityBroadcastRing`. Re-prewarming the
 cached capacity is a no-op; prewarming a different capacity replaces the slot;
@@ -106,7 +106,7 @@ capacity leaves the cache intact and allocates cold.
 
 | Call | Behavior |
 |---|---|
-| `sub.try_next(out) -> Result<(), PubSubReadError>` | Read next item. On `Ok`, advances position by 1. On `Pending` AND not on the latest chain entry, transparently advances to the next backing. On `Lost`, propagates. |
+| `sub.try_next(out) -> Result<(), PubSubReadError>` | Read next item. On `Ok`, advances position by 1. On `Pending` and not on the latest chain entry, transparently advances to the next backing. On `Lost`, propagates. |
 | `sub.backing_idx() -> u64` | Current chain index being read. |
 | `sub.position() -> u64` | Current position within the current backing. |
 
@@ -146,14 +146,14 @@ test level to verify no-loss correctness across the full
 
 Subscribers reading via `try_next` see the new entry on their next
 call (chain lock is taken to snapshot the active backing). Already
-in-flight try_next calls hold an Arc to their CURRENT backing and
+in-flight try_next calls hold an Arc to their current backing and
 complete on it; the chain grew under them but their cloned Arc is
 still valid.
 
 ## Garbage collection
 
-`gc()` reclaims fully-drained chain entries from the FRONT of the
-chain. It serialises with `morph_lock` (the same lock the morph
+`gc()` reclaims fully-drained chain entries from the front of the
+chain. It serializes with `morph_lock` (the same lock the morph
 takes) so chain mutations are atomic with respect to each other.
 
 The check is `Arc::strong_count(&chain[0]) == 1` - meaning only the
@@ -181,7 +181,7 @@ stream in strict send-order across hundreds of morph events.
 - **Power-of-two capacity preserved.**
 - **Single producer.** PubSub itself is 1P/NC.
 - **`publish` holds chain.lock through the inner publish.** This
-  serialises against concurrent morphs; the lock is uncontended in
+  serializes against concurrent morphs; the lock is uncontended in
   steady state. The cost is one parking_lot mutex acquire per
   publish (~5-10 ns).
 - **Subscriber path is lock-free.** `try_next` takes the chain
@@ -198,7 +198,7 @@ stream in strict send-order across hundreds of morph events.
 - Workloads with runtime-elastic queueing depth on the fan-out
   side.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - 1P/NC fan-out where loss-on-overflow is acceptable - plain
   `SharedBroadcastRing` is simpler (no chain, no gc).

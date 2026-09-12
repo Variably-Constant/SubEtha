@@ -12,7 +12,7 @@ Thundering-herd-proof distributed config fetch. Composite over
 CAS wins, runs the fetcher closure, and publishes; concurrent
 losers block until the publish, then read the canonical value.
 Across N processes mapping the same file, the fetcher runs at
-most ONCE, no matter how many of them call `get_or_fetch`
+most once, no matter how many of them call `get_or_fetch`
 concurrently.
 
 > **The "config-fetch primitive that beats the thundering herd"
@@ -21,8 +21,8 @@ concurrently.
 > `Mutex<Option<T>>` 17.77 ns (**1.76x faster**). Post-load
 > `get_or_fetch_loaded` at 1.65 ns vs std OnceLock 1.06 ns
 > (1.55x slower). The architectural lever: same per-op cost
-> envelope as the in-process baseline AND cross-process
-> visibility AND single-fetch-across-N-processes guarantee.
+> envelope as the in-process baseline and cross-process
+> visibility and single-fetch-across-N-processes guarantee.
 
 **Constraints (read first):**
 
@@ -138,7 +138,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
    visibility costs nothing measurable on the hot read path.
 2. **`get_or_fetch` post-load is 1.55x slower than std.** The
    SeqLock retry-on-mismatch loop is the cost of cross-process
-   safety against concurrent writers in OTHER processes; std
+   safety against concurrent writers in other processes; std
    OnceLock has no such concern (single-process only).
 3. **The mutex baseline pays 1.76x for try_get.** Lock acquire
    + read + lock release vs one atomic load + one SeqLock read.
@@ -161,7 +161,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
 - **MMF lifecycle managed**: create + load via `get_or_fetch`
   + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Thundering-herd prevention across processes**: the
   architectural claim. N processes call `get_or_fetch`
@@ -245,7 +245,7 @@ assert_eq!(lc.try_get(), Some(42));
 A pool of N processes each call `get_or_fetch(fetch_from_consul)`
 at startup. Exactly one runs the network fetch; the others
 block briefly then read the published config. The backend
-service sees ONE request instead of N.
+service sees one request instead of N.
 
 ### Pattern: lazy initialization of expensive resources
 

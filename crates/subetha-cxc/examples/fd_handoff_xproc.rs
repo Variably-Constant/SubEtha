@@ -1,6 +1,6 @@
 //! Cross-process E2E for live handle handoff ([`subetha_cxc::fd_handoff`]).
 //!
-//! The sender process creates an ANONYMOUS shared region with NO name /
+//! The sender process creates an anonymous shared region with no name /
 //! path (a Linux memfd, a FreeBSD `SHM_ANON` object, a Windows
 //! pagefile-backed file mapping), maps it, and writes a marker; it then
 //! hands the live handle to a separate receiver process - via SCM_RIGHTS
@@ -9,8 +9,8 @@
 //! receiver maps the handed-over handle
 //! and reads the marker, which it could only reach through the passed
 //! handle since the region has no name to open. The sender then writes a
-//! SECOND marker AFTER the handoff and the receiver reads it too,
-//! proving both processes hold the SAME live kernel object, not a copy.
+//! second marker after the handoff and the receiver reads it too,
+//! proving both processes hold the same live kernel object, not a copy.
 //!
 //! Only the handle-transport syscall differs per OS; the anonymous-
 //! region + two-marker liveness proof is shared.
@@ -45,7 +45,7 @@ fn main() {
         p as *mut u8
     }
 
-    // Create an ANONYMOUS (no-name) shared fd of REGION bytes. Only this
+    // Create an anonymous (no-name) shared fd of REGION bytes. Only this
     // syscall is per-OS; the SCM_RIGHTS handoff + two-marker liveness proof
     // below are shared across every Unix.
     fn create_anon_fd() -> RawFd {
@@ -60,7 +60,7 @@ fn main() {
         #[cfg(target_os = "freebsd")]
         let fd = {
             // SHM_ANON: an anonymous shared object with no name, explicitly
-            // passable via sendmsg(2)/SCM_RIGHTS - the FreeBSD analogue of a
+            // passable via sendmsg(2)/SCM_RIGHTS - the FreeBSD analog of a
             // Linux memfd.
             let fd =
                 unsafe { libc::shm_open(libc::SHM_ANON, libc::O_RDWR | libc::O_CREAT, 0o600) };
@@ -93,7 +93,7 @@ fn main() {
         let uds_path = &args[2];
         let mut stream = connect(uds_path).expect("connect");
         let fd = recv_fd(&stream).expect("recv_fd");
-        // Anonymous memfd: there is NO path; reaching the data proves the
+        // Anonymous memfd: there is no path; reaching the data proves the
         // duplicated fd is what gives access.
         let base = map_shared(fd);
         let got1 = unsafe { std::slice::from_raw_parts(base, MARK1.len()) };
@@ -129,7 +129,7 @@ fn main() {
     send_fd(&stream, anon_fd).expect("send_fd");
     println!("[sender] handed the anon fd to receiver via SCM_RIGHTS");
 
-    // Wait for the receiver to confirm it mapped + saw marker1, THEN write
+    // Wait for the receiver to confirm it mapped + saw marker1, then write
     // marker2 so its visibility proves a live shared object.
     let mut ack = [0u8; 1];
     stream.read_exact(&mut ack).expect("ack1");
@@ -172,7 +172,7 @@ fn main() {
         let port: u16 = args[2].parse().expect("port");
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
         let handle = recv_handle(&mut stream).expect("recv_handle");
-        // Anonymous mapping: there is NO name; reaching the data proves
+        // Anonymous mapping: there is no name; reaching the data proves
         // the duplicated handle is what gives access.
         let base = map_handle(handle, REGION).expect("map passed handle");
         let got1 = unsafe { std::slice::from_raw_parts(base, MARK1.len()) };
@@ -211,7 +211,7 @@ fn main() {
     send_handle(&mut stream, handle, child.id()).expect("send_handle");
     println!("[sender] duplicated the mapping handle into the receiver");
 
-    // Wait for the receiver to confirm it mapped + saw marker1, THEN write
+    // Wait for the receiver to confirm it mapped + saw marker1, then write
     // marker2 so its visibility proves a live shared object.
     let mut ack = [0u8; 1];
     stream.read_exact(&mut ack).expect("ack1");

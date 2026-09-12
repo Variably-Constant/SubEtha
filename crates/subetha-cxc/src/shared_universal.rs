@@ -12,17 +12,14 @@
 //! Subsequent peer reads observe the migration via a version bump in
 //! the shared state header and transparently re-open the new backing.
 //!
-//! # The MVP scope
+//! # Scope
 //!
-//! - **2 backings only**: `SharedVec<T>` and `SharedHashMap<T, ()>`.
-//!   The extension to 5 backings (SharedRing, SharedHandleTable,
-//!   SharedBTreeMap, SharedTreiberStack) is its own bead.
-//! - **Single-writer model**: ONE process holds the writer role and
+//! - **Two backings**: `SharedVec<T>` and `SharedHashMap<T, ()>`.
+//! - **Single-writer model**: one process holds the writer role and
 //!   triggers migrations. Other processes are read-only observers
-//!   that follow the strategy tag. Multi-writer voting protocol is
-//!   ap-uvj.
+//!   that follow the strategy tag.
 //! - **Local policy**: the writer's local op histogram drives
-//!   migration decisions. Quorum / cross-process voting is ap-uvj.
+//!   migration decisions.
 //!
 //! # File layout
 //!
@@ -41,19 +38,18 @@
 //!
 //! # Concurrency model
 //!
-//! - Reader / writer ops take an INTERNAL `RwLock<Backing<T>>` on
-//!   the handle (process-local; protects against the re-open race
-//!   between two ops in the same process).
+//! - Reader and writer ops take an internal `RwLock<Backing<T>>` on
+//!   the handle (process-local; it guards the re-open race between two
+//!   ops in the same process).
 //! - Re-open is double-checked: re-read state.version under the
-//!   write lock; if some other thread already re-opened, drop the
-//!   write lock and use the current backing.
-//! - Migration is ONLY safe from a single writer process. If two
-//!   processes both try to migrate, both will succeed locally but
-//!   race on the state CAS; the loser's new backing file is
-//!   orphaned (cleanable). The voting protocol (ap-uvj) prevents
-//!   this; the MVP documents the single-writer constraint.
+//!   write lock; if another thread already re-opened, drop the write
+//!   lock and use the current backing.
+//! - Migration is safe only from a single writer process. When two
+//!   processes migrate at once, both succeed locally and race on the
+//!   state CAS; the loser's new backing file is orphaned and can be
+//!   removed. Nothing here coordinates writers, so the single-writer
+//!   constraint is the caller's to keep.
 
-use std::fs::OpenOptions;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
@@ -143,13 +139,13 @@ pub struct UniversalHeader {
     /// - bits 63..32 = `version: u32` (bumps per migration within
     ///   the current generation; wraps to 0 at u32::MAX)
     /// - bits 31..16 = `generation: u16` (bumps when version wraps;
-    ///   ensures a reused (generation, version) pair NEVER appears
+    ///   ensures a reused (generation, version) pair never appears
     ///   in the same lifetime, so readers comparing the full u64
     ///   state always observe wrap-around and re-open)
     /// - bits 15..0  = `strategy: u16` (low byte is the Strategy
     ///   discriminant; high byte reserved for strategy variants)
     ///
-    /// True exhaustion: generation u16 AND version u32 both at MAX
+    /// True exhaustion: generation u16 and version u32 both at their maximum
     /// (= 2^48 = 281 trillion migrations). Returns VersionExhausted.
     pub state: AtomicU64,
     /// Bumped by every `insert`; consumed by the writer's local
@@ -329,7 +325,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     pub fn open(base: impl AsRef<Path>, capacity: usize) -> Result<Self, UniversalError> {
         let base = base.as_ref().to_path_buf();
         let state_p = Self::state_path(&base);
-        let state_file = OpenOptions::new().read(true).write(true).open(&state_p)?;
+        let state_file = crate::region_file::open_existing(&state_p)?;
         if state_file.metadata()?.len() < size_of::<UniversalHeader>() as u64 {
             return Err(UniversalError::LayoutMismatch);
         }
@@ -397,7 +393,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     /// Re-open the local backing handle if the shared state's
     /// (version, generation) pair differs from the locally cached
     /// pair. Comparing both fields means a wrap-around (same version
-    /// at a new generation) ALSO triggers re-open, preventing the
+    /// at a new generation) also triggers re-open, preventing the
     /// stale-reader race where a reused version points at new
     /// content. Double-checked so concurrent ops don't trample each
     /// other.
@@ -517,10 +513,10 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     ///
     /// # Concurrency
     ///
-    /// **Single-writer ONLY.** Two processes calling `migrate_to`
-    /// concurrently will both build new backings and race on the CAS;
-    /// the loser orphans its backing file. Use ap-uvj's voting
-    /// protocol to coordinate when multiple writers are involved.
+    /// **Single writer only.** Two processes calling `migrate_to`
+    /// concurrently both build new backings and race on the CAS; the
+    /// loser orphans its backing file. Nothing here coordinates
+    /// writers, so the caller keeps to one.
     pub fn migrate_to(&self, target: Strategy) -> Result<(), UniversalError>
     where T: std::hash::Hash,
     {
@@ -598,7 +594,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
 
     /// Local-policy migration trigger. If the observed `contains` ops
     /// outnumber `insert` ops by at least `contains_to_insert_ratio`,
-    /// AND total ops exceed `min_total_ops`, migrate Vec → Map. If
+    /// and total ops exceed `min_total_ops`, migrate Vec → Map. If
     /// the inverse holds, migrate Map → Vec.
     ///
     /// Returns `Ok(Some(new_strategy))` if a migration happened,
@@ -914,7 +910,7 @@ mod tests {
     fn reader_re_opens_on_generation_change_even_at_same_version() {
         // This is the load-bearing safety property: if a writer
         // wraps version back to 0 (bumping generation), an old
-        // reader whose cached (v, g) is (0, 0) MUST re-open when
+        // reader whose cached (v, g) is (0, 0) must re-open when
         // the shared state changes to (0, 1, new_strategy).
         let base = tmp_base("reader-gen");
         let writer: SharedUniversal<u64> = SharedUniversal::create(&base, 16).unwrap();
@@ -942,7 +938,7 @@ mod tests {
         // needed" and return stale results. With the generation
         // check, refresh_backing_if_stale re-opens at (0, 1, Map).
         assert!(reader.contains(&99u64).unwrap());
-        // Old keys are NOT in the new Map backing (it was created
+        // Old keys are absent from the new Map backing (it was created
         // fresh with only 99).
         assert!(!reader.contains(&11u64).unwrap());
         assert_eq!(reader.strategy(), Strategy::Map);

@@ -1,6 +1,6 @@
 //! Producer side of the cross-process `BlockingSpscRing` end-to-end demo.
 //!
-//! Run this AFTER the consumer side has opened the file-backed
+//! Run this after the consumer side has opened the file-backed
 //! ring (the consumer's "ready" marker file appears, see below).
 //! The two binaries communicate via a file-backed BlockingSpscRing
 //! whose backing files sit in `%TEMP%` (Windows) / `/tmp` (Unix)
@@ -13,10 +13,10 @@
 //!     waker_xproc_producer /tmp/subetha_xproc_demo 50000
 //!
 //! Coordination:
-//!   1. Run waker_xproc_consumer FIRST. It creates the
+//!   1. Run waker_xproc_consumer first. It creates the
 //!      BlockingSpscRing's three files (ring + 2 wakers) and a
 //!      ".consumer_ready" marker.
-//!   2. Run THIS binary. It waits for the marker, opens the ring,
+//!   2. Run this binary. It waits for the marker, opens the ring,
 //!      pushes <n_items>, then drops a ".producer_done" marker.
 //!   3. The consumer recv_blocking-loops to <n_items> and exits.
 

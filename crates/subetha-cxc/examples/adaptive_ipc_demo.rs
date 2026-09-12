@@ -1,5 +1,5 @@
 //! `AdaptiveIpc` E2E demo: runtime profile-and-migrate IPC with
-//! kernel-bypass preserved on the data path AND the migration handoff.
+//! kernel-bypass preserved on the data path and the migration handoff.
 //!
 //! Demonstrates:
 //!
@@ -10,10 +10,10 @@
 //! 3. The producer starts sending batches - profile flips to
 //!    "batched" behavior.
 //! 4. `maybe_promote` observes the profile, migrates to KHL via
-//!    `migrate_to` (ONE `mmap()` for the new backing, then an
+//!    `migrate_to` (one `mmap()` for the new backing, then an
 //!    atomic flip of the active-backing index, all user-space).
 //! 5. Subsequent sends land on the KHL backing.
-//! 6. Receiver drains BOTH backings - items pushed pre-migration
+//! 6. Receiver drains both backings - items pushed pre-migration
 //!    are still readable from the now-stale SharedRing.
 //!
 //! No OS-mediated coordination (no condvar, no pipe, no socket, no
@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
 
-    // === Step 6: Drain BOTH backings ===
+    // === Step 6: Drain both backings ===
     println!("[step 6] draining both backings (stale-first, then active)...");
     let mut drained = 0u32;
     let mut single_count = 0u32;

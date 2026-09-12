@@ -14,7 +14,7 @@ The ordering axis of the polymorphic substrate. The composed MPSC /
 MPMC shapes beat the Vyukov queue on the cross-process leaderboard
 because they have zero CAS - but their guarantee is per-producer
 FIFO only. This layer makes global FIFO a runtime property of the
-SAME composed rings: every push carries an 8-byte stamp, and a
+same composed rings: every push carries an 8-byte stamp, and a
 consumer that k-way-merges ring heads by stamp delivers items in
 global order. The ordering toggle is one `Release` store on an
 MMF-resident flag - no morph, no data movement, and the in-flight
@@ -29,9 +29,9 @@ Three layers, separately useful:
    declaration: an unstamped
    [`AdaptiveRing`](../shared-ring-adaptive/) morphs to the Vyukov
    shape; a stamped ring flips the merge flag.
-2. **Detection** - what IS observable is how often the composed
+2. **Detection** - what is observable is how often the composed
    interleave is visible: stamped pops feed a cross-producer
-   INVERSION counter in the shared header (one count per pop whose
+   inversion counter in the shared header (one count per pop whose
    stamp undercuts the previous pop's). The substrate reports
    inversions/sec; it acts on the rate only when the caller
    pre-authorized an automatic response (`auto_order(threshold)`).
@@ -42,7 +42,7 @@ Three layers, separately useful:
 
 ## Stamp sources
 
-Stamping from a shared counter to DETECT ordering need would pay
+Stamping from a shared counter to detect ordering need would pay
 the exact contended-cache-line cost that makes Vyukov slower than
 composed. The escape hatch is `rdtsc`:
 
@@ -86,7 +86,7 @@ confirms exactly that slot, and leaves every other head unconsumed
 (`SpscRingCore::peek_slot` drop-without-confirm semantics). Three
 release gates protect the order:
 
-- **In-flight gate** (both merge modes): producers RESERVE their
+- **In-flight gate** (both merge modes): producers reserve their
   stamp slot before reading the clock and finalize the watermark
   after the push (success or `Full`), so `issued != watermark`
   brackets the entire reserve-stamp-push window. A candidate above
@@ -112,10 +112,10 @@ release gates protect the order:
 ## Exact delivery: the reorder consumer
 
 `MergeByStamp` is the cheap merge, and its guarantee is "global FIFO
-WITHIN stamp skew" - not exact. The scan that picks the minimum ring
+within stamp skew" - not exact. The scan that picks the minimum ring
 head is a non-atomic snapshot, and the in-flight gate only holds
 candidates above a *reserved-but-unpublished* stamp. A producer that
-PUBLISHES a lower stamp in the window between the consumer's scan (which
+publishes a lower stamp in the window between the consumer's scan (which
 saw that ring empty) and the pop is caught by neither: the scan missed
 it, and the gate reports "not in flight" because it is already
 published. With time-based stamps the freshness guard covers this window;
@@ -162,7 +162,7 @@ holds, so `AdaptiveOrderedReceiver` delivers directly with no overhead.
 
 With M concurrent consumers, "global FIFO delivery" is meaningless
 downstream - two concurrent pops race regardless of pop order - so
-merge mode implies ONE active drainer. On rings with
+merge mode implies one active drainer. On rings with
 `max_consumers > 1` the merge pop auto-acquires a drainer lease in
 the ordering header (the [`OwnerLease`](../../ownership-types/owner-lease/)
 claim protocol embedded in the region so every locale gets it):
@@ -209,7 +209,7 @@ Hot loops pin: `pin.stamped_try_push(producer_id, payload)` /
 `pin.ordered_try_pop(consumer_id, out)` /
 `pin.ordered_try_pop_with_stamp(...)` - the pinned pop reads the
 mode atom per call (one Acquire load, a plain MOV on x86 TSO), so
-ordering-mode flips do NOT invalidate pins.
+ordering-mode flips do not invalidate pins.
 
 Exact-order opt-in: `with_ordering_stamps_kind(StampKind::SharedCounter)`
 buys a total stamp order for one contended `fetch_add` per push;
@@ -238,7 +238,7 @@ sequenceDiagram
     Note over R: every attached process sees the flag;<br/>backlog already carries stamps,<br/>so it merges in global order retroactively
 ```
 
-What makes the loop cheap is WHERE each cost lands. Producers pay
+What makes the loop cheap is where each cost lands. Producers pay
 ~20 cycles per push for the stamp, with zero coherence traffic
 under the TSC kind - they never coordinate. Detection rides the
 consumer's existing pop (one comparison against the previous
@@ -309,10 +309,10 @@ versions of this section.
 Numbers, methodology, and the bench-audit notes live in
 [`docs/ORDERING_MODES_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/ORDERING_MODES_PERFORMANCE.md);
 the raw JSON is `docs/ordering_modes_results.json`. Each contender's
-consumer CHECKS the guarantee it charges for: per-producer sequence
-monotonicity everywhere, and zero inversions for the STRICT merge rows
+consumer checks the guarantee it charges for: per-producer sequence
+monotonicity everywhere, and zero inversions for the strict merge rows
 (they fail the run with a non-zero exit otherwise). The best-effort
-`MergeByStamp` row REPORTS its within-skew inversion count rather than
+`MergeByStamp` row reports its within-skew inversion count rather than
 asserting zero - matching its documented contract.
 
 ## E2E proof
@@ -321,7 +321,7 @@ Two real-multi-process binaries, verified on Windows + WSL Linux
 across repeated back-to-back runs:
 
 - `ordering_xproc_consumer` creates the stamped ring and spawns 4
-  `ordering_xproc_producer` PROCESSES. Draining 400,000 items
+  `ordering_xproc_producer` processes. Draining 400,000 items
   unordered observes ~30,000-60,000 inversions (the detection
   layer); flipping the flag mid-traffic yields ZERO new inversions
   and monotone stamps from the flip point, with every producer

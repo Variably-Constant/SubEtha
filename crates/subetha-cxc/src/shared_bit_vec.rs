@@ -26,7 +26,7 @@
 //! - `set_range(lo, hi)` / `clear_range(lo, hi)` use RMW on
 //!   boundary words and `store` on fully-covered interior words.
 //!   Interior stores are safe because they overwrite all 64 bits;
-//!   no concurrent writer can be modifying interior bits THIS
+//!   no concurrent writer can be modifying interior bits this
 //!   call expects to keep (we're setting/clearing them all).
 //!
 //! # Use cases
@@ -37,7 +37,7 @@
 //! - Feature flag arrays.
 //! - Multi-process work-stealing claim bits.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -169,7 +169,7 @@ impl SharedBitVec {
         path: impl AsRef<Path>, expected_capacity_bits: usize,
     ) -> Result<Self, BitVecError> {
         let total = bit_vec_file_size(expected_capacity_bits);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(BitVecError::LayoutMismatch);
         }
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn concurrent_setters_of_same_word_distinct_bits_all_visible() {
-        // 64 threads each set ONE distinct bit in the same word.
+        // 64 threads each set one distinct bit in the same word.
         // Without atomic RMW this would race and lose updates.
         let p = tmp("concurrent-same-word");
         let b = Arc::new(SharedBitVec::create(&p, 64).unwrap());

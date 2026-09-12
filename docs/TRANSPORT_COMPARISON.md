@@ -119,10 +119,10 @@ clean rate); the sliding-window RLC code holds 547-907.
 | **Sens-O-Matic / RS** | 287 | 5889 | **1592** | **2041** |
 
 This is the sharpest result. Under loss the TCP bridges' tail latency blows
-out to **204-254 ms p99**: a single lost segment head-of-line-blocks the
+out to **204-255 ms p99**: a single lost segment head-of-line-blocks the
 whole stream until a retransmit arrives, and every byte queued behind it
 waits. Sens-O-Matic recovers the loss in-band from parity, so the stream
-never stalls: **block-RS holds a 1.6-2.0 ms p99 - a ~130x lower tail than
+never stalls: **block-RS holds a 1.5-2.1 ms p99 - a ~130x lower tail than
 TCP at the same 3% loss**, with interleaving spreading a burst across blocks.
 The RLC code's p99 sits at ~30 ms (its sliding window recovers a round
 later than the block code's interleave). QUIC's quinn retransmit puts its

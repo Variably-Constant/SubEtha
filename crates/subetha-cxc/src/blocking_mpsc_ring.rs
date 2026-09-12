@@ -227,7 +227,7 @@ impl BlockingMpscProducer {
     }
 
     /// Block until either push succeeds or `timeout` elapses.
-    /// Producer parks on its OWN ring's waker; the consumer's
+    /// Producer parks on its own ring's waker; the consumer's
     /// pop-side wakes the right ring's waker by `try_pop_ring_blocking`.
     pub fn send_blocking(
         &self,
@@ -281,6 +281,9 @@ impl BlockingMpscProducer {
     pub fn capacity(&self) -> usize { self.ring.capacity() }
     /// This producer's own publish head.
     pub fn head(&self) -> u64 { self.ring.head() }
+    /// The waker this producer parks on while its ring is full; the
+    /// consumer's pop from that ring wakes it.
+    pub fn own_waker(&self) -> &Arc<CrossProcessWaker> { &self.own_waker }
 }
 
 impl BlockingMpscConsumer {
@@ -301,7 +304,7 @@ impl BlockingMpscConsumer {
     }
 
     /// Block until either a pop succeeds or `timeout` elapses.
-    /// Consumer parks on the SHARED consumer waker; any producer's
+    /// Consumer parks on the one shared consumer waker; any producer's
     /// push fires it.
     pub fn recv_blocking(
         &self,
@@ -364,6 +367,9 @@ impl BlockingMpscConsumer {
 
     /// Number of producer rings this consumer drains.
     pub fn n_producers(&self) -> usize { self.rings.len() }
+    /// The waker this consumer parks on while every ring is empty; any
+    /// producer's push wakes it.
+    pub fn consumer_waker(&self) -> &Arc<CrossProcessWaker> { &self.consumer_waker }
 
     /// Approximate total pending items across every ring.
     pub fn approx_total_len(&self) -> usize {

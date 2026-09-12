@@ -87,7 +87,7 @@ large enough that the rate is a real signal.
 flips the strategy whenever the rate crosses that line. Two
 scans per second of a workload with rate oscillating between
 10% and 15% cycles migrations indefinitely. The 5% / 20% band
-neutralises that oscillation - a workload has to commit to
+neutralizes that oscillation - a workload has to commit to
 "clearly contended" or "clearly uncontended" to trigger a swap.
 
 **The same-tag-shortcut.** Each match arm returns either the
@@ -223,9 +223,9 @@ fn decide(&self, stats: &InstanceStats, current_tag: u32) -> Option<u32> {
 `average_latency_ticks()` returns `total_latency_ticks / ops_observed`,
 with the divide-by-zero case returning 0. Wrapping the comparison
 in a sample-size floor lets the policy ignore the first few
-samples while the average has not stabilised.
+samples while the average has not stabilized.
 
-## What `InstanceStats` does NOT give you
+## What `InstanceStats` does not give you
 
 The sidecar's accumulator is a sum-and-count pair plus a small
 per-op-kind cache. It does not give you:

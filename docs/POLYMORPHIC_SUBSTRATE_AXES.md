@@ -46,7 +46,7 @@ covers a strict subset:
 | `SharedDeque<T>` | anon, file | deque | WorkStealing |
 | `SharedHashMap` | anon, file | hashmap | KeyValue |
 | `AdaptiveRing` | anon, file | ring | morphs across all 4 ring shapes |
-| `AdaptiveIpc<T>` | file | morphs across ring + deque | ring backing is itself `AdaptiveRing` so the shape axis is COMPOSED in by default; deque path is fixed at WorkStealing |
+| `AdaptiveIpc<T>` | file | morphs across ring + deque | ring backing is itself `AdaptiveRing` so the shape axis is composed in by default; deque path is fixed at WorkStealing |
 | `LocaleAdaptiveRing` | morphs anon / file / shmfs | ring | carries the **locale** axis; holds one `AdaptiveRing` per locale |
 | `CapacityAdaptiveRing` | anon, file, shmfs | ring | carries the **capacity** axis; ArcSwaps the active backing for a new pow2 slot count, old backing on a stale list |
 | `AdaptiveRing` + `with_ordering_stamps` | anon, file, shmfs | ring | carries the **ordering** axis; MMF-resident switch flips per-producer FIFO to global FIFO |
@@ -101,7 +101,7 @@ The bridging contract across axes:
 1. Each adaptive layer owns a `pin_generation: AtomicU64`. Bumped
    on every successful morph along that layer's axis.
 2. Pin handles capture both the active axis-tag (e.g. `RingShape`,
-   `MmfFamily`) AND the pin_generation at pin time.
+   `MmfFamily`) and the pin_generation at pin time.
 3. `is_still_valid()` is one Acquire load comparing the captured
    generation to the current one. The caller chooses the sampling
    cadence (every op, every N ops, on backpressure, on explicit
@@ -197,7 +197,7 @@ bytes between them using QUIC streams over UDP.
 ```
 
 The bridge consumes the pinned-handoff protocol from both
-endpoints. It does NOT add a third pin level; it operates at the
+endpoints. It does not add a third pin level; it operates at the
 locale-axis level and is transparent to the protocol + shape axes
 underneath. Application code on either host sees a `SharedRing`
 that happens to be paired across the wire.
@@ -211,7 +211,7 @@ on its own host.
 ## Morph cost characteristics per axis
 
 Each axis has a different cost-of-morph. The pinned-handoff layer
-amortises this cost by ensuring it is paid only at morph
+amortizes this cost by ensuring it is paid only at morph
 boundaries, not per op.
 
 | Axis | Morph cost | Per-op cost when stable | Notes |

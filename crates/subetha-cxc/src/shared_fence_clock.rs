@@ -31,7 +31,7 @@
 //!
 //! # Layout
 //!
-//! ONE MMF file: `<base>.bin` with `HlcHeader` (64B) +
+//! A single MMF file: `<base>.bin` with `HlcHeader` (64B) +
 //! `HlcSlot[capacity]` (64B each, one cache line so cross-process
 //! writes don't false-share).
 //!
@@ -49,7 +49,7 @@
 //! here because HLC's coarse-granularity guarantees absorb the
 //! single-cycle window.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -220,7 +220,7 @@ impl SharedFenceClock {
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, FenceClockError> {
         crate::cached_clock::start();
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = fence_clock_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(FenceClockError::LayoutMismatch);

@@ -2,8 +2,8 @@
 //! IoRing on Windows, POSIX aio on FreeBSD / macOS) exposed as a
 //! substrate ring primitive.
 //!
-//! Both OSes ship the same architecture - a user->kernel SUBMISSION ring
-//! and a kernel->user COMPLETION ring - which is exactly the substrate's
+//! Both OSes ship the same architecture - a user->kernel submission ring
+//! and a kernel->user completion ring - which is exactly the substrate's
 //! SharedRing shape applied to the user/kernel boundary. This wraps that
 //! kernel object behind one cross-platform surface; only the ring
 //! syscalls are gated, the verb shape (prepare / submit / reap) and the
@@ -496,7 +496,7 @@ mod windows_impl {
     impl KernelAsyncRing {
         /// Create a ring with `entries` submission slots. Queries the
         /// runtime IoRing capabilities to pick a supported version + clamp
-        /// the queue sizes, and verifies READ is supported. Fails (so the
+        /// the queue sizes, and verifies read is supported. Fails (so the
         /// caller can fall back) on Windows builds without IoRing.
         pub fn new(entries: u32) -> io::Result<Self> {
             let mut caps: IORING_CAPABILITIES = unsafe { std::mem::zeroed() };

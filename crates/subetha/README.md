@@ -36,7 +36,7 @@ each member as a module:
 
 ```toml
 [dependencies]
-subetha = "0.1"
+subetha = "0.3"
 ```
 
 ```rust

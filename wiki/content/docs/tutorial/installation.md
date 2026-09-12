@@ -36,10 +36,10 @@ SubEtha ships as four separate crates. Pull in the one you need:
 
 ```toml
 [dependencies]
-subetha-cxc = "0.1"          # The primary user-facing crate.
-subetha-pointers = "0.1"     # Exotic pointer types for CXC payloads.
-subetha-core = "0.1"         # The substrate, if you only need that.
-subetha-sidecar = "0.1"      # Control plane, if you embed it directly.
+subetha-cxc = "0.3"          # The primary user-facing crate.
+subetha-pointers = "0.3"     # Exotic pointer types for CXC payloads.
+subetha-core = "0.3"         # The substrate, if you only need that.
+subetha-sidecar = "0.3"      # Control plane, if you embed it directly.
 ```
 
 The crate inventory:

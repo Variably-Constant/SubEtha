@@ -1,7 +1,7 @@
 //! Cross-process bench: the full ordering mode ladder.
 //!
 //! Six contenders, each a file-backed `AdaptiveRing` drained by this
-//! process while P real producer PROCESSES stream into it:
+//! process while P real producer processes stream into it:
 //!
 //! | contender | substrate | ordering guarantee | consumer asserts |
 //! |---|---|---|---|
@@ -9,18 +9,18 @@
 //! | `stamped` | stamps, mode Unordered | per-producer FIFO + inversion metric | per-producer seq monotone; inversions reported |
 //! | `merge_tsc` | stamps, MergeByStamp | global FIFO within stamp skew | best-effort: merged-order inversions reported, not asserted |
 //! | `merge_strict` | stamps, MergeStrict | exact global FIFO (in-flight gate) | non-decreasing stamps + zero inversions |
-//! | `merge_exact` | SharedCounter stamps, MergeStrict | exact global FIFO, total order | STRICTLY increasing stamps + zero inversions |
+//! | `merge_exact` | SharedCounter stamps, MergeStrict | exact global FIFO, total order | strictly increasing stamps + zero inversions |
 //! | `vyukov` | unstamped Vyukov shape | exact global FIFO (CAS) | per-producer seq monotone |
 //!
 //! Bench-audit notes (each contender, per the audit discipline):
-//! - every contender invokes its PINNED production hot path
+//! - every contender invokes its pinned production hot path
 //!   (`mpsc_try_pop` / `ordered_try_pop_with_stamp` /
 //!   `vyukov_try_pop`; pushes mirror it) - no shortcut paths;
 //! - all contenders move the same 16-byte `[producer; 8][seq; 8]`
 //!   payload through the same 16384-slot rings sized for the same
 //!   P-producer / 1-consumer workload; the stamped rows add only
 //!   the 8-byte stamp the mode requires;
-//! - the consumer-side check IS the feature: a contender with an EXACT
+//! - the consumer-side check is the feature: a contender with an exact
 //!   guarantee that cannot uphold it fails the run (non-zero exit, its
 //!   child producers killed first so none is orphaned) instead of
 //!   posting a number. Best-effort modes (`merge_tsc`, "within stamp
@@ -255,7 +255,7 @@ fn run_child(
         ring.retire_producer(producer_id).map_err(|e| format!("retire: {e:?}"))?;
     }
     // Machine-readable producer-side rate (the parent averages
-    // these). Includes backpressure spin time by design: that IS
+    // these). Includes backpressure spin time by design: that is
     // the producer-side cost of the mode under a saturating stream.
     println!("{:.2}", elapsed.as_nanos() as f64 / N_ITEMS_PER_PRODUCER as f64);
     Ok(())
@@ -339,7 +339,7 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(stamp) = popped_stamp {
                     match contender.mode() {
                         OrderingMode::Unordered => {}
-                        // MergeStrict claims EXACT global FIFO. Any
+                        // MergeStrict claims exact global FIFO. Any
                         // out-of-order stamp is a real violation: kill
                         // the producer children first so the early
                         // return cannot orphan a spinning process, then

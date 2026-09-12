@@ -21,7 +21,7 @@ quinn + rcgen + rustls + tokio as regular dependencies.
 
 A per-slot stream write (one `write_all` await per 64-byte item)
 serializes the bridge on reactor latency - microseconds per item
-regardless of wire speed - so the client BURST-DRAINS the ring:
+regardless of wire speed - so the client burst-drains the ring:
 every already-available slot (up to `EGRESS_BATCH_SLOTS = 256`,
 16 KiB) is copied into one contiguous buffer and handed to quinn
 in a single write. The 64-byte memcpy per slot is noise next to
@@ -84,7 +84,7 @@ QuicBridgeServer -> consumer-side AdaptiveRing on 127.0.0.1
 (100,000 items, integrity verified).
 
 [`examples/bridge_lan.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
-runs the same chain between two PHYSICAL hosts with the cert
+runs the same chain between two physical hosts with the cert
 shipped as DER bytes: 1,000,000 items each direction with strict
 sequence assertions, plus a ping/pong round-trip mode. Measured
 numbers live in

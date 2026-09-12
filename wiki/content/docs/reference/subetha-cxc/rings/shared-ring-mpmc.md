@@ -39,7 +39,7 @@ preserved. When global FIFO matters, use
   **cross-process file-backed** (`create_grid` / `open_grid`,
   one file per producer ring named `<path_prefix>.{i}.bin`).
 - **Huge / large pages** (`create_grid_in_region`): all N SPSC
-  lanes are carved back-to-back from ONE caller-owned
+  lanes are carved back-to-back from one caller-owned
   `RegionOwner` (the region must hold
   `spsc_ring_file_size(capacity) * n_producers` bytes), so the
   whole grid sits on a handful of 2 MB / 1 GB pages instead of N

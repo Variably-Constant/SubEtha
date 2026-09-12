@@ -4,7 +4,7 @@
 //! Contenders:
 //! - **A (baseline)**: No Umbra. Scan `Vec<*const Item>`, deref each
 //!   pointer and compare the 32-byte struct against the query.
-//!   Represents the IPC crate's lookup pattern WITHOUT the Umbra
+//!   Represents the IPC crate's lookup pattern without the Umbra
 //!   optimization.
 //! - **B (original `UmbraPointer<Item>`)**: From `subetha-pointers`.
 //!   The existing nightly-required implementation. Prefix-first
@@ -20,7 +20,7 @@
 //! - 10,000 queries, 50% hit / 50% miss. Misses are where Umbra
 //!   wins (prefix-reject without deref).
 //!
-//! Bench audit (HARD RULE 3):
+//! Bench audit:
 //! - All three contenders exercise their named feature (A does
 //!   full compare always; B and C do prefix-first then full compare).
 //! - Same payload size (32 B), same N (1024), same M (10000),

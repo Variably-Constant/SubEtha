@@ -281,7 +281,7 @@ modest because both paths write to memory + atomic version bump.
 - **MMF lifecycle managed**: file created at bench start, deleted
   at end.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Multi-reader scaling**: SeqLock's win widens with reader
   count (no contention); RwLock's reader-acquire still serializes

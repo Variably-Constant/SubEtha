@@ -199,7 +199,7 @@ impl ObservationRing {
     /// Out-of-line store path, reached only when some ring in the process is
     /// armed. `#[cold]` + `#[inline(never)]` keep the per-op observation
     /// machinery off every primitive's hot path; the still-cheap
-    /// `self.armed` recheck confirms it is THIS ring that a consumer attached.
+    /// `self.armed` recheck confirms it is this ring that a consumer attached.
     #[cold]
     #[inline(never)]
     fn push_cold(&self, mut obs: Observation) -> bool {

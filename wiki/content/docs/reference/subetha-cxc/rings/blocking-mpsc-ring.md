@@ -21,8 +21,8 @@ the producer side plus one shared consumer waker.
 
 > **The "N SPSC rings, two wake families" primitive.** Each
 > producer is the sole writer to its own SPSC ring and parks on
-> its OWN producer waker when its ring is full; the consumer
-> drains all N rings round-robin and parks on ONE shared
+> its own producer waker when its ring is full; the consumer
+> drains all N rings round-robin and parks on one shared
 > consumer waker when every ring is empty. Wakes route by
 > identity: a producer's push wakes the shared consumer waker;
 > a consumer's pop wakes the specific producer waker for the

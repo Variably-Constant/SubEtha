@@ -119,7 +119,7 @@ beating slot 1.
 | `clear_in_flight(idx, bit)` | 1 fetch_and | Clear work-unit bit |
 | `snapshot(idx)` | SeqLock retry | Consistent read of all fields |
 
-`beat` writes only `last_seen_epoch`. SeqLock version is NOT
+`beat` writes only `last_seen_epoch`. SeqLock version is not
 bumped on a beat (forcing every observer to retry on
 every beat, defeating the SeqLock's purpose). `seq_version` is
 bumped only by the two structural lifecycle ops, `register` and
@@ -127,7 +127,7 @@ bumped only by the two structural lifecycle ops, `register` and
 slot's multi-field rewrite). Every other write is a single atomic
 word: `beat` stores `last_seen_epoch`, and `mark_in_flight` /
 `clear_in_flight` / the watchdog's `clear_dead_bitmap` reclamation
-are RMW / store on `in_flight_bitmap` - NONE of them bump
+are RMW / store on `in_flight_bitmap` - none of them bump
 `seq_version`. A reader sees each of those as a single atomic load
 with no field-level tear; the SeqLock exists only to protect the
 multi-field register/unregister rewrite from being read torn.
@@ -174,7 +174,7 @@ Bench harness: `crates/subetha-cxc/benches/heartbeat.rs`. Captured
 
 1. **`beat` is the headline number.** 22.6x faster than the
    global-mutex baseline and 44.5x faster than the per-slot-mutex
-   baseline. The per-slot-mutex variant pays TWO locks per beat
+   baseline. The per-slot-mutex variant pays two locks per beat
    (global_epoch lock + slot lock), so it's actually slower than
    the global-mutex naive version. The mmf path is two atomic
    ops to one cache line that lives in L1 after warmup.
@@ -182,7 +182,7 @@ Bench harness: `crates/subetha-cxc/benches/heartbeat.rs`. Captured
    The retry loop never iterates in this bench (no concurrent
    writers), so it's 4 atomic Acquire loads + a version check.
 3. **`mark_in_flight` wins 2.4x.** Single `fetch_or` vs
-   lock+OR+unlock. The atomic RMW IS the synchronization
+   lock+OR+unlock. The atomic RMW is the synchronization
    mechanism.
 4. **`register + unregister` is tied.** Both pay the O(capacity)
    first-empty-slot scan. The mmf uses lock-free CAS per slot;
@@ -192,7 +192,7 @@ Bench harness: `crates/subetha-cxc/benches/heartbeat.rs`. Captured
 
 ### Rule 3b bench audit
 
-- **Fair contenders**: TWO baselines.
+- **Fair contenders**: two baselines.
   `Mutex<(epoch, Vec<NaiveRec>)>` is the textbook naive
   global-lock shape. `Vec<Mutex<NaiveRec>>` with a separate
   global-epoch mutex is the per-slot-mutex shape (the mutex
@@ -201,13 +201,13 @@ Bench harness: `crates/subetha-cxc/benches/heartbeat.rs`. Captured
   worker pool); same slot index used for beat / snapshot /
   mark_in_flight to measure per-op cost.
 - **register state-mutation pitfall handled**: register +
-  unregister CYCLED per iter so the table never fills.
+  unregister cycled per iter so the table never fills.
 - **No `thread::spawn` inside `b.iter`**: workloads are
   single-threaded.
 - **MMF lifecycle managed**: create + ops + drop + remove_file
   per bench.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process beats**: every process beats its own slot in
   its own MMF window. No cross-process synchronization between
@@ -286,7 +286,7 @@ this.
 ### Pattern: leader-election quorum
 
 A leader-election daemon scans heartbeat slots to find the
-lowest-PID-still-alive. The heartbeat IS the liveness source;
+lowest-PID-still-alive. The heartbeat is the liveness source;
 the leader election adds the policy.
 
 ### Pattern: phase-barrier dead-peer exclusion

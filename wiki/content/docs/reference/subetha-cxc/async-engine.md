@@ -106,7 +106,7 @@ crosses the process boundary; an in-process wake takes the direct path.
 
 The smallest async ring: one SPSC lane with a `Waker` cell. It is the
 primitive the fixed-pool scaling story is built on, with no
-marshalling or shape dispatch in the way.
+marshaling or shape dispatch in the way.
 
 ```rust
 pub fn create_anon_pair(capacity) -> Result<(WakerProducer, WakerConsumer), RingError>;

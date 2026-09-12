@@ -38,7 +38,7 @@ fn build_umbras() -> (Vec<ArcUmbra<u64>>, u32, u64) {
 }
 
 // =========================================================
-// Scan for a value that exists at the END (late match).
+// Scan for a value that exists at the end (late match).
 // =========================================================
 
 fn scan_late_match(c: &mut Criterion) {
@@ -76,7 +76,7 @@ fn scan_late_match(c: &mut Criterion) {
 }
 
 // =========================================================
-// Scan for a value that does NOT exist (full miss).
+// Scan for a value that does not exist (full miss).
 // =========================================================
 
 fn scan_full_miss(c: &mut Criterion) {

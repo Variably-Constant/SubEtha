@@ -15,12 +15,12 @@
 //! # Concurrency
 //!
 //! - `get` / `contains_key` / `snapshot_*` / `len`: **lock-free
-//!   read paths**. Multi-reader safe at any concurrency. Does NOT
+//!   read paths**. Multi-reader safe at any concurrency. Does not
 //!   promote MRU order.
 //! - `touch` / `get_and_touch` / `put` / `remove` / `evict_oldest`:
 //!   **single-writer** operations. Wrap in a SharedSemaphore(1) or
 //!   the application's own coordination for cross-process writer
-//!   serialisation.
+//!   serialization.
 //!
 //! # Why split get vs touch
 //!
@@ -33,7 +33,7 @@
 //! # Eviction
 //!
 //! `put(k, v)` always succeeds when the underlying map has room.
-//! If the cache is at capacity AND `k` is not already present, the
+//! If the cache is at capacity and `k` is not already present, the
 //! LRU entry (back of list) is evicted first via pop_back +
 //! map.remove.
 //!
@@ -114,7 +114,7 @@ impl<
 > SharedLRUCache<K, V> {
     /// Create a new LRU cache with `capacity` entries.
     ///
-    /// SIZING: the underlying SharedHashMap is sized to 8x capacity
+    /// Sizing: the underlying SharedHashMap is sized to 8x capacity
     /// to absorb tombstone accumulation (open-addressing leaves a
     /// tombstone on every remove; LRU caches do many removes via
     /// eviction). The linked list region is sized to capacity + 2
@@ -167,14 +167,14 @@ impl<
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
-    /// Lock-free lookup. Does NOT promote `k` to MRU position.
+    /// Lock-free lookup. Does not promote `k` to MRU position.
     /// Use [`get_and_touch`](Self::get_and_touch) or
     /// [`touch`](Self::touch) for strict LRU semantics.
     pub fn get(&self, key: &K) -> Option<V> {
         let r = (|| {
             let idx = self.map.get(key)?;
             let (k, v) = self.list.get(NodeHandle::new(idx))?;
-            // Sanity: the list slot we looked up via the map MUST hold
+            // Sanity: the list slot we looked up via the map must hold
             // the same key. If not, the cache is corrupted (shouldn't
             // happen since map and list are updated together in writer
             // ops). Return None defensively rather than asserting.
@@ -236,7 +236,7 @@ impl<
     }
 
     /// Insert / update. Writer-side. If the cache is at capacity
-    /// AND `key` is new, evicts the LRU entry first. Returns the
+    /// and `key` is new, evicts the LRU entry first. Returns the
     /// previous value if `key` was present.
     pub fn put(&self, key: K, value: V) -> Result<Option<V>, LRUError> {
         let r = self.put_inner(key, value);
@@ -391,7 +391,7 @@ mod tests {
         // Snapshot order is push-front-order, so MRU = 3.
         let before = c.snapshot_mru_first();
         assert_eq!(before, vec![(3, 300), (2, 200), (1, 100)]);
-        // Plain get on key 1 should NOT promote.
+        // Plain get on key 1 should not promote.
         c.get(&1).unwrap();
         let after = c.snapshot_mru_first();
         assert_eq!(after, vec![(3, 300), (2, 200), (1, 100)],

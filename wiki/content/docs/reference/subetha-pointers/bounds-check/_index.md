@@ -7,7 +7,7 @@ sidebar:
 
 # Bounds-checking primitives
 
-Hardware-flavoured pointer-safety primitives. The capability pair
+Hardware-flavored pointer-safety primitives. The capability pair
 here carries a region descriptor (base, length, permissions)
 alongside the pointer itself, so a dereference can be validated
 against the descriptor before the load actually issues. The result
@@ -25,7 +25,7 @@ corruption.
 The **CHERI** capability uses the **silicon** to enforce bounds.
 The processor refuses to dereference outside the capability's
 range, and capability arithmetic that escapes the bounds
-invalidates the capability tag. The crate ships two specialised
+invalidates the capability tag. The crate ships two specialized
 wrappers: `ReadableCapability<T>` for read-only access and
 `WritableCapability<T>` for read-write access. Both bound the
 permission set so a `ReadableCapability` cannot be coerced into a

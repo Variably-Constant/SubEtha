@@ -7,7 +7,7 @@
 //! when the local ring is empty (client side) or full (server
 //! side), this primitive uses `recv_blocking` / `send_blocking` on
 //! `BlockingSpscRing` via `tokio::task::spawn_blocking`. The
-//! blocking call parks the worker thread on a SHARED `futex` (or
+//! blocking call parks the worker thread on a shared `futex` (or
 //! `WaitOnAddress`) and returns within microseconds of the next
 //! ring event. Result: an idle bridge consumes zero CPU; a
 //! freshly-published item ships across the wire one wake +
@@ -66,7 +66,7 @@ impl From<BlockingError> for BlockingTcpBridgeError {
 const TICK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Slots per batched egress write. The blocking client parks for
-/// the FIRST item (the zero-CPU-idle property), then burst-drains
+/// the first item (the zero-CPU-idle property), then burst-drains
 /// every slot already in the ring via `try_pop` before paying one
 /// socket write.
 pub const EGRESS_BATCH_SLOTS: usize = 256;
@@ -90,7 +90,7 @@ impl BlockingTcpBridgeClient {
 
     /// Connect + ship `n_items` items. The bridge parks on the
     /// ring's `recv_blocking` (off the runtime thread) until the
-    /// FIRST item arrives - an idle bridge consumes zero CPU - then
+    /// first item arrives - an idle bridge consumes zero CPU - then
     /// burst-drains every slot already in the ring via `try_pop`
     /// and ships the whole batch in one socket write.
     pub async fn run(&self, n_items: u64) -> Result<(), BlockingTcpBridgeError> {

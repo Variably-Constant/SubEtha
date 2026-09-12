@@ -1,10 +1,10 @@
 //! Notifier side of the cross-process [`SharedCondvar`] E2E.
 //!
 //! Coordination:
-//!   1. Run `condvar_xproc_waiter` FIRST. It creates the condvar
+//!   1. Run `condvar_xproc_waiter` first. It creates the condvar
 //!      files + a shared predicate atom + drops a `.waiter_ready`
 //!      marker.
-//!   2. Run THIS binary. It waits for the marker, opens the
+//!   2. Run this binary. It waits for the marker, opens the
 //!      condvar + predicate, sleeps briefly, sets the predicate
 //!      to true, and calls `notify_all`. It then drops a
 //!      `.notifier_done` marker.
@@ -12,10 +12,10 @@
 //!      exits rc=0.
 //!
 //! On Linux/WSL the wake call crosses the process boundary via
-//! SHARED `futex` and the test proves cross-process condvar
+//! shared `futex` and the test proves cross-process condvar
 //! wake-without-per-message-syscalls. On Windows the primitive
 //! falls back to spin (`WaitOnAddress` is intra-process only) so
-//! THIS binary should be run from WSL Linux.
+//! this binary should be run from WSL Linux.
 //!
 //! Usage:
 //!     condvar_xproc_notifier <base_path>

@@ -1,4 +1,4 @@
-//! Item 14: Trace mini-traceroute on the control stream + path asymmetry.
+//! Trace mini-traceroute on the control stream + path asymmetry.
 //!
 //! Two signals about the *shape* of the path, both read without a separate probe
 //! flow:
@@ -213,7 +213,7 @@ pub fn drain_icmp_errors(fd: std::os::fd::RawFd) -> Vec<(IpAddr, Vec<u8>)> {
                         let off = (ee as *const u8).add(size_of::<libc::sock_extended_err>())
                             as *const libc::sockaddr_in;
                         // s_addr holds the address in network byte order, so its
-                        // in-memory bytes ARE the octets a.b.c.d in order.
+                        // in-memory bytes are the octets a.b.c.d in order.
                         let octets = (*off).sin_addr.s_addr.to_ne_bytes();
                         hops.push((IpAddr::V4(std::net::Ipv4Addr::from(octets)), payload.clone()));
                     }

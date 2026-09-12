@@ -11,7 +11,7 @@
 //! - Pure `fetch_add` writes - no underflow possible.
 //! - No spin loops, no CAS retries, no RAII guards.
 //! - Bounded memory at create time (`d * w` cells of u64).
-//! - Hash collisions OVERCOUNT, never undercount. Estimate is a
+//! - Hash collisions overcount, never undercount. Estimate is a
 //!   guaranteed upper bound on true count.
 //!
 //! # Error bound
@@ -28,7 +28,7 @@
 //! double-hashing (Kirsch-Mitzenmacher). Same technique as
 //! [`SharedBloomFilter`](crate::SharedBloomFilter).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -175,7 +175,7 @@ impl SharedCountMinSketch {
         path: impl AsRef<Path>, expected_d: u32, expected_w: u32,
     ) -> Result<Self, CMSError> {
         let total = cms_file_size(expected_d, expected_w);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(CMSError::LayoutMismatch);
         }

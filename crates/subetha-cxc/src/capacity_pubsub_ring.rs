@@ -25,7 +25,7 @@
 //! - `position: u64` - position within `backings[backing_idx]`
 //!
 //! On `try_next()`, the subscriber reads at its current
-//! `(backing_idx, position)`. On `Pending` AND when not on the
+//! `(backing_idx, position)`. On `Pending` and when not on the
 //! most-recent backing, it advances `backing_idx` and resets
 //! `position` to 0 (every stale backing's prior content drains
 //! before the subscriber crosses into the next).
@@ -86,7 +86,7 @@ pub struct CapacityPubSubRing {
     backing_source: PubSubBackingSource,
     /// Monotonic morph counter for path / shm-name uniqueness.
     morph_seq: AtomicU64,
-    /// Serialises morph callers (and gc) so the chain mutations
+    /// Serializes morph callers (and gc) so the chain mutations
     /// are atomic with respect to each other.
     morph_lock: Mutex<()>,
     /// One-slot warm cache: a fully constructed backing at a
@@ -203,10 +203,10 @@ impl CapacityPubSubRing {
         chain.last().expect("chain always has at least one backing").publish(payload)
     }
 
-    /// Subscribe to the stream from the CURRENT active backing's
+    /// Subscribe to the stream from the currently active backing's
     /// current head. The subscriber drains forward from there,
     /// crossing into newly-morphed backings as it catches up.
-    /// "From now" semantics: late joiners do NOT see history
+    /// "From now" semantics: late joiners do not see history
     /// from before they subscribed.
     pub fn subscribe_from_now(self: &Arc<Self>) -> CapacityPubSubSubscriber {
         let chain = self.chain.lock();
@@ -221,7 +221,7 @@ impl CapacityPubSubRing {
         }
     }
 
-    /// Subscribe starting from the beginning of the OLDEST
+    /// Subscribe starting from the beginning of the oldest
     /// backing currently in the chain. The subscriber drains
     /// every item from every backing oldest-to-newest, crossing
     /// chain entries as it catches up. Used when a subscriber
@@ -371,7 +371,7 @@ impl CapacityPubSubRing {
     /// Sum of capacities across every backing currently in the
     /// chain. Used by KeepAll-style producers to bound in-flight
     /// items to actual buffering room: any item the producer
-    /// publishes is held in SOME backing until the slowest
+    /// publishes is held in some backing until the slowest
     /// subscriber catches up; with at most `chain_total_capacity()`
     /// in-flight items, no backing wraps past a subscriber's
     /// position before that subscriber drains it.

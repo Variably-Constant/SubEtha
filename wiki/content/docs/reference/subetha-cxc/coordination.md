@@ -63,7 +63,7 @@ Canonical doc:
 
 ### `EpochBarrier`
 
-Synchronisation barrier across processes. Each participant
+Synchronization barrier across processes. Each participant
 calls `wait(epoch)` and blocks until all other participants have
 also called `wait(epoch)`. When the count reaches the registered
 participant count, the barrier releases and the epoch advances.

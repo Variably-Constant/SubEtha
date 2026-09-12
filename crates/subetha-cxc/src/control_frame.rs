@@ -3,7 +3,7 @@
 //! A single `CONTROL` datagram carries a sequence of type-tagged,
 //! length-prefixed frames. Both endpoints emit `CONTROL` datagrams holding
 //! whatever frames they have to report, so the channel is symmetric: an ACK
-//! from the receiver and a TIMING beat from the sender are the same packet
+//! from the receiver and a timing beat from the sender are the same packet
 //! shape, just different frames.
 //!
 //! The point of the framing is extensibility without a version bump. A new
@@ -25,9 +25,7 @@
 //! written raw. The codec is pure and does no I/O, so it is exhaustively
 //! testable against synthetic frame sequences.
 
-/// Packet-type tag for a control datagram (vs `PKT_DATA`). Distinct from the
-/// retired fixed `PKT_FEEDBACK` / `PKT_HEARTBEAT` tags, which this container
-/// subsumes.
+/// Packet-type tag for a control datagram (vs `PKT_DATA`).
 pub const PKT_CONTROL: u8 = 4;
 
 /// Frame type tags. Stable on the wire; append new variants, never renumber.
@@ -42,9 +40,9 @@ pub enum FrameType {
     Loss = 0x03,
     /// Sender clock beat plus the peer beat being echoed, for RTT and OWD.
     Timing = 0x04,
-    /// Source-ring shape telemetry (the legacy heartbeat payload).
+    /// Source-ring shape telemetry.
     Ring = 0x05,
-    /// The peer's observed TTL / ECN / hop-count of THIS endpoint's packets.
+    /// The peer's observed TTL / ECN / hop-count of this endpoint's packets.
     Path = 0x06,
     /// The peer's link class and normalized quality.
     Link = 0x07,
@@ -67,7 +65,7 @@ pub enum FrameType {
     /// the sender pre-arms protection one cycle ahead of a periodic delay spike.
     Periodicity = 0x0E,
     /// Receiver -> sender: prove you can receive at the address a datagram
-    /// under an unrecognised session epoch came from.
+    /// under an unrecognized session epoch came from.
     SessionChallenge = 0x0F,
     /// Sender -> receiver: the challenge echoed back.
     SessionResponse = 0x10,
@@ -107,7 +105,7 @@ impl FrameType {
 /// A session-epoch challenge and the answer echoing it: the epoch under
 /// challenge, and a nonce only a peer that received the challenge holds.
 ///
-/// `nonce` MUST fit 62 bits, masked with [`NONCE_MASK`]. The varint codec
+/// `nonce` fits 62 bits, masked with [`NONCE_MASK`]. The varint codec
 /// clamps wider values, and a clamped echo never compares equal to the
 /// unclamped original.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -152,7 +150,7 @@ pub struct TimingFrame {
     pub echo_ts: u64,
 }
 
-/// Source-ring shape telemetry: the legacy heartbeat payload, now a frame.
+/// Source-ring shape telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RingFrame {
     pub fill_pct: u8,
@@ -163,11 +161,11 @@ pub struct RingFrame {
     pub flags: u8,
 }
 
-/// The peer's view of THIS endpoint's packets: the TTL it saw, the ECN bits,
+/// The peer's view of this endpoint's packets: the TTL it saw, the ECN bits,
 /// and the hop count it derived from the TTL. A change in `hop_count` is a
 /// router-level path shift, often visible before throughput moves.
 ///
-/// AccECN (item 15): `ce_count` / `ect_count` are the peer's CUMULATIVE counts of
+/// AccECN: `ce_count` / `ect_count` are the peer's cumulative counts of
 /// our CE-marked and ECN-capable packets, so the sender derives a graded
 /// `ce_rate = delta_CE / delta_ECT` between frames instead of reading a single
 /// CE bit. An AQM marks CE before it tail-drops, so a rising rate leads loss.
@@ -198,7 +196,7 @@ pub mod link_class {
 }
 
 /// Bidirectional control-plane loss accounting. `seq` is the count of control
-/// packets this endpoint has SENT; `last_recv_seq` is the count it has RECEIVED
+/// packets this endpoint has sent; `last_recv_seq` is the count it has received
 /// from the peer. Pairing the two separates forward-path loss (the peer did not
 /// get your packets: your `seq` minus the peer's reported `last_recv_seq`) from
 /// reverse-path loss (you did not get the peer's: the peer's `seq` minus your
@@ -246,7 +244,7 @@ pub struct AvailBwFrame {
     pub capacity_kbps: u64,
 }
 
-/// The receiver's Sprout-style forecast (item 16): the 5th-percentile deliverable
+/// The receiver's Sprout-style forecast: the 5th-percentile deliverable
 /// rate it predicts for the next tick, so the sender pre-sizes its window ahead
 /// of a dip instead of reacting after the loss the dip causes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -255,7 +253,7 @@ pub struct ForecastFrame {
     pub forecast_kbps: u64,
 }
 
-/// The receiver's LEO handover-cadence detection (item 17): the detected period
+/// The receiver's LEO handover-cadence detection: the detected period
 /// and the time to the next predicted delay spike, both in deciseconds (0.1 s),
 /// plus a confidence, so the sender pre-arms one cycle ahead. `period_ds == 0`
 /// means no cadence detected.
@@ -672,6 +670,70 @@ pub fn decode_control(buf: &[u8]) -> Option<ControlPacket> {
 mod tests {
     use super::*;
 
+    /// The control container's packet type has a row in the
+    /// specification's packet-type table.
+    #[test]
+    fn the_control_packet_type_is_in_the_wire_specification() {
+        crate::spec_doc::assert_listed("control_frame", &[(PKT_CONTROL, "control container")]);
+    }
+
+    /// Every frame type this module encodes appears in the
+    /// specification's frame-type table under the same tag and name, and
+    /// the table names nothing this module does not encode.
+    #[test]
+    fn the_control_frame_types_match_the_wire_specification() {
+        let ours: Vec<(u8, &str)> = vec![
+            (FrameType::Ack as u8, "Ack"),
+            (FrameType::Nak as u8, "Nak"),
+            (FrameType::Loss as u8, "Loss"),
+            (FrameType::Timing as u8, "Timing"),
+            (FrameType::Ring as u8, "Ring"),
+            (FrameType::Path as u8, "Path"),
+            (FrameType::Link as u8, "Link"),
+            (FrameType::LossAcct as u8, "LossAcct"),
+            (FrameType::Pmtu as u8, "Pmtu"),
+            (FrameType::BwProbe as u8, "BwProbe"),
+            (FrameType::Trace as u8, "Trace"),
+            (FrameType::AvailBw as u8, "AvailBw"),
+            (FrameType::Forecast as u8, "Forecast"),
+            (FrameType::Periodicity as u8, "Periodicity"),
+            (FrameType::SessionChallenge as u8, "SessionChallenge"),
+            (FrameType::SessionResponse as u8, "SessionResponse"),
+            (FrameType::SessionAnnounce as u8, "SessionAnnounce"),
+        ];
+        let listed = crate::spec_doc::control_frame_types();
+
+        for (tag, name) in &ours {
+            match listed.get(tag) {
+                Some(stated) => assert_eq!(
+                    stated, name,
+                    "the specification calls frame 0x{tag:02X} {stated:?}; this module \
+                     calls it {name:?}. A tag is stable on the wire and its name is how \
+                     an implementer finds it."
+                ),
+                None => panic!(
+                    "the specification's frame-type table does not list 0x{tag:02X} \
+                     ({name}). Section 7 rule 2 has receivers skip an unknown frame, so \
+                     an unlisted frame is one every other implementation discards."
+                ),
+            }
+        }
+
+        let ours_tags: std::collections::BTreeSet<u8> = ours.iter().map(|(t, _)| *t).collect();
+        let extra: Vec<String> = listed
+            .keys()
+            .filter(|t| !ours_tags.contains(t))
+            .map(|t| format!("0x{t:02X} ({})", listed[t]))
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "the specification's frame-type table lists {}, which this module does not \
+             encode. A frame in the document and not on the wire is one an implementer \
+             will wait for and never receive.",
+            extra.join(", ")
+        );
+    }
+
     #[test]
     fn varint_round_trips_each_length_class() {
         for v in [0u64, 1, 63, 64, 16383, 16384, (1 << 30) - 1, 1 << 30, (1u64 << 62) - 1] {
@@ -809,7 +871,7 @@ mod tests {
     #[test]
     fn unknown_frame_is_skipped_not_fatal() {
         // Hand-build: a real ACK, then an unknown frame type 0x7F with a
-        // 4-byte body, then a real LINK. The unknown one must be skipped and
+        // 4-byte body, then a real Link. The unknown one must be skipped and
         // both known frames decoded.
         let mut wire = vec![PKT_CONTROL];
         wire.push(FrameType::Ack as u8);

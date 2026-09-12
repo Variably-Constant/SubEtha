@@ -36,7 +36,7 @@
 //!
 //! # Guarantee (read this)
 //! Delivery is exactly stamp-monotone **while `window >= max
-//! displacement`**. This is NOT an unconditional, host-independent
+//! displacement`**. This is not an unconditional, host-independent
 //! guarantee: if a displacement spike exceeds the current window, one
 //! item can be released out of order *before* the window grows to
 //! absorb the next spike. Start `floor` at or above the host's expected
@@ -125,7 +125,7 @@ impl ReorderBuffer {
     }
 
     /// Proactively raise the window (and, if needed, the cap) to at
-    /// least `min_window`. Called when the producer count GROWS at
+    /// least `min_window`. Called when the producer count grows at
     /// runtime: displacement is bounded by the concurrent producer
     /// count, so widening on growth keeps delivery provably exact
     /// instead of waiting for a caught late stamp (which admits one
@@ -380,7 +380,7 @@ impl<'a> AdaptiveOrderedReceiver<'a> {
         let cid = self.consumer_id;
         match &mut self.mode {
             ExactMode::Reorder(rb) => {
-                // Producers can GROW mid-stream: widen the window with
+                // Producers can grow mid-stream: widen the window with
                 // them (displacement is bounded by producer count).
                 // Past the reorder cap, flip the ring to the strict
                 // watermark wait; the buffer then sees monotone input

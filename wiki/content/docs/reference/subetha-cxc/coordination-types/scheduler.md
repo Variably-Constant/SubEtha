@@ -27,8 +27,8 @@ from the same MMF substrate.
 > 204 ns (1.07x slower; tied). watchdog_scan at 18.91 ns for an
 > 8-slot heartbeat (~2.36 ns per slot). try_recv at 254 ns
 > (full submit -> worker -> result -> recv path). Architectural
-> lever stacks: cross-process visibility AND durable ring (file
-> IS the queue) AND auto-failover, at zero measurable cost over
+> lever stacks: cross-process visibility and durable ring (file
+> is the queue) and auto-failover, at zero measurable cost over
 > the in-process mpsc baseline.
 
 **Constraints (read first):**
@@ -107,7 +107,7 @@ in-flight bits.
 
 The submit and result sides are abstracted behind the `MessageTransport`
 trait, so the scheduler can ride
-the canonical MPMC `SharedRing` OR the SPMC `SharedDeque<PassSlot>`
+the canonical MPMC `SharedRing` or the SPMC `SharedDeque<PassSlot>`
 work-stealing transport. Three constructors pick the transport:
 
 | Constructor | Transport choice |
@@ -218,7 +218,7 @@ Worker drains concurrently (pre-spawned at scheduler start).
    `failover.scan`: O(slots) atomic loads, dead count is free.
 4. **The architectural lever is cross-process + durable +
    failover.** mpsc::sync_channel is in-process only and has
-   no failover. The scheduler's ring file IS the persistent
+   no failover. The scheduler's ring file is the persistent
    queue.
 
 ### Rule 3b bench audit
@@ -235,7 +235,7 @@ Worker drains concurrently (pre-spawned at scheduler start).
 - **MMF lifecycle managed**: scheduler created + ops + dropped +
   3 files removed per bench function.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process Pass dispatch**: process A submits, process B's
   worker drains and executes. The mpsc baseline cannot do this.
@@ -335,7 +335,7 @@ workers' in-flight bits are reclaimed within `grace_epochs`.
 
 ### Pattern: durable RPC
 
-The submit ring file IS the persistent queue. A coordinator
+The submit ring file is the persistent queue. A coordinator
 crash leaves submitted Pass items in the ring; a restarted
 coordinator (or any other process) drains them and produces
 results. No external queue service needed.
@@ -387,7 +387,7 @@ token in the payload so correlation is direct.
 
 - **Treating `result_token` as a sequence number.** It is a
   correlation ID picked monotonically per submitter; different
-  submitters' tokens may interleave. Use it ONLY to match
+  submitters' tokens may interleave. Use it only to match
   results to submissions, not for ordering.
 
 - **Holding the scheduler in a long-running scope without

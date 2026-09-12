@@ -24,7 +24,7 @@
 //! # When this is the right MPMC primitive
 //!
 //! `SharedRingMpmc` is the **default-recommended MPMC primitive**
-//! when callers do NOT need global FIFO order across all
+//! when callers can live without global FIFO order across all
 //! producers. It preserves **per-producer FIFO** (items from one
 //! producer arrive at one consumer in push order), but items from
 //! different producers can interleave at different consumers
@@ -102,7 +102,7 @@ impl SharedRingMpmc {
         build_grid(rings, n_consumers)
     }
 
-    /// MPMC grid laid out in ONE caller-owned region (huge / large
+    /// MPMC grid laid out in a single caller-owned region (huge / large
     /// pages). All `n_producers` SPSC lanes are carved back-to-back
     /// from the single region, so the whole grid sits on a handful of
     /// 2 MB / 1 GB pages instead of `n_producers` separate small
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn create_grid_in_region_round_trip() {
-        // Carve all four SPSC lanes from ONE heap-backed region (the
+        // Carve all four SPSC lanes from a single heap-backed region (the
         // large-page path in miniature; a heap region needs no
         // privilege). Round-trip integrity proves the lanes occupy
         // disjoint, non-overlapping byte ranges.

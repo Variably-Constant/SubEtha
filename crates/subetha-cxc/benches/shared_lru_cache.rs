@@ -2,7 +2,7 @@
 //! in-process LRU baseline.
 //!
 //! Architectural claim: the composite primitive matches in-process
-//! LRU on the hot read path AND provides cross-process visibility.
+//! LRU on the hot read path and provides cross-process visibility.
 //! Writer-side ops (put / touch) cost more because we update two
 //! underlying primitives; reads are competitive.
 //!

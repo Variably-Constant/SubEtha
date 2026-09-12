@@ -184,7 +184,7 @@ impl MpscConsumer {
             let idx = (start + i) % n;
             if let Ok(bytes) = self.rings[idx].try_pop(out) {
                 // Advance the cursor past the ring we just drained so
-                // the NEXT call starts at idx+1; producer fairness.
+                // the next call starts at idx+1; producer fairness.
                 self.next_drain.store((idx + 1) % n, Ordering::Relaxed);
                 return Ok(bytes);
             }
@@ -221,8 +221,8 @@ impl MpscConsumer {
 /// consumer drains one ring instead of round-robining N. The
 /// crossover depends on:
 ///
-/// - **N (producer count)**: low N favours `Fifo` (light producer
-///   CAS contention + no consumer round-robin); high N favours
+/// - **N (producer count)**: low N favors `Fifo` (light producer
+///   CAS contention + no consumer round-robin); high N favors
 ///   `Composed` (independent producer rings, no shared CAS).
 /// - **ordering requirement**: `Fifo` is the only choice when the
 ///   caller needs global FIFO across all producers (e.g. a totally-

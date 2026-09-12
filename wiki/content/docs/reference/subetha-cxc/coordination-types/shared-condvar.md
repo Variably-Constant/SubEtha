@@ -13,31 +13,31 @@ weight: 55
 Cross-process Mesa-style condition variable built on top of
 [`CrossProcessWaker`]({{< ref "cross-process-waker" >}}). Waiters
 check a user-owned predicate, park if not satisfied, and resume
-when a notifier advances the predicate AND calls `notify_*`.
+when a notifier advances the predicate and calls `notify_*`.
 
 > **The "Mesa condvar over a futex slot" primitive.** A monotonic
 > generation counter lives in shared memory; every `wait` parks at
 > `target = current_gen + 1`; every `notify_one` / `notify_all`
 > bumps the generation and fires `wake_(one_)up_to(new_gen)`,
 > which wakes parked waiters whose `target <= new_gen`. The
-> condvar does NOT own the predicate atom; callers pass a closure
+> condvar does not own the predicate atom; callers pass a closure
 > that returns the current predicate value.
 
 ## Constraints
 
-- **`Arc::clone` for intra-process sharing**, NOT `create` +
+- **`Arc::clone` for intra-process sharing**, not `create` +
   `open`. The `open` constructor mmaps the same file a second
   time, producing a different virtual-address range aliased to
   the same file pages; Windows `WaitOnAddress` is keyed by
-  virtual address, so a `notify` from the second handle does NOT
+  virtual address, so a `notify` from the second handle does not
   reach a `wait` on the first handle. Cross-process Linux works
-  via SHARED `futex`, but the rule "one `Arc<SharedCondvar>` per
+  via shared `futex`, but the rule "one `Arc<SharedCondvar>` per
   process" is cross-platform safe.
-- **`open` is for SEPARATE processes** joining a condvar the
-  creator already initialised.
+- **`open` is for separate processes** joining a condvar the
+  creator already initialized.
 - **Cross-process wake** rides the
   [`CrossProcessWaker`]({{< ref "cross-process-waker" >}}) parks:
-  SHARED `futex` on Linux/WSL, non-PRIVATE `_umtx_op` on FreeBSD,
+  shared `futex` on Linux/WSL, non-private `_umtx_op` on FreeBSD,
   `os_sync_wait_on_address` on macOS 14.4+, and the hardware
   monitor tier (`MONITORX` / `UMONITOR`, physical-address keyed)
   on Windows for file/shm-backed condvars; anon-backed Windows
@@ -116,7 +116,7 @@ waiter.join().unwrap();
 - Cross-process WSL Linux pair
   (`examples/condvar_xproc_notifier.rs` +
   `examples/condvar_xproc_waiter.rs`) drives a 255ms cross-process
-  wait that crosses the kernel boundary via SHARED `futex`;
+  wait that crosses the kernel boundary via shared `futex`;
   notifier wakes 1 parked waiter; both processes exit `rc=0`.
 - 5 lib tests cover notify_one, notify_all, wait_timeout,
   immediate-true predicate, and Arc::clone file-backed

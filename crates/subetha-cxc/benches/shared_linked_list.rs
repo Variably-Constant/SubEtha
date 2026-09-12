@@ -119,12 +119,12 @@ fn iter_100(c: &mut Criterion) {
 }
 
 // =========================================================
-// THE HEADLINE: remove from middle of 100-element list.
+// The headline: remove from middle of 100-element list.
 //
 // SharedLinkedList: pass the handle directly to remove() = O(1).
 // Mutex<LinkedList>: must scan to find the target = O(N/2 avg).
 // Mutex<VecDeque>: pop_front + push_back doesn't apply (we need
-//   to remove a SPECIFIC item, not just one end), so this would
+//   to remove a specific item, not just one end), so this would
 //   be O(N) shift. Skipped because the comparison is unfair.
 // =========================================================
 

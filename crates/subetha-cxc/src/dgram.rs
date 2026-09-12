@@ -49,7 +49,7 @@ pub enum DgramBackend {
 }
 
 // The backends are inherently different sizes (a plain UdpSocket vs an io_uring
-// ring). There is exactly ONE Inner per DgramSock, alive for the socket's whole
+// ring). There is exactly one Inner per DgramSock, alive for the socket's whole
 // life - never a collection - so the per-variant size gap the lint warns about
 // (wasted slots in a Vec) does not apply; boxing would only add a hot-path deref.
 #[allow(clippy::large_enum_variant)]
@@ -140,28 +140,113 @@ impl DemuxDgram {
     }
 }
 
+/// How much this host can say about datagrams its kernel dropped on one
+/// socket because the receive buffer was full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReport {
+    /// A count, attributable to this socket. Linux carries it in the
+    /// `SO_RXQ_OVFL` ancillary message as packets dropped since the socket
+    /// was created.
+    Exact,
+    /// Drops happened on this socket and the host will not say how many.
+    /// FreeBSD's `SO_RERROR` turns an overflow into `ENOBUFS` on receive;
+    /// its only count is system-wide and shared with every process.
+    Occurred,
+    /// The host reports nothing. Windows records a drop as a verbose trace
+    /// event rather than a counter, and moves no counter for it. macOS is
+    /// untested.
+    Unknown,
+}
+
+/// Per-socket kernel drop state.
+///
+/// The count is meaningful only when [`read`](Self::read) answers
+/// [`DropReport::Exact`]. A host that cannot count leaves it zero and says
+/// so, rather than letting silence read as none.
+#[derive(Debug, Default)]
+pub struct DropTally {
+    dropped: std::sync::atomic::AtomicU64,
+    occurred: std::sync::atomic::AtomicBool,
+}
+
+impl DropTally {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The count and what it is worth on this host.
+    pub fn read(&self) -> (u64, DropReport) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if cfg!(target_os = "linux") {
+            return (self.dropped.load(Relaxed), DropReport::Exact);
+        }
+        if cfg!(target_os = "freebsd") {
+            // Until something overflows, none have, and that zero is exact.
+            let report = if self.occurred.load(Relaxed) {
+                DropReport::Occurred
+            } else {
+                DropReport::Exact
+            };
+            return (0, report);
+        }
+        (0, DropReport::Unknown)
+    }
+
+    /// Record the cumulative count the kernel reported. It counts from the
+    /// socket's creation and arrives as `u32`, so it is taken as a maximum
+    /// rather than added: the same value seen twice is the same drops, not
+    /// new ones.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn observe_count(&self, total: u32) {
+        self.dropped.fetch_max(u64::from(total), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record that an overflow happened without a count.
+    #[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+    fn observe_occurred(&self) {
+        self.occurred.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// A datagram socket whose backend is chosen at runtime: io_uring where
 /// available, plain UDP otherwise. Same surface either way.
 pub struct DgramSock {
     inner: Inner,
+    drops: DropTally,
 }
 
 impl DgramSock {
     /// Wrap a bound `UdpSocket`, auto-detecting the io_uring backend. Honors
     /// `SUBETHA_DGRAM` (`iouring` / `udp`); otherwise prefers io_uring on
     /// Linux and falls back to plain UDP when the ring cannot be created.
+    fn of(inner: Inner) -> Self {
+        Self { inner, drops: DropTally::new() }
+    }
+
+    /// Datagrams this socket's kernel dropped for a full receive buffer,
+    /// and what the count is worth here. Only the plain-UDP path observes
+    /// them; the io_uring and wire backends answer
+    /// [`DropReport::Unknown`], since neither carries the kernel's report.
+    pub fn kernel_drops(&self) -> (u64, DropReport) {
+        match &self.inner {
+            Inner::Udp(_) => self.drops.read(),
+            _ => (0, DropReport::Unknown),
+        }
+    }
+
     pub fn wrap(sock: UdpSocket) -> Self {
         enable_rx_timestamp(&sock);
+        enable_drop_reporting(&sock);
         let forced = std::env::var("SUBETHA_DGRAM").ok();
         if forced.as_deref() == Some("udp") {
-            return Self { inner: Inner::Udp(sock) };
+            return Self::of(Inner::Udp(sock));
         }
 
         // NIC-bypass backend (AF_XDP on Linux, netmap on FreeBSD, BPF on macOS): the
         // transport's datagrams ride raw Ethernet+IPv4+UDP frames with the
         // kernel stack bypassed. It only wins when the link is fast enough
         // that the per-packet syscall path - not the link - is the
-        // bottleneck, so the AUTO path engages it ONLY above the link-speed
+        // bottleneck, so the auto path engages it only above the link-speed
         // gate (`SUBETHA_WIRE_MIN_GBPS`, default 10 Gbit/s) and otherwise
         // falls through to io_uring / UDP. `SUBETHA_DGRAM=wire` forces it
         // regardless (warned when below the gate). Either way it needs the
@@ -185,7 +270,7 @@ impl DgramSock {
                                 wire_min_link_bps() as f64 / 1e9
                             );
                         }
-                        return Self { inner: Inner::Wire(w) };
+                        return Self::of(Inner::Wire(w));
                     }
                     Err(e) => eprintln!(
                         "Wire backend requested but unavailable ({e}); falling back"
@@ -198,7 +283,7 @@ impl DgramSock {
         {
             let force_ring = forced.as_deref() == Some("iouring");
             match linux_iou::IoUringDgram::new(sock) {
-                Ok(d) => Self { inner: Inner::IoUring(d) },
+                Ok(d) => Self::of(Inner::IoUring(d)),
                 Err((sock, e)) => {
                     if force_ring {
                         eprintln!(
@@ -206,7 +291,7 @@ impl DgramSock {
                              ({e}); using plain UDP"
                         );
                     }
-                    Self { inner: Inner::Udp(sock) }
+                    Self::of(Inner::Udp(sock))
                 }
             }
         }
@@ -214,7 +299,7 @@ impl DgramSock {
         #[cfg(not(target_os = "linux"))]
         {
             drop(forced);
-            Self { inner: Inner::Udp(sock) }
+            Self::of(Inner::Udp(sock))
         }
     }
 
@@ -242,16 +327,14 @@ impl DgramSock {
         queue: DemuxQueue,
         sent: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     ) -> Self {
-        Self {
-            inner: Inner::Demux(DemuxDgram {
-                real,
-                queue,
-                peer: std::sync::Mutex::new(None),
-                sent,
-                pop_attempts: std::sync::atomic::AtomicU64::new(0),
-                pop_yields: std::sync::atomic::AtomicU64::new(0),
-            }),
-        }
+        Self::of(Inner::Demux(DemuxDgram {
+            real,
+            queue,
+            peer: std::sync::Mutex::new(None),
+            sent,
+            pop_attempts: std::sync::atomic::AtomicU64::new(0),
+            pop_yields: std::sync::atomic::AtomicU64::new(0),
+        }))
     }
 
     /// Demux-backend queue probe: `(pop_attempts, pop_yields,
@@ -270,7 +353,7 @@ impl DgramSock {
         }
     }
 
-    /// Wrap a bound `UdpSocket` as a plain-UDP `DgramSock` WITHOUT the io_uring
+    /// Wrap a bound `UdpSocket` as a plain-UDP `DgramSock` without the io_uring
     /// auto-upgrade. The Reed-Solomon transport drives the raw fd directly for
     /// GRO / TTL / ECN / connected-send / Windows USO, so it needs the `Udp`
     /// backend (reachable via [`as_udp`](Self::as_udp)); `wrap`'s io_uring
@@ -278,7 +361,7 @@ impl DgramSock {
     /// manages its own recvmsg cmsgs and control-buffer sizing, so adding the
     /// RX-timestamp cmsg here could overflow its control buffer.
     pub fn from_udp(sock: UdpSocket) -> Self {
-        Self { inner: Inner::Udp(sock) }
+        Self::of(Inner::Udp(sock))
     }
 
     /// The underlying `UdpSocket` when this is a plain-UDP backend (the only
@@ -393,11 +476,11 @@ impl DgramSock {
     }
 
     /// Ship `batch` (an integer number of `seg_size`-byte datagrams concatenated)
-    /// to `addr` in ONE `sendmsg` via UDP GSO (`UDP_SEGMENT`) - the kernel slices
+    /// to `addr` in a single `sendmsg` via UDP GSO (`UDP_SEGMENT`) - the kernel slices
     /// it into `batch.len() / seg_size` wire datagrams, replicating IP+UDP
     /// headers. Collapses the per-datagram syscall + stack-traversal cost (~62x
     /// fewer syscalls at MTU). Falls back to one `send_to` per segment on
-    /// backends without a UDP fd (Wire) or non-Linux. `batch.len()` MUST be a
+    /// backends without a UDP fd (Wire) or non-Linux. `batch.len()` must be a
     /// multiple of `seg_size`, and `seg_size * n_segs` must fit a single IP
     /// datagram (<= 65535) - the caller caps the batch.
     pub fn send_gso(&self, batch: &[u8], seg_size: u16, addr: SocketAddr) -> io::Result<()> {
@@ -429,7 +512,7 @@ impl DgramSock {
     /// Receive one datagram with the kernel arrival timestamp when available.
     pub fn recv_with_kts(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
         match &self.inner {
-            Inner::Udp(s) => udp_recv_with_kts(s, buf),
+            Inner::Udp(s) => udp_recv_with_kts(s, buf, &self.drops),
             #[cfg(target_os = "linux")]
             Inner::IoUring(d) => d.recv_with_kts(buf),
             #[cfg(all(feature = "wire-locale", any(target_os = "linux", target_os = "freebsd", target_os = "macos")))]
@@ -486,9 +569,74 @@ fn enable_rx_timestamp(sock: &UdpSocket) {
 #[cfg(not(target_os = "linux"))]
 fn enable_rx_timestamp(_sock: &UdpSocket) {}
 
-/// `recvmsg`-based receive that extracts the kernel arrival timestamp.
+/// Ask the kernel to report receive-buffer overflows on this socket.
+///
+/// Linux attaches a cumulative count to each received datagram; FreeBSD
+/// turns an overflow into `ENOBUFS` on the next receive. Elsewhere there
+/// is nothing to ask for and the socket is left alone. A refusal is
+/// ignored: reporting is an observation, and a socket that cannot offer
+/// it still carries traffic.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn enable_drop_reporting(sock: &UdpSocket) {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    const OPTION: libc::c_int = libc::SO_RXQ_OVFL;
+    // Not in the libc crate's FreeBSD constants; SO_RERROR is 0x00020000.
+    #[cfg(target_os = "freebsd")]
+    const OPTION: libc::c_int = 0x0002_0000;
+    let on: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            OPTION,
+            &on as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn enable_drop_reporting(_sock: &UdpSocket) {}
+
+/// `enable_drop_reporting` for a socket a caller reads directly rather
+/// than through a [`DgramSock`], which the unified demux thread does.
+pub fn enable_drop_reporting_on(sock: &UdpSocket) {
+    enable_drop_reporting(sock);
+}
+
+/// The cumulative drop count in a received message's ancillary data, when
+/// the kernel attached one.
 #[cfg(target_os = "linux")]
-pub(crate) fn udp_recv_with_kts(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
+fn parse_rxq_ovfl(msg: &libc::msghdr) -> Option<u32> {
+    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg) };
+    while !cmsg.is_null() {
+        let hdr = unsafe { &*cmsg };
+        if hdr.cmsg_level == libc::SOL_SOCKET && hdr.cmsg_type == libc::SO_RXQ_OVFL {
+            let data = unsafe { libc::CMSG_DATA(cmsg) };
+            let mut value: u32 = 0;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data,
+                    &mut value as *mut u32 as *mut u8,
+                    std::mem::size_of::<u32>(),
+                );
+            }
+            return Some(value);
+        }
+        cmsg = unsafe { libc::CMSG_NXTHDR(msg, cmsg) };
+    }
+    None
+}
+
+/// `recvmsg`-based receive that extracts the kernel arrival timestamp and
+/// the receive-queue drop count, recording the latter in `drops`.
+#[cfg(target_os = "linux")]
+pub(crate) fn udp_recv_with_kts(
+    sock: &UdpSocket,
+    buf: &mut [u8],
+    drops: &DropTally,
+) -> io::Result<(usize, SocketAddr, Option<i128>)> {
     use std::os::fd::AsRawFd;
     let mut iov = libc::iovec {
         iov_base: buf.as_mut_ptr() as *mut libc::c_void,
@@ -507,16 +655,45 @@ pub(crate) fn udp_recv_with_kts(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<
     if n < 0 {
         return Err(io::Error::last_os_error());
     }
+    if let Some(total) = parse_rxq_ovfl(&msg) {
+        drops.observe_count(total);
+    }
     let kts = parse_timestamp(&msg);
     let from = unsafe { sockaddr_to_socketaddr(&name) }
         .ok_or_else(|| io::Error::other("non-IP source"))?;
     Ok((n as usize, from, kts))
 }
 
+/// Where the kernel reports an overflow it reaches this path as an error
+/// rather than a number, so it is recorded and then returned unchanged:
+/// the caller sees the same failure it always did.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn udp_recv_with_kts(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
-    let (n, from) = sock.recv_from(buf)?;
-    Ok((n, from, None))
+pub(crate) fn udp_recv_with_kts(
+    sock: &UdpSocket,
+    buf: &mut [u8],
+    drops: &DropTally,
+) -> io::Result<(usize, SocketAddr, Option<i128>)> {
+    match sock.recv_from(buf) {
+        Ok((n, from)) => Ok((n, from, None)),
+        Err(e) => {
+            if is_overflow(&e) {
+                drops.observe_occurred();
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Whether a receive error is the kernel saying the buffer overflowed.
+/// Only FreeBSD raises one, and only with `SO_RERROR` set.
+#[cfg(target_os = "freebsd")]
+fn is_overflow(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ENOBUFS)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn is_overflow(_e: &io::Error) -> bool {
+    false
 }
 
 /// Stop Winsock reporting an inbound ICMP port-unreachable as a recv
@@ -527,14 +704,13 @@ pub(crate) fn udp_recv_with_kts(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<
 /// `WSAECONNRESET` from a later `recv_from`. The recv then completes as
 /// an error instead of delivering a datagram, so an endpoint talking to
 /// peers that come and go spends recv attempts on errors while traffic
-/// from every OTHER peer keeps arriving. A sender finishing and
+/// from every other peer keeps arriving. A sender finishing and
 /// dropping its socket is enough to start it, which is every normal
 /// end of stream.
 ///
 /// Measured on the Sens-O-Matic demux socket: 712 errors against 773
 /// successful receives in one run, with every received datagram routed
-/// and none unroutable, so the loss sat below routing entirely
-/// (subetha-25).
+/// and none unroutable, so the loss sat below routing entirely.
 ///
 /// Returns whether the option was applied. A failure is not fatal: the
 /// socket still works and is merely noisy again, and a caller has no
@@ -566,7 +742,7 @@ pub(crate) fn quiet_icmp_connreset(sock: &UdpSocket) -> bool {
 }
 
 /// Every other platform reports ICMP port-unreachable through
-/// `SO_ERROR` on a CONNECTED socket only, so an unconnected receiver
+/// `SO_ERROR` on a connected socket only, so an unconnected receiver
 /// never has a datagram displaced by one.
 #[cfg(not(windows))]
 pub(crate) fn quiet_icmp_connreset(_sock: &UdpSocket) -> bool {

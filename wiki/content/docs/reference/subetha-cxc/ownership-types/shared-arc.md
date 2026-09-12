@@ -88,7 +88,7 @@ any price.
 - **Reading is measured through an already-held handle**, which is what
   a caller does after opening once.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process access.** `Arc` cannot address a value in another
   process at all.

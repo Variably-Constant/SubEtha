@@ -48,8 +48,8 @@ above.
 Three diagnostic-only switches log decisions to stderr and change no
 behavior: `SUBETHA_FEC_DEBUG` (each Sens-O-Matic coding-parameter
 decision), `SUBETHA_PAIR_DEBUG` (each packet-pair id-gap sample) and
-`SUBETHA_RING_DEBUG` (each `AdaptiveRing` shape transition, including a
-morph deferred behind a stale backlog and the pop that later lands it).
+`SUBETHA_RING_DEBUG` (each `AdaptiveRing` shape transition, naming the
+shape left, the shape taken and the walked set the morph leaves behind).
 
 ## Cargo features
 

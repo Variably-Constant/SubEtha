@@ -1,15 +1,15 @@
 //! One-port QUIC + Sens-O-Matic demux: end-to-end proof.
 //!
-//! Brings up ONE UDP server port that speaks BOTH protocols, then drives a
-//! vanilla QUIC transfer AND a unified Sens-O-Matic transfer (with the loss-
-//! driven RLC <-> RS auto-switch) against it CONCURRENTLY. The server's
+//! Brings up a single UDP server port that speaks both protocols, then drives a
+//! vanilla QUIC transfer and a unified Sens-O-Matic transfer (with the loss-
+//! driven RLC <-> RS auto-switch) against it concurrently. The server's
 //! `DemuxQuicSocket` routes each inbound datagram by its first wire byte: QUIC
 //! (fixed bit 0x40) to quinn, Sens (RS 1/4, RLC 10..=14, CODE_SWITCH 9) to the
 //! unified receiver's queues. Both transfers are verified: the QUIC payload must
 //! arrive byte-exact; the Sens stream must arrive in order with the right sum,
 //! fully acked, and (under injected loss) must have switched codes.
 //!
-//! Run (VM loopback; do NOT run high-rate UDP loopback on a Windows host):
+//! Run (VM loopback; do not run high-rate UDP loopback on a Windows host):
 //!   cargo run --release --features quic-bridge --example one_port_e2e -- \
 //!       --sens-items 4000 --quic-kb 512 --loss 30
 //!
@@ -76,7 +76,7 @@ fn main() -> Result<(), BoxErr> {
             .map_err(|e| -> BoxErr { e.to_string().into() })?;
 
         // Hold the endpoint in this scope so its driver (which polls the demux
-        // socket and feeds the Sens queues) stays alive until BOTH transfers
+        // socket and feeds the Sens queues) stays alive until both transfers
         // finish; the server task gets a clone. If QUIC retired the only handle,
         // Sens routing would halt the moment the QUIC transfer completed.
         let ep_srv = endpoint.clone();
@@ -162,7 +162,7 @@ fn main() -> Result<(), BoxErr> {
             Ok::<(), BoxErr>(())
         });
 
-        // Sens client: connect to the SAME port + ship the u64 sequence with the
+        // Sens client: connect to the same port + ship the u64 sequence with the
         // auto-switch live (sync UnifiedSensSender on its own thread).
         let sens_cli = std::thread::spawn(move || {
             let mut send = UnifiedSensSender::connect("0.0.0.0:0", server_addr, cli_unified)?;
@@ -186,8 +186,8 @@ fn main() -> Result<(), BoxErr> {
             ))
         });
 
-        // Join everything. Collect outcomes WITHOUT aborting early, so the RESULT
-        // line always reports BOTH protocols even if one of them failed.
+        // Join everything. Collect outcomes without aborting early, so the RESULT
+        // line always reports both protocols even if one of them failed.
         let quic_cli_res = quic_cli.await.map_err(|e| -> BoxErr { e.to_string().into() })?;
         let quic_srv_res = quic_srv.await.map_err(|e| -> BoxErr { e.to_string().into() })?;
         let (sens_acked, sw_tx, code_tx) = sens_cli.join().map_err(|_| "sens client panicked")??;

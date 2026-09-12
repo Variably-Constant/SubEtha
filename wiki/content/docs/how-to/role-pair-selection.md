@@ -9,7 +9,7 @@ role pair matches your shape, take the type, move on. The
 shape - who-talks-to-who - is what determines the primitive.
 Strategy adaptation is a secondary axis the sidecar handles via
 the `AdaptiveIpc<T>` umbrella, which auto-picks among the
-specialised primitives below based on declarative workload hints.
+specialized primitives below based on declarative workload hints.
 
 ## Cross-process MMF primitives
 
@@ -37,7 +37,7 @@ path after construction.
 Several primitives sit on the same role-pair shape but tune for a
 specific data layout:
 
-| Type | Same role-pair as | Specialisation |
+| Type | Same role-pair as | Specialization |
 |---|---|---|
 | `SharedBTreeMap` | `SharedHashMap` | ordered keys, range queries |
 | `SharedLinkedList` | `SharedTreiberStack` | doubly linked, both-end ops |
@@ -79,7 +79,7 @@ across the participants.
 |---|---|
 | liveness signal across processes | `HeartbeatTable`, `SharedLeaderElection` |
 | owner of a resource + lease holders | `OwnerLease` |
-| epoch barrier (all participants synchronise) | `EpochBarrier` |
+| epoch barrier (all participants synchronize) | `EpochBarrier` |
 | failover (work reassignment on dead peer) | `FailoverWatchdog` |
 | priority fan-out | `PriorityFanout` |
 | event log (emit + drain + fold) | `EventStateLog` |

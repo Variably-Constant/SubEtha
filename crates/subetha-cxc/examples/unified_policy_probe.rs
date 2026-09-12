@@ -3,7 +3,7 @@
 //! shape and capacity axes plus a contention phase.
 //!
 //! Baseline ("independent"): one thread running the capacity policy
-//! (DefaultCapacityPolicy -> morph_capacity_to) AND the shape policy
+//! (DefaultCapacityPolicy -> morph_capacity_to) and the shape policy
 //! (DefaultRingShapePolicy on peer counts -> ring_handle().morph_to)
 //! each tick, blind to each other, each with its own 100 ms
 //! hysteresis - the faithful "today" stack.
@@ -11,16 +11,16 @@
 //! Unified: one UnifiedSidecar scoring (shape, capacity) jointly and
 //! emitting compound morph_to_config moves, gated by confidence.
 //!
-//! Four phases on ONE ring (single consumer throughout, so exactly-
+//! Four phases on a single ring (one consumer throughout, so exactly-
 //! once is well defined and asserted):
 //!   A  1P/1C light load     -> SPSC, small capacity
 //!   B  2P/1C moderate        -> MPSC
 //!   C  4P/1C heavy load      -> MPSC, grown capacity
 //!   D  4P drain              -> MPSC, capacity descends
 //!
-//! Both arms reach the SAME shape per phase (shape is peer-count
+//! Both arms reach the same shape per phase (shape is peer-count
 //! driven - a hard validity constraint, not a tuning choice). The
-//! divergence is the CAPACITY axis and the MORPH COUNT: when the
+//! divergence is the capacity axis and the morph count: when the
 //! shape morphs SPSC -> MPSC the total slot inventory jumps Nx (one
 //! sub-ring per producer), collapsing the fill ratio. The independent
 //! capacity policy, blind to the shape change, thrashes chasing the
@@ -155,10 +155,10 @@ fn run_arm(arm: Arm) -> ArmResult {
     let consumed = Arc::new(AtomicU64::new(0));
     let backpressure = Arc::new(AtomicU64::new(0));
 
-    // Consumer: drains continuously, verifies per-producer EXACTLY-
-    // ONCE rigorously (every seq seen exactly once - no loss, no
+    // Consumer: drains continuously, verifies per-producer exactly-
+    // once rigorously (every seq seen exactly once - no loss, no
     // duplication). Strict cross-morph FIFO under concurrent
-    // producers is NOT asserted: the stale-list design guarantees
+    // producers is not asserted: the stale-list design guarantees
     // exactly-once across a morph boundary, not in-order delivery of
     // items in flight during the swap - the library's own concurrent
     // multi-morph test checks the same exactly-once property via a
@@ -251,7 +251,7 @@ fn run_arm(arm: Arm) -> ArmResult {
                 dns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 dct.fetch_add(1, Ordering::Relaxed);
 
-                // Two INDEPENDENT, blind decisions, each its own
+                // Two independent, blind decisions, each its own
                 // morph. Both route through morph_to_config (single-
                 // axis configs) so each is serialized by the wrapper
                 // morph lock - the faithful "today" cost is two
@@ -310,13 +310,13 @@ fn run_arm(arm: Arm) -> ArmResult {
     phase_ends.push(settle_and_snapshot(&ring));
 
     // Phase B: 2P/1C moderate. Register producer 1, then morph the
-    // shape to MPSC SYNCHRONOUSLY before activating it - two
+    // shape to MPSC synchronously before activating it - two
     // producers at an SPSC ring violate its single-producer
     // contract, and the policy's async morph leaves a window. The
     // synchronous morph routes through morph_to_config (wrapper
     // morph lock) so it cannot race the policy sidecar's morphs.
     // The shape is now a valid MPSC; the policy refines capacity and
-    // (unified) may upgrade the shape to a better VALID shape.
+    // (unified) may upgrade the shape to a better valid shape.
     ring.register_producer().unwrap();
     ring.morph_to_config(&RingConfig {
         shape: Some(RingShape::Mpsc),
@@ -352,7 +352,7 @@ fn run_arm(arm: Arm) -> ArmResult {
     std::thread::sleep(Duration::from_millis(1500));
     phase_ends.push(settle_and_snapshot(&ring));
 
-    // Teardown order: stop producers, QUIESCE all morphing (so no
+    // Teardown order: stop producers, quiesce all morphing (so no
     // morph perturbs the tail), join producer counts, drain to
     // completion, then verify.
     run.store(false, Ordering::Release);

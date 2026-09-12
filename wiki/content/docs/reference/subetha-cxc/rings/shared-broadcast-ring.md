@@ -14,7 +14,7 @@ weight: 20
 
 Single-producer, multi-consumer pub/sub ring backed by an MMF.
 Distinct from [`SharedRing`](shared-ring/) (MPMC; each slot
-consumed once); here EVERY registered consumer sees EVERY
+consumed once); here every registered consumer sees every
 message independently with its own cursor. This is the
 Kafka-topic / log-tail / pub-sub shape. Each slot is a SeqLock
 cell - producer writes under odd version + bumps to even on
@@ -27,7 +27,7 @@ commit; consumers spin on the version to read.
 > (**2.7x faster**). `lag` observer at **1.06 ns vs 49.2 ns
 > (46x faster)** - two atomic loads minus the consumer cursor
 > vs 3 mutex acquires. The architectural lever stacks:
-> cross-process pub/sub AND lock-free dispatch AND per-consumer
+> cross-process pub/sub and lock-free dispatch and per-consumer
 > independent progress. (Full table with provenance under
 > [Bench evidence](#bench-evidence).)
 
@@ -46,7 +46,7 @@ commit; consumers spin on the version to read.
 - **Producer waits for slowest consumer**: `try_push` returns
   `BroadcastError::Full` when the slowest active consumer's cursor is
   capacity-behind. Slow consumer = blocked producer.
-- **`register_consumer` starts AT current `producer_seq`**: new
+- **`register_consumer` starts at current `producer_seq`**: new
   consumers see only post-registration messages, not history.
 - **`unregister` removes from min calc**: producer no longer
   waits for that consumer's cursor.
@@ -218,7 +218,7 @@ implementing the same protocol shape.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process pub/sub**: producer in process A, consumers
   in processes B, C, D. The mutex baseline cannot do this at
@@ -244,11 +244,11 @@ dedicated constructor calls. Pick by visibility need:
 | `create_anon(capacity)` | Anonymous mmap | In-process only. Fastest construction (no file open, no ftruncate). |
 | `create_from_shm(shm, capacity)` | Named shared memory | Cross-process RAM-resident (Linux `/dev/shm` or Windows named section); never touches the page cache. Caller passes a pre-sized [`ShmFile`](../../atomics/shared-atomic/) handle. |
 | `open(path, expected_capacity)` | File-backed | Open an existing file-backed ring. Validates magic + capacity. |
-| `open_from_shm(shm, expected_capacity)` | Named shared memory | Open an existing named-shm region without re-initialising. |
+| `open_from_shm(shm, expected_capacity)` | Named shared memory | Open an existing named-shm region without re-initializing. |
 
 All variants use the same `try_push` / `try_recv` / `register_consumer`
 API. The locale only affects backing-bytes lifecycle. `capacity >= 2`
-is asserted; it does NOT need to be a power of two (the slot-index
+is asserted; it does not need to be a power of two (the slot-index
 `wrap` uses a bit-mask on pow2 capacities and a modulo otherwise).
 `broadcast_file_size(capacity)` is a public `const fn` for callers
 sizing a `ShmFile` by hand.
@@ -377,7 +377,7 @@ coordinator only blocks if ALL caches fall behind.
   pattern to detect dead consumers externally.
 
 - **Treating `register` as starting from history.** New
-  consumers start at CURRENT `producer_seq`; messages produced
+  consumers start at current `producer_seq`; messages produced
   before registration are not delivered.
 
 - **Multi-producer assumption.** The ring is single-producer.

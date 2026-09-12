@@ -3,9 +3,9 @@
 //!
 //! Each process can call [`SharedLeaderElection::try_claim_leadership`]
 //! which atomically claims the leader role if:
-//! 1. There is no current leader (PID == 0), OR
+//! 1. There is no current leader (PID == 0), or
 //! 2. The caller's PID is strictly lower than the current leader's
-//!    (lower PIDs preempt higher; the lowest live PID always wins), OR
+//!    (lower PIDs preempt higher; the lowest live PID always wins), or
 //! 3. The current leader's heartbeat has gone stale (last beat is
 //!    more than `grace_epochs` behind the global epoch).
 //!
@@ -33,7 +33,7 @@
 //! +-----------------------------+
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -136,7 +136,7 @@ impl SharedLeaderElection {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaderError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < LEADER_FILE_SIZE as u64 {
             return Err(LeaderError::LayoutMismatch);
         }
@@ -158,7 +158,7 @@ impl SharedLeaderElection {
 
     /// Attempt to claim leadership for `my_pid`. Returns `true` if
     /// successful (now leader) or already leader; `false` if the
-    /// current leader is alive AND has a lower or equal PID.
+    /// current leader is alive and has a lower or equal PID.
     ///
     /// `grace_epochs` is the staleness window: when the current
     /// leader's heartbeat is more than this many epochs behind the

@@ -19,8 +19,8 @@ Bounded, lock-free FIFO / LIFO / pub-sub structures backed by an MMF.
 | 1P / NC fan-out (every consumer reads every item) | `SharedBroadcastRing` | none needed | [shared-broadcast-ring](shared-broadcast-ring/) |
 | 1P / NC work-distribute (each item to one consumer) | `SharedDeque` family | none needed | [shared-deque](shared-deque/) |
 | NP / NC (MPMC) | `SharedRingMpmc` (composed N x M Lamport grid) | `SharedRing` (Vyukov MPMC) | [shared-ring-mpmc](shared-ring-mpmc/) |
-| Shape unknown / morphs over runtime | `AdaptiveRing` (all 4 shapes pre-allocated; peers register / unregister at runtime, backings GROW past the construction hint, shape auto-morphs to the live counts; pins to native primitive speed once stable) | none needed | [shared-ring-adaptive](shared-ring-adaptive/) |
-| Global FIFO needed sometimes / decided at runtime | `AdaptiveRing::with_ordering_stamps()` (push stamps + a shared ordering flag; the merge flip delivers global FIFO within stamp skew on the composed rings, retroactive over the backlog). For EXACT delivery on the SharedCounter path, `AdaptiveOrderedReceiver` (auto reorder-vs-strict). | `RingShape::Vyukov` morph for unstamped rings | [adaptive-ordering](adaptive-ordering/) |
+| Shape unknown / morphs over runtime | `AdaptiveRing` (all 4 shapes pre-allocated; peers register / unregister at runtime, backings grow past the construction hint, shape auto-morphs to the live counts; pins to native primitive speed once stable) | none needed | [shared-ring-adaptive](shared-ring-adaptive/) |
+| Global FIFO needed sometimes / decided at runtime | `AdaptiveRing::with_ordering_stamps()` (push stamps + a shared ordering flag; the merge flip delivers global FIFO within stamp skew on the composed rings, retroactive over the backlog). For exact delivery on the SharedCounter path, `AdaptiveOrderedReceiver` (auto reorder-vs-strict). | `RingShape::Vyukov` morph for unstamped rings | [adaptive-ordering](adaptive-ordering/) |
 | Shape + locale both morph at runtime | `LocaleAdaptiveRing` (Anon / File / ShmFs locale wrapped around AdaptiveRing) | none needed | [locale-adaptive-ring](locale-adaptive-ring/) |
 | Slot count grows / shrinks at runtime under load (fan-in family) | `CapacityAdaptiveRing` (ArcSwap state-swap to a fresh backing at any pow2 capacity; stale-list draining; pinned hot path reaches native speed) | none needed | [capacity-adaptive-ring](capacity-adaptive-ring/) |
 | Slot count grows / shrinks at runtime under load (broadcast fan-out) | `CapacityBroadcastRing` (same ArcSwap state-swap pattern; per-subscriber positions baked into the underlying broadcast ring header) | none needed | [capacity-broadcast-ring](capacity-broadcast-ring/) |
@@ -42,8 +42,8 @@ observable signal.
 The blocking variants layer `CrossProcessWaker` (a userspace
 futex slot list in MMF) on top of the non-blocking SPSC / MPSC
 / MPMC rings so consumers can park kernel-side instead of
-spinning when the ring is empty. SHARED `futex` on Linux and
-non-PRIVATE `_umtx_op` on FreeBSD carry the wake across the
+spinning when the ring is empty. shared `futex` on Linux and
+non-private `_umtx_op` on FreeBSD carry the wake across the
 process boundary; on Windows the hardware monitor tier
 (MONITORX/UMONITOR, physical-address based) carries the
 cross-process wake while `WaitOnAddress` serves anon-backed
@@ -71,7 +71,7 @@ underlying protocol and the measured wait ladder.
 | [Shared Treiber Stack](shared-treiber-stack/) | LIFO stack | Lock-free CAS-based push/pop |
 | [Shared Deque](shared-deque/) | Work-stealing deque | Single owner (LIFO push / pop), multiple thieves (FIFO steal) |
 | [Shared Deque (KHPD)](shared-deque-khpd/) | Publication-line deque | Single owner stages + publishes K items per cache-line, multiple thieves CAS-claim whole lines |
-| [Shared Deque (KHL)](shared-deque-khl/) | K-axis Hierarchical LCRQ (SubEtha-novel hybrid) | Pulls KHPD's per-slot packing + LOH's per-batch counter amortization + Chase-Lev's owner-private tail all at once |
+| [Shared Deque (KHL)](shared-deque-khl/) | K-axis Hierarchical LCRQ (SubEtha-native hybrid) | Pulls KHPD's per-slot packing + LOH's per-batch counter amortization + Chase-Lev's owner-private tail all at once |
 | [Shared Deque (LOH)](shared-deque-loh/) | LCRQ-on-LIFO Hybrid deque | Single owner stages in a process-private LIFO (no atomic) + migrates batches into a Vyukov-sequence ring; multiple thieves CAS-claim per-slot |
 | [Shared Deque (URD)](shared-deque-urd/) | Per-thief mailbox deque (UMWAIT / PauseSpin) | Single owner picks target mailbox by round-robin, each thief reads its own mailbox (no shared CAS contention) |
 | [Deque Dispatcher](dispatch-deque/) | Per-shape routing composition | Owns one handle per variant; picks the variant per call based on `WorkloadShape` (n_thieves, batch_size, wait_idle) |

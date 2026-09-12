@@ -1,8 +1,8 @@
-//! Item 16: Sprout-style stochastic forecast of the deliverable rate.
+//! Sprout-style stochastic forecast of the deliverable rate.
 //!
 //! Sprout (Winstein, Sivaraman & Balakrishnan, NSDI 2013) treats a cellular /
 //! variable bottleneck as a rate process with uncertainty and forecasts a
-//! CONSERVATIVE lower bound on what it will deliver over the next tick, so a
+//! conservative lower bound on what it will deliver over the next tick, so a
 //! sender can pre-size its window ahead of a dip rather than react after the loss
 //! a dip causes. This is the receiver-side estimator: it is fed the delivered
 //! bytes per measurement interval and tracks the rate with a one-dimensional
@@ -11,11 +11,11 @@
 //! 5th-percentile deliverable rate for the next tick as
 //! `mean - 1.645 * sqrt(predicted variance)`, floored at zero.
 //!
-//! Unlike the passive BtlBw (item 6), which is a windowed-MAX of the PAST
-//! delivery rate, this is a forward-looking, conservative LOWER bound: when the
+//! Unlike the passive BtlBw, which is a windowed-MAX of the past
+//! delivery rate, this is a forward-looking, conservative lower bound: when the
 //! observed rate jumps around, the filter's variance widens and the forecast
 //! drops at once - leading the dip - so the controller arms protection before the
-//! loss materialises. The noises scale with the current rate estimate, so one
+//! loss materializes. The noises scale with the current rate estimate, so one
 //! filter spans a bottleneck that varies by an order of magnitude.
 
 /// The one-sided z-score for a 5th-percentile (95 % one-sided) lower bound.
@@ -150,7 +150,7 @@ mod tests {
         assert!(fc_after < 0.4e6, "toward the new low rate, got {fc_after}");
     }
 
-    /// Uninitialised: no forecast yet.
+    /// Uninitialized: no forecast yet.
     #[test]
     fn no_forecast_before_any_observation() {
         let f = ArrivalForecast::new();

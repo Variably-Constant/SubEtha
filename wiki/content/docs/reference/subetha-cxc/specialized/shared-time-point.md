@@ -38,10 +38,10 @@ feature-stripped builds.
 - **Native sidecar integration**: the struct carries a `HandshakeHeader` + `ObservationRing` and implements `subetha_sidecar::AdaptiveInstance`. Wrap in `SidecarBox::new` to register with the global sidecar; raw `create()` / `open()` return the unregistered type unchanged.
 
 - **16 slots fixed**: `TILE_CAP = 16`. Sized for SIMD register
-  alignment. `create(path)` takes NO capacity argument; the tile
+  alignment. `create(path)` takes no capacity argument; the tile
   is always 16 slots.
 - **Payload up to 56 bytes per slot** (`SLOT_PAYLOAD = 56`); `T:
-  Copy + 'static` with `align_of::<T>() <= 8`. An oversized OR
+  Copy + 'static` with `align_of::<T>() <= 8`. An oversized or
   over-aligned `T` returns `TileError::PayloadTooLarge` at
   create/open.
 - **CAS-based insert**: `insert(version, value)` claims the
@@ -119,7 +119,7 @@ tile size; AVX-512 would separate from AVX2 on a larger tile.
    is cache-contiguous (16 * 16 bytes = 256 bytes) while the mmf's
    64-byte-aligned slots span more cache lines. On Genoa the gap
    reverses - the mmf scan is 6.74 ns vs the mutex's 7.78 ns. The
-   tile does NOT pay a large penalty for its cross-process layout.
+   tile does not pay a large penalty for its cross-process layout.
 2. **at() at 2.44 ns**: one atomic load of version + one
    unaligned read of payload. Lookup hot path is very fast.
 3. **Cross-process visibility is the architectural lever**:
@@ -144,7 +144,7 @@ tile size; AVX-512 would separate from AVX2 on a larger tile.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process visibility**: any process scans the same
   tile; the mutex baseline cannot.
@@ -224,7 +224,7 @@ slots by snapshot version for time-point queries.
 
 - **Treating visible_mask as exact at a writer-in-progress
   boundary.** A version with Release semantics becomes visible
-  to readers' Acquire load AFTER the write; brief windows of
+  to readers' Acquire load after the write; brief windows of
   invisibility during write are by design.
 
 - **Sizing one tile for >16 keys.** Partition across multiple

@@ -1,7 +1,7 @@
-//! One-port QUIC + ENCRYPTED Sens-O-Matic demux: end-to-end proof.
+//! One-port QUIC + encrypted Sens-O-Matic demux: end-to-end proof.
 //!
 //! Same shape as `one_port_e2e`, but the Sens half runs a TLS 1.3 handshake and
-//! AEAD-seals every item, so the WHOLE one-port endpoint - QUIC and Sens - is
+//! AEAD-seals every item, so the whole one-port endpoint - QUIC and Sens - is
 //! confidential on one UDP port. The server's `DemuxQuicSocket` routes inbound
 //! datagrams by first wire byte: QUIC (fixed bit 0x40) to quinn, Sens (RS 1/4,
 //! RLC 10..=14, CODE_SWITCH 9, crypto 15/16) to the unified receiver's queues -
@@ -10,7 +10,7 @@
 //! arrive byte-exact; the Sens stream must arrive in order with the right sum,
 //! fully acked, encrypted, and (under loss) must have switched codes.
 //!
-//! Run (VM loopback; do NOT run high-rate UDP loopback on a Windows host):
+//! Run (VM loopback; do not run high-rate UDP loopback on a Windows host):
 //!   cargo run --release --features "quic-bridge tls" --example one_port_tls_e2e -- \
 //!       --sens-items 100000 --quic-kb 512 --loss 30
 
@@ -69,7 +69,7 @@ fn main() -> Result<(), BoxErr> {
         let mut cli_unified = srv_unified;
         cli_unified.debug_loss = 0;
 
-        // One UDP port speaking QUIC + ENCRYPTED Sens. The Sens handshake driver
+        // One UDP port speaking QUIC + encrypted Sens. The Sens handshake driver
         // runs on a thread fed by the demux'd handshake queue.
         let (endpoint, mut sens_recv) =
             one_port_server_tls(server_sock, server_cfg, srv_unified, sens_server_cfg)
@@ -147,7 +147,7 @@ fn main() -> Result<(), BoxErr> {
             Ok::<(), BoxErr>(())
         });
 
-        // Sens client: connect_tls to the SAME port (the handshake rides the demux
+        // Sens client: connect_tls to the same port (the handshake rides the demux
         // on the server), then ship the u64 sequence AEAD-sealed with the switch live.
         let sens_cli = std::thread::spawn(move || {
             let mut send = UnifiedSensSender::connect_tls(

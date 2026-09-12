@@ -16,7 +16,7 @@ and reads/writes via `pread(2)` / `pwrite(2)`. Every write goes
 directly to the underlying block device; every read comes
 directly from the device.
 
-Useful when the substrate IS the buffer (caller does its own
+Useful when the substrate is the buffer (caller does its own
 caching, doesn't want the kernel double-buffering). Common in
 database storage engines.
 
@@ -30,7 +30,7 @@ This primitive fixes the slot size at 4096 bytes
 
 ## Coordination
 
-Head/tail counters live in two SEPARATE small MMF
+Head/tail counters live in two separate small MMF
 `SharedAtomicU64` files. Writing them via `O_DIRECT` `pwrite`
 would defeat their purpose (atomic cross-process visibility).
 File layout:
@@ -71,11 +71,11 @@ Drop removes all three files.
 - Workloads that need durability guarantees stronger than the
   page cache's writeback semantics.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Cross-process IPC: the substrate's mmap'd rings are faster
-  AND give you the page cache for free (which you usually want).
-- Workloads where the page cache IS the buffer (read-heavy with
+  and give you the page cache for free (which you usually want).
+- Workloads where the page cache is the buffer (read-heavy with
   reuse) - O_DIRECT just throws away that cache.
 
 ## References

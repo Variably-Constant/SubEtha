@@ -103,7 +103,7 @@ Low-level helpers `stack_file_size(capacity, slot_size)`, `STACK_MAGIC`, and
   stack at 0/1 size).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process push/pop**: any process pushes; any process
   pops. The Vec baseline is in-process only.
@@ -163,14 +163,14 @@ free list; the standalone primitive exposes the same shape.
 
 ### Pattern: undo / history stack
 
-LIFO semantics match undo. Cross-process LET multiple processes
+LIFO semantics match undo. Cross-process, it lets multiple processes
 share the same history.
 
 ---
 
 ## Known limitations
 
-- **Bounded capacity at create** (`capacity >= 1`; NOT
+- **Bounded capacity at create** (`capacity >= 1`; not
   power-of-2 constrained, unlike the ring primitives).
 - **LIFO only**: no FIFO; use SharedRing for FIFO.
 - **`approx_len()` is O(N) and racy**: it walks the head chain,

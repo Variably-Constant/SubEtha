@@ -229,7 +229,7 @@ impl<T> RaspBatch<T> {
     }
 
     /// Raw pointer at the given index. Returns `None` for an
-    /// out-of-range index. The pointer is NOT validated; pair with
+    /// out-of-range index. The pointer is not validated; pair with
     /// `check_read_scalar` (or use `read_at` which combines both).
     pub fn raw_ptr(&self, idx: RaspBatchIndex<T>) -> Option<*const T> {
         let i = idx.idx as usize;
@@ -246,7 +246,7 @@ impl<T> RaspBatch<T> {
     /// The target of the pointer at `idx` must still be valid
     /// (alive, properly aligned for `T`, and accessible via the
     /// permissions encoded). The check enforces the permissions
-    /// recorded at push time; it does NOT prove the target's
+    /// recorded at push time; it does not prove the target's
     /// allocation has not been freed.
     pub unsafe fn read_at(&self, idx: RaspBatchIndex<T>) -> Result<T, RaspError>
     where T: Copy,
@@ -342,8 +342,8 @@ impl<T> RaspBatch<T> {
             let sealed_mask4 =
                 _mm_movemask_ps(_mm_castsi128_ps(perms_xmm)) as u32;
 
-            // No-read: AND with Read bit, compare to zero. Set bit per
-            // lane means that lane LACKS the read permission.
+            // No-read: `AND` with Read bit, compare to zero. Set bit per
+            // lane means that lane lacks the read permission.
             let read_anded = _mm_and_si128(perms_xmm, read_bit_vec);
             let read_eq_zero = _mm_cmpeq_epi32(read_anded, zero128);
             let no_read_mask4 =
@@ -358,10 +358,10 @@ impl<T> RaspBatch<T> {
             let oob_upper_4 =
                 _mm256_movemask_pd(_mm256_castsi256_pd(cmp_upper)) as u32;
 
-            // A lane is invalid if ANY of the 4 failure conditions
+            // A lane is invalid if any of the 4 failure conditions
             // are set.
             let any_fail = sealed_mask4 | no_read_mask4 | oob_lower_4 | oob_upper_4;
-            // Valid lanes: bits 0..4 NOT set in any_fail.
+            // Valid lanes: bits 0..4 not set in any_fail.
             let valid_in_chunk = 4 - (any_fail & 0xF).count_ones();
             count_in_simd += valid_in_chunk;
         }
@@ -434,7 +434,7 @@ impl<T> RaspBatch<T> {
             let sealed_mask8 =
                 _mm256_movemask_ps(_mm256_castsi256_ps(perms_ymm)) as u32 & 0xFF;
 
-            // No-read: AND with Read bit, cmpeq vs zero, movemask.
+            // No-read: `AND` with Read bit, cmpeq vs zero, movemask.
             let read_anded = _mm256_and_si256(perms_ymm, read_bit_vec);
             let read_eq_zero = _mm256_cmpeq_epi32(read_anded, zero256);
             let no_read_mask8 =
@@ -480,7 +480,7 @@ impl<T> RaspBatch<T> {
     }
 
     /// AVX2-accelerated full validation that writes per-index results.
-    /// Slower than `count_valid_avx2` because it materialises a
+    /// Slower than `count_valid_avx2` because it materializes a
     /// `Vec<Result>` instead of just counting; use this when the
     /// caller needs per-index error attribution.
     ///

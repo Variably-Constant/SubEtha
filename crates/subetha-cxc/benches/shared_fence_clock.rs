@@ -1,5 +1,5 @@
 //! Bench: SharedFenceClock vs in-process HLC (Mutex<Hlc>) and the
-//! naive "just use SystemTime" approach (which is NOT HLC but is the
+//! naive "just use SystemTime" approach (which is not HLC but is the
 //! sloppy baseline most code uses for cross-process timestamps).
 //!
 //! Architectural claim: SharedFenceClock provides the HLC properties

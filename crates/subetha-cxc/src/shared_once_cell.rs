@@ -14,11 +14,11 @@
 //! with cross-process safety guaranteed by the atomic CAS protocol
 //! over shared memory.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
 
@@ -34,7 +34,11 @@ pub struct OnceHeader {
     pub magic: u32,
     pub size: u32,
     pub state: AtomicU8,
-    pub _pad_to_payload: [u8; 7],
+    pub _pad_to_pid: [u8; 3],
+    /// The process that moved the cell to `STATE_INITIALIZING`, or zero.
+    /// A claim whose process is gone is one nobody will ever publish, so
+    /// the pid is what lets a waiter tell that from a fetch still running.
+    pub claimant_pid: AtomicU32,
     pub payload: [u8; ONCE_PAYLOAD_BYTES],
 }
 
@@ -130,7 +134,7 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedOnceError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < ONCE_FILE_SIZE as u64 {
             return Err(SharedOnceError::LayoutMismatch);
         }
@@ -152,18 +156,18 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
         unsafe { &*(self.mmap.as_ptr() as *const OnceHeader) }
     }
 
-    /// True when the cell has been initialised.
+    /// True when the cell has been initialized.
     pub fn is_initialized(&self) -> bool {
         self.header().state.load(Ordering::Acquire) == STATE_INITIALIZED
     }
 
-    /// Get the value if initialised; otherwise return None.
-    /// Non-blocking; never invokes the initialiser.
+    /// Get the value if initialized; otherwise return None.
+    /// Non-blocking; never invokes the initializer.
     pub fn get(&self) -> Option<T> {
         let header = self.header();
         if header.state.load(Ordering::Acquire) != STATE_INITIALIZED {
             self.ring_sidecar
-                .push_op(crate::sidecar_ops::cell::OP_GET, 2); // empty / uninitialised
+                .push_op(crate::sidecar_ops::cell::OP_GET, 2); // empty / uninitialized
             return None;
         }
         let value: T = unsafe {
@@ -176,7 +180,7 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
     }
 
     /// Try to write the value. Returns `true` if this caller won
-    /// the init race, `false` if the cell was already initialised
+    /// the init race, `false` if the cell was already initialized
     /// or another init is in progress.
     pub fn set(&self, value: T) -> bool {
         let header = self.header();
@@ -244,6 +248,202 @@ impl<T: Copy + 'static> SharedOnceCell<T> {
     }
 }
 
+/// Why a wait for a published value gave up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitError {
+    /// The deadline passed with a claim still outstanding.
+    TimedOut,
+    /// The claim belongs to a process that is gone.
+    ClaimantGone,
+}
+
+/// A once-cell whose payload size is given at run time and whose
+/// initialization is three steps: claim the right to produce the value,
+/// produce it, publish it. Callers that lose the claim wait for the
+/// winner's value, so the value is produced once however many processes
+/// ask at once. This is the form a caller with no closures uses.
+///
+/// # A claim spans the caller's own code
+///
+/// A claim stands from `claim` until `publish`, across whatever the
+/// caller does to produce the value, so a claimant can die holding one.
+/// The claim carries the process that took it: [`wait`] answers
+/// `ClaimantGone` when that process is gone, and [`reclaim`] returns the
+/// cell to empty for the next caller.
+///
+/// [`wait`]: Self::wait
+/// [`reclaim`]: Self::reclaim
+pub struct SharedOnceCellDyn {
+    _file: File,
+    mmap: MmapMut,
+    value_bytes: usize,
+}
+
+unsafe impl Send for SharedOnceCellDyn {}
+unsafe impl Sync for SharedOnceCellDyn {}
+
+impl std::fmt::Debug for SharedOnceCellDyn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedOnceCellDyn")
+            .field("value_len", &self.value_bytes)
+            .field("state", &self.state())
+            .finish()
+    }
+}
+
+impl SharedOnceCellDyn {
+    /// Obtain the cell at `path` for a payload of `value_bytes`,
+    /// initializing an empty one when the path does not exist. A payload
+    /// past [`ONCE_PAYLOAD_BYTES`] is a `PayloadTooLarge`.
+    pub fn create(path: impl AsRef<Path>, value_bytes: usize) -> Result<Self, SharedOnceError> {
+        if value_bytes == 0 || value_bytes > ONCE_PAYLOAD_BYTES {
+            return Err(SharedOnceError::PayloadTooLarge);
+        }
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            path.as_ref(),
+            ONCE_FILE_SIZE,
+            |ptr| unsafe {
+                let hdr = ptr as *mut OnceHeader;
+                (*hdr).size = value_bytes as u32;
+                std::ptr::write_volatile(&raw mut (*hdr).magic, ONCE_MAGIC);
+            },
+            |ptr| unsafe { (*(ptr as *const OnceHeader)).magic == ONCE_MAGIC },
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, SharedOnceError::LayoutMismatch))?;
+        Self::from_region(file, mmap, value_bytes)
+    }
+
+    /// Attach to the cell another process created at `path`, whose
+    /// payload must be `value_bytes` long.
+    pub fn open(path: impl AsRef<Path>, value_bytes: usize) -> Result<Self, SharedOnceError> {
+        if value_bytes == 0 || value_bytes > ONCE_PAYLOAD_BYTES {
+            return Err(SharedOnceError::PayloadTooLarge);
+        }
+        let file = crate::region_file::open_existing(path.as_ref())?;
+        if file.metadata()?.len() < ONCE_FILE_SIZE as u64 {
+            return Err(SharedOnceError::LayoutMismatch);
+        }
+        let mmap = unsafe { MmapOptions::new().len(ONCE_FILE_SIZE).map_mut(&file)? };
+        Self::from_region(file, mmap, value_bytes)
+    }
+
+    fn from_region(file: File, mmap: MmapMut, value_bytes: usize) -> Result<Self, SharedOnceError> {
+        let header = unsafe { &*(mmap.as_ptr() as *const OnceHeader) };
+        if header.magic != ONCE_MAGIC || header.size as usize != value_bytes {
+            return Err(SharedOnceError::LayoutMismatch);
+        }
+        Ok(Self { _file: file, mmap, value_bytes })
+    }
+
+    fn header(&self) -> &OnceHeader {
+        unsafe { &*(self.mmap.as_ptr() as *const OnceHeader) }
+    }
+
+    /// Bytes the payload holds.
+    #[inline]
+    pub fn value_len(&self) -> usize {
+        self.value_bytes
+    }
+
+    /// One of `STATE_EMPTY`, `STATE_INITIALIZING` or `STATE_INITIALIZED`.
+    pub fn state(&self) -> u8 {
+        self.header().state.load(Ordering::Acquire)
+    }
+
+    /// The published value into `out`, or `false` while none is
+    /// published. Non-blocking, and takes no claim.
+    pub fn try_get(&self, out: &mut [u8]) -> bool {
+        let header = self.header();
+        if header.state.load(Ordering::Acquire) != STATE_INITIALIZED {
+            return false;
+        }
+        let len = self.value_bytes.min(out.len());
+        out[..len].copy_from_slice(&header.payload[..len]);
+        true
+    }
+
+    /// Take the right to produce the value, stamping the claim with
+    /// `pid`. `true` to the one caller that wins.
+    pub fn claim(&self, pid: u32) -> bool {
+        let header = self.header();
+        if header
+            .state
+            .compare_exchange(STATE_EMPTY, STATE_INITIALIZING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        header.claimant_pid.store(pid, Ordering::Release);
+        true
+    }
+
+    /// Publish the value and release the claim held by `pid`. `false`
+    /// unless that claim is the one standing.
+    pub fn publish(&self, pid: u32, value: &[u8]) -> bool {
+        let header = self.header();
+        if header.state.load(Ordering::Acquire) != STATE_INITIALIZING {
+            return false;
+        }
+        if header.claimant_pid.load(Ordering::Acquire) != pid {
+            return false;
+        }
+        let len = self.value_bytes.min(value.len());
+        unsafe {
+            let dst = header.payload.as_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(value.as_ptr(), dst, len);
+        }
+        header.claimant_pid.store(0, Ordering::Release);
+        header.state.store(STATE_INITIALIZED, Ordering::Release);
+        true
+    }
+
+    /// Wait for a published value into `out` until `deadline`.
+    pub fn wait(&self, out: &mut [u8], deadline: std::time::Instant) -> Result<(), WaitError> {
+        let header = self.header();
+        loop {
+            if self.try_get(out) {
+                return Ok(());
+            }
+            if header.state.load(Ordering::Acquire) == STATE_INITIALIZING {
+                let pid = header.claimant_pid.load(Ordering::Acquire);
+                if pid != 0 && !crate::peer_directory::process_alive(pid) {
+                    return Err(WaitError::ClaimantGone);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(WaitError::TimedOut);
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Break a claim whose process is gone, returning the cell to empty.
+    pub fn reclaim(&self) -> bool {
+        let header = self.header();
+        if header.state.load(Ordering::Acquire) != STATE_INITIALIZING {
+            return false;
+        }
+        let pid = header.claimant_pid.load(Ordering::Acquire);
+        if pid == 0 || crate::peer_directory::process_alive(pid) {
+            return false;
+        }
+        if header
+            .state
+            .compare_exchange(STATE_INITIALIZING, STATE_EMPTY, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            header.claimant_pid.store(0, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    pub fn flush(&self) -> Result<(), SharedOnceError> {
+        self.mmap.flush()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +452,112 @@ mod tests {
     /// primitive that maps it so it drops after it.
     fn tmp(name: &str) -> crate::test_paths::TmpFile {
         crate::test_paths::TmpFile::new(format!("subetha-once-{name}-{}.bin", std::process::id()))
+    }
+
+    /// One claim is granted and the rest are refused, so the value is
+    /// produced once however many callers arrive.
+    #[test]
+    fn one_caller_claims_and_the_others_wait_for_its_value() {
+        let p = tmp("dyn-claim");
+        let a = SharedOnceCellDyn::create(&p, 4).unwrap();
+        let b = SharedOnceCellDyn::open(&p, 4).unwrap();
+        assert_eq!(a.state(), STATE_EMPTY);
+
+        let mine = std::process::id();
+        assert!(a.claim(mine), "the first caller takes the claim");
+        assert!(!b.claim(mine), "the second is refused while one stands");
+        assert_eq!(b.state(), STATE_INITIALIZING);
+
+        let mut out = [0u8; 4];
+        assert!(!b.try_get(&mut out), "nothing is published yet");
+        assert!(
+            !b.publish(mine + 1, &[9, 9, 9, 9]),
+            "a publish under a pid that does not hold the claim is refused",
+        );
+
+        assert!(a.publish(mine, &[1, 2, 3, 4]));
+        assert!(b.try_get(&mut out));
+        assert_eq!(out, [1, 2, 3, 4], "the waiter reads the claimant's value");
+        assert_eq!(b.state(), STATE_INITIALIZED);
+
+        // Once published, nobody claims again.
+        assert!(!a.claim(mine));
+    }
+
+    /// A wait against a published value returns at once.
+    #[test]
+    fn a_wait_on_a_published_value_returns_it() {
+        let p = tmp("dyn-wait");
+        let c = SharedOnceCellDyn::create(&p, 2).unwrap();
+        let mine = std::process::id();
+        assert!(c.claim(mine));
+        assert!(c.publish(mine, &[7, 8]));
+        let mut out = [0u8; 2];
+        c.wait(&mut out, std::time::Instant::now() + std::time::Duration::from_millis(50))
+            .expect("the value is there");
+        assert_eq!(out, [7, 8]);
+    }
+
+    /// A claim held by a live process outlasts a deadline, and the waiter
+    /// is told the deadline passed.
+    #[test]
+    fn a_wait_under_a_live_claim_times_out() {
+        let p = tmp("dyn-timeout");
+        let c = SharedOnceCellDyn::create(&p, 2).unwrap();
+        assert!(c.claim(std::process::id()), "this process holds it and is alive");
+        let mut out = [0u8; 2];
+        let began = std::time::Instant::now();
+        assert_eq!(
+            c.wait(&mut out, began + std::time::Duration::from_millis(40)).unwrap_err(),
+            WaitError::TimedOut,
+        );
+        assert!(began.elapsed() >= std::time::Duration::from_millis(30));
+        assert!(!c.reclaim(), "a live claimant keeps its claim");
+    }
+
+    /// A claim stamped with a pid that names no process is one nobody
+    /// will publish: the waiter is told so rather than waiting out its
+    /// deadline, and the claim can be broken for the next caller.
+    #[test]
+    fn a_claim_whose_process_is_gone_is_reported_and_reclaimed() {
+        let p = tmp("dyn-gone");
+        let c = SharedOnceCellDyn::create(&p, 2).unwrap();
+        // A pid this high is not a live process on any of the gate hosts.
+        let absent = 0x7FFF_FFF0u32;
+        assert!(c.claim(absent));
+
+        let mut out = [0u8; 2];
+        let began = std::time::Instant::now();
+        assert_eq!(
+            c.wait(&mut out, began + std::time::Duration::from_secs(30)).unwrap_err(),
+            WaitError::ClaimantGone,
+        );
+        assert!(began.elapsed() < std::time::Duration::from_secs(5), "it did not wait out the deadline");
+
+        assert!(c.reclaim(), "the abandoned claim is broken");
+        assert_eq!(c.state(), STATE_EMPTY);
+        let mine = std::process::id();
+        assert!(c.claim(mine), "the next caller may claim it");
+        assert!(c.publish(mine, &[4, 5]));
+        assert!(c.try_get(&mut out));
+        assert_eq!(out, [4, 5]);
+    }
+
+    /// The payload's size is part of the layout, so a size that
+    /// disagrees is refused, and one past the header's room is too.
+    #[test]
+    fn a_dyn_cell_at_the_wrong_size_is_refused() {
+        let p = tmp("dyn-size");
+        let _c = SharedOnceCellDyn::create(&p, 8).unwrap();
+        assert_eq!(SharedOnceCellDyn::open(&p, 4).unwrap_err(), SharedOnceError::LayoutMismatch);
+        assert_eq!(
+            SharedOnceCellDyn::create(tmp("dyn-big"), ONCE_PAYLOAD_BYTES + 1).unwrap_err(),
+            SharedOnceError::PayloadTooLarge,
+        );
+        assert_eq!(
+            SharedOnceCellDyn::create(tmp("dyn-zero"), 0).unwrap_err(),
+            SharedOnceError::PayloadTooLarge,
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ until that node is removed.
 > caller `remove`s that node (or pops it). After that the slot may be
 > reused by a later push, and operating on the stale handle silently
 > reads or writes the *reused* node. This is the same contract as a
-> C++ `std::list::iterator`: the library does NOT detect staleness, so
+> C++ `std::list::iterator`: the library does not detect staleness, so
 > the caller must not retain a handle past its node's removal.
 
 > **The "cross-process linked list with O(1) handle-remove"
@@ -44,10 +44,10 @@ until that node is removed.
 - **`T: Copy + Default + 'static`**: fixed-size payload per
   node. `Default` seeds the sentinel head's value.
 - **Single-writer, multi-reader**: push/pop/remove/set must be
-  serialised externally; reads (`get` / `first` / `last` /
+  serialized externally; reads (`get` / `first` / `last` /
   `iter_*`) are lock-free.
 - **NodeHandle returned at insert**: pass to `remove(h)` for
-  O(1) removal. A handle is a bare `u32` slot index with NO
+  O(1) removal. A handle is a bare `u32` slot index with no
   generation tag; staleness is the caller's responsibility (see
   the logic-error contract above).
 - **Bounded capacity at create**: SharedRegion-backed;
@@ -136,7 +136,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
     pub fn len(&self) -> usize;        // excludes the sentinel head
     pub fn is_empty(&self) -> bool;
     pub fn capacity(&self) -> usize;
-    pub fn region(&self) -> &SharedRegion<Node<T>>;  // wrap writes in a SharedSemaphore for x-proc serialisation
+    pub fn region(&self) -> &SharedRegion<Node<T>>;  // wrap writes in a SharedSemaphore for x-proc serialization
     pub fn flush(&self) -> Result<(), LinkedListError>;
     pub fn flush_async(&self) -> Result<(), LinkedListError>;  // Windows: page-cache only
 }
@@ -175,7 +175,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
    time the list empties; the SharedLinkedList's per-allocate
    cost is higher than VecDeque's contiguous push. The pure
    per-op pop_front is ~30 ns; the high number reflects refill
-   amortization. The architectural win is NOT raw pop speed.
+   amortization. The architectural win is not raw pop speed.
 3. **iter_100: linked-list cache pattern loses to
    VecDeque** (3.62x slower) and to std::LinkedList (1.59x).
    Per-node SharedRegion lookups jump through the region
@@ -200,7 +200,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
   push cost into the pop measurement.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process operation**: any process can open the list
   and read iterators; mutex baselines cannot.
@@ -265,14 +265,14 @@ adjustments.
 ### Pattern: deduplicated FIFO with O(1) cancellation
 
 External hash table maps key -> handle; on cancellation,
-remove the handle from the list AND the hash entry. Both O(1).
+remove the handle from the list and the hash entry. Both O(1).
 
 ---
 
 ## Known limitations
 
 - **Single-writer**: concurrent push/pop/remove require
-  external serialisation.
+  external serialization.
 - **Iteration is linked-list-cache**: per-node region lookups.
   Use VecDeque for sequential-access-heavy workloads.
 - **Bounded capacity at create**.
@@ -286,7 +286,7 @@ remove the handle from the list AND the hash entry. Both O(1).
 
 - **Reusing a stale handle.** After `remove` (or a pop of that
   node), the slot is freed and a subsequent push may reuse it.
-  The library does NOT detect this: `get` / `set` / `remove` on
+  The library does not detect this: `get` / `set` / `remove` on
   the stale handle silently read or write whatever now occupies
   the slot. Treat a handle like a C++ `std::list::iterator` and
   drop it the moment its node is removed. The only handles
@@ -294,10 +294,10 @@ remove the handle from the list AND the hash entry. Both O(1).
   and the sentinel head (`HEAD_INDEX`): `remove` / `get` return
   `None`, `set` returns `LinkedListError::InvalidHandle`.
 
-- **Concurrent writers without synchronisation.** Multiple
+- **Concurrent writers without synchronization.** Multiple
   threads calling `push_back` simultaneously can corrupt the
   sentinel head's `next` / `prev` links and the region freelist
-  (the link updates are non-atomic field writes). Serialise
+  (the link updates are non-atomic field writes). Serialize
   writers with a `SharedSemaphore` (1 permit) or a mutex.
 
 - **Using SharedLinkedList for cache-sequential workloads.**

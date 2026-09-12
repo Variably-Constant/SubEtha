@@ -10,7 +10,7 @@
 //! 3. If yes, calls [`HandshakeHeader::set_tag`] to install the new
 //!    strategy.
 //!
-//! Heavy migrations (data swap) are NOT handled here; primitives
+//! Heavy migrations (data swap) are not handled here; primitives
 //! that need them invoke their own migration logic from within the
 //! policy callback (e.g. `subetha-cxc::AdaptiveIpc::migrate_to`).
 //!
@@ -182,12 +182,12 @@ fn record_thread_for_op(
         return;
     }
     // New tid: either append to the cache (when there's room) or just
-    // bump the saturated count to MAX+1 (when full).
+    // bump the saturated count to MAX_TRACKED_THREADS_PER_KIND + 1 (when full).
     if n < MAX_TRACKED_THREADS_PER_KIND {
         slots[n] = tid;
         stats.per_op_kind_distinct_count[k] = (n as u8) + 1;
     } else {
-        // Saturation transition: count moves from MAX to MAX+1; we
+        // Saturation transition: count moves from the cap to cap + 1; we
         // know "more threads than the cache can hold" without
         // remembering which ones.
         stats.per_op_kind_distinct_count[k] = (MAX_TRACKED_THREADS_PER_KIND as u8) + 1;
@@ -572,7 +572,7 @@ static GLOBAL: Lazy<Arc<Sidecar>> = Lazy::new(|| {
     // Register an `atexit` callback that signals shutdown + joins
     // the sidecar threads before process teardown. Without this, the
     // `static Lazy<Arc<Sidecar>>` never drops at exit (Rust statics
-    // with non-trivial Drop aren't run for late-initialised Lazy);
+    // with non-trivial Drop aren't run for late-initialized Lazy);
     // the OS terminates sidecar threads mid-action, occasionally
     // producing STATUS_ACCESS_VIOLATION at process exit when their
     // parking_lot/crossbeam TLS state races with the main thread's
@@ -582,7 +582,7 @@ static GLOBAL: Lazy<Arc<Sidecar>> = Lazy::new(|| {
 });
 
 /// One-shot registration of the atexit callback. Idempotent across
-/// processes that re-initialise the Lazy (e.g., on fork + re-exec).
+/// processes that re-initialize the Lazy (e.g., on fork + re-exec).
 fn register_sidecar_atexit() {
     static REGISTERED: std::sync::Once = std::sync::Once::new();
     REGISTERED.call_once(|| {
@@ -655,7 +655,7 @@ pub fn numa_node_count() -> u32 {
             // Link against kernel32.lib (auto-linked on MSVC targets).
             let result = GetNumaHighestNodeNumber(&mut highest);
             if result == 0 {
-                // BOOL FALSE means failure; fall back to 1 node.
+                // A zero `BOOL` means failure; fall back to 1 node.
                 1
             } else {
                 highest.saturating_add(1)
@@ -679,14 +679,14 @@ pub fn numa_node_count() -> u32 {
 /// Windows: these two work across processor groups (Windows splits
 /// logical processors into groups of up to 64), so the >64-logical-
 /// processor case (dual-socket servers, large core-count workstations)
-/// is handled correctly. The legacy `GetNumaProcessorNode` (capped at
-/// processor 255) is no longer called.
+/// is handled correctly. `GetNumaProcessorNode`, which is capped at
+/// processor 255, is not used.
 pub fn current_numa_node() -> u32 {
     #[cfg(target_os = "windows")]
     {
         // PROCESSOR_NUMBER per
         // https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-processor_number
-        // sized layout: Group (USHORT) + Number (BYTE) + Reserved (BYTE) = 4 bytes.
+        // sized layout: Group (`USHORT`) + Number (`BYTE`) + Reserved (`BYTE`) = 4 bytes.
         #[repr(C)]
         #[derive(Default, Clone, Copy)]
         struct ProcessorNumber {
@@ -738,8 +738,8 @@ fn current_numa_node_linux() -> u32 {
         Ok(s) => s,
         Err(_) => return 0,
     };
-    // /proc/self/stat fields are space-separated AFTER the comm field
-    // (which is parenthesised). Skip past the closing paren.
+    // /proc/self/stat fields are space-separated past the comm field
+    // (which is parenthesized). Skip past the closing paren.
     let after_comm = match stat.rfind(')') {
         Some(i) => &stat[i + 1..],
         None => return 0,
@@ -805,7 +805,7 @@ pub trait AdaptiveInstance: Send + Sync + 'static {
 /// then clears the registry slot), then the box drops (frees the
 /// header/ring memory). No raw-pointer-after-free race.
 pub struct SidecarBox<T: AdaptiveInstance> {
-    // ORDER MATTERS: handle drops before inner.
+    // Field order is drop order: handle drops before inner.
     handle: SidecarHandle,
     inner: Box<T>,
 }
@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn cap_panic_message_is_actionable() {
         // Build a Sidecar with a tiny cap and verify the panic
-        // message names the actual cap value AND mentions the
+        // message names the actual cap value and mentions the
         // diagnostic guidance about loops / b.iter() / set_max_instances.
         let s = Sidecar::new();
         s.set_max_instances(2);
@@ -1091,7 +1091,7 @@ mod tests {
         assert!(msg.contains("set_max_instances"),
                 "panic must mention the escape hatch: {msg}");
 
-        // Failed register must NOT have incremented the count past cap.
+        // Failed register must not have incremented the count past cap.
         assert_eq!(s.instance_count(), 2,
                    "count must roll back on cap-rejected register");
 

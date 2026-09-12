@@ -42,7 +42,7 @@ atomic CAS for head updates.
   reuse after GC (when added).
 - **`push(version, value)`**: CAS prepend at head; one slot
   allocate from the Treiber free list. The `version` must be
-  STRICTLY GREATER than the current head's version, or push
+  strictly greater than the current head's version, or push
   returns `ChainError::NonMonotonicVersion` (and `Full` when the
   free list is exhausted).
 - **`read_at(snapshot)`**: linear walk newest-first; returns
@@ -91,7 +91,7 @@ atomic CAS for head updates.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process MVCC**: any process pushes a versioned entry;
   any process reads at any snapshot version.

@@ -1,5 +1,5 @@
 //! Sharded reliable-UDP: N independent Sens-O-Matic streams, each on its
-//! own thread, distributing the WHOLE data path (encode + flow + send on
+//! own thread, distributing the whole data path (encode + flow + send on
 //! the way out, recv + decode + deliver on the way in) across N cores.
 //!
 //! Each stream is the single-threaded [`ReliableUdpSender`] /
@@ -126,7 +126,7 @@ impl ShardedSender {
     pub fn finish(self) -> bool {
         let Self { txs, handles, .. } = self;
         drop(txs);
-        // Join EVERY shard (collect forces all joins; `all` alone would
+        // Join every shard (collect forces all joins; `all` alone would
         // short-circuit on the first non-acked shard and strand threads),
         // then report whether all acked.
         let acked: Vec<bool> = handles
@@ -231,7 +231,7 @@ impl ShardedReceiver {
         self.rxs.len()
     }
 
-    /// Receive the next item in GLOBAL order (round-robin across shards;
+    /// Receive the next item in global order (round-robin across shards;
     /// each shard delivers its own items in order, so the round-robin is
     /// the global order). Blocks until that shard delivers it; `None`
     /// when the shard's stream ended.

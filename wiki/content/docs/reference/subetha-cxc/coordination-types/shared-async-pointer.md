@@ -20,7 +20,7 @@ backing file sees the same canonical value once published.
 
 > **The "shared MMF-backed lazy/speculative cell" primitive.**
 > Equivalent to `std::sync::OnceLock<T>` but cross-process via a
-> memory-mapped file, AND with a speculative race variant that
+> memory-mapped file, and with a speculative race variant that
 > spawns N workers to redundantly compute the value with
 > first-publisher-wins. The redundant-compute pattern targets
 > survivability (any one worker can publish) and value-quality
@@ -36,15 +36,15 @@ backing file sees the same canonical value once published.
 - **Backed by `SharedOnceCell<T>` over a memory-mapped file.** The
   underlying file is created or opened at construction; multiple
   processes can `open` the same path and share state.
-- **First-publisher-wins, NOT first-finisher-wins.** Speculative
+- **First-publisher-wins, not first-finisher-wins.** Speculative
   workers race to publish via the cell's CAS; the first to CAS-in
   becomes canonical. The bench shows wall-clock time is bounded
-  by the SLOWEST worker because the implementation joins all
+  by the slowest worker because the implementation joins all
   spawned threads before returning. See Known Limitations.
 - **`get_or_lazy` runs the closure on the first `is_initialized`
   miss.** Multiple threads racing the same lazy cell may each
   run the closure once; only the first published value becomes
-  canonical. The cell guarantees a single canonical value, NOT
+  canonical. The cell guarantees a single canonical value, not
   single-execution of the closure.
 - **`get_or_speculative` panics if `n < 1`.**
 - **`get_or_speculative_with` panics if the iterator yields no
@@ -55,7 +55,7 @@ backing file sees the same canonical value once published.
 - **`get_or_speculative_resilient` is the only variant that
   tolerates worker panics.** Panicking
   workers do not propagate the panic; if every worker panics
-  AND nothing was published, returns `Err(AllWorkersDied)`.
+  and nothing was published, returns `Err(AllWorkersDied)`.
 - **No timeout / deadline knob.** A slow / hung worker blocks the
   enclosing call until it finishes (or panics into a join-ok). No
   cancellation primitive is exposed.
@@ -145,7 +145,7 @@ canonical.
 
 Spawn N workers that all independently run the closure; the first
 to CAS-publish wins, the others discard their results. The CAS
-protocol IS the coordination - no central coordinator needed:
+protocol is the coordination - no central coordinator needed:
 
 ```rust
 // Same closure, N workers (all interchangeable).
@@ -165,7 +165,7 @@ let value: Result<T, _> = sap.get_or_speculative_resilient(4, || try_fetch());
 The architectural use cases are survivability (any worker can
 publish) and value selection (whichever finishes first
 contributes the canonical value). The wall-clock latency does
-NOT decrease (see Known Limitations).
+not decrease (see Known Limitations).
 
 ---
 
@@ -333,15 +333,15 @@ created once, queried many times).
 
 **The honest finding** (and the most important number in this
 doc): the speculative race takes ~21 ms, not ~2.5 ms. The fast
-worker DOES publish first (the canonical value is the fast
+worker does publish first (the canonical value is the fast
 worker's `100`), but the implementation joins ALL spawned
 threads before returning. Wall-clock latency is bounded by the
-SLOWEST worker.
+slowest worker.
 
 The rustdoc on the module suggests "Latency hedging: race 2-3
 backend lookups, take the fastest". The current implementation
 provides the value-quality guarantee (you get the fast worker's
-result) but NOT the wall-clock guarantee (you wait for the slow
+result) but not the wall-clock guarantee (you wait for the slow
 worker to finish). See Known Limitations.
 
 ### Speculative N=4 same-speed workers (overhead vs lazy)
@@ -369,7 +369,7 @@ speculative path is essentially free vs lazy.
 | **Shared computed config** | Set once at startup, read everywhere | `set_resolved` + cross-process `open`. |
 | **Persistent memoization** | Lazy compute, persist to disk | The MMF survives process restart; subsequent processes see the cached value. |
 
-**Do NOT use for:**
+**Do not use for:**
 
 - **Mutable values.** The cell is write-once; for mutable shared
   state use `SharedRing`, `SharedHashMap`, or a different
@@ -385,19 +385,19 @@ speculative path is essentially free vs lazy.
 
 All confirmed against the source or the bench:
 
-- **Speculative race waits for ALL workers** (the join-all loop
+- **Speculative race waits for all workers** (the join-all loop
   at the end of each `get_or_speculative*` method). The
   "first-publisher-wins" CAS determines which
-  VALUE becomes canonical, but the call does not return until
+  value becomes canonical, but the call does not return until
   every spawned thread has joined. Bench evidence:
   speculative_2_hedged is 21 ms with 20 ms slow + 2 ms fast
   workers, not 2.5 ms. The module-level rustdoc mentions
   "Latency hedging" which is misleading at this protocol shape.
 - **No timeout / deadline.** Source has no method that bounds
   the wait. A hung worker blocks until OS-level intervention.
-- **No cancellation.** Stoping the race once a publisher has won
+- **No cancellation.** Stopping the race once a publisher has won
   requires the workers to voluntarily check `cell.is_initialized()`
-  (the implementation does this at the TOP of each worker, but
+  (the implementation does this at the top of each worker, but
   not mid-closure). Inside the user-supplied closure, the
   speculation cannot be canceled.
 - **Closure cloning for `get_or_speculative`.** Its bound
@@ -422,8 +422,8 @@ All confirmed against the source or the bench:
 ## Common pitfalls
 
 - **Don't expect the speculative race to reduce wall-clock
-  latency.** As shipped, you get the fast worker's VALUE but
-  pay the slow worker's TIME. Use a different pattern (e.g.,
+  latency.** As shipped, you get the fast worker's value but
+  pay the slow worker's time. Use a different pattern (e.g.,
   spawn workers + check `try_get` in a loop with a timeout) if
   you need wall-clock hedging.
 - **Don't share a `SharedAsyncPointer` across threads without
@@ -442,7 +442,7 @@ All confirmed against the source or the bench:
   `Arc`-wrapped reference instead.
 - **Don't use `_resilient` to mask correctness bugs.** Panicking
   workers are silently absorbed; if every panic indicates a bug,
-  you'll get `AllWorkersDied` and no diagnostic about WHY they
+  you'll get `AllWorkersDied` and no diagnostic about why they
   panicked. Log inside the closure to retain context.
 - **Don't reuse the same MMF path across unrelated processes
   without coordination.** The first to `create` wins; later

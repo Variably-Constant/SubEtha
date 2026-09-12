@@ -37,7 +37,7 @@
 //!
 //! Each bucket's counter is its own AtomicU64. `record` uses
 //! `fetch_add(1, AcqRel)` to atomically increment; multiple
-//! recorders contend only on the SAME bucket's cache line
+//! recorders contend only on the same bucket's cache line
 //! (different buckets are fully concurrent).
 //!
 //! # Percentile estimation
@@ -48,7 +48,7 @@
 //! granularity; for log-spaced boundaries that's typically <1
 //! decade error which suffices for latency dashboards.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -196,7 +196,7 @@ impl SharedHistogram {
         let n_boundaries = expected_boundaries.len();
         if n_boundaries == 0 { return Err(HistogramError::EmptyBoundaries); }
         let total = histogram_file_size(n_boundaries);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(HistogramError::LayoutMismatch);
         }
@@ -235,7 +235,7 @@ impl SharedHistogram {
         let bounds = self.boundaries();
         // partition_point returns the first index where the predicate
         // is false. With `|&b| b <= value`, it returns the first
-        // boundary GREATER than value, i.e., the bucket index.
+        // boundary greater than value, i.e., the bucket index.
         bounds.partition_point(|&b| b <= value)
     }
 

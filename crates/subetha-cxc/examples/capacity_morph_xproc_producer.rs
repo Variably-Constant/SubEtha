@@ -1,4 +1,4 @@
-//! Cross-process capacity-morph E2E: the producer PROCESS.
+//! Cross-process capacity-morph E2E: the producer process.
 //!
 //! Drives a real capacity morph across the process boundary. Each
 //! "epoch" is a fresh file-backed `AdaptiveRing` at the next ladder
@@ -8,8 +8,8 @@
 //! control atomic the consumer follows. The consumer (the
 //! orchestrator that spawned this process) opens each backing by the
 //! deterministic name and drains them in epoch order, so the global
-//! sequence is delivered exactly once, in order, ACROSS the morph
-//! boundary and ACROSS the process boundary.
+//! sequence is delivered exactly once, in order, across the morph
+//! boundary and across the process boundary.
 //!
 //! Args: `<control_path> <ring_prefix> <items_per_epoch> <n_epochs>`
 //!
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             global_seq += 1;
         }
-        // The next iteration's create + control store IS the morph;
+        // The next iteration's create + control store is the morph;
         // the producer never pushes to this backing again, so the
         // consumer can drain it to completion and switch.
     }

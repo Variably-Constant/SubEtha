@@ -102,7 +102,7 @@ impl HandshakeHeader {
         old_value
     }
 
-    /// Set the strategy tag in place. PIC-only update; does NOT bump
+    /// Set the strategy tag in place. PIC-only update; does not bump
     /// generation. Use when the strategy change does not require any
     /// data-layout migration (e.g., switching wait strategy in a
     /// once-shot primitive).

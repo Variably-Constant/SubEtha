@@ -6,11 +6,11 @@
 //! change multiplies the total slot inventory (an MPSC ring has one
 //! sub-ring per producer) or that growing capacity relieves the fill
 //! pressure the shape change just created. [`UnifiedPolicy`] scores
-//! every reachable `(shape, capacity)` configuration with ONE cost
+//! every reachable `(shape, capacity)` configuration with a single cost
 //! function and descends greedily to the cheapest, emitting a single
 //! [`RingConfig`] compound move that changes both axes at once.
 //!
-//! The unification that matters is shape-capacity COUPLING: the
+//! The unification that matters is shape-capacity coupling: the
 //! number of sub-rings a shape allocates multiplies the total slot
 //! inventory, so a shape change silently changes the fill ratio the
 //! capacity decision depends on. Two independent policies cannot see
@@ -29,15 +29,15 @@
 //!   relieve fill but cost memory, and the argmin sits where the
 //!   marginal relief equals the marginal memory cost. Because fill is
 //!   computed against `capacity * n_sub_rings`, the shape's sub-ring
-//!   multiplication enters the SAME term the capacity is chosen on -
+//!   multiplication enters the same term the capacity is chosen on -
 //!   this is the coupling the independent policies miss.
 //! - **shape overhead** - a fixed per-op structural cost ordering the
 //!   valid shapes (SPSC cheapest, then MPSC, MPMC, Vyukov) so the
 //!   policy prefers the simplest shape that fits the peer counts when
 //!   footprint and fill tie. Shape is driven by peer counts (a hard
-//!   validity constraint) plus this throughput preference; it is NOT
+//!   validity constraint) plus this throughput preference; it is not
 //!   driven by the observed inversion rate - inversions are harmless
-//!   unless the application DECLARES a global-ordering requirement,
+//!   unless the application declares a global-ordering requirement,
 //!   and that declaration is the ordering sidecar's axis, kept
 //!   separate here.
 //! - **transition** - the morph cost from the current config, warm-
@@ -46,7 +46,7 @@
 //!   microsecond-scale. Acts as switching hysteresis - a move happens
 //!   only when its steady-state saving beats its transition price.
 //!
-//! Locale is NOT a load-driven axis either: cross-process visibility
+//! Locale is not a load-driven axis either: cross-process visibility
 //! and persistence are application declarations, not properties a
 //! throughput observation can discover. The unified policy holds the
 //! locale fixed at whatever the ring was constructed with and never
@@ -168,7 +168,7 @@ impl UnifiedPolicy {
         // shape overhead: a per-op structural cost so the cheapest
         // shape that fits the peers is preferred when footprint and
         // fill tie. SPSC has no CAS; MPSC/MPMC give each producer its
-        // own sub-ring (coordination-free); Vyukov serializes ALL
+        // own sub-ring (coordination-free); Vyukov serializes all
         // producers on one tail, so its CAS-contention cost grows
         // with the producer count - which is why MPSC wins for many
         // producers even though Vyukov's single ring is cheaper on
@@ -278,7 +278,7 @@ impl UnifiedPolicy {
 /// repeated capacity target off the morph lock (so the eventual move
 /// is warm), gate the decision through a [`ConfidenceGate`], and
 /// execute the gated compound move. The gate keys on the recommended
-/// `(shape, capacity)` DESTINATION - a repeated identical target
+/// `(shape, capacity)` destination - a repeated identical target
 /// accrues conviction - and is shocked on a peer-count change.
 pub struct UnifiedSidecar {
     handle: Option<std::thread::JoinHandle<()>>,
@@ -480,8 +480,8 @@ mod tests {
         let policy = UnifiedPolicy::default();
         // 4P/1C: MPSC's four sub-rings win on throughput (Vyukov
         // serializes all four producers on one tail). This must hold
-        // at HIGH fill (where MPSC's 4x slots also relieve pressure)
-        // AND at LOW fill (where Vyukov's single ring is cheaper on
+        // at high fill (where MPSC's 4x slots also relieve pressure)
+        // and at low fill (where Vyukov's single ring is cheaper on
         // memory but its producer-scaled CAS contention still loses).
         for len in [10usize, 800, 1900] {
             let o = obs(RingShape::Mpsc, 512, 4, 1, len);
@@ -494,7 +494,7 @@ mod tests {
     fn transition_hysteresis_holds_marginal_gains() {
         let policy = UnifiedPolicy::default();
         // At a near-optimal config, a candidate one ladder step away
-        // whose steady-state saving is tiny must NOT beat the cold
+        // whose steady-state saving is tiny must not beat the cold
         // morph price - decide returns None (stay put).
         let o = obs(RingShape::Spsc, 64, 1, 1, 4);
         assert!(policy.decide(&o).is_none(),

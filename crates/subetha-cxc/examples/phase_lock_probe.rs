@@ -7,13 +7,13 @@
 //! short guard band instead of paying the doorbell's park/wake
 //! propagation; while the consumer keeps up (high throughput) the
 //! predictor never engages and the fast path is the bare doorbell.
-//! Both arms call the SAME `recv_blocking`; the only difference is
+//! Both arms call the same `recv_blocking`; the only difference is
 //! the atomic `set_phase_locking` toggle - so this measures the
 //! shipped default behavior, on vs off.
 //!
 //! Built-in bench audit (asserted, not printed):
 //!   engagement   - phase-ON must engage at CV=0 and beat phase-OFF
-//!                  p50 latency there; must DISENGAGE at CV=1.0
+//!                  p50 latency there; must disengage at CV=1.0
 //!                  (parity). An arm that never engages, or never
 //!                  disengages, measures nothing.
 //!   integrity    - exactly-once + strict FIFO over every row.
@@ -120,7 +120,7 @@ fn run_row(phase_on: bool, period_ns: u64, cv: f64, n: usize) -> RowResult {
 }
 
 /// Throughput regression: producer floods (no pacing), consumer
-/// drains via recv_blocking and KEEPS UP, so the ring is rarely
+/// drains via recv_blocking and keeps up, so the ring is rarely
 /// empty and the predictor should never engage. Returns ns/item.
 fn throughput_ns_per_item(phase_on: bool, n: usize) -> (u64, bool) {
     let ring = Arc::new(BlockingSpscRing::create_anon(1024).expect("create"));
@@ -174,7 +174,7 @@ fn main() {
                         "audit: CV=0 phase-ON p50 ({}) must not regress vs OFF ({})",
                         on.p50_ns, off.p50_ns);
                 // Strong win where the consumer cleanly waits per item:
-                // the predictor must fire AND beat the doorbell >2x.
+                // the predictor must fire and beat the doorbell >2x.
                 if period >= 50_000 {
                     assert!(on.predictive_catches > (n as u64) / 4,
                             "audit: CV=0 period>=50us must fire the predictor (got {})",

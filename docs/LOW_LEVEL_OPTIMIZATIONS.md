@@ -24,7 +24,7 @@ ring workloads.
 | MMF warm-up at attach | `mmf_warm.rs`, called from `shm_file.rs` + `shared_ring::open` + `shared_region` | Linux `MADV_POPULATE_WRITE`: first full 32 MiB drain 7-13 ms with warm-up against 54-63 ms without (5-8x; the fault storm leaves the traffic path). FreeBSD `MADV_WILLNEED`: neutral (shm pages already resident) |
 | Egress staging buffer reuse | `blocking_tcp_bridge.rs` | one stream-lifetime staging buffer threaded through `spawn_blocking`, instead of an allocation per 256-slot batch |
 | Linux TCP knobs | `net_tune.rs`, all bridge sockets | `TCP_QUICKACK` and `TCP_NOTSENT_LOWAT` (16 KiB = one egress batch); advisory, no-op off Linux |
-| Waker `parked_mask` | `cross_process_waker.rs` header word | a producer wake scan reads ONE header line instead of `capacity` slot lines when nobody is parked (the common case); stale bits are filtered by per-slot state, missing bits covered by the parker's pre-wait double-check |
+| Waker `parked_mask` | `cross_process_waker.rs` header word | a producer wake scan reads one header line instead of `capacity` slot lines when nobody is parked (the common case); stale bits are filtered by per-slot state, missing bits covered by the parker's pre-wait double-check |
 
 ## Available as caller overrides
 

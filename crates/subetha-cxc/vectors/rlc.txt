@@ -1,0 +1,179 @@
+# SubEtha RLC interoperability vectors
+#
+# Regenerate with SUBETHA_REGENERATE_VECTORS=1; the test that
+# writes this file also compares it, so the format cannot move
+# without these moving.
+#
+# Source symbol `sid` of `len` bytes is, for byte b in 0..len:
+#     (sid * 131 + b * 17 + 7) & 0xff
+# so an implementation needs no random source to reproduce it.
+#
+# A repair line is: seq, the lowest source id its window covers,
+# the number of symbols in that window, the dt byte whole, and
+# the payload. dt carries the density in the low nibble and the
+# generator id in the high one.
+
+[generators]
+per_repair=0 (refused)
+published_taps=1
+
+[taps] 64 entries
+  0: 01 02 03 05 07 0b 0d 11
+  8: 13 17 1d 1f 25 29 2b 2f
+ 16: 35 3b 3d 43 47 49 4f 53
+ 24: 59 61 65 67 6b 6d 71 7f
+ 32: 83 89 8b 95 97 9d a3 a7
+ 40: ad b3 b5 bf c1 c5 c7 d3
+ 48: df e3 e5 e9 ef f1 f5 f7
+ 56: fb fd 04 08 0e 16 1a 22
+
+[coefficients] fixed_coef(place, density), place 0..64 across the row
+density  0: 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 35 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 df 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+density  1: 01 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 35 3b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83 89 00 00 00 00 00 00 00 00 00 00 00 00 00 00 df e3 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+density  2: 01 02 03 00 00 00 00 00 00 00 00 00 00 00 00 00 35 3b 3d 00 00 00 00 00 00 00 00 00 00 00 00 00 83 89 8b 00 00 00 00 00 00 00 00 00 00 00 00 00 df e3 e5 00 00 00 00 00 00 00 00 00 00 00 00 00
+density  3: 01 02 03 05 00 00 00 00 00 00 00 00 00 00 00 00 35 3b 3d 43 00 00 00 00 00 00 00 00 00 00 00 00 83 89 8b 95 00 00 00 00 00 00 00 00 00 00 00 00 df e3 e5 e9 00 00 00 00 00 00 00 00 00 00 00 00
+density  4: 01 02 03 05 07 00 00 00 00 00 00 00 00 00 00 00 35 3b 3d 43 47 00 00 00 00 00 00 00 00 00 00 00 83 89 8b 95 97 00 00 00 00 00 00 00 00 00 00 00 df e3 e5 e9 ef 00 00 00 00 00 00 00 00 00 00 00
+density  5: 01 02 03 05 07 0b 00 00 00 00 00 00 00 00 00 00 35 3b 3d 43 47 49 00 00 00 00 00 00 00 00 00 00 83 89 8b 95 97 9d 00 00 00 00 00 00 00 00 00 00 df e3 e5 e9 ef f1 00 00 00 00 00 00 00 00 00 00
+density  6: 01 02 03 05 07 0b 0d 00 00 00 00 00 00 00 00 00 35 3b 3d 43 47 49 4f 00 00 00 00 00 00 00 00 00 83 89 8b 95 97 9d a3 00 00 00 00 00 00 00 00 00 df e3 e5 e9 ef f1 f5 00 00 00 00 00 00 00 00 00
+density  7: 01 02 03 05 07 0b 0d 11 00 00 00 00 00 00 00 00 35 3b 3d 43 47 49 4f 53 00 00 00 00 00 00 00 00 83 89 8b 95 97 9d a3 a7 00 00 00 00 00 00 00 00 df e3 e5 e9 ef f1 f5 f7 00 00 00 00 00 00 00 00
+density  8: 01 02 03 05 07 0b 0d 11 13 00 00 00 00 00 00 00 35 3b 3d 43 47 49 4f 53 59 00 00 00 00 00 00 00 83 89 8b 95 97 9d a3 a7 ad 00 00 00 00 00 00 00 df e3 e5 e9 ef f1 f5 f7 fb 00 00 00 00 00 00 00
+density  9: 01 02 03 05 07 0b 0d 11 13 17 00 00 00 00 00 00 35 3b 3d 43 47 49 4f 53 59 61 00 00 00 00 00 00 83 89 8b 95 97 9d a3 a7 ad b3 00 00 00 00 00 00 df e3 e5 e9 ef f1 f5 f7 fb fd 00 00 00 00 00 00
+density 10: 01 02 03 05 07 0b 0d 11 13 17 1d 00 00 00 00 00 35 3b 3d 43 47 49 4f 53 59 61 65 00 00 00 00 00 83 89 8b 95 97 9d a3 a7 ad b3 b5 00 00 00 00 00 df e3 e5 e9 ef f1 f5 f7 fb fd 04 00 00 00 00 00
+density 11: 01 02 03 05 07 0b 0d 11 13 17 1d 1f 00 00 00 00 35 3b 3d 43 47 49 4f 53 59 61 65 67 00 00 00 00 83 89 8b 95 97 9d a3 a7 ad b3 b5 bf 00 00 00 00 df e3 e5 e9 ef f1 f5 f7 fb fd 04 08 00 00 00 00
+density 12: 01 02 03 05 07 0b 0d 11 13 17 1d 1f 25 00 00 00 35 3b 3d 43 47 49 4f 53 59 61 65 67 6b 00 00 00 83 89 8b 95 97 9d a3 a7 ad b3 b5 bf c1 00 00 00 df e3 e5 e9 ef f1 f5 f7 fb fd 04 08 0e 00 00 00
+density 13: 01 02 03 05 07 0b 0d 11 13 17 1d 1f 25 29 00 00 35 3b 3d 43 47 49 4f 53 59 61 65 67 6b 6d 00 00 83 89 8b 95 97 9d a3 a7 ad b3 b5 bf c1 c5 00 00 df e3 e5 e9 ef f1 f5 f7 fb fd 04 08 0e 16 00 00
+density 14: 01 02 03 05 07 0b 0d 11 13 17 1d 1f 25 29 2b 00 35 3b 3d 43 47 49 4f 53 59 61 65 67 6b 6d 71 00 83 89 8b 95 97 9d a3 a7 ad b3 b5 bf c1 c5 c7 00 df e3 e5 e9 ef f1 f5 f7 fb fd 04 08 0e 16 1a 00
+density 15: 01 02 03 05 07 0b 0d 11 13 17 1d 1f 25 29 2b 2f 35 3b 3d 43 47 49 4f 53 59 61 65 67 6b 6d 71 7f 83 89 8b 95 97 9d a3 a7 ad b3 b5 bf c1 c5 c7 d3 df e3 e5 e9 ef f1 f5 f7 fb fd 04 08 0e 16 1a 22
+
+[stream narrow-window-full-density] window_max=8 step=4 density=15 symbol_len=16 sources=96
+repair seq=0 first=0 window=4 dt=0x1f payload=1255884b436cd98a90075ae4b15e1b0f
+repair seq=1 first=0 window=8 dt=0x1f payload=35cf7d94080f80b1ffb2ea471fcf9060
+repair seq=2 first=4 window=8 dt=0x1f payload=64b451491171c45623fecbf37beb6f71
+repair seq=3 first=8 window=8 dt=0x1f payload=000d46589a9729dffd879c0f0049f325
+repair seq=4 first=12 window=8 dt=0x1f payload=fbc6da0c432870f4ac55ed8144c2ea9e
+repair seq=5 first=16 window=8 dt=0x1f payload=22ebc3b74c244c80d52c8e9029c3e14a
+repair seq=6 first=20 window=8 dt=0x1f payload=00eac8d9679d2fc65a5dd2e3ade0b815
+repair seq=7 first=24 window=8 dt=0x1f payload=84c9916e36e6031b4323960471ac99a1
+repair seq=8 first=28 window=8 dt=0x1f payload=58058ada525f140ac8c57b8dafd5ce5d
+repair seq=9 first=32 window=8 dt=0x1f payload=86e1b526a994885e117a22a6fe07bfd3
+repair seq=10 first=36 window=8 dt=0x1f payload=d77cc4a870b991e51e761ed2877edcc2
+repair seq=11 first=40 window=8 dt=0x1f payload=9405a7b952b89a8b35cf7d94080f80b1
+repair seq=12 first=44 window=8 dt=0x1f payload=73747bf0d69bc33c64b451491171c456
+repair seq=13 first=48 window=8 dt=0x1f payload=6a0aa27f0a57d888000d46589a9729df
+repair seq=14 first=52 window=8 dt=0x1f payload=e15600f6d4b3e774fbc6da0c432870f4
+repair seq=15 first=56 window=8 dt=0x1f payload=a50159dd852e96fa22ebc3b74c244c80
+repair seq=16 first=60 window=8 dt=0x1f payload=c30d6534c657f5eb00eac8d9679d2fc6
+repair seq=17 first=64 window=8 dt=0x1f payload=4eb4061b212629a284c9916e36e6031b
+repair seq=18 first=68 window=8 dt=0x1f payload=1fcf90603858f02d58058ada525f140a
+repair seq=19 first=72 window=8 dt=0x1f payload=7beb6f71b30452a486e1b526a994885e
+repair seq=20 first=76 window=8 dt=0x1f payload=0049f325f7530b8fd77cc4a870b991e5
+repair seq=21 first=80 window=8 dt=0x1f payload=44c2ea9e915f37669405a7b952b89a8b
+repair seq=22 first=84 window=8 dt=0x1f payload=29c3e14a1ce6544973747bf0d69bc33c
+repair seq=23 first=88 window=8 dt=0x1f payload=ade0b8154d9dc2326a0aa27f0a57d888
+lost 14 of 96: every 7th id
+recovered 14 of 14: 0 7 14 21 28 35 42 49 56 63 70 77 84 91
+
+[stream one-density-class-wide] window_max=16 step=4 density=15 symbol_len=16 sources=96
+repair seq=0 first=0 window=4 dt=0x1f payload=1255884b436cd98a90075ae4b15e1b0f
+repair seq=1 first=0 window=8 dt=0x1f payload=35cf7d94080f80b1ffb2ea471fcf9060
+repair seq=2 first=0 window=12 dt=0x1f payload=661e6f15bb518f229694af58e6bcde90
+repair seq=3 first=0 window=16 dt=0x1f payload=18560a0680401c1f269c9d22843083b4
+repair seq=4 first=4 window=16 dt=0x1f payload=8b4b793a08fd1723a5f8ab1e0c398ca0
+repair seq=5 first=8 window=16 dt=0x1f payload=9ede022ea194dc6243d1eb5d7c496f15
+repair seq=6 first=12 window=16 dt=0x1f payload=d4fde121b25bfd91aaf9c55b104fdd4c
+repair seq=7 first=16 window=16 dt=0x1f payload=9dc15390c52230e3d922d901e6dc8750
+repair seq=8 first=20 window=16 dt=0x1f payload=68d233ab19570b0781411d1e279d9c23
+repair seq=9 first=24 window=16 dt=0x1f payload=a90e5cac8a4a783b09fc1622a4f9aa1f
+repair seq=10 first=28 window=16 dt=0x1f payload=2a503b909fdf032fa095dd6342d0ea5c
+repair seq=11 first=32 window=16 dt=0x1f payload=f65c65d3d5fce020b35afc90abf8c45a
+repair seq=12 first=36 window=16 dt=0x1f payload=6b77cbef9cc05291c42331e2d823d800
+repair seq=13 first=40 window=16 dt=0x1f payload=49ac4ac169d332aa18560a0680401c1f
+repair seq=14 first=44 window=16 dt=0x1f payload=0f75b48fa80f5dad8b4b793a08fd1723
+repair seq=15 first=48 window=16 dt=0x1f payload=1a209aad2b513a919ede022ea194dc62
+repair seq=16 first=52 window=16 dt=0x1f payload=da6e5271f75d64d2d4fde121b25bfd91
+repair seq=17 first=56 window=16 dt=0x1f payload=55d573eb6a76caee9dc15390c52230e3
+repair seq=18 first=60 window=16 dt=0x1f payload=71ac040548ad4bc068d233ab19570b07
+repair seq=19 first=64 window=16 dt=0x1f payload=9744d7b20e74b58ea90e5cac8a4a783b
+repair seq=20 first=68 window=16 dt=0x1f payload=843083b41b219bac2a503b909fdf032f
+repair seq=21 first=72 window=16 dt=0x1f payload=0c398ca0db6f5370f65c65d3d5fce020
+repair seq=22 first=76 window=16 dt=0x1f payload=7c496f1554d472ea6b77cbef9cc05291
+repair seq=23 first=80 window=16 dt=0x1f payload=104fdd4c70ad050449ac4ac169d332aa
+lost 14 of 96: every 7th id
+recovered 14 of 14: 0 7 14 21 28 35 42 49 56 63 70 77 84 91
+
+[stream past-one-density-class] window_max=48 step=8 density=15 symbol_len=16 sources=96
+repair seq=0 first=0 window=8 dt=0x1f payload=35cf7d94080f80b1ffb2ea471fcf9060
+repair seq=1 first=0 window=16 dt=0x1f payload=18560a0680401c1f269c9d22843083b4
+repair seq=2 first=0 window=24 dt=0x1f payload=67a3210b858fcf998767f426456c845d
+repair seq=3 first=0 window=32 dt=0x1f payload=c97eeef81c1e43b32d4f876ea9c8cf86
+repair seq=4 first=0 window=40 dt=0x1f payload=660d9ba9c187f70383507e64b4a719cb
+repair seq=5 first=0 window=48 dt=0x1f payload=ac15ff59cc74cdf4dd96a68a677a631d
+repair seq=6 first=8 window=48 dt=0x1f payload=5967629eada5f03dce1b6c748727b1e6
+repair seq=7 first=16 window=48 dt=0x1f payload=246f8615c14c874a002f598b3e97e770
+repair seq=8 first=24 window=48 dt=0x1f payload=9b46cc6d2dd59e0c40b5b5ac6d4c82f5
+repair seq=9 first=32 window=48 dt=0x1f payload=3bc8635625b3b87427de7fda37cedf55
+repair seq=10 first=40 window=48 dt=0x1f payload=1fcd5c470c33de45ac15ff59cc74cdf4
+repair seq=11 first=48 window=48 dt=0x1f payload=a1ec2ef29a21f0665967629eada5f03d
+lost 14 of 96: every 7th id
+recovered 0 of 14: 
+
+[stream widest-window] window_max=64 step=8 density=15 symbol_len=16 sources=96
+repair seq=0 first=0 window=8 dt=0x1f payload=35cf7d94080f80b1ffb2ea471fcf9060
+repair seq=1 first=0 window=16 dt=0x1f payload=18560a0680401c1f269c9d22843083b4
+repair seq=2 first=0 window=24 dt=0x1f payload=67a3210b858fcf998767f426456c845d
+repair seq=3 first=0 window=32 dt=0x1f payload=c97eeef81c1e43b32d4f876ea9c8cf86
+repair seq=4 first=0 window=40 dt=0x1f payload=660d9ba9c187f70383507e64b4a719cb
+repair seq=5 first=0 window=48 dt=0x1f payload=ac15ff59cc74cdf4dd96a68a677a631d
+repair seq=6 first=0 window=56 dt=0x1f payload=d859fa1696783f0ec5bcf6f3c2327eb6
+repair seq=7 first=0 window=64 dt=0x1f payload=e5d1a7acb8f2191260503517a462b6b4
+repair seq=8 first=8 window=64 dt=0x1f payload=5a3ebeb675d65931a2852198cbe1796e
+repair seq=9 first=16 window=64 dt=0x1f payload=5063de3dff4cdd352d8e9c37e3d63b41
+repair seq=10 first=24 window=64 dt=0x1f payload=c5a71446a4c5f83bbf150223428f269d
+repair seq=11 first=32 window=64 dt=0x1f payload=6cdf27d37a67b1629226a6377466aff5
+lost 14 of 96: every 7th id
+recovered 0 of 14: 
+
+[stream wide-window-sparsest-density] window_max=48 step=8 density=0 symbol_len=16 sources=96
+repair seq=0 first=0 window=8 dt=0x10 payload=9cadbecfe0f102132435465768798a9b
+repair seq=1 first=0 window=16 dt=0x10 payload=b4c5d6e7f8091a2b3c4d5e6f8091a2b3
+repair seq=2 first=0 window=24 dt=0x10 payload=45f8e39fa0d3586b6e1d09ba0271fac9
+repair seq=3 first=0 window=32 dt=0x10 payload=364a912c5ab9e25f94e8338e2f1cc9ba
+repair seq=4 first=0 window=40 dt=0x10 payload=cf8a1fdd53b58aad7d9b2a9213f5caed
+repair seq=5 first=0 window=48 dt=0x10 payload=bd7fb471d39fcb8efd3ff431684f799f
+repair seq=6 first=8 window=48 dt=0x10 payload=19a117f1692cb97b5693064a296cf93b
+repair seq=7 first=16 window=48 dt=0x10 payload=b5536c4b4aac1da5f5132c0b5b995297
+repair seq=8 first=24 window=48 dt=0x10 payload=35792d68bf07b1578ea99f79ff47f117
+repair seq=9 first=32 window=48 dt=0x10 payload=8fca5f9d61a4317dcf8a1fdd53b58aad
+repair seq=10 first=40 window=48 dt=0x10 payload=ac4afb4393df8bcebd7fb471d39fcb8e
+repair seq=11 first=48 window=48 dt=0x10 payload=59e157b1b99ea84e19a117f1692cb97b
+lost 14 of 96: every 7th id
+recovered 2 of 14: 7 63
+
+[stream mid-density] window_max=16 step=4 density=7 symbol_len=16 sources=96
+repair seq=0 first=0 window=4 dt=0x17 payload=1255884b436cd98a90075ae4b15e1b0f
+repair seq=1 first=0 window=8 dt=0x17 payload=35cf7d94080f80b1ffb2ea471fcf9060
+repair seq=2 first=0 window=12 dt=0x17 payload=64b451491171c45623fecbf37beb6f71
+repair seq=3 first=0 window=16 dt=0x17 payload=000d46589a9729dffd879c0f0049f325
+repair seq=4 first=4 window=16 dt=0x17 payload=fbc6da0c432870f4ac55ed8144c2ea9e
+repair seq=5 first=8 window=16 dt=0x17 payload=22ebc3b74c244c80d52c8e9029c3e14a
+repair seq=6 first=12 window=16 dt=0x17 payload=00eac8d9679d2fc65a5dd2e3ade0b815
+repair seq=7 first=16 window=16 dt=0x17 payload=84c9916e36e6031b4323960471ac99a1
+repair seq=8 first=20 window=16 dt=0x17 payload=58058ada525f140ac8c57b8dafd5ce5d
+repair seq=9 first=24 window=16 dt=0x17 payload=86e1b526a994885e117a22a6fe07bfd3
+repair seq=10 first=28 window=16 dt=0x17 payload=d77cc4a870b991e51e761ed2877edcc2
+repair seq=11 first=32 window=16 dt=0x17 payload=9405a7b952b89a8b35cf7d94080f80b1
+repair seq=12 first=36 window=16 dt=0x17 payload=73747bf0d69bc33c64b451491171c456
+repair seq=13 first=40 window=16 dt=0x17 payload=6a0aa27f0a57d888000d46589a9729df
+repair seq=14 first=44 window=16 dt=0x17 payload=e15600f6d4b3e774fbc6da0c432870f4
+repair seq=15 first=48 window=16 dt=0x17 payload=a50159dd852e96fa22ebc3b74c244c80
+repair seq=16 first=52 window=16 dt=0x17 payload=c30d6534c657f5eb00eac8d9679d2fc6
+repair seq=17 first=56 window=16 dt=0x17 payload=4eb4061b212629a284c9916e36e6031b
+repair seq=18 first=60 window=16 dt=0x17 payload=1fcf90603858f02d58058ada525f140a
+repair seq=19 first=64 window=16 dt=0x17 payload=7beb6f71b30452a486e1b526a994885e
+repair seq=20 first=68 window=16 dt=0x17 payload=0049f325f7530b8fd77cc4a870b991e5
+repair seq=21 first=72 window=16 dt=0x17 payload=44c2ea9e915f37669405a7b952b89a8b
+repair seq=22 first=76 window=16 dt=0x17 payload=29c3e14a1ce6544973747bf0d69bc33c
+repair seq=23 first=80 window=16 dt=0x17 payload=ade0b8154d9dc2326a0aa27f0a57d888
+lost 14 of 96: every 7th id
+recovered 14 of 14: 0 7 14 21 28 35 42 49 56 63 70 77 84 91
+

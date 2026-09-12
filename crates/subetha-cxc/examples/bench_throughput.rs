@@ -756,7 +756,7 @@ fn bench_adaptive(
 }
 
 // ============================================================================
-// LocaleAdaptiveRing (specify locale at construction; same shape behaviour)
+// LocaleAdaptiveRing (specify locale at construction; same shape behavior)
 // ============================================================================
 
 fn bench_locale_adaptive(
@@ -1291,7 +1291,7 @@ fn bench_adaptive_pinned(
     for pid in 0..n_producers {
         let r = Arc::clone(&ring);
         let h = thread::spawn(move || {
-            // Pin the shape ONCE; hot-loop on PinnedRing's native
+            // Pin the shape once; hot-loop on PinnedRing's native
             // per-shape dispatch (bypasses the shape_tag.load per
             // op the adaptive try_send pays).
             let pin = r.pin_current_shape();
@@ -1360,8 +1360,8 @@ fn bench_adaptive_pinned(
 
 /// CapacityAdaptiveRing pinned: pin the capacity wrapper, get the
 /// inner AdaptiveRing handle, then pin that for shape and hot-loop
-/// on PinnedRing's native dispatch. Skips BOTH the wrapper's
-/// stale-list mutex (steady-state overhead) AND the AdaptiveRing
+/// on PinnedRing's native dispatch. Skips both the wrapper's
+/// stale-list mutex (steady-state overhead) and the AdaptiveRing
 /// shape_tag.load.
 fn bench_capacity_pinned(
     locale: &str,

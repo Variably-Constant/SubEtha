@@ -56,7 +56,7 @@ const PKT_DATA: u8 = 1;
 /// Send datagrams under an epoch no peer here holds, from a socket that
 /// is dropped without answering anything.
 ///
-/// Covers an UNANSWERED challenge yielding no adoption, not source-address
+/// Covers an unanswered challenge yielding no adoption, not source-address
 /// spoofing: the datagrams carry this process's real source address, since
 /// forging that needs a raw socket.
 fn forge_unknown_session(port: u16) -> Result<(), BoxErr> {
@@ -141,7 +141,7 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
              unauthenticated peer can reset this receiver's window"
         ),
     )?;
-    // The security property is that an unanswered epoch is CHALLENGED and
+    // The security property is that an unanswered epoch is challenged and
     // never adopted. Whether the challenge has additionally been retired
     // as failed by now is bookkeeping on a timer, and asserting it here
     // made the gate fail on a busy host while the property itself held.
@@ -180,7 +180,7 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
         .iter()
         .map(|e| match rx.rs_session_frontier(*e) {
             // `peer` is the address this window aims its ACKs and NAKs at.
-            // A completed window pointing at the RESTARTED sender is the
+            // A completed window pointing at the restarted sender is the
             // rebinding that would free that sender's pending blocks.
             // A window that ingested datagrams without advancing either
             // took them and could not use them, or refused them at a gate.
@@ -260,7 +260,7 @@ pub fn parent(h: &Harness) -> Result<(), BoxErr> {
     // deliver, freeing them from its retransmit buffer for good. This is
     // an invariant, so it catches the fault even on a run whose delivery
     // happens to survive it.
-    // Recorded rather than returned, so a run reports BOTH the delivery
+    // Recorded rather than returned, so a run reports both the delivery
     // result and this property. Returning here would abort before the
     // delivery check and make the shortfall unobservable whenever the
     // rebinding fires, which is exactly how one comparison of the two

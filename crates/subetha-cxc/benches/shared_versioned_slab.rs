@@ -18,7 +18,7 @@
 //!    a chain that is full and must sweep before every push, because a
 //!    write that never sweeps would hide what the bound costs.
 //!
-//! What the numbers do NOT show: the plain slab has no answer to a
+//! What the numbers leave out: the plain slab has no answer to a
 //! scan that must not see a concurrent overwrite. It is not a slower
 //! way of doing the same thing; it does a different thing.
 

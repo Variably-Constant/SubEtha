@@ -5,7 +5,7 @@
 //! The architectural claim: every per-slot op is a lock-free atomic
 //! on a cache-line-aligned slot. No cross-slot false-sharing.
 //! Cross-process visibility for free via the MMF substrate. The
-//! in-process mutex baselines pay a lock per op AND cannot do
+//! in-process mutex baselines pay a lock per op and cannot do
 //! cross-process at any cost.
 //!
 //! Workloads:

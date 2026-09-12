@@ -19,7 +19,7 @@
 //! The producer-fast bench measures the pure producer-side
 //! throughput: K=64 items dispatched per iter, drain runs in the
 //! background, and the wait-for-drain-catch-up happens via
-//! `iter_custom` OUTSIDE the timed window. This isolates the
+//! `iter_custom` outside the timed window. This isolates the
 //! per-item amortization shape that LOH targets.
 //!
 //! # Bench-audit notes
@@ -117,7 +117,7 @@ fn loh_producer_fast(c: &mut Criterion) {
 
                 // Canonical LOH producer-fast shape: build the K
                 // items in a caller-side buffer, then call
-                // publish_batch() ONCE to migrate them with one
+                // publish_batch() once to migrate them with one
                 // Mutex acquire + one `tail.fetch_add(K)` + K
                 // Release-stores on per-slot sequence numbers.
                 // The amortization lever is "one producer-counter
@@ -138,7 +138,7 @@ fn loh_producer_fast(c: &mut Criterion) {
                 }
                 total += start.elapsed();
 
-                // Drain catch-up OUTSIDE the timed window.
+                // Drain catch-up outside the timed window.
                 while drained.load(Ordering::Acquire) < target {
                     std::hint::spin_loop();
                 }

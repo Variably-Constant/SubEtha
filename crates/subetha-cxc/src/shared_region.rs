@@ -53,12 +53,12 @@
 //!
 //! # No drop semantics
 //!
-//! T: Copy + Sized. Allocated T values are NOT dropped on `free`
+//! T: Copy + Sized. Allocated T values go undropped on `free`
 //! (Copy types don't need drop, and we can't run drop glue on bytes
 //! living in shared memory anyway). `free` returns the value as a
 //! by-copy.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -77,7 +77,14 @@ pub struct RegionHeader {
     _pad1: u32,
     pub bump_next: AtomicU64,
     pub free_head: AtomicU64,
-    _pad2: [u8; 32],
+    /// Where the slot array starts in the file.
+    pub slots_offset: u32,
+    /// The element's alignment, as the creator stated it.
+    pub alignment: u32,
+    /// A tag the creator chose for the element type; an open that states
+    /// another is refused.
+    pub layout_tag: u64,
+    _pad2: [u8; 16],
 }
 
 const _: () = {
@@ -223,27 +230,39 @@ impl<T: Copy + 'static> SharedRegion<T> {
         unsafe {
             (*hdr).capacity = capacity as u32;
             (*hdr).slot_size = size_of::<T>() as u32;
+            (*hdr).slots_offset = Self::slots_offset_for(capacity) as u32;
+            (*hdr).alignment = std::mem::align_of::<T>() as u32;
+            (*hdr).layout_tag = 0;
             std::ptr::write(&raw mut (*hdr).free_head, AtomicU64::new(pack(0, NIL_INDEX)));
             std::ptr::write_volatile(&raw mut (*hdr).magic, REGION_MAGIC);
         }
     }
 
+    /// Where the slot array starts: right behind the free links.
+    fn slots_offset_for(capacity: usize) -> usize {
+        size_of::<RegionHeader>() + capacity * size_of::<AtomicU32>()
+    }
+
     /// Wrap an initialized region, refusing one built with a different
-    /// capacity or payload type.
+    /// capacity or payload type. A slot start or tag at zero records
+    /// nothing and constrains nothing; one that is set must be this
+    /// type's, and the tag must be the typed region's own, zero.
     fn from_region(
         file: File,
         mmap: MmapMut,
         capacity: usize,
     ) -> Result<Self, RegionError> {
+        let next_offset = size_of::<RegionHeader>();
+        let slots_offset = Self::slots_offset_for(capacity);
         let hdr = unsafe { &*(mmap.as_ptr() as *const RegionHeader) };
         if hdr.magic != REGION_MAGIC
             || hdr.capacity != capacity as u32
             || hdr.slot_size != size_of::<T>() as u32
+            || (hdr.slots_offset != 0 && hdr.slots_offset as usize != slots_offset)
+            || hdr.layout_tag != 0
         {
             return Err(RegionError::LayoutMismatch);
         }
-        let next_offset = size_of::<RegionHeader>();
-        let slots_offset = next_offset + capacity * size_of::<AtomicU32>();
         Ok(Self {
             _file: file, mmap, capacity, next_offset, slots_offset,
             _phantom: PhantomData,
@@ -256,7 +275,7 @@ impl<T: Copy + 'static> SharedRegion<T> {
         path: impl AsRef<Path>, expected_capacity: usize,
     ) -> Result<Self, RegionError> {
         let total = region_file_size(expected_capacity, size_of::<T>());
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(RegionError::LayoutMismatch);
         }
@@ -389,8 +408,8 @@ impl<T: Copy + 'static> SharedRegion<T> {
         Ok(v)
     }
 
-    /// Overwrite the value at `ptr`. Same caveats as `get`: caller
-    /// must hold a still-valid pointer.
+    /// Overwrite the value at `ptr`. As with `get`, the caller must hold
+    /// a still-valid pointer.
     pub fn set(&self, ptr: OffsetPtr<T>, value: T) -> Result<(), RegionError> {
         if ptr.is_nil() || (ptr.index as usize) >= self.capacity {
             self.ring_sidecar

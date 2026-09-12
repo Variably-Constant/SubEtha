@@ -59,7 +59,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::Mutex;
@@ -145,8 +145,8 @@ impl LineItem {
 /// 3 [`LineItem`] payloads plus a count. The deque-family hybrid
 /// [`SharedDequeFcl`](crate::SharedDequeFcl) uses this as the slot
 /// type for counter-only Chase-Lev with `K_inner = 3`: each push
-/// publishes 3 items in one cache-line write, with NO per-slot
-/// atomic and ONE owner-private `bottom` store amortized across the
+/// publishes 3 items in one cache-line write, with no per-slot
+/// atomic and a single owner-private `bottom` store amortized across the
 /// whole batch.
 ///
 /// Layout:
@@ -314,7 +314,7 @@ pub struct SharedDequeKhpd {
 
 // SAFETY: all fields are Send. Mmap handle is Send + Sync per
 // memmap2. Every line access goes through the per-line state-atomic
-// protocol; the `pending` Mutex linearises owner-side accesses.
+// protocol; the `pending` Mutex linearizes owner-side accesses.
 unsafe impl Send for SharedDequeKhpd {}
 // SAFETY: same justification as the Send impl directly above.
 unsafe impl Sync for SharedDequeKhpd {}
@@ -326,12 +326,7 @@ impl SharedDequeKhpd {
         let capacity = capacity.max(2).next_power_of_two();
         let size = khpd_file_size(capacity);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(size as u64)?;
 
         // SAFETY: `map_mut` is unsafe because the kernel cannot
@@ -383,10 +378,7 @@ impl SharedDequeKhpd {
 
     /// Open an existing KHPD file.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let size = file.metadata()?.len() as usize;
         if size < std::mem::size_of::<KhpdHeader>() {
             return Err(io::Error::new(
@@ -485,19 +477,19 @@ impl SharedDequeKhpd {
 
     /// Owner-side single-call batch publish. Bypasses the
     /// [`stage`](Self::stage)/[`publish`](Self::publish) pair so the
-    /// caller pays only ONE Mutex acquire per batch instead of one
+    /// caller pays only a single Mutex acquire per batch instead of one
     /// per staged item. This is the canonical hot-path API: the
     /// caller hands in a slice of [`LineItem`] values and the method
     /// publishes them into `ceil(items.len() / LINE_ITEMS)`
     /// publication lines with one `tail.fetch_add(n_lines)` plus
     /// one Release-store per line.
     ///
-    /// Returns the number of LINES published.
+    /// Returns the number of lines published.
     pub fn publish_batch(&self, items: &[LineItem]) -> Result<usize, PushError> {
         if items.is_empty() {
             return Ok(0);
         }
-        // Hold migration_lock-equivalent: serialise against other
+        // Hold migration_lock-equivalent: serialize against other
         // owner-side publishes by going through the same Mutex the
         // staged path uses.
         let _g = self.pending.lock().expect("KHPD pending poisoned");
@@ -510,13 +502,9 @@ impl SharedDequeKhpd {
         }
         let base = h.tail.fetch_add(n_lines as i64, Ordering::AcqRel);
 
-        // No PREFETCHW here: empirical 30-second criterion bench on
-        // Zen+ R7 2700 measured a 12% regression vs the unprefetched
-        // path (p = 0.01). KHPD's publication lines are L1d-warm from
-        // the prior iteration of `publish_batch`; explicit prefetch
-        // pollutes the prefetch queue without payoff. The architectural
-        // lever is preserved for Chase-Lev and LOH where the slot line
-        // is cold per push.
+        // No PREFETCHW: publication lines are L1d-warm from the previous
+        // `publish_batch` iteration, and prefetching them measured 12%
+        // slower on a Zen+ R7 2700.
 
         let mut it = items.iter();
         for line_i in 0..n_lines {
@@ -550,7 +538,7 @@ impl SharedDequeKhpd {
     /// Owner-side publish. Drains the pending buffer into one or
     /// more publication lines ([`LINE_ITEMS`] items per line). Each
     /// line takes one `tail.fetch_add(1)` plus one Release-store on
-    /// the line's state. Returns the number of LINES published.
+    /// the line's state. Returns the number of lines published.
     pub fn publish(&self) -> Result<usize, PushError> {
         let mut p = self.pending.lock().expect("KHPD pending poisoned");
         if p.is_empty() {
@@ -653,7 +641,7 @@ impl SharedDequeKhpd {
         // Release the slot: store STATE_EMPTY so the next round's
         // producer (at idx = head + capacity) sees the slot ready.
         //
-        // SAFETY: still our slot; the Release synchronises with the
+        // SAFETY: still our slot; the Release synchronizes with the
         // next producer's Acquire-spin in `publish`.
         unsafe {
             (*line).state.store(STATE_EMPTY, Ordering::Release);

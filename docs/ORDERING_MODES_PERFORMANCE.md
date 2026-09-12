@@ -1,8 +1,8 @@
 # Ordering Mode Ladder Performance
 
 What each rung of the cross-producer ordering ladder costs, measured
-cross-process: real producer PROCESSES stream into a file-backed
-`AdaptiveRing` while the consumer process drains and ASSERTS the
+cross-process: real producer processes stream into a file-backed
+`AdaptiveRing` while the consumer process drains and asserts the
 guarantee the rung charges for. Numbers reproduced by
 [`examples/ordering_modes_compare.rs`](../crates/subetha-cxc/examples/ordering_modes_compare.rs);
 results saved to [`ordering_modes_results.json`](ordering_modes_results.json).
@@ -20,7 +20,7 @@ the `stamp_kind` the live JSON records for each rung. A bare-metal host
 with invariant TSC selects the cheaper `rdtsc` stamp for the by-stamp
 merge rungs instead; that run is in
 [Stamp source: TSC vs counter](#stamp-source-tsc-vs-counter) below.
-These are SATURATING-STREAM throughput costs (50,000
+These are saturating-stream throughput costs (50,000
 items per producer, 16-byte payload, 16384-slot rings), not the
 ping-pong one-way latency of the
 [cross-process IPC comparison](CROSS_PROCESS_IPC_PERFORMANCE.md) -
@@ -47,7 +47,7 @@ holding.
 - **The stamp overhead is the composed-vs-stamped delta**: several
   times the per-push cost at 4P (58 -> 239 ns/push) for the TSC read
   + stamp write + watermark store - the price of making the
-  invisible ordering property observable (55k inversions REPORTED
+  invisible ordering property observable (55k inversions reported
   instead of silently delivered). Callers that never need ordering
   skip it entirely by not calling `with_ordering_stamps()`.
 - **The ordered switch costs ~1.7x the stamped-unordered rate at the
@@ -61,7 +61,7 @@ holding.
   costs less than the consumer-side k-way merge plus the stamped
   push the merge rungs carry, and at 1P/1C its core-local slot lines
   put it ~10x ahead. The merge's value is therefore not throughput
-  but the RUNTIME dial: a stamped ring serves per-producer mode at
+  but the runtime dial: a stamped ring serves per-producer mode at
   ~69 ns/item and flips to global FIFO with one store, retroactively
   ordering the backlog; it is also the global-FIFO
   path for a ring that must stay stamped (Vyukov's 56-byte slots
@@ -95,7 +95,7 @@ used:
 | Stamped merge, `MergeStrict` (total order) | counter | 351 | 1324 |
 | Vyukov MPMC shape | none | 76 | 276 |
 
-Windows numbers are per-field MEDIANS of 3 idle-machine runs: a single
+Windows numbers are per-field medians of 3 idle-machine runs: a single
 Windows draw lands one scenario several times high at random (process
 scheduling), so one run misleads. The absolute ns run higher than the
 5700G Linux table - this is the slower part, and Windows process
@@ -108,7 +108,7 @@ for `MergeStrict` total order, which needs strictly increasing stamps a
 clock cannot guarantee. Raw numbers in
 [`ordering_modes_results-windows-tsc.json`](ordering_modes_results-windows-tsc.json).
 
-## What the consumer asserts (the assertion IS the feature)
+## What the consumer asserts (the assertion is the feature)
 
 Per the bench-audit discipline, a rung that cannot uphold its
 claimed guarantee fails the run instead of posting a number:
@@ -116,20 +116,20 @@ claimed guarantee fails the run instead of posting a number:
 | Rung | Check in the drain loop |
 |---|---|
 | every rung | per-producer payload sequence strictly increases |
-| strict merge rungs (`MergeStrict`) | popped stamps monotone (strictly increasing for the counter total-order rung) AND the inversion counter reads zero; a violation kills the producer children and fails the run with a non-zero exit |
-| by-stamp merge (`MergeByStamp`) | best-effort "within stamp skew": merged-order inversions are REPORTED, not asserted - without the freshness guard (time stamps) or the watermark gate (`MergeStrict`) a lagging producer can legitimately invert |
-| stamped unordered | inversions are REPORTED (the metric, not a violation) |
+| strict merge rungs (`MergeStrict`) | popped stamps monotone (strictly increasing for the counter total-order rung) and the inversion counter reads zero; a violation kills the producer children and fails the run with a non-zero exit |
+| by-stamp merge (`MergeByStamp`) | best-effort "within stamp skew": merged-order inversions are reported, not asserted - without the freshness guard (time stamps) or the watermark gate (`MergeStrict`) a lagging producer can legitimately invert |
+| stamped unordered | inversions are reported (the metric, not a violation) |
 
 This assertion discipline is what caught a real ordering hole
 during bring-up: on WSL2, a producer vCPU descheduled mid-push
 stretched the stamp-to-publish window to ~63,000 cycles - far past
 any fixed freshness window - and the merge briefly delivered a
 newer stamp first. The in-flight gate both merge modes now carry
-closes THAT window: producers reserve their stamp slot before reading
+closes that window: producers reserve their stamp slot before reading
 the clock and finalize the watermark after the push, so the merge holds
 any candidate that an in-flight (reserved-but-unpublished) stamp
 undercuts, no matter how long the producer stalls. A separate window -
-a producer that PUBLISHES a lower stamp between the consumer's scan and
+a producer that publishes a lower stamp between the consumer's scan and
 its pop - is not covered by the in-flight gate; see
 [Exact delivery on the counter path](#exact-delivery-on-the-counter-path).
 
@@ -142,12 +142,12 @@ under producer lag. The cause is a scan/pop TOCTOU, not a memory-ordering
 bug - a WRC litmus test confirmed the KVM guest is multi-copy-atomic
 (zero violations, same as bare metal). The k-way scan is a non-atomic
 snapshot; the in-flight gate only holds candidates above a
-reserved-but-unpublished stamp; a producer that PUBLISHES a lower stamp
+reserved-but-unpublished stamp; a producer that publishes a lower stamp
 between the scan (which saw its ring empty) and the pop is caught by
 neither. `MergeStrict`'s watermark gate is immune: it waits until every
 empty in-use ring's watermark proves no lower stamp exists.
 
-Proven on the 16-vCPU KVM guest by the library's OWN inversion counter
+Proven on the 16-vCPU KVM guest by the library's own inversion counter
 plus an independent harness ([`examples/ordering_race_proof.rs`](../crates/subetha-cxc/examples/ordering_race_proof.rs)):
 raw `MergeByStamp` delivers concrete out-of-order pairs (e.g. 512->511,
 1753->1752); `MergeStrict` never does; same host, same workload.
@@ -155,7 +155,7 @@ Bare-metal 8-core x86 did not reproduce it (the scan/pop window is far
 narrower). The displacement is bounded by the concurrent producer count
 (off-by-one in practice).
 
-The fix keeps the cheap merge's throughput without the strict tax.
+The reorder consumer keeps the cheap merge's throughput without the strict tax.
 [`crate::reorder::AdaptiveOrderedReceiver`](../crates/subetha-cxc/src/reorder.rs)
 auto-selects the exact strategy per ring: SharedCounter with `<= 256`
 producers keeps `MergeByStamp` and corrects on the consumer with a
@@ -163,7 +163,7 @@ reorder buffer sized to the producer count (provably exact); more
 producers morph the ring to `MergeStrict`; time-based / unstamped rings
 deliver directly. Consumer drain cost on the same host (one coherent
 measurement set; its raw-merge baseline sat at ~106 that day - the
-ladder above drifts a few ns run-to-run, the RATIOS are the result):
+ladder above drifts a few ns run-to-run, the ratios are the result):
 
 | Strategy | ns/item | exact? |
 |---|---:|---|
@@ -174,7 +174,7 @@ ladder above drifts a few ns run-to-run, the RATIOS are the result):
 ## Bench methodology
 
 1. **Real processes, production hot path.** Each producer is a
-   separate OS process pushing through the PINNED per-shape calls
+   separate OS process pushing through the pinned per-shape calls
    (`stamped_try_push` / `mpsc_try_push` / `vyukov_try_push`); the
    consumer drains through `ordered_try_pop_with_stamp` /
    `mpsc_try_pop` / `vyukov_try_pop`. No bench-only shortcuts.
@@ -184,7 +184,7 @@ ladder above drifts a few ns run-to-run, the RATIOS are the result):
    rungs add only the 8-byte stamp their mode requires.
 3. **Both sides of the cost reported.** Consumer ns/item is
    first-pop to last-pop; producer ns/push includes backpressure
-   spin time by design (that IS the producer-side cost of a mode
+   spin time by design (that is the producer-side cost of a mode
    under a saturating stream).
 4. **Strict-rung lifecycle.** Producers retire their stamp slots on
    clean exit (`retire_producer`) so the strict watermark gate

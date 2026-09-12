@@ -4,7 +4,7 @@
 //! single-consumer baseline.
 //!
 //! Architectural claim: SharedBroadcastRing matches or beats the
-//! in-process textbook pattern AND provides cross-process pub/sub
+//! in-process textbook pattern and provides cross-process pub/sub
 //! that the in-process pattern cannot offer.
 //!
 //! Workloads:

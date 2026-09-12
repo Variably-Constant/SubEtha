@@ -26,7 +26,7 @@ snapshot.
 > kernel sync). `emit` and full cycle are within 7% of
 > `Mutex<VecDeque>` baselines, so the architectural lever isn't
 > raw speed - it's cross-process visibility plus disk persistence
-> (the ring file IS the durable event log).
+> (the ring file is the durable event log).
 
 **Constraints (read first):**
 
@@ -126,7 +126,7 @@ post-batch state, never an intermediate.
 event ring, e.g. `Ring(Full)` on backpressure), `Cell(SharedCellError)`
 (propagated from the state cell), and the two construction-time size guards
 `EventTooLarge` (`size_of::<Event>() > 56`) and `StateTooLarge`
-(`size_of::<State>() > 52`). The size guards fire in BOTH `create` and `open`,
+(`size_of::<State>() > 52`). The size guards fire in both `create` and `open`,
 so a layout mismatch is caught before any I/O.
 
 Durability is two-file: `flush()` syncs both `.events.bin` and `.state.bin`
@@ -186,7 +186,7 @@ The story the numbers tell:
 - **MMF lifecycle managed**: events + state files created,
   ops run, dropped, both files removed per bench.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process emit + drain**: producer in one process emits;
   consumer in another process drains. The naive baseline cannot

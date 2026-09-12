@@ -154,13 +154,13 @@ poll.
 ## The `atexit` shutdown hook
 
 `global()` is backed by a `once_cell::sync::Lazy<Arc<Sidecar>>`.
-A `Lazy` initialised after `main` starts does not run its `Drop`
+A `Lazy` initialized after `main` starts does not run its `Drop`
 at process exit, which leaves the scan threads alive when the
-CRT shuts down - and historically that produced occasional
-`STATUS_ACCESS_VIOLATION` at exit when the scan threads' TLS
-state raced with main-thread CRT shutdown.
+CRT shuts down, and those threads can raise
+`STATUS_ACCESS_VIOLATION` at exit when their TLS
+state races with main-thread CRT shutdown.
 
-The fix: `register_sidecar_atexit()` registers a CRT `atexit`
+`register_sidecar_atexit()` registers a CRT `atexit`
 callback the first time `global()` is called. The callback signals
 shutdown, joins every scan thread, clears the slot tables (so
 any other static-drop chain sees an empty registry), and prints

@@ -72,7 +72,7 @@ SIMD scan when available.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process visibility**: any process scans the same
   tile; the mutex baseline cannot.
@@ -151,7 +151,7 @@ slots by snapshot version for time-point queries.
 
 - **Treating visible_mask as exact at a writer-in-progress
   boundary.** A version with Release semantics becomes visible
-  to readers' Acquire load AFTER the write; brief windows of
+  to readers' Acquire load after the write; brief windows of
   invisibility during write are by design.
 
 - **Sizing one tile for >16 keys.** Partition across multiple

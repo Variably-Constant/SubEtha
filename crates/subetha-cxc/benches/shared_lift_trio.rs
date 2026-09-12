@@ -3,7 +3,7 @@
 //! once_cell::sync::OnceCell).
 //!
 //! The architectural claim isn't "faster than in-process"; it's
-//! "comparable to in-process AND works cross-process AND persists
+//! "comparable to in-process and works cross-process and persists
 //! to disk." The in-process versions provide none of (2) or (3).
 
 use std::hint::black_box;

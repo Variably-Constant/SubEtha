@@ -25,7 +25,7 @@ on the target.
 > Umbra paper (Neumann + Freitag, CIDR 2020) introduced 16-byte
 > string pointers that pack a 4-byte content prefix alongside the
 > pointer to enable in-register equality fast-rejection. This
-> primitive is the same idea, parameterised over any `T` instead
+> primitive is the same idea, parameterized over any `T` instead
 > of just `&str`; it works for any heap-allocated payload. The
 > MMF-resident sibling for cross-process use is
 > [`SharedUmbraPointer`](../../subetha-cxc/specialized/shared-umbra-pointer/).
@@ -41,7 +41,7 @@ on the target.
   require wrapping in a sized container (`Box<[u8]>`,
   `Arc<str>`, etc.) at the application layer first.
 - **`UmbraPointer::from_raw` is `unsafe`.** Caller is responsible
-  for keeping the target alive AND for choosing a prefix that is
+  for keeping the target alive and for choosing a prefix that is
   a deterministic function of the content; arbitrary prefixes
   make `prefix_eq` semantically meaningless. The safe entry
   points are `with_content_prefix` (returns
@@ -58,7 +58,7 @@ on the target.
   truncated to the low 32 bits.** `DefaultHasher` may be
   randomized per process in some Rust versions. Two processes
   hashing the same content may compute different prefixes; this
-  is NOT a content-addressing-stable hash.
+  is not a content-addressing-stable hash.
 - **Prefix is 4 bytes (32 bits).** Birthday-bound collision
   probability is ~50% at ~65 K distinct prefixes. Treat
   prefix-equality as a candidate-filter, not a definitive
@@ -225,7 +225,7 @@ flowchart TD
 
 | Construction | Prefix derivation | Lifetime owner | When to use |
 |---|---|---|---|
-| `with_content_prefix(T)` | First 4 bytes of `T`'s representation, in native byte order | `Box<UmbraOwner<T>>` | T's first 4 bytes are a meaningful key (row ID, packet header, etc.) AND you do not need cross-host portability |
+| `with_content_prefix(T)` | First 4 bytes of `T`'s representation, in native byte order | `Box<UmbraOwner<T>>` | T's first 4 bytes are a meaningful key (row ID, packet header, etc.) and you do not need cross-host portability |
 | `with_hash_prefix(T)` | `DefaultHasher::finish() as u32` (low 32 bits of u64 output) | `Box<UmbraOwner<T>>` | Near-uniform random prefix for HashMap-style rejection; T is unique enough that collision is rare |
 | `from_arc(Arc<T>, prefix: u32)` | Caller-supplied | `ArcUmbra<T>` (Arc keeps target alive) | You already have an Arc; you want shared ownership; you supply the prefix from your own hash function |
 | `from_raw(prefix, *const T)` | Caller-supplied | None (caller manages) | Hot-path construction over an existing pointer; unsafe |
@@ -261,7 +261,7 @@ is on a cold cache line**. The 16-byte slot ensures the scan
 itself stays dense (one cache line covers 4 slots); only the
 prefix-hit path pays the cost of loading the target's bytes.
 
-When the prefix is content-derived AND the target is
+When the prefix is content-derived and the target is
 unpredictable (scattered heap allocations, no prefetch), this
 turns into a multi-x speedup. When the target is small or always
 in cache, the shortcircuit adds overhead without saving anything.
@@ -273,7 +273,7 @@ in cache, the shortcircuit adds overhead without saving anything.
 
 | Method | Signature | Notes |
 |---|---|---|
-| `from_raw` (unsafe) | `const unsafe fn(prefix: u32, target: *const T) -> Self` | Caller responsible for target lifetime AND prefix derivation |
+| `from_raw` (unsafe) | `const unsafe fn(prefix: u32, target: *const T) -> Self` | Caller responsible for target lifetime and prefix derivation |
 | `with_content_prefix` | `fn(value: T) -> Box<UmbraOwner<T>>` | Heap-allocates value via Box; prefix is first 4 bytes |
 | `with_hash_prefix` | `fn(value: T) -> Box<UmbraOwner<T>> where T: Hash` | Heap-allocates value via Box; prefix is DefaultHasher u32 |
 | `from_arc` | `fn(value: Arc<T>, prefix: u32) -> ArcUmbra<T>` | Caller supplies the prefix; Arc keeps target alive |
@@ -299,9 +299,9 @@ auto-trait impls.
 | `value` | `fn(&self) -> &T` | Safe deref through the owned Box |
 | `Drop` | impl | Reclaims the target via `Box::from_raw` |
 
-`UmbraOwner` does NOT implement `Clone`. To copy ownership of
+`UmbraOwner` does not implement `Clone`. To copy ownership of
 the target, build a second `UmbraOwner` from a fresh allocation
-OR use the `ArcUmbra` shared-ownership variant.
+or use the `ArcUmbra` shared-ownership variant.
 
 </details>
 
@@ -429,7 +429,7 @@ value appears only when the deref is genuinely expensive (see
 <summary><b>scan_cache_pressure: native wins (umbra 0.69x, the honest loss)</b></summary>
 
 This workload forces a sum reduction over all 1024 payloads.
-Every entry IS consumed - there is no miss to skip.
+Every entry is consumed - there is no miss to skip.
 
 The native path sums `**arc` for every entry. With sequential
 heap layout and warm caches, this is a fast tight loop.
@@ -468,7 +468,7 @@ cache miss still costs a stall per access, partially overlapped
 by out-of-order execution.
 
 Umbra: 1.24 us. The prefix scan loads 16-byte slots from a
-contiguous Vec<ArcUmbra>, which IS prefetcher-friendly because
+contiguous Vec<ArcUmbra>, which is prefetcher-friendly because
 the Vec itself is sequential. Misses on the prefix compare are
 rare; derefs are zero (no prefix matches the query).
 
@@ -576,7 +576,7 @@ predicate. Reduces the cold-cache-miss count in the worst case.
    for the cross-process leg.
 
 2. **`from_raw` is `unsafe`.** No lifetime tracking; caller must
-   guarantee the target outlives the pointer AND must supply a
+   guarantee the target outlives the pointer and must supply a
    prefix derived deterministically from content.
 
 3. **`T: Sized`.** Unsized targets do not fit the 8-byte thin-
@@ -688,7 +688,7 @@ prefix layer is pure overhead. The `scan_cache_pressure` bench
 shows the 0.69x loss case (native wins ~1.45x).
 
 Decision rule: only use `UmbraPointer` when the expected miss
-rate is high (above 50%) AND the deref cost is non-trivial
+rate is high (above 50%) and the deref cost is non-trivial
 (payload at least one cache line, or scattered heap allocation).
 For full-consumption sequential scans of small payloads, use
 `Vec<T>` directly.

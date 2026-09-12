@@ -37,7 +37,7 @@ via Kirsch-Mitzenmacher double-hashing
 
 - **Probabilistic**: false positives possible, false negatives
   never. `contains(x) == false` is authoritative; `contains(x) ==
-  true` means MAYBE.
+  true` means maybe.
 - **Tunable**: `SharedBloomFilter::suggest_config(n_items, p)`
   returns `(n_bits, n_hashes)` for target FPR `p`.
 - **Hash**: FNV-1a with two distinct seeds; the k positions are
@@ -216,7 +216,7 @@ The story the numbers tell:
 - **MMF lifecycle managed**: `create` then ops then `drop` then
   `cleanup_base` removes both backing files; no leaks across runs.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process query throughput**: every process gets the
   same map with no lock acquire and no IPC round-trip. The
@@ -283,7 +283,7 @@ println!("inserted ~{est} items, current FPR ~= {fpr:.4}");
 
 Pre-populate with known-bad / known-existing keys; every
 candidate is queried first; only candidates that pass (i.e., the
-filter says MAYBE) hit the authoritative slow store. The
+filter says maybe) hit the authoritative slow store. The
 architectural payoff is amortizing the slow store's per-query
 cost across the cheaper Bloom queries.
 

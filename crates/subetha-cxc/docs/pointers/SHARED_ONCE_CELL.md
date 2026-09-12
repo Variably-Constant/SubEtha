@@ -185,7 +185,7 @@ tied; `get_or_init` adds the mmap pointer-deref overhead
 - **Closure never runs**: `get_or_init` is given a panicking
   closure; if either path runs it the bench crashes.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Race-to-init cost**: bench measures post-init; the EMPTY ->
   INITIALIZING -> INITIALIZED transition (with N processes

@@ -47,7 +47,7 @@ use crate::reliable_udp::{
     NAK_NONE,
 };
 
-/// Receive-buffer size for an inbound CONTROL datagram. Generous: a control
+/// Receive-buffer size for an inbound `CONTROL` datagram. Generous: a control
 /// packet carrying every frame is well under this, and over-sizing costs only
 /// stack.
 const CONTROL_RECV_BUF: usize = 256;
@@ -133,7 +133,7 @@ type MmsgLen = libc::c_uint;
 #[cfg(target_os = "freebsd")]
 type MmsgLen = usize;
 
-/// Minimum spacing between NAKs for the SAME block. Feedback is emitted
+/// Minimum spacing between NAKs for one and the same block. Feedback is emitted
 /// on every poll, so without this a single lost block draws a NAK on
 /// every packet and the sender retransmits it hundreds of times per
 /// round-trip. One re-request per this interval is roughly one per RTT
@@ -171,7 +171,7 @@ const MAX_NAKS_PER_CYCLE: usize = 64;
 /// How often the sender emits a heartbeat (timestamp + ring digest).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(20);
 
-/// WBest active probe (item 13). A round is emitted this often; it is low
+/// WBest active probe. A round is emitted this often; it is low
 /// intrusion (a few dozen padded packets every couple of seconds), so it does
 /// not perturb the transfer it measures.
 const BW_PROBE_INTERVAL: Duration = Duration::from_secs(2);
@@ -184,7 +184,7 @@ const BW_PROBE_TRAIN: u8 = 12;
 /// clock and jitter), the size the receiver's estimator assumes.
 const BW_PROBE_BYTES: usize = 1400;
 
-/// Trace mini-traceroute (item 14). A sweep of probes at IP TTL 1..=`MAX_TRACE_HOPS`
+/// Trace mini-traceroute. A sweep of probes at IP TTL 1..=`MAX_TRACE_HOPS`
 /// is emitted this often; each expired probe draws an ICMP TimeExceeded the
 /// sender reads off its error queue for the per-hop router and RTT. The cadence
 /// only drives the Linux error-queue path, so it is dead on other targets.
@@ -192,7 +192,7 @@ const BW_PROBE_BYTES: usize = 1400;
 const TRACE_INTERVAL: Duration = Duration::from_secs(3);
 const MAX_TRACE_HOPS: u8 = 8;
 
-/// Sprout forecast tick (item 16): the receiver integrates arrivals over this
+/// Sprout forecast tick: the receiver integrates arrivals over this
 /// interval into one rate observation, the "next tick" the forecast bounds.
 const FORECAST_TICK: Duration = Duration::from_millis(50);
 /// Headroom above the forecast the predictive window cap allows, so the sender
@@ -220,7 +220,7 @@ const PACE_TARGET_MS: f32 = 10.0;
 /// back to this floor.
 const MIN_PACE_INTERVAL_US: u64 = 1000;
 
-/// Multiple of the smoothed RTT after which TOTAL silence (no feedback of any
+/// Multiple of the smoothed RTT after which complete silence (no feedback of any
 /// kind) marks the link dead. Several round trips with nothing back is a
 /// liveness failure, not jitter.
 const DEAD_RTT_MULTIPLE: u64 = 8;
@@ -327,7 +327,7 @@ pub struct ReliableUdpSender {
     /// frontier each feedback, so it stays bounded by the in-flight window.
     block_send_us: VecDeque<(u32, u64)>,
     /// The full (un-paced) flow window captured at construction; the bufferbloat
-    /// pacer only ever clamps the encoder's window DOWN from this toward the BDP
+    /// pacer only ever clamps the encoder's window down from this toward the BDP
     /// to drain a self-induced queue, and restores it when the queue clears.
     flow_window_max: u32,
     /// Whether the bufferbloat pacer is active. On by default; an A/B harness
@@ -341,7 +341,7 @@ pub struct ReliableUdpSender {
     /// adjusts at most once per round trip.
     last_pace_us: u64,
     /// Link-liveness state. `last_feedback_at` is when the sender last received
-    /// ANY feedback; when the silence exceeds a PTO derived from the smoothed
+    /// any feedback at all; when the silence exceeds a PTO derived from the smoothed
     /// RTT the link is declared dead. While dead the producer is already held by
     /// flow-control backpressure (the window cannot advance with no ACKs); the
     /// sender adds a periodic probe (a retransmit of the oldest unacked block)
@@ -383,7 +383,7 @@ pub struct ReliableUdpSender {
     recovery_tokens: f64,
     last_recovery_us: u64,
     /// Until this time (microseconds since `start`) the bufferbloat pacer holds
-    /// its window instead of clamping: we KNOW a recovery resend is in flight,
+    /// its window instead of clamping: a recovery resend is known to be in flight,
     /// so the queue it briefly adds is an expected, intentional transient, not
     /// steady-state bloat. Without this the recovery would still throttle the
     /// window it just refilled. Extended while the resend drains, plus a grace
@@ -404,7 +404,7 @@ pub struct ReliableUdpSender {
     last_hb: Instant,
     /// When the link sensor was last polled.
     last_link_sample: Instant,
-    /// When the last WBest probe round (item 13) was emitted, and its round id.
+    /// When the last WBest probe round was emitted, and its round id.
     /// A round is a burst of padded packet-pair probes followed by a packet
     /// train; the receiver measures their dispersion and reports the available
     /// bandwidth back, which the sender cross-checks against its passive BtlBw.
@@ -414,7 +414,7 @@ pub struct ReliableUdpSender {
     /// effective capacity. 0 = none yet.
     avail_bw_kbps: u64,
     wbest_capacity_kbps: u64,
-    /// Trace mini-traceroute (item 14): the connected peer, the probe cadence /
+    /// Trace mini-traceroute: the connected peer, the probe cadence /
     /// round, the per-TTL send time (for the RTT), the discovered hops, and the
     /// forward/reverse path-asymmetry tracker. The probe-emission fields only
     /// drive the Linux error-queue path, so they are dead on other targets.
@@ -433,13 +433,13 @@ pub struct ReliableUdpSender {
     trace_sends_skipped: u64,
     trace_hops: Vec<crate::trace_sensor::TraceHop>,
     asym: crate::trace_sensor::PathAsymmetry,
-    /// AccECN (item 15): the graded CE rate the peer's cumulative CE / ECT counts
+    /// AccECN: the graded CE rate the peer's cumulative CE / ECT counts
     /// imply (`ce_count / ect_count`).
     ce_rate: f32,
-    /// Sprout forecast (item 16): the peer's 5th-percentile next-tick deliverable
+    /// Sprout forecast: the peer's 5th-percentile next-tick deliverable
     /// rate (bytes/s), so the sender pre-sizes its window ahead of a dip.
     forecast_bps: u64,
-    /// LEO cadence (item 17): the peer's detected handover period (seconds), its
+    /// LEO cadence: the peer's detected handover period (seconds), its
     /// confidence, and the seconds to the next predicted spike. When a spike is
     /// imminent the sender pre-arms FEC one cycle ahead.
     leo_period_s: f32,
@@ -650,7 +650,7 @@ impl ReliableUdpSender {
         sock.connect(peer)?;
         sock.set_nonblocking(true)?;
         size_socket_buffers(&sock);
-        // Item 14: turn on the ICMP error queue (so an expired-TTL Trace probe's
+        // Turn on the ICMP error queue (so an expired-TTL Trace probe's
         // TimeExceeded is delivered) and per-packet RX TTL (so the feedback's hop
         // count gives the reverse-path length for the asymmetry). Linux only.
         #[cfg(target_os = "linux")]
@@ -661,10 +661,10 @@ impl ReliableUdpSender {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             enable_ttl_ecn(&sock);
-            // Item 15: mark our data ECN-capable so an AQM marks CE, not drops.
+            // Mark our data ECN-capable so an AQM marks CE, not drops.
             set_ect(&sock);
         }
-        // Wrap as the plain-UDP DgramSock backend AFTER the raw-fd feature setup
+        // Wrap as the plain-UDP DgramSock backend once the raw-fd feature setup
         // above: the standalone RS path keeps the fd (via as_udp) for GRO / TTL
         // / ECN / connected-send / USO; the unified path swaps in a demux socket.
         let sock = crate::dgram::DgramSock::from_udp(sock);
@@ -762,7 +762,7 @@ impl ReliableUdpSender {
         self.link_stress
     }
 
-    /// The last `(ttl, ecn, hop_count)` the peer echoed about THIS endpoint's
+    /// The last `(ttl, ecn, hop_count)` the peer echoed about this endpoint's
     /// packets, or `None` if no `Path` frame has arrived yet. A nonzero TTL
     /// proves the receiver extracted it from the wire and the control plane
     /// carried it back. Diagnostics for the path-sensing feed-forward.
@@ -857,7 +857,7 @@ impl ReliableUdpSender {
     }
 
     /// Estimated Wi-Fi backhaul-hop count (0..=3) behind the first hop, from the
-    /// first-hop PHY rate (item 5) vs the measured `BtlBw` (item 6), gated on a
+    /// first-hop PHY rate vs the measured `BtlBw`, gated on a
     /// healthy first hop and inflated RTT. Nonzero answers "are we behind a
     /// Wi-Fi-backhauled repeater" - which TTL cannot, since an L2 bridge does
     /// not decrement it. Diagnostics / parity-bias input.
@@ -991,7 +991,7 @@ impl ReliableUdpSender {
     }
 
     /// `(last NAK received, last block id stamped on a retransmit)` - what
-    /// this sender is answering and emitting NOW, as opposed to over its
+    /// this sender is answering and emitting now, as opposed to over its
     /// lifetime.
     pub fn last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
         self.enc.last_nak_and_retx()
@@ -1019,7 +1019,7 @@ impl ReliableUdpSender {
     }
 
     /// `(queued_recovery_datagrams, blocks_recovered)`. The recovery queue
-    /// holds datagrams BUILT AT ENQUEUE TIME, so it can still carry a block
+    /// holds datagrams built when they were enqueued, so it can still carry a block
     /// that has since been acked and dropped from the retransmit buffer -
     /// traffic the receiver refuses as already delivered while the block it
     /// is actually waiting on competes with it for the link.
@@ -1094,9 +1094,9 @@ impl ReliableUdpSender {
             let sealed = self.enc.next_block_id().wrapping_sub(1);
             self.block_send_us
                 .push_back((sealed, self.start.elapsed().as_micros() as u64));
-            // Control + feedback ride the per-BLOCK boundary, not every
+            // Control + feedback ride the per-block boundary, not every
             // staged item, so the hot path does not pay a recv syscall
-            // per item (a `k`-fold reduction). Sample the link BEFORE the
+            // per item (a `k`-fold reduction). Sample the link ahead of the
             // heartbeat so the Link frame it carries reports the current
             // class / quality, not the previous block's.
             self.maybe_sample_link();
@@ -1145,7 +1145,7 @@ impl ReliableUdpSender {
     }
 
     /// Drain immediately-available feedback (apply acks, send any ARQ)
-    /// and emit a heartbeat / link sample if due, WITHOUT blocking. Call
+    /// and emit a heartbeat / link sample if due, without blocking. Call
     /// this in a producer's backpressure loop while
     /// [`flow_blocked`](Self::flow_blocked) is true - unlike
     /// [`drain_until_acked`](Self::drain_until_acked) it returns at once,
@@ -1187,7 +1187,7 @@ impl ReliableUdpSender {
         let mut buf = [0u8; CONTROL_RECV_BUF];
         loop {
             // Standalone path reads the connected socket with the IP-TTL cmsg
-            // (item 14 reverse-hop count); the demux path has no fd, so it pops
+            // (reverse-hop count); the demux path has no fd, so it pops
             // its queue via the connected recv (no TTL observation there).
             let res = match self.sock.as_udp() {
                 Some(u) => recv_with_ttl(u, &mut buf),
@@ -1195,7 +1195,7 @@ impl ReliableUdpSender {
             };
             match res {
                 Ok((n, ttl)) => {
-                    // Item 14 reverse-hop count: the feedback's IP TTL gives how
+                    // Reverse-hop count: the feedback's IP TTL gives how
                     // many hops the peer's packets crossed on the way back.
                     if let Some(t) = ttl {
                         self.asym
@@ -1242,9 +1242,9 @@ impl ReliableUdpSender {
                                 }
                             }
                         }
-                        // Link-liveness: ANY feedback means the link is alive.
+                        // Link-liveness: feedback of any kind means the link is alive.
                         // Note whether we were dead; the proactive recovery
-                        // burst fires AFTER `on_feedback` below applies this
+                        // burst fires once `on_feedback` below has applied this
                         // ACK, so it resends only the still-unacked (genuinely
                         // lost) blocks - not the whole window, most of which a
                         // dead-link recovery ACK frees at once (the data
@@ -1272,10 +1272,10 @@ impl ReliableUdpSender {
                         // reflected when the controller recomputes.
                         if let Some(p) = cp.path {
                             self.path_sensor.observe(p.ttl, p.ecn, p.hop_count);
-                            // Item 14 forward-hop count: how many hops the peer
-                            // reports OUR packets crossed (vs the reverse above).
+                            // Forward-hop count: how many hops the peer
+                            // reports this side's packets crossed (vs the reverse above).
                             self.asym.observe_forward(p.hop_count);
-                            // Item 15 AccECN: the graded CE rate is the peer's
+                            // AccECN: the graded CE rate is the peer's
                             // cumulative CE marks over its ECN-capable packets.
                             // The cumulative ratio (not a per-feedback delta) is
                             // what stays stable: feedback fires every few packets,
@@ -1298,20 +1298,20 @@ impl ReliableUdpSender {
                                 self.peer_pmtu = pm.pmtu;
                             }
                         }
-                        // WBest report (item 13): the receiver's available-
+                        // WBest report: the receiver's available-
                         // bandwidth / effective-capacity estimate, held for
                         // telemetry and the cross-check against the passive BtlBw.
                         if let Some(ab) = cp.avail_bw {
                             self.avail_bw_kbps = ab.avail_kbps;
                             self.wbest_capacity_kbps = ab.capacity_kbps;
                         }
-                        // Sprout forecast (item 16): the receiver's next-tick
+                        // Sprout forecast: the receiver's next-tick
                         // deliverable-rate lower bound, in bytes/s, used to
                         // pre-size the flow window ahead of a dip.
                         if let Some(fc) = cp.forecast {
                             self.forecast_bps = fc.forecast_kbps * 1000 / 8;
                         }
-                        // LEO cadence (item 17): the receiver's detected handover
+                        // LEO cadence: the receiver's detected handover
                         // period and time-to-next-spike, for the pre-arm.
                         if let Some(pe) = cp.periodicity {
                             self.leo_period_s = pe.period_ds as f32 / 10.0;
@@ -1341,8 +1341,8 @@ impl ReliableUdpSender {
                             }
                         }
                         // Proactive recovery: now that this ACK has freed every
-                        // block the receiver actually got, ENQUEUE whatever is
-                        // STILL unacked oldest-first - the genuinely-lost gap -
+                        // block the receiver actually got, enqueue whatever is
+                        // unacked oldest-first, which is the genuinely-lost gap -
                         // for a BtlBw-paced resend, instead of waiting a round
                         // trip per NAK to relearn it. The resend is metered
                         // (`drain_recovery`) so it fills the pipe without
@@ -1425,7 +1425,7 @@ impl ReliableUdpSender {
     /// for a few round trips after) it arms the pacer grace, so the queue this
     /// adds is not mistaken for steady-state bloat.
     /// Whether a queued recovery datagram names a block the peer has since
-    /// acknowledged. Non-DATA and short datagrams are never stale, so a
+    /// acknowledged. Non-`DATA` and short datagrams are never stale, so a
     /// frame this cannot read is sent rather than dropped.
     fn recovery_dgram_is_stale(dgram: &[u8], acked_through: u32) -> bool {
         if dgram.len() < DATA_HEADER || dgram[0] != 1 {
@@ -1518,9 +1518,8 @@ impl ReliableUdpSender {
                 send_ts: self.start.elapsed().as_micros() as u64,
                 echo_ts: 0,
             });
-            // Source-ring shape (the legacy heartbeat payload, now a frame).
-            // Backlog proxy: in-flight blocks (the real AdaptiveIpc integration
-            // reads the source ring's fill instead).
+            // Source-ring shape, with the in-flight block count standing in
+            // for the source ring's fill.
             cp.ring = Some(RingFrame {
                 fill_pct: self.enc.in_flight().min(255) as u8,
                 ring_kind: 0,
@@ -1556,7 +1555,7 @@ impl ReliableUdpSender {
         Ok(())
     }
 
-    /// Emit one WBest probe round (item 13): `BW_PROBE_PAIRS` back-to-back packet
+    /// Emit one WBest probe round: `BW_PROBE_PAIRS` back-to-back packet
     /// pairs (stage 1, effective capacity) followed by a `BW_PROBE_TRAIN`-packet
     /// train (stage 2, available bandwidth). Every probe is a control datagram
     /// padded to `BW_PROBE_BYTES` carrying a single `BwProbe` frame stamped with
@@ -1592,7 +1591,7 @@ impl ReliableUdpSender {
         (self.avail_bw_kbps * 1000, self.wbest_capacity_kbps * 1000)
     }
 
-    /// Emit one Trace sweep (item 14): a probe at each IP TTL 1..=`MAX_TRACE_HOPS`,
+    /// Emit one Trace sweep: a probe at each IP TTL 1..=`MAX_TRACE_HOPS`,
     /// stamping the per-TTL send time, then drain whatever ICMP TimeExceeded
     /// replies have arrived. Linux only (the error queue is an `IP_RECVERR`
     /// capability); a no-op elsewhere.
@@ -1653,7 +1652,7 @@ impl ReliableUdpSender {
         Ok(())
     }
 
-    /// The hops the Trace sweep discovered toward the peer (item 14): each is a
+    /// The hops the Trace sweep discovered toward the peer: each is a
     /// `(ttl, router address, RTT)` from an ICMP TimeExceeded.
     pub fn trace_hops(&self) -> &[crate::trace_sensor::TraceHop] {
         &self.trace_hops
@@ -1667,26 +1666,26 @@ impl ReliableUdpSender {
         self.trace_sends_skipped
     }
 
-    /// Forward / reverse path hop counts and their asymmetry (item 14), or `None`
+    /// Forward / reverse path hop counts and their asymmetry, or `None`
     /// for a direction not yet observed.
     pub fn path_asymmetry(&self) -> (Option<u8>, Option<u8>, Option<u8>) {
         (self.asym.forward(), self.asym.reverse(), self.asym.asymmetry())
     }
 
-    /// The graded AccECN CE rate (item 15): the fraction of our ECN-capable
+    /// The graded AccECN CE rate: the fraction of our ECN-capable
     /// packets the AQM marked CE, `delta_CE / delta_ECT` from the peer's counts.
     pub fn ce_rate(&self) -> f32 {
         self.ce_rate
     }
 
-    /// The peer's Sprout forecast (item 16): the 5th-percentile next-tick
+    /// The peer's Sprout forecast: the 5th-percentile next-tick
     /// deliverable rate (bits/s), 0 until the first forecast arrives. Drives the
     /// predictive window cap and leads a dip down.
     pub fn forecast_bps(&self) -> u64 {
         self.forecast_bps * 8
     }
 
-    /// The LEO pre-arm path-shift (item 17): the detection confidence when a
+    /// The LEO pre-arm path-shift: the detection confidence when a
     /// confident handover cadence's next spike is within the pre-arm window,
     /// else 0 - so protection arms one cycle ahead of the spike.
     fn leo_prearm_shift(&self) -> f32 {
@@ -1701,7 +1700,7 @@ impl ReliableUdpSender {
         }
     }
 
-    /// The peer's detected LEO handover cadence (item 17): `(period_s,
+    /// The peer's detected LEO handover cadence: `(period_s,
     /// confidence, secs_to_next_spike)`. `period_s == 0` means none detected.
     pub fn leo_cadence(&self) -> (f32, f32, f32) {
         (self.leo_period_s, self.leo_conf, self.leo_secs_to_spike)
@@ -1775,21 +1774,21 @@ impl ReliableUdpSender {
                 .path_shift()
                 .max(self.class_shift)
                 .max(event_shift)
-                // LEO pre-arm (item 17): when the peer has detected a confident
+                // LEO pre-arm: when the peer has detected a confident
                 // handover cadence and its next spike is within the pre-arm
-                // window, spike the path shift NOW - one cycle ahead of the delay
+                // window, spike the path shift now - one cycle ahead of the delay
                 // spike, so protection is armed before the handover lands.
                 .max(self.leo_prearm_shift()),
-            // AccECN graded CE rate (item 15) when the peer reports counters;
+            // AccECN graded CE rate when the peer reports counters;
             // the path-sensor's single-CE-bit reading is the floor so a first CE
             // still registers before the rate has accumulated.
             ecn_ce: self.ce_rate.max(self.path_sensor.ecn_ce()),
             congestion_fraction: self.congestion_fraction,
             rev_loss: self.rev_loss,
-            // Self-induced queue delay from the BBR path model (item 6 RTprop):
+            // Self-induced queue delay from the BBR path model (RTprop):
             // RTT_now - RTprop, the bufferbloat signal.
             queue_delay_ms: self.path_model.queue_delay_us() as f32 / 1000.0,
-            // Wi-Fi backhaul-hop estimate (item 5 first-hop PHY vs item 6 BtlBw):
+            // Wi-Fi backhaul-hop estimate (first-hop PHY vs BtlBw):
             // more hops bias parity up.
             backhaul_hops: self.backhaul_hops(),
         };
@@ -1798,7 +1797,7 @@ impl ReliableUdpSender {
         self.control.set_level(d.level);
         self.control.set_parity_r(d.parity_r);
         self.control.set_interleave_depth(d.interleave_depth);
-        // Provision parity to actually COVER the measured loss for this block's k
+        // Provision parity to actually cover the measured loss for this block's k
         // (r/(k+r) >= loss), with the controller's decision as the floor - so a
         // high-loss block recovers in-FEC up to the bitmap ceiling instead of
         // falling to ARQ round trips at the old fixed parity<=6.
@@ -1817,7 +1816,7 @@ impl ReliableUdpSender {
     ///
     /// On a clean link the queue delay is ~0, so `off_target` stays positive
     /// and the window holds at its full configured value - the pacer only ever
-    /// engages once WE are the ones filling a buffer.
+    /// engages once we are the ones filling a buffer.
     fn pace_flow_window(&mut self, queue_delay_ms: f32) {
         if !self.pacing_enabled {
             return;
@@ -1831,7 +1830,7 @@ impl ReliableUdpSender {
         if !self.recovery_dgrams.is_empty() || now < self.recovery_grace_until_us {
             return;
         }
-        // The queue responds one CURRENT round trip after a window change (the
+        // The queue responds one present round trip after a window change (the
         // inflated RTT under load, not the bloat-free RTprop), so adjust at most
         // once per smoothed RTT - adjusting faster than the feedback loop closes
         // over-corrects and oscillates. Fall back to a 1 ms floor before the
@@ -1849,12 +1848,12 @@ impl ReliableUdpSender {
         let step = off_target.clamp(-0.5 * w, w);
         self.paced_window = (w + step).clamp(MIN_PACED_WINDOW as f32, self.flow_window_max as f32);
         let mut target = self.paced_window.round() as u32;
-        // Item 16 predictive cap: when the Sprout forecast (the conservative
+        // Predictive cap: when the Sprout forecast (the conservative
         // next-tick deliverable rate) falls well below the historical BtlBw, a
-        // dip is coming - scale the window down NOW, before the queue (and the
+        // dip is coming - scale the window down now, before the queue (and the
         // loss) the dip would cause builds. The LEDBAT step above only reacts
         // after the queue has formed; this leads it. The `FORECAST_HEADROOM`
-        // factor leaves room to send ABOVE the forecast, so the sender keeps
+        // factor leaves room to send above the forecast, so the sender keeps
         // probing the link and the forecast can climb back after a dip - without
         // it the cap is self-reinforcing (the send rate collapses to the forecast,
         // so the arrivals the forecast is built from never reveal a faster link).
@@ -1875,10 +1874,10 @@ impl ReliableUdpSender {
         loop {
             match self.sock.send(pkt) {
                 Ok(_) => return Ok(()),
-                // Send buffer full = the link is saturated. PACE: wait for
+                // Send buffer full = the link is saturated. Pace: wait for
                 // buffer space instead of dropping. Dropping here
                 // manufactures loss and lets the sender outrun the link,
-                // so FEC/ARQ then has to recover the sender's OWN datagrams
+                // so FEC/ARQ then has to recover the sender's own datagrams
                 // - a throughput collapse, not a wire loss.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     spins += 1;
@@ -1911,7 +1910,7 @@ impl ReliableUdpSender {
     }
 
     /// Send a whole block's datagrams. On Linux this uses UDP GSO
-    /// (`UDP_SEGMENT`): the same-size datagrams concatenate into ONE buffer
+    /// (`UDP_SEGMENT`): the same-size datagrams concatenate into one buffer
     /// the kernel segments into many wire datagrams, so a block costs one
     /// `sendmsg` and one skb instead of `k+r` skbs - the clean-link
     /// throughput lever QUIC uses. The kernel splits on the wire, so the
@@ -2076,7 +2075,7 @@ impl ReliableUdpSender {
         }
     }
 
-    /// UDP USO egress (Windows). The Windows analogue of GSO: groups
+    /// UDP USO egress (Windows). The Windows analog of GSO: groups
     /// consecutive same-size datagrams into one buffer of up to 64 segments
     /// / 60 KiB and hands each group to `WSASendMsg` with a
     /// `UDP_SEND_MSG_SIZE` control message; the kernel segments it into
@@ -2205,7 +2204,7 @@ impl ReliableUdpSender {
                     USO_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(false);
                 }
-                // Send buffer full: PACE rather than drop (see `send`).
+                // Send buffer full: pace rather than drop (see `send`).
                 WSAEWOULDBLOCK => {
                     spins += 1;
                     if spins > 20_000 {
@@ -2267,7 +2266,7 @@ impl ReliableUdpSender {
             }
             let err = io::Error::last_os_error();
             match err.kind() {
-                // Send buffer full: PACE rather than drop (see `send`).
+                // Send buffer full: pace rather than drop (see `send`).
                 io::ErrorKind::WouldBlock => {
                     spins += 1;
                     if spins > 20_000 {
@@ -2303,7 +2302,7 @@ struct RsSession {
     /// a NAK this session's peer never received, so it goes on waiting for
     /// something it was never told about.
     feedback_send_failures: std::sync::atomic::AtomicU64,
-    /// `(epoch, block_id)` of the last DATA datagram handed to this
+    /// `(epoch, block_id)` of the last `DATA` datagram handed to this
     /// session's decoder. Ground truth for what is actually on the wire,
     /// as opposed to what either end's own counters say it should be.
     last_data_seen: Option<(u32, u32)>,
@@ -2323,14 +2322,14 @@ struct RsSession {
     ctrl_recv: u32,
     peer_acked: u32,
     /// `ctrl_out` / `peer_acked` snapshots at the previous heartbeat, so the
-    /// feedback-loss estimate is a WINDOWED rate (advance of each between
+    /// feedback-loss estimate is a windowed rate (advance of each between
     /// heartbeats) rather than a cumulative count - the latter is dominated by
     /// the in-flight backlog, which grows with link delay.
     ctrl_out_at_last_hb: u32,
     peer_acked_at_last_hb: u32,
     /// Last computed reverse-path (feedback) loss fraction (diagnostics).
     fb_loss_est: f32,
-    /// WBest available-bandwidth estimator (item 13): measures the dispersion of
+    /// WBest available-bandwidth estimator: measures the dispersion of
     /// the sender's probe pairs / train and computes the available bandwidth,
     /// reported back in the feedback so the sender can cross-check its passive
     /// BtlBw. `wbest_round` is the probe round it is accumulating; a new round id
@@ -2346,7 +2345,7 @@ struct RsSession {
     peer_link_quality: u8,
     /// Current ACK cadence, shortened under reverse-path (feedback) loss.
     ack_interval: Duration,
-    /// Test knob: drop this percent of OUTGOING feedback to inject reverse-path
+    /// Test knob: drop this percent of outgoing feedback to inject reverse-path
     /// loss (the forward-path counterpart is `debug_drop_pct`). Zero normally.
     fb_drop_pct: u32,
     fb_drop_rng: u64,
@@ -2370,12 +2369,12 @@ struct RsSession {
     head_since: Instant,
     /// Monotonic clock origin for heartbeat receive timestamps.
     start: Instant,
-    /// Diagnostic loss injection: drop this percent of received DATA
+    /// Diagnostic loss injection: drop this percent of received `DATA`
     /// datagrams before decoding, to validate FEC / ARQ on a lossless
     /// link (loopback). Zero in normal operation.
     debug_drop_pct: u32,
     drop_rng: u64,
-    /// Diagnostic Gilbert-Elliott BURST loss (per-10000 transition probs): in
+    /// Diagnostic Gilbert-Elliott burst loss (per-10000 transition probs): in
     /// the Bad state every datagram is dropped, `ge_loss_r/10000` returns to
     /// Good and `ge_loss_p/10000` enters Bad, giving a mean burst of
     /// `10000 / ge_loss_r`. A known bursty channel for the burst-model A/B.
@@ -2383,12 +2382,12 @@ struct RsSession {
     ge_loss_p: u32,
     ge_loss_r: u32,
     ge_bad: bool,
-    /// Diagnostic WHOLE-block loss: drop every shard of any data block
+    /// Diagnostic whole-block loss: drop every shard of any data block
     /// whose id is a multiple of this (0 = off). Such a block cannot be
     /// ARQ-recovered (its retransmits are dropped too), so it isolates
     /// tower recovery. Outer-parity blocks are never dropped.
     drop_block_mod: u32,
-    /// Diagnostic loss BURST: drop every data datagram whose arrival index
+    /// Diagnostic loss burst: drop every data datagram whose arrival index
     /// falls in `[burst_at, burst_at + burst_len)` - one concentrated loss
     /// event, to show a throughput blip and its full recovery in the trace.
     /// Zero length = off.
@@ -2415,19 +2414,19 @@ struct RsSession {
     last_ttl: u8,
     /// Most recent IP TOS byte observed (its low two bits are the ECN field).
     last_tos: u8,
-    /// AccECN (item 15) cumulative counts of the peer's CE-marked and ECN-capable
+    /// AccECN cumulative counts of the peer's CE-marked and ECN-capable
     /// packets, echoed in the `Path` frame so the sender derives a graded CE rate
     /// from the deltas (an AQM marks CE before it tail-drops).
     ce_count: u64,
     ect_count: u64,
-    /// Sprout-style forecast (item 16): the arrival-rate Kalman filter, the bytes
+    /// Sprout-style forecast: the arrival-rate Kalman filter, the bytes
     /// received since the last forecast tick, and when that tick was. The
     /// 5th-percentile next-tick forecast is echoed to the sender in a `Forecast`
     /// frame so it pre-sizes ahead of a dip.
     forecast: crate::forecast_sensor::ArrivalForecast,
     fc_bytes: u64,
     fc_last: Instant,
-    /// LEO handover-cadence detector (item 17): autocorrelates the heartbeat OWD
+    /// LEO handover-cadence detector: autocorrelates the heartbeat OWD
     /// trace for a periodic delay spike and reports the period + seconds-to-next
     /// in a `Periodicity` frame, so the sender pre-arms one cycle ahead.
     periodicity: crate::periodicity_sensor::PeriodicitySensor,
@@ -2556,7 +2555,7 @@ fn enable_ttl_ecn(sock: &UdpSocket) {
 
 /// Mark this socket's outgoing packets ECN-capable (ECT(0)), so an ECN-enabled
 /// AQM on the path marks CE under congestion instead of tail-dropping - the
-/// signal the AccECN counters (item 15) count. Best-effort.
+/// signal the AccECN counters count. Best-effort.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn set_ect(sock: &UdpSocket) {
     use std::os::fd::AsRawFd;
@@ -2578,7 +2577,7 @@ fn set_ect(sock: &UdpSocket) {
 /// `IP_TTL` cmsg as a 4-byte `int`; the BSDs deliver it as a 1-byte
 /// `u_char`. Reading by the cmsg's own payload length (an `int` when four
 /// or more bytes are present, otherwise one byte) yields the same value on
-/// either platform. The caller passes a pointer the CMSG walk validated.
+/// either platform. The caller passes a pointer the `CMSG` walk validated.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn cmsg_scalar_u8(cmsg: *const libc::cmsghdr) -> u8 {
     // SAFETY: `cmsg` comes from CMSG_FIRSTHDR / CMSG_NXTHDR, so it points at
@@ -2610,7 +2609,7 @@ fn cmsg_scalar_u8(cmsg: *const libc::cmsghdr) -> u8 {
 }
 
 /// `recv` on a connected socket, also extracting the datagram's IP TTL from the
-/// `IP_TTL` cmsg (item 14 reverse-hop count). Returns the byte count and the TTL
+/// `IP_TTL` cmsg (reverse-hop count). Returns the byte count and the TTL
 /// when present. Linux / BSD only; elsewhere it is a plain `recv` with no TTL.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn recv_with_ttl(sock: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, Option<u8>)> {
@@ -2830,7 +2829,7 @@ impl RsSession {
         // Windowed loss rate over this heartbeat interval: how much feedback we
         // sent (`d_out`) versus how much more the sender acknowledged receiving
         // (`d_peer`). The cumulative in-flight backlog cancels, so this reflects
-        // CURRENT reverse-path loss independent of link delay.
+        // present reverse-path loss independent of link delay.
         let d_out = self.ctrl_out.saturating_sub(self.ctrl_out_at_last_hb);
         let d_peer = self.peer_acked.saturating_sub(self.peer_acked_at_last_hb);
         self.ctrl_out_at_last_hb = self.ctrl_out;
@@ -2859,20 +2858,20 @@ impl RsSession {
         (self.peer_link_class, self.peer_link_quality)
     }
 
-    /// AccECN (item 15) cumulative counts of the peer's CE-marked and ECN-capable
+    /// AccECN cumulative counts of the peer's CE-marked and ECN-capable
     /// packets this receiver has observed. A nonzero `ect` confirms the sender's
     /// ECT marking reached us; a rising `ce` is the AQM's congestion signal.
     pub fn accecn_counts(&self) -> (u64, u64) {
         (self.ce_count, self.ect_count)
     }
 
-    /// The receiver's current Sprout forecast (item 16): the 5th-percentile
+    /// The receiver's current Sprout forecast: the 5th-percentile
     /// next-tick deliverable rate it predicts (bits/s).
     pub fn forecast_bps(&self) -> u64 {
         (self.forecast.forecast_bps() * 8.0) as u64
     }
 
-    /// The detected LEO handover cadence (item 17): `(period_s, confidence,
+    /// The detected LEO handover cadence: `(period_s, confidence,
     /// secs_to_next_spike)`, or `None` until a periodic delay cadence is found.
     pub fn leo_cadence(&self) -> Option<(f64, f64, f64)> {
         let (period, conf) = self.periodicity.detected_period()?;
@@ -2987,7 +2986,7 @@ impl RsSession {
             if let Some(cp) = decode_control(buf) {
                 // A control packet from the sender (a heartbeat). Count it for
                 // reverse-path loss accounting, and read its LossAcct to learn
-                // how many of OUR feedback packets the sender has received.
+                // how many of this side's feedback packets the sender has received.
                 self.ctrl_recv = self.ctrl_recv.wrapping_add(1);
                 if let Some(la) = cp.loss_acct
                     && la.last_recv_seq > self.peer_acked
@@ -3005,7 +3004,7 @@ impl RsSession {
                 }
                 // A beat announcing a session this receiver does not hold.
                 // Recorded, not trusted: it goes through the same challenge
-                // as an unrecognised data epoch.
+                // as an unrecognized data epoch.
                 if let Some(announced) = cp.session_announce
                     && self.dec.session_epoch().is_some_and(|e| e != announced)
                 {
@@ -3016,7 +3015,7 @@ impl RsSession {
                 if let Some(t) = cp.timing {
                     let recv_ts = self.start.elapsed().as_micros() as u64;
                     self.dec.on_heartbeat(t.send_ts, recv_ts);
-                    // Item 17: feed the relative OWD (recv minus send timestamp -
+                    // Feed the relative OWD (recv minus send timestamp -
                     // the constant clock offset cancels in the autocorrelation's
                     // mean subtraction) to the LEO cadence detector.
                     let owd = recv_ts as f64 - t.send_ts as f64;
@@ -3035,7 +3034,7 @@ impl RsSession {
         } else if self.in_burst() {
             // Loss-burst injection: swallow it.
         } else {
-            // AccECN (item 15): count this data packet's ECN. An ECN-capable
+            // AccECN: count this data packet's ECN. An ECN-capable
             // packet (ECT0 / ECT1 / CE) advances ect_count; a CE mark advances
             // ce_count - the AQM's congestion signal, which it sets before it
             // tail-drops. Echoed cumulatively in the Path frame.
@@ -3046,7 +3045,7 @@ impl RsSession {
                     self.ce_count += 1;
                 }
             }
-            // Item 16: this data datagram's bytes are an arrival the Sprout
+            // This data datagram's bytes are an arrival the Sprout
             // forecaster integrates over the tick (the path's deliverable rate).
             self.fc_bytes += buf.len() as u64;
             // Stamp the arrival so the decoder's loss differentiator measures
@@ -3198,7 +3197,7 @@ impl RsSession {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn observe_ttl_tos(&mut self, msg: &libc::msghdr) {
         // SAFETY: `msg` is a live msghdr whose `msg_control` the kernel
-        // filled; the CMSG walk stays within the reported `msg_controllen`,
+        // filled; the `CMSG` walk stays within the reported `msg_controllen`,
         // and `cmsg_scalar_u8` reads only within each cmsg's payload.
         unsafe {
             let mut cmsg = libc::CMSG_FIRSTHDR(msg as *const libc::msghdr);
@@ -3265,7 +3264,7 @@ impl RsSession {
             hdr.msg_hdr.msg_controllen = (CMSG_WORDS * size_of::<u64>()) as _;
             msgs.push(hdr);
         }
-        // An explicit timeout bounds the wait for the FIRST message. With a
+        // An explicit timeout bounds the wait for the first message. With a
         // NULL timeout FreeBSD's recvmmsg blocks until every `vlen` buffer
         // fills - MSG_WAITFORONE only sets MSG_DONTWAIT *after* the first
         // message, so at end-of-stream the first receive blocks forever
@@ -3291,7 +3290,7 @@ impl RsSession {
         if n == 0 {
             // FreeBSD returns 0 when the recvmmsg timeout expires with no
             // data; Linux returns -1/EAGAIN. Both mean the read-timeout park,
-            // which must drive tail-ARQ feedback, NOT surface as an error
+            // which must drive tail-ARQ feedback rather than surface as an error
             // (an error here skips the feedback in poll() and the sender's
             // drain_until_acked then waits forever for ACKs that never come).
             return Ok(true);
@@ -3380,7 +3379,7 @@ impl RsSession {
             // Segment size from the UDP_GRO cmsg; absent = a single datagram.
             let mut seg = n;
             // SAFETY: msg.msg_control points at the cmsg buffer the kernel
-            // filled; the CMSG walk stays within the reported msg_controllen.
+            // filled; the `CMSG` walk stays within the reported `msg_controllen`.
             unsafe {
                 let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
                 while !cmsg.is_null() {
@@ -3444,7 +3443,7 @@ impl RsSession {
     }
 
     /// Receive one datagram on Windows via `WSARecvMsg`, reading the IP hop
-    /// limit and TOS / ECN from its control messages - the Windows analogue
+    /// limit and TOS / ECN from its control messages - the Windows analog
     /// of the Linux/FreeBSD cmsg path. The socket is connected to the peer by
     /// the time this runs, so no source capture is needed and the read parks
     /// on the socket timeout (driving tail-ARQ). Falls back to a plain
@@ -3606,7 +3605,7 @@ impl RsSession {
                 self.queue_feedback(peer, &ack);
                 self.last_feedback = now;
             }
-            // Selective NAK: re-request EVERY gap the window is holding in
+            // Selective NAK: re-request every gap the window is holding in
             // this one cycle (capped), each rate-limited per-block to ~one
             // per RTT. This is the head-of-line fix: retransmits for all
             // gaps flow in a single round-trip and the delivery frontier
@@ -3664,9 +3663,9 @@ impl RsSession {
     /// loopback run can reproduce a real link's recovery round-trip.
     /// Feedback is best-effort and self-healing (the ack frontier is
     /// cumulative), so a transient send error must not abort the loop.
-    /// Encode the receiver-side control state as a CONTROL packet: an ACK
-    /// frame, a NAK frame when one is pending, a LOSS frame with the fused
-    /// channel readings, and a PATH frame echoing the peer's last observed
+    /// Encode the receiver-side control state as a `CONTROL` packet: an ACK
+    /// frame, a NAK frame when one is pending, a `LOSS` frame with the fused
+    /// channel readings, and a `PATH` frame echoing the peer's last observed
     /// TTL / ECN so the sender's controller sees hop-count shifts and ECN
     /// congestion before they reach the loss estimate.
     fn control_bytes(&self, fb: &Feedback) -> Vec<u8> {
@@ -3715,7 +3714,7 @@ impl RsSession {
             seq: self.ctrl_out,
             last_recv_seq: self.ctrl_recv,
         });
-        // WBest report (item 13): our measured available bandwidth / effective
+        // WBest report: our measured available bandwidth / effective
         // capacity, so the sender can cross-check its passive BtlBw.
         if self.wbest_capacity_kbps != 0 {
             cp.avail_bw = Some(crate::control_frame::AvailBwFrame {
@@ -3723,7 +3722,7 @@ impl RsSession {
                 capacity_kbps: self.wbest_capacity_kbps,
             });
         }
-        // Sprout forecast (item 16): the 5th-percentile next-tick deliverable
+        // Sprout forecast: the 5th-percentile next-tick deliverable
         // rate, so the sender pre-sizes ahead of a dip.
         let fc_kbps = (self.forecast.forecast_bps() * 8.0 / 1000.0) as u64;
         if fc_kbps != 0 {
@@ -3731,7 +3730,7 @@ impl RsSession {
                 forecast_kbps: fc_kbps,
             });
         }
-        // LEO cadence (item 17): a detected handover period and time-to-next-spike
+        // LEO cadence: a detected handover period and time-to-next-spike
         // (deciseconds), so the sender pre-arms one cycle ahead.
         if let Some((period_s, conf)) = self.periodicity.detected_period() {
             let to_spike = self.periodicity.secs_to_next_spike().unwrap_or(0.0);
@@ -3745,10 +3744,10 @@ impl RsSession {
     }
 
     fn queue_feedback(&mut self, peer: SocketAddr, fb: &Feedback) {
-        // Item 16: integrate one forecast tick before building the feedback that
+        // Integrate one forecast tick before building the feedback that
         // carries the forecast.
         self.maybe_observe_forecast();
-        // Count this feedback packet as sent BEFORE building it, so the LossAcct
+        // Count this feedback packet as sent ahead of building it, so the LossAcct
         // seq it carries includes itself.
         self.ctrl_out = self.ctrl_out.wrapping_add(1);
         let fbuf = self.control_bytes(fb);
@@ -4023,6 +4022,12 @@ impl ReliableUdpReceiver {
         self.session_service_errors
     }
 
+    /// Datagrams this receiver's kernel dropped because the receive buffer
+    /// was full, and what the count is worth on this host.
+    pub fn kernel_drops(&self) -> (u64, crate::dgram::DropReport) {
+        self.sock.kernel_drops()
+    }
+
     /// Receive one datagram, decode it, send feedback, and return any items
     /// that became deliverable in stream order. Peer attribution is dropped;
     /// use [`poll_from`](Self::poll_from) when several peers are live.
@@ -4082,7 +4087,7 @@ impl ReliableUdpReceiver {
         if self.try_admit(buf, src) {
             return;
         }
-        // Whether the datagram NAMED its session. A control packet does not,
+        // Whether the datagram named its session. A control packet does not,
         // so its owner is inferred - and an inference must not be allowed to
         // move a window's peer address, or one sender's control plane ends up
         // aimed at another.
@@ -4112,7 +4117,7 @@ impl ReliableUdpReceiver {
             s.local_pmtu = pmtu;
             // Only a datagram that named this session may move where the
             // session sends its acks and naks. An inferred owner rebinding
-            // the peer is how a completed window came to ack a DIFFERENT
+            // the peer is how a completed window came to ack another
             // sender, freeing blocks that sender still had to deliver.
             if named_its_session && s.peer != Some(src) {
                 s.peer = Some(src);
@@ -4383,7 +4388,7 @@ impl ReliableUdpReceiver {
         Some(self.sessions.get(&epoch)?.dec.rejects())
     }
 
-    /// `(epoch, block_id)` of the last DATA datagram this window's session
+    /// `(epoch, block_id)` of the last `DATA` datagram this window's session
     /// handed to its decoder, read off the wire before the decoder judged
     /// it. Ground truth for what is arriving, as against what either end's
     /// own counters say should be.
@@ -4394,7 +4399,7 @@ impl ReliableUdpReceiver {
     /// `(pop_attempts, pop_yields, queue_ptr, queue_len)` of the inbound
     /// demux queue, or `None` on a non-demux backend. A `queue_len` that
     /// climbs is a receiver draining slower than the peer sends: it is then
-    /// reading the PAST, and its view of what is on the wire lags the
+    /// reading what has already happened, and its view of what is on the wire lags the
     /// sender's by however long the backlog represents.
     pub fn inbound_queue(&self) -> Option<(u64, u64, u64, u64)> {
         self.sock.demux_probe()
@@ -4583,7 +4588,7 @@ mod tests {
         }
 
         // Acked through `highest`: everything below it is delivered, and the
-        // frontier block itself is NOT - the ack is exclusive.
+        // frontier block itself is not - the ack is exclusive.
         for d in &pkts {
             let b = block_of(d);
             assert_eq!(
@@ -4748,7 +4753,7 @@ mod tests {
     }
 
     /// Two independent block-RS senders, distinct session epochs, delivering
-    /// to ONE receiver at the same time - the replication-mesh shape, where a
+    /// to one receiver at the same time - the replication-mesh shape, where a
     /// node receives from several peers concurrently rather than from one peer
     /// that restarted.
     ///
@@ -4756,7 +4761,7 @@ mod tests {
     /// window); block-RS holds a single session epoch, so the second sender's
     /// blocks are gated out by the epoch check ahead of the block-id checks.
     /// Each sender tags its items in the high byte so the streams stay
-    /// distinguishable; ordering is asserted WITHIN a sender, since nothing
+    /// distinguishable; ordering is asserted within a sender, since nothing
     /// orders one against the other.
     #[test]
     fn two_concurrent_rs_senders_both_deliver() {
@@ -4817,7 +4822,7 @@ mod tests {
             );
         }
         // Delivery alone does not prove the receiver carried two sessions. A
-        // single-session receiver reaches the same result by ADOPTING back and
+        // single-session receiver reaches the same result by adopting back and
         // forth - each adoption resets the decoder and ARQ re-delivers - which
         // converges at this size and collapses at scale. Two live peers should
         // cost at most one adoption, so a count that tracks the traffic is the
@@ -4841,7 +4846,7 @@ mod tests {
         let mut recv = ReliableUdpReceiver::bind("127.0.0.1:0").unwrap();
         let addr = recv.local_addr().unwrap();
 
-        // A first session, so a second epoch is a REPLACEMENT and gets
+        // A first session, so a second epoch replaces it and gets
         // challenged rather than taking the free first-admission slot.
         let mut first = ReliableUdpSender::bind("127.0.0.1:0", addr, 4, 2, 8).unwrap();
         for i in 0..N {

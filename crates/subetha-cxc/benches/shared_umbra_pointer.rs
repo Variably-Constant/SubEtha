@@ -40,7 +40,7 @@ fn build_n(n: usize) -> (std::path::PathBuf, SharedRegion<Wide>, Vec<SharedUmbra
 }
 
 fn prefix_scan_no_match(c: &mut Criterion) {
-    // 10k entries, query for a prefix that does NOT match any.
+    // 10k entries, query for a prefix that does not match any.
     const N: usize = 10_000;
     let (path, region, pointers) = build_n(N);
 

@@ -31,7 +31,7 @@ on keep, replace a uniformly-chosen existing slot.
   `size_of::<T>() <= RESERVOIR_SLOT_PAYLOAD = 56`).
 - **Each accepted `record` is one SeqLock-write**: no spin loops,
   no CAS retries on the write side.
-- **Per-slot SeqLock on EVERY write** (version bumped to odd,
+- **Per-slot SeqLock on every write** (version bumped to odd,
   payload copied, bumped to even) regardless of T size; readers
   spin on odd version. There is no small-T atomic-store fast path
   - the SeqLock is unconditional so any `T <= 56` bytes is
@@ -79,7 +79,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700.
   benched separately.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process recording**: N processes each record into
   the same reservoir; the mutex baseline cannot.

@@ -2,8 +2,8 @@
 //! ring backed by an MMF.
 //!
 //! Distinct from [`SharedRing`](crate::SharedRing) (MPMC; each slot
-//! consumed exactly once). In a broadcast ring, EVERY registered
-//! consumer sees EVERY message independently with its own cursor.
+//! consumed exactly once). In a broadcast ring, every registered
+//! consumer sees every message independently with its own cursor.
 //! This is the pub/sub / kafka-topic / log-tail shape.
 //!
 //! # Layout
@@ -45,7 +45,7 @@
 //! ## Consumer
 //!
 //! `register()` -> consumer_idx in 0..MAX_CONSUMERS:
-//! - CAS the first inactive slot to active; initialise
+//! - CAS the first inactive slot to active; initialize
 //!   `consumer_seqs[i]` to current `producer_seq` (so the consumer
 //!   starts from "now," not from the beginning of history).
 //!
@@ -61,13 +61,13 @@
 //! # Why single-producer?
 //!
 //! Multi-producer broadcast adds complexity (producers must
-//! coordinate slot claim AND ordering must be preserved per topic).
+//! coordinate slot claim and ordering must be preserved per topic).
 //! The single-producer case covers most pub/sub use cases: one
 //! source, many subscribers. For multi-producer fan-in, the
 //! producers should fan into a SharedRing first, then a single
 //! relay process re-emits into a SharedBroadcastRing.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -273,7 +273,7 @@ impl SharedBroadcastRing {
     /// magic + capacity.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, BroadcastError> {
         let total = broadcast_file_size(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(BroadcastError::LayoutMismatch);
         }
@@ -318,7 +318,7 @@ impl SharedBroadcastRing {
     }
 
     /// Open an existing named ShmFs-backed broadcast ring.
-    /// Validates magic + capacity. Does NOT re-initialise the
+    /// Validates magic + capacity and leaves the layout as it found it - the
     /// layout - the layout must already be present from a prior
     /// `create_from_shm` on the same logical name.
     pub fn open_from_shm(
@@ -372,7 +372,7 @@ impl SharedBroadcastRing {
 
     /// Register as a consumer. Returns a consumer index in
     /// `0..MAX_CONSUMERS`; that index is used for all subsequent
-    /// recv calls. Initialises the consumer's cursor to the current
+    /// recv calls. Initializes the consumer's cursor to the current
     /// producer_seq (consumer starts reading from "now," not history).
     pub fn register_consumer(&self) -> Result<usize, BroadcastError> {
         let hdr = self.header();
@@ -675,9 +675,9 @@ mod tests {
     fn consumer_registered_late_starts_at_current_producer() {
         let p = tmp("late-consumer");
         let r = SharedBroadcastRing::create(&p, 8).unwrap();
-        // Push 3 messages BEFORE registering any consumer.
+        // Push 3 messages before registering any consumer.
         for i in 0..3u32 { r.try_push(&payload_of(i)).unwrap(); }
-        // Now register; this consumer should see only NEW messages.
+        // Now register; this consumer should see only new messages.
         let c = r.register_consumer().unwrap();
         let mut buf = [0u8; BROADCAST_PAYLOAD_BYTES];
         assert_eq!(r.try_recv(c, &mut buf).err(), Some(BroadcastError::Empty));

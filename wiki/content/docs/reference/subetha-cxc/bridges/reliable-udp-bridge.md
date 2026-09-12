@@ -59,7 +59,7 @@ fallback.
 ## Recovery without head-of-line stall
 
 In-order delivery has to recover a gap before delivering past it, but it
-must not stall the WIRE while doing so. The receiver re-requests **every
+must not stall the wire while doing so. The receiver re-requests **every
 gap it is holding in one round-trip** (selective NAK), so all retransmits
 ride the next interleave together and the delivery frontier advances in
 bulk - rather than chasing one gap per round-trip while the sender's flow
@@ -80,7 +80,7 @@ Two structural layers compose on top of the per-block code:
   losses spreads to at most one shard per block - back inside the parity
   budget. The interleave depth is a control-table knob.
 - **The cross-block tower** ships fire-and-forget outer-parity blocks per
-  segment, reconstructing a whole lost block from its neighbours when an
+  segment, reconstructing a whole lost block from its neighbors when an
   entire block (every shard) is erased - a loss ARQ alone cannot recover
   if the retransmits are lost too. Enable it with
   `ReliableUdpSender::enable_tower(d, r_outer)`.
@@ -239,9 +239,9 @@ while the TCP bridges (`TcpBridge`, `TcpTlsBridge`, `BlockingTcpBridge`)
 collapse to ~115 and ~10 Mbit/s as their congestion control reads loss as
 congestion and backs the window toward zero. The latency gap is sharper: a
 lost TCP segment head-of-line-blocks the whole stream until its retransmit
-lands, so the TCP bridges' p99 round-trip is **204-254 ms** at 3-8% loss; the
+lands, so the TCP bridges' p99 round-trip is **204-255 ms** at 3-8% loss; the
 block-RS code recovers in-band from parity already on the wire, holding a
-**1.6-2.0 ms p99 - a ~130x lower tail at the same 3% loss**. Transmit
+**1.5-2.1 ms p99 - a ~130x lower tail at the same 3% loss**. Transmit
 interleaving spreads a burst across blocks, and `ShardedSender` /
 `ShardedReceiver` (N independent streams reassembled in order) is the
 fast-link lever for when one core cannot drive the wire. The A/B, burst trace, the cross-OS matrix, the

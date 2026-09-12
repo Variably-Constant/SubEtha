@@ -21,7 +21,7 @@
 //!   (TaggedOffsetPtr variant).
 //! - Lower 32 bits hold the `TaggedOffsetPtr<_, TAG_BITS>::raw()`
 //!   packed value.
-//! - `TAG_BITS` is type-statically known at construction AND
+//! - `TAG_BITS` is type-statically known at construction and
 //!   extraction (caller passes it as a const generic on the
 //!   `as_tagged_offset_ptr` call).
 //!
@@ -31,7 +31,7 @@
 //! typed-pointer discrimination in 64 bits total, with zero heap
 //! allocation and position-independent across processes. This is
 //! strictly more expressive than V8/SpiderMonkey NaN boxing (which
-//! is single-process) AND than naive `Box<dyn Trait>` polymorphism
+//! is single-process) and than naive `Box<dyn Trait>` polymorphism
 //! (which costs ~24 bytes per slot for box+vtable plus a heap
 //! allocation).
 //!
@@ -39,7 +39,7 @@
 //!
 //! - Heterogeneous graph nodes:
 //!   `SharedHashMap<u64, SharedNaNTaggedValue>` where each value
-//!   can be a scalar OR a pointer into a typed region with
+//!   can be a scalar or a pointer into a typed region with
 //!   multiple node kinds (Leaf/Internal/Tombstone, etc.).
 //! - JIT-compiled scripting where typed-pointer variants
 //!   distinguish object shapes.
@@ -47,7 +47,7 @@
 //!   for embedded JSON-style state.
 
 use crate::shared_nan_value::{
-    SharedNaNValue, BOXED_MASK, BOXED_PREFIX,
+    SharedNaNValue, BOXED_MASK, BOXED_PREFIX, PAYLOAD_MASK,
     TAG_MASK, TAG_SHIFT, TAG_TAGGED_OFFSET_PTR,
 };
 // Test code references NaNValueType separately; pull it in where used.
@@ -101,6 +101,35 @@ impl SharedNaNTaggedValue {
         Self { raw: pack(TAG_TAGGED_OFFSET_PTR, p.raw() as u64) }
     }
 
+    /// Box `(index, tag)` at a tag width known only at run time.
+    ///
+    /// [`from_tagged_offset_ptr`](Self::from_tagged_offset_ptr) is the
+    /// one to reach for where the width is a constant. This exists for a
+    /// caller that learns it later, which the C ABI does: C has no const
+    /// generics.
+    ///
+    /// `None` on the same terms as
+    /// [`pack_runtime`](crate::tagged_offset_ptr::pack_runtime): a width
+    /// above 31, or a component that does not fit it.
+    pub fn from_tagged_parts(index: u32, tag: u32, tag_bits: u32) -> Option<Self> {
+        let packed = crate::tagged_offset_ptr::pack_runtime(index, tag, tag_bits)?;
+        Some(Self { raw: pack(TAG_TAGGED_OFFSET_PTR, u64::from(packed)) })
+    }
+
+    /// The `(index, tag)` this holds, read at `tag_bits`.
+    ///
+    /// `None` when it is not a tagged pointer at all, or when `tag_bits`
+    /// is above 31. The width is not stored in the value, so a caller
+    /// that reads at a width other than the one it wrote gets a different
+    /// pair rather than an error; only the caller knows which is right.
+    pub fn as_tagged_parts(self, tag_bits: u32) -> Option<(u32, u32)> {
+        if !self.is_tagged_offset_ptr() {
+            return None;
+        }
+        let packed = (self.raw & PAYLOAD_MASK) as u32;
+        crate::tagged_offset_ptr::unpack_runtime(packed, tag_bits)
+    }
+
     // ===== Raw & conversion =====
 
     #[inline]
@@ -109,7 +138,7 @@ impl SharedNaNTaggedValue {
     pub const fn raw(self) -> u64 { self.raw }
 
     /// Reinterpret as a SharedNaNValue (loses the TaggedOffsetPtr
-    /// discriminator IF the value is tag-5; the resulting NaNValue's
+    /// discriminator if the value is tag-5; the resulting NaNValue's
     /// `type_tag()` will report `Reserved(5)`).
     pub fn to_nan_value(self) -> SharedNaNValue {
         SharedNaNValue::from_raw(self.raw)

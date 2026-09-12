@@ -5,18 +5,18 @@
 //! noise burst on the one-way `Unordered -> MergeByStamp` auto-arm
 //! while the ungated path flips prematurely. This re-validates that
 //! across the OS process boundary - SubEtha's actual use case - with
-//! REAL producer processes (`ordering_xproc_producer`) generating the
+//! real producer processes (`ordering_xproc_producer`) generating the
 //! cross-process inversions, since the ordering flag lives in the
 //! shared MMF header (not process-local state) and the inversion
 //! signal is a data-path property that could behave differently with
 //! processes than with threads.
 //!
 //! Two scenarios x two arms:
-//!   BRIEF noise  - producers flood a SHORT burst then exit. The
-//!                  gated arm must NOT commit the one-way flip (it
+//!   Brief noise  - producers flood a short burst then exit. The
+//!                  gated arm must not commit the one-way flip (it
 //!                  resists); the ungated arm flips on the first
 //!                  high-inversion scan.
-//!   SUSTAINED    - producers flood a LONG burst. BOTH arms must
+//!   Sustained    - producers flood a long burst. Both arms must
 //!                  commit the flip (sustained inversions are a
 //!                  genuine signal).
 //! Every scenario asserts per-producer FIFO + zero loss across the
@@ -190,9 +190,9 @@ fn main() {
     println!("flag lives in the shared MMF header, so the flip is cross-process visible.");
     println!();
 
-    // BRIEF noise: a short burst the gate should resist.
+    // Brief noise: a short burst the gate should resist.
     let brief = 4_000u64;
-    // SUSTAINED: a long burst both arms should commit on.
+    // Sustained: a long burst both arms should commit on.
     let sustained = 3_000_000u64;
 
     println!("{:<10} {:<11} {:>10} {:>12} {:>9} {:>12} {:>10}",
@@ -216,7 +216,7 @@ fn main() {
 
     // Audit: integrity held everywhere (the drain asserted FIFO and
     // counted exactly `total`). The gate's value claim: under
-    // SUSTAINED genuine inversions BOTH arms commit the one-way flip.
+    // sustained genuine inversions both arms commit the one-way flip.
     assert!(sust_ungated.flipped && sust_gated.flipped,
             "audit: sustained inversions must commit the flip in both arms");
 

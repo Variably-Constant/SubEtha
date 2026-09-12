@@ -11,7 +11,7 @@
 //! A per-slot socket write (one `write_all` await per 64-byte item)
 //! serializes the whole bridge on syscall + reactor latency -
 //! microseconds per item against a wire that moves the same bytes
-//! in nanoseconds. The client therefore BURST-DRAINS the ring:
+//! in nanoseconds. The client therefore burst-drains the ring:
 //! every already-available slot (up to [`EGRESS_BATCH_SLOTS`]) is
 //! copied into one contiguous buffer and shipped with a single
 //! write. A lone item still ships immediately - batching never
@@ -47,7 +47,7 @@ const INGRESS_BUF_BYTES: usize = 64 * 1024;
 // ingress loops touch only the AsyncRead/AsyncWrite trait surface, so
 // they run identically over a plain `TcpStream` and over a
 // `tokio_rustls::TlsStream<TcpStream>`. The TCP and TCP+TLS bridges
-// therefore SHARE one wire protocol - the only difference between
+// therefore share one wire protocol - the only difference between
 // them is the record layer the bytes pass through, which is the
 // fairest possible TCP-vs-TLS comparison.
 // ===================================================================

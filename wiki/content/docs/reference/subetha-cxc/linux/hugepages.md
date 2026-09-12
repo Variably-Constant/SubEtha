@@ -68,7 +68,7 @@ echo 64 > /proc/sys/vm/nr_hugepages   # 64 * 2MB = 128MB
 - Workloads that benefit from kernel-level hugepage-aware
   memory management (THP off, manual hugepages on).
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Small rings (< 1MB). 4KB pages are fine; hugepages add no
   measurable benefit and pin scarce reserved pages.

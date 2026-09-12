@@ -53,7 +53,7 @@ Bench harness: `crates/subetha-cxc/benches/shared_region.rs`. Captured
 
 1. **allocate 1.85x faster.** One atomic fetch_add (bump) +
    optional Treiber CAS pop. Mutex baseline: lock + Vec push +
-   unlock OR lock + free-list pop + slot reuse + unlock.
+   unlock or lock + free-list pop + slot reuse + unlock.
 2. **alloc_free_cycle 3.84x faster.** The free-list hot path:
    one Treiber-push + one Treiber-pop. Pure CAS dominates over
    mutex lock/unlock.
@@ -73,7 +73,7 @@ Bench harness: `crates/subetha-cxc/benches/shared_region.rs`. Captured
   measurement window for the pure-bump allocate.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process arena allocation**: any process can allocate
   from the same region. OffsetPtrs resolve identically in
@@ -159,7 +159,7 @@ indices stable across processes that map the same file.
 - **Wrapping in a Mutex.** Pointless; the bump + Treiber CAS
   protocol is already concurrency-safe.
 
-- **Sizing the region too small.** Once bump hits capacity AND
+- **Sizing the region too small.** Once bump hits capacity and
   free list is empty, `allocate` returns `Full`. Plan for
   worst-case live count.
 

@@ -16,7 +16,7 @@
 //! `BLOCK_WORDS` (8) words per block. All bit ops are lock-free atomics, so
 //! concurrent inserters across threads / processes compose correctly.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -208,7 +208,7 @@ impl SharedBlockedBloomFilter {
     ) -> Result<Self, BlockedBloomError> {
         let n_blocks = n_bits.div_ceil(BLOCK_BITS).max(1);
         let total = blocked_bloom_file_size(n_blocks);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(BlockedBloomError::LayoutMismatch);
         }
@@ -247,7 +247,7 @@ impl SharedBlockedBloomFilter {
     /// `i`-th within-block bit position in `[0, BLOCK_BITS)`. `h2` is
     /// already fmix64-avalanched, so a distinct 9-bit slice per `i` gives
     /// decorrelated positions for free - seven 9-bit slices fit in 63
-    /// bits. Each `i` must take its OWN slice: a shared slice correlates
+    /// bits. Each `i` must take its own slice: a shared slice correlates
     /// every position of an item and inflates the achieved FPR far above
     /// the configured target. Past seven, `h2` is re-avalanched per `i`
     /// rather than sliced again.
@@ -272,7 +272,7 @@ impl SharedBlockedBloomFilter {
             .push_op(crate::sidecar_ops::sketch::OP_INSERT, 0);
     }
 
-    /// True if `item` MIGHT be present; false if definitely absent. One
+    /// True if `item` might be present; false if definitely absent. One
     /// cache line read.
     pub fn contains(&self, item: &[u8]) -> bool {
         let (block, h2) = self.locate(item);

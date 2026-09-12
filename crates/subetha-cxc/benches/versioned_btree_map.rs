@@ -14,12 +14,12 @@
 //!    the loop, pre-populated identically, and neither allocates
 //!    inside a measured iteration.
 //! 3. The range arms walk the same key span at the same limit. The
-//!    versioned range is measured on a tree with NO tombstones and
+//!    versioned range is measured on a tree with no tombstones and
 //!    again with a quarter of its entries superseded, because the
 //!    filter is free when there is nothing to filter and measuring
 //!    only the clean case would hide it.
 //!
-//! What the numbers do NOT show: the plain tree has no answer to a
+//! What the numbers do not show: the plain tree has no answer to a
 //! scan that must not see a concurrent write. It is not a slower way
 //! of doing the same thing; it does a different thing.
 

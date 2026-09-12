@@ -63,7 +63,7 @@ Owns the migrate-then-drain sequence:
 3. After `wait_quiescent()` returns, the coordinator owns the old
    data exclusively and can reclaim it.
 
-The guard does NOT auto-drain on drop. The coordinator typically
+The guard does not auto-drain on drop. The coordinator typically
 allocates new state, calls `begin`, allocates and writes the new
 layout while old readers drain, then calls `wait_quiescent` and
 frees the old layout. The two-call shape exists so the coordinator

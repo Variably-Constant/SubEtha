@@ -13,11 +13,11 @@
 //!
 //! Storage: self-contained MMF `[BTreeHeader | BTreeNode array]` with bump
 //! allocation. Concurrency model: single-writer for `insert` / `remove`
-//! (serialise externally); reads are consistent
+//! (serialize externally); reads are consistent
 //! against a quiescent tree (build-then-query), which is what the cold
 //! benchmark exercises.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -34,7 +34,7 @@ pub const B: usize = 2 * T - 1; // 15
 /// most about eleven levels deep; a walk that goes further is reading a
 /// tree a concurrent writer is mid-way through changing, and the budget
 /// stops it following a cycle instead of recursing until the stack ends.
-const MAX_TREE_DEPTH: u32 = 64;
+pub(crate) const MAX_TREE_DEPTH: u32 = 64;
 /// Sentinel "no node".
 pub const NIL: u32 = u32::MAX;
 
@@ -56,7 +56,13 @@ pub struct BTreeHeader {
     /// the whole search if it changes or is odd, so concurrent reads never
     /// observe a torn tree. Single-writer, multi-reader.
     pub version: AtomicU64,
-    _pad: [u8; 16],
+    /// Bytes per key.
+    pub key_size: u32,
+    /// Bytes per value.
+    pub value_size: u32,
+    /// A tag the creator chose for the key and value types; an open that
+    /// states another is refused.
+    pub layout_tag: u64,
 }
 
 const _: () = {
@@ -169,6 +175,9 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
         let hdr = ptr as *mut BTreeHeader;
         unsafe {
             (*hdr).capacity = capacity as u64;
+            (*hdr).key_size = size_of::<K>() as u32;
+            (*hdr).value_size = size_of::<V>() as u32;
+            (*hdr).layout_tag = 0;
             std::ptr::write(&raw mut (*hdr).root, AtomicU32::new(NIL));
             std::ptr::write(&raw mut (*hdr).free_head, AtomicU32::new(NIL));
             std::ptr::write_volatile(&raw mut (*hdr).magic, BTREE_MAGIC);
@@ -176,10 +185,16 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
     }
 
     /// Wrap an initialized region, refusing one built with a different
-    /// capacity.
+    /// capacity or payload type. A size field at zero records nothing and
+    /// constrains nothing; one that is set must be this type's.
     fn from_region(file: File, mut mmap: MmapMut, capacity: usize) -> Result<Self, BTreeError> {
         let hdr = unsafe { &*(mmap.as_ptr() as *const BTreeHeader) };
-        if hdr.magic != BTREE_MAGIC || hdr.capacity != capacity as u64 {
+        if hdr.magic != BTREE_MAGIC
+            || hdr.capacity != capacity as u64
+            || (hdr.key_size != 0 && hdr.key_size as usize != size_of::<K>())
+            || (hdr.value_size != 0 && hdr.value_size as usize != size_of::<V>())
+            || hdr.layout_tag != 0
+        {
             return Err(BTreeError::LayoutMismatch);
         }
         let raw_ptr = mmap.as_mut_ptr();
@@ -193,7 +208,7 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, BTreeError> {
         let total = btree_file_size::<K, V>(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(BTreeError::LayoutMismatch);
         }
@@ -356,7 +371,7 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
         self.get_inner(key).is_some()
     }
 
-    /// Insert / update. Single-writer (serialise externally). Returns the
+    /// Insert / update. Single-writer (serialize externally). Returns the
     /// previous value if `key` was present.
     pub fn insert(&self, key: K, value: V) -> Result<Option<V>, BTreeError> {
         self.begin_write();
@@ -498,7 +513,7 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
     }
 
     /// Remove `key`, returning its previous value if present. Single-writer
-    /// (serialise externally, as with insert).
+    /// (serialize externally, as with insert).
     pub fn remove(&self, key: &K) -> Result<Option<V>, BTreeError> {
         self.begin_write();
         let r = self.remove_inner(key);
@@ -753,7 +768,7 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
     /// of them.
     ///
     /// Resume a longer scan by passing `Bound::Excluded` of the last key
-    /// returned. Resumption is by KEY: a node index is not a stable
+    /// returned. Resumption is by key: a node index is not a stable
     /// cursor, because a split moves the upper half of a node's entries
     /// into a new node and promotes the median into the parent, so a
     /// saved position can name a different entry afterwards, or sit below

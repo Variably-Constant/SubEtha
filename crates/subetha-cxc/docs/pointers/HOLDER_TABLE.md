@@ -80,7 +80,7 @@ Against the `AtomicU32` refcount it replaces.
 - **Claim measured loaded as well as empty**, because an empty table
   hides the free-slot scan that is the design's cost.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **The reap.** A refcount has no equivalent - there is nothing in it
   to probe - which is the reason the table exists and the reason a

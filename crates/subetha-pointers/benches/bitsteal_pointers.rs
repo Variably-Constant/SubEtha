@@ -12,15 +12,15 @@ use subetha_pointers::self_desc_pointer::{LayoutShape, SelfDescPointer};
 
 // =========================================================
 // Cardinality pointer: branch-on-size, comparing against
-// REALISTIC precomputed-tier baselines that match what a real
+// realistic precomputed-tier baselines that match what a real
 // query planner would actually store. Three contenders:
 //
-// 1. PADDED tuple: Vec<(*const u64, u8)>. Rust pads the tuple
+// 1. Padded tuple: Vec<(*const u64, u8)>. Rust pads the tuple
 //    to 16 bytes (pointer alignment). This is the "naive"
 //    metadata-table layout for callers who don't think about
 //    layout.
 //
-// 2. PARALLEL vecs: Vec<*const u64> + Vec<u8>. Two separate
+// 2. Parallel vecs: Vec<*const u64> + Vec<u8>. Two separate
 //    cache-line streams. Smaller storage but worse cache
 //    behavior on indexed lookup.
 //
@@ -73,7 +73,7 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
 
     // Parallel vecs: 8-byte ptr + 1-byte tier in separate arrays.
     // The bench iterates the tier vec only since the planner branches
-    // on tier alone (the pointer is dereferenced LATER, post-tier).
+    // on tier alone (the pointer is dereferenced later, post-tier).
     // This is the fairest "no padding" baseline.
     c.bench_function("bitsteal.cardinality/parallel_vecs_baseline", |b| {
         b.iter(|| {
@@ -107,7 +107,7 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
     });
 
     // Dispatch bench: realistic query-planner workload that reads
-    // BOTH the pointer AND the tier per entry. The architectural
+    // both the pointer and the tier per entry. The architectural
     // win of CardinalityPointer over parallel_vecs shows up here:
     // a single 8-byte load gives both fields; parallel_vecs must
     // do two loads from separate cache lines per entry.
@@ -172,11 +172,9 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
 // memory location the compiler cannot constant-fold, forcing
 // an IMUL per step.
 //
-// AUDIT: the original bench had `stride: usize = 32` as a local
-// constant the compiler folded into SHL just like the typed
-// path, so both contenders ran at 73 ns (parity, not a finding).
-// The rewrite reads the stride from a Vec<usize> indexed by a
-// black_box'd value so the compiler must emit IMUL.
+// The runtime arm reads the stride from a Vec<usize> indexed by a
+// black_box'd value, so the compiler cannot fold it into SHL and
+// must emit IMUL.
 // =========================================================
 
 fn kstep_vs_runtime_stride(c: &mut Criterion) {
@@ -213,10 +211,9 @@ fn kstep_vs_runtime_stride(c: &mut Criterion) {
         });
     });
 
-    // Bonus contender: the OLD compile-time-constant stride case.
-    // Demonstrates the auto-folding the original bench was
-    // accidentally measuring; included so the reader can see all
-    // three regimes side by side.
+    // Third contender: a compile-time-constant stride, which the
+    // compiler folds into SHL like the typed path, so all three
+    // regimes run side by side.
     c.bench_function("bitsteal.kstep/compile_const_stride_baseline", |b| {
         b.iter(|| {
             const STRIDE: usize = 32;
@@ -234,10 +231,9 @@ fn kstep_vs_runtime_stride(c: &mut Criterion) {
 // =========================================================
 // SelfDescPointer: type dispatch via byte switch vs vtable
 //
-// AUDIT (rule 3b): the Arc<dyn Handle> contender adds atomic
-// refcount overhead (Arc::deref) that is NOT strictly the
-// dispatch cost. The architectural claim is "byte switch beats
-// vtable lookup". A fair set of contenders:
+// The Arc<dyn Handle> contender adds atomic refcount overhead
+// (Arc::deref) on top of the dispatch cost. The architectural
+// claim is "byte switch beats vtable lookup". The contenders:
 //
 // 1. Arc<dyn Handle>:  the real-world shared-ownership shape.
 // 2. Box<dyn Handle>:  the pure single-owner vtable cost.

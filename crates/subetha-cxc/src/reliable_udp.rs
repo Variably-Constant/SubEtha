@@ -14,7 +14,7 @@
 //!     shards and shipped with `r` Cauchy Reed-Solomon parity shards
 //!     ([`crate::fec`]). Up to `r` losses per block are reconstructed by
 //!     the receiver with **no retransmit round-trip**.
-//!  2. **ARQ (fallback).** When a block loses MORE than `r` shards - the
+//!  2. **ARQ (fallback).** When a block loses more than `r` shards - the
 //!     rare burst FEC cannot cover - the receiver NAKs the missing shard
 //!     indices and the sender retransmits exactly those.
 //!
@@ -79,8 +79,11 @@ const FLAG_OUTER: u8 = 0b0000_0010;
 const FLAG_RETRANSMIT: u8 = 0b0000_0100;
 
 /// High bit set on an outer-parity block id, separating it from the
-/// sequential data-block id space. The low bits encode
-/// `(segment << 8) | outer_index`.
+/// sequential data-block id space. The remaining bits are
+/// `d(27..31) | r_outer(24..27) | segment(8..24) | outer_index(0..8)`,
+/// where `d` is the segment's data-block count and `r_outer` its parity
+/// count. Both are one-based: a receiver discards an id carrying zero in
+/// either, since it describes a segment with nothing to decode.
 const OUTER_ID_BIT: u32 = 0x8000_0000;
 
 /// Maximum shards per block (`k + r`); keeps the received-bitmap in one
@@ -108,7 +111,7 @@ fn reorder_guard_enabled() -> bool {
 
 /// The receiver-side control state - ack frontier, selective NAK, and the
 /// fused channel readings - that the bridge carries as `Ack` / `Nak` / `Loss`
-/// frames in a [`crate::control_frame`] CONTROL packet. Kept as a struct
+/// frames in a [`crate::control_frame`] `CONTROL` packet. Kept as a struct
 /// because it is the form the sender's controller already consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Feedback {
@@ -118,7 +121,7 @@ pub struct Feedback {
     /// Block whose missing shards should be retransmitted, or
     /// [`NAK_NONE`].
     pub nak_block: u32,
-    /// Bitmap of MISSING shard indices in `nak_block`.
+    /// Bitmap of the missing shard indices in `nak_block`.
     pub nak_mask: u32,
     /// Estimated loss fraction scaled to `0..=255`.
     pub loss_x255: u8,
@@ -199,8 +202,7 @@ fn derive_epoch() -> u32 {
     let mut x = tsc ^ wall.rotate_left(32) ^ ((std::process::id() as u64) << 16);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    // Never zero: zero reads as "no epoch recorded" to a peer built
-    // before this field existed.
+    // Never zero, as the wire specification requires of a session epoch.
     ((x ^ (x >> 31)) as u32) | 1
 }
 
@@ -237,7 +239,7 @@ pub struct Encoder {
     retx_hi: Option<u32>,
     /// The most recent NAK this encoder answered and the block id it
     /// stamped on the answer. Lifetime ranges cannot say what is on the
-    /// wire NOW, which is the only thing that describes a live stall.
+    /// wire at this moment, which is the only thing that describes a live stall.
     last_nak_block: Option<u32>,
     last_retx_block: Option<u32>,
     /// Highest `ack_through` reported by the receiver; below this every
@@ -352,7 +354,7 @@ impl Encoder {
     /// Adjust the in-flight flow window at runtime - the bufferbloat pacer
     /// shrinks it toward the BDP to drain a self-induced queue, and restores it
     /// when the queue clears. The receiver's window is the hard ceiling, so the
-    /// pacer only ever clamps DOWN from the configured maximum.
+    /// pacer only ever clamps down from the configured maximum.
     pub fn set_flow_window(&mut self, blocks: u32) {
         self.flow_window = blocks.max(1);
     }
@@ -384,7 +386,7 @@ impl Encoder {
         self.r
     }
 
-    /// The id the NEXT sealed block will take; the block just sealed by a
+    /// The id the next sealed block will take; the block just sealed by a
     /// non-empty [`push`](Self::push) / [`flush`](Self::flush) is this minus
     /// one. Lets the sender record a per-block send time for RTT sampling.
     pub fn next_block_id(&self) -> u32 {
@@ -511,7 +513,7 @@ impl Encoder {
     fn seal_segment(&mut self) -> Vec<Vec<u8>> {
         let r_outer = self.tower_r_outer;
         let infos = std::mem::take(&mut self.seg_infos);
-        // Use the ACTUAL block count: a full segment has `tower_d`, the
+        // Use the actual block count: a full segment has `tower_d`, the
         // final partial segment (flushed) has fewer. The count is encoded
         // in the outer id so the receiver protects partial segments too.
         let d = infos.len();
@@ -550,7 +552,7 @@ impl Encoder {
                 shard_len: self.shard_len,
                 shards: oshards,
             };
-            // Self-describing id: bit31 = OUTER, bits27-30 = d (1..15),
+            // Self-describing id: bit31 = outer, bits27-30 = d (1..15),
             // bits24-26 = r_outer (1..7), bits8-23 = segment, bits0-7 =
             // outer index. The receiver learns the segment structure from
             // the wire, no out-of-band config.
@@ -568,13 +570,13 @@ impl Encoder {
 
     /// Set the parity shards per new block, clamped to the encoder's
     /// `[r_min, r_max]`. The fusion controller drives this from the
-    /// control table; the encoder no longer self-adapts parity.
+    /// control table; the encoder never changes parity on its own.
     pub fn set_parity(&mut self, r: usize) {
         self.r = r.clamp(self.r_min, self.r_max);
     }
 
     /// Set parity to at least `floor` (the fusion controller's burst / feed-forward
-    /// signal) AND enough to FEC-recover a `loss` fraction of THIS block: to
+    /// signal) and enough to FEC-recover a `loss` fraction of this block: to
     /// recover a fraction p of the k + r shards, r / (k + r) >= p, i.e.
     /// r >= p * k / (1 - p). A 20% margin covers a spike above the mean. Capped at
     /// `r_max` (the bitmap ceiling). Without this, parity tracked only the
@@ -634,7 +636,7 @@ impl Encoder {
                 // Nothing held for this block. A block at or above
                 // `next_block` was never produced - the receiver's tail
                 // drive probing one past the end of a delivered stream,
-                // which is ordinary and says nothing. A block BELOW it
+                // which is ordinary and says nothing. A block below it
                 // existed and is gone, so the peer waits on data that can
                 // never arrive: counted, and reported once per block
                 // because a silent miss there reads as a healthy
@@ -656,7 +658,7 @@ impl Encoder {
                 }
                 // The tail drive probing one past the end of a delivered
                 // stream, which is ordinary. Counted so the arm is not a
-                // silent path, and separated from the block ABOVE that,
+                // silent path, and separated from the block above that,
                 // which asks for something never produced and cannot be
                 // reached by a receiver whose frontier tracks one epoch.
                 None => {
@@ -716,7 +718,7 @@ impl Encoder {
     }
 
     /// `(last NAK received, last block id stamped on a retransmit)`. The
-    /// two describe what is on the wire NOW, which a lifetime range
+    /// two describe what is on the wire at this moment, which a lifetime range
     /// cannot: a live stall is a steady state, not an accumulation.
     pub fn last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
         (self.last_nak_block, self.last_retx_block)
@@ -728,7 +730,7 @@ impl Encoder {
         self.pending.keys().next().copied()
     }
 
-    /// Retransmit datagrams (flagged `RETRANSMIT`) for the `k` DATA shards of
+    /// Retransmit datagrams (flagged `RETRANSMIT`) for the `k` `DATA` shards of
     /// one pending block - a liveness probe that also pre-positions the block
     /// the receiver's frontier is stalled on. Empty if the block is already
     /// acked.
@@ -741,9 +743,9 @@ impl Encoder {
         }
     }
 
-    /// Retransmit datagrams (flagged `RETRANSMIT`) for the `k` DATA shards of
-    /// EVERY pending block, oldest-first - the proactive burst on link recovery
-    /// that resends the whole unacked window WITHOUT waiting for the receiver's
+    /// Retransmit datagrams (flagged `RETRANSMIT`) for the `k` `DATA` shards of
+    /// every pending block, oldest-first - the proactive burst on link recovery
+    /// that resends the whole unacked window without waiting for the receiver's
     /// NAKs (the sender already holds the exact unacked set, so no estimation
     /// is needed). The receiver dedups any datagram it already has via its
     /// D-SACK / false-recovery path, so over-resending is safe. `k` data shards
@@ -772,7 +774,7 @@ struct RxBlock {
     /// original was dropped) - the wire-loss evidence for the estimator.
     retransmitted: u32,
     /// Bitmap of positions where the original (non-retransmit) shard arrived
-    /// AFTER an ARQ retransmit had already filled the slot. A duplicate of an
+    /// after an ARQ retransmit had already filled the slot. A duplicate of an
     /// already-recovered shard is the D-SACK signal (RFC 2883): "significant
     /// reordering followed by a false (unnecessary) retransmission", so the
     /// shard was reordered (late), not lost, and the retransmit-counted loss
@@ -813,7 +815,7 @@ impl RxBlock {
 /// already emitted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RejectCounts {
-    /// Not a DATA datagram, or shorter than the fixed header.
+    /// Not a `DATA` datagram, or shorter than the fixed header.
     pub malformed: u64,
     /// Carries a session epoch other than the one this decoder holds.
     pub epoch: u64,
@@ -833,7 +835,7 @@ pub struct RejectCounts {
     /// range the window passed long ago.
     pub delivered_lo: Option<u32>,
     pub delivered_hi: Option<u32>,
-    /// Lowest and highest block id SEEN at ingest, recorded before any gate
+    /// Lowest and highest block id seen at ingest, recorded before any gate
     /// runs. A block the encoder says it sent that never appears here was
     /// lost below the decoder; one that appears without advancing the
     /// window was taken by a path that neither delivers nor refuses.
@@ -863,7 +865,7 @@ pub struct Decoder {
     next_deliver: AtomicU32,
     /// Highest block id seen, for stall detection.
     highest_seen: u32,
-    /// Highest DATA block fully decoded. Genuine gaps (blocks needing a
+    /// Highest `DATA` block fully decoded. Genuine gaps (blocks needing a
     /// retransmit) sit only below this: a later block fully arrived, so
     /// the missing one's shards are lost, not in flight. On a clean link
     /// this tracks the delivery frontier, so the selective-NAK gap scan is
@@ -893,7 +895,7 @@ pub struct Decoder {
     /// and heartbeat ROTT, consulted when a block delivers with loss.
     loss_class: LossClassSensor,
     /// Gilbert-Elliott burst-loss fit: fed each delivered block's per-shard
-    /// original-loss trace, it yields a REAL mean burst length. When
+    /// original-loss trace, it yields a true mean burst length. When
     /// `use_ge_burst` is set the reported burstiness is derived from it
     /// (interleave at least the mean burst), instead of the jitter-ratio
     /// heuristic - the A/B knob.
@@ -1124,7 +1126,7 @@ impl Decoder {
             buf[EPOCH_OFFSET + 2],
             buf[EPOCH_OFFSET + 3],
         ]);
-        // Session gate, ABOVE the block-id checks below. A restarted peer's
+        // Session gate, ahead of the block-id checks below. A restarted peer's
         // ids start at the bottom again, so those checks read its whole
         // stream as already-delivered duplicates. Record the epoch for the
         // receiver to challenge; nothing under it is delivered until the
@@ -1141,7 +1143,7 @@ impl Decoder {
         let payload = &buf[DATA_HEADER..];
         // r == 0 is the Passthrough block: k data shards, no parity. It is a
         // valid shape (the block completes when all k data shards arrive, via
-        // ARQ if any drop), so it is NOT rejected here.
+        // ARQ if any drop), so it is not rejected here.
         if k == 0 || k + r > MAX_SHARDS || shard_index >= k + r {
             self.rejects.shape += 1;
             return Vec::new();
@@ -1152,7 +1154,7 @@ impl Decoder {
             self.handle_outer(block_id, shard_index, k, r, payload);
             return self.drain_in_order();
         }
-        // A timestamped DATA-shard arrival feeds the loss differentiator's
+        // A timestamped `DATA`-shard arrival feeds the loss differentiator's
         // inter-arrival input (Biaz `T_min` / `T_i`). Outer-parity shards are
         // excluded above, so this is the data-stream spacing the LDA expects.
         if let Some(now) = recv_us {
@@ -1214,10 +1216,10 @@ impl Decoder {
                 blk.retransmitted |= bit;
             }
         } else if !is_retransmit && (blk.retransmitted & bit) != 0 {
-            // The original arrives AFTER its ARQ retransmit already filled this
+            // The original arrives after its ARQ retransmit already filled this
             // slot - a duplicate of an already-recovered shard. That is the
             // D-SACK signal (RFC 2883): reordering followed by a spurious
-            // retransmission, NOT a loss. Mark it so the estimator discounts
+            // retransmission rather than a loss. Mark it so the estimator discounts
             // the retransmit it counted. The slot keeps the retransmit's bytes
             // (identical to the original), so delivery is unchanged.
             blk.false_recovery |= bit;
@@ -1272,7 +1274,7 @@ impl Decoder {
         if d == 0 || r_outer == 0 {
             return;
         }
-        // `tower_d` tracks the FULL segment size (for segment-id math);
+        // `tower_d` tracks the whole segment size (for segment-id math);
         // `seg_d` records this segment's actual data-block count, which is
         // smaller for the final partial segment.
         self.tower_d = d.max(self.tower_d);
@@ -1391,13 +1393,13 @@ impl Decoder {
                 break;
             }
             let blk = self.window.remove(&id).unwrap();
-            // Loss = data shards that did NOT arrive directly and had to be
+            // Loss = data shards that did not arrive directly and had to be
             // recovered: FEC-reconstructed (a data position never received, so
             // absent from the mask) plus ARQ-retransmitted (received, but only
             // after its original dropped). Parity shards are redundancy, not
             // loss, so they are excluded - counting them made a clean link read
             // as r/(k+r) loss and pinned FEC on. The counters decay per block
-            // (~32-block window) so the estimate follows the CURRENT link and
+            // (~32-block window) so the estimate follows the current link and
             // falls back to zero - and the controller back to Passthrough -
             // once loss clears.
             let data_mask: u32 = if blk.k >= 32 { u32::MAX } else { (1u32 << blk.k) - 1 };
@@ -1477,7 +1479,7 @@ impl Decoder {
     ///
     /// `drive_arq` requests an unconditional NAK of the head block when
     /// it is present but undecoded. A receiver sets it on a recv timeout
-    /// (no fresh data) so the LAST block - which has no newer block to
+    /// (no fresh data) so the last block - which has no newer block to
     /// trigger a NAK - still recovers from tail loss. With `drive_arq`
     /// false the NAK only fires once a newer block has arrived, which
     /// avoids NAKing a block whose shards may still be in flight.
@@ -1502,7 +1504,7 @@ impl Decoder {
                     nak_mask = full & !present;
                 }
                 // Entirely missing (zero shards) while later blocks have
-                // arrived OR the caller is draining the tail: request ALL
+                // arrived or the caller is draining the tail: request every
                 // of its shards. The sender clamps the mask to the
                 // block's real shard count (and ignores a block it does
                 // not hold). Without this, a head or tail block that
@@ -1526,7 +1528,7 @@ impl Decoder {
         let mean_ia = self.temporal.interarrival_micros().max(1.0);
         let heuristic = (self.temporal.jitter_micros() / mean_ia).clamp(0.0, 1.0);
         // With the Gilbert-Elliott model enabled, derive burstiness from the
-        // REAL mean burst length (`mean_burst / 16` maps through the sender's
+        // true mean burst length (`mean_burst / 16` maps through the sender's
         // interleave mapping `depth = burstiness * 16` to `depth = mean_burst`),
         // falling back to the jitter heuristic until the fit converges.
         let burstiness = if self.use_ge_burst {
@@ -1559,19 +1561,19 @@ impl Decoder {
         }
     }
 
-    /// Enumerate EVERY gap the reassembly window is holding, as
+    /// Enumerate every gap the reassembly window is holding, as
     /// `(block_id, missing_shard_mask)`, so a caller can NAK them all in
     /// one feedback cycle instead of one-gap-per-round-trip serial
     /// recovery. A block received in part returns its still-missing shards;
     /// a block not seen at all returns `u32::MAX` (the sender clamps the
     /// mask to the block's real shard count). Gaps strictly below
     /// `highest_seen` are always overdue - a later block has arrived, so
-    /// this one's shards are lost, not merely in flight. The block AT
+    /// this one's shards are lost, not merely in flight. The block at
     /// `highest_seen` (the tail) is included only when `drive_tail` is set,
     /// matching [`feedback`](Self::feedback)'s single-NAK overdue rule: the
     /// tail has no newer block to prove its shards should have arrived, so
-    /// it is NAK'd only on a recv-timeout drain. The drain ALSO re-requests
-    /// the head block when `next_deliver` has advanced AT OR ABOVE
+    /// it is NAK'd only on a recv-timeout drain. The drain also re-requests
+    /// the head block when `next_deliver` has advanced to it or past it
     /// `highest_seen` - the case where every shard of the next expected
     /// (tail) block was lost, so it was never "seen" and sits above the
     /// `[next_deliver, highest_seen)` sweep. Without that, delivery
@@ -1584,7 +1586,7 @@ impl Decoder {
         let hi = self.highest_seen;
         let mut gaps = Vec::new();
         let mut id = nd;
-        // Genuine gaps sit only below the highest DECODED block: a later
+        // Genuine gaps sit only below the highest decoded block: a later
         // block fully arrived, proving this one's shards are lost rather
         // than still in flight. On a clean link `highest_decoded` tracks
         // the delivery frontier, so this loop does nothing - the O(window)
@@ -1594,7 +1596,7 @@ impl Decoder {
             self.push_gap(id, &mut gaps);
             id = id.saturating_add(1);
         }
-        // Under a drain, chase the block we are BLOCKED on: the tail at
+        // Under a drain, chase the block we are blocked on: the tail at
         // `highest_seen` (nd <= hi), or the never-seen head above it
         // (nd > hi, every shard of the tail block lost). `nd.max(hi)`
         // selects whichever it is; a fully-lost tail block returns
@@ -1658,6 +1660,12 @@ impl Decoder {
 mod tests {
     use super::*;
 
+    /// The RS data type has a row in the specification's packet-type table.
+    #[test]
+    fn the_rs_data_packet_type_is_in_the_wire_specification() {
+        crate::spec_doc::assert_listed("reliable_udp", &[(PKT_DATA, "data shard")]);
+    }
+
     /// Per-block adaptive shard length: a block of small items ships
     /// datagrams sized to the item, not to `max_item`, so schema
     /// compression actually reaches the wire. A block sizes to its largest
@@ -1666,7 +1674,7 @@ mod tests {
     /// datagram size, so no header field is added.
     #[test]
     fn per_block_shard_len_sizes_datagrams_to_items() {
-        // Generous max_item; small items must NOT be padded up to it.
+        // Generous max_item; small items must not be padded up to it.
         let mut enc = Encoder::new(8, 2, 256);
         let mut dgrams = Vec::new();
         for _ in 0..8 {
@@ -1803,7 +1811,7 @@ mod tests {
     }
 
     /// Drive `n` items end-to-end through a channel that drops `loss_pct`
-    /// of DATA datagrams, with ARQ feedback flowing back. Asserts every
+    /// of `DATA` datagrams, with ARQ feedback flowing back. Asserts every
     /// item is delivered exactly once, in order.
     fn round_trip(n: usize, k: usize, r: usize, loss_pct: u32, seed: u64) {
         let mut enc = Encoder::new(k, r, 8);
@@ -1911,7 +1919,7 @@ mod tests {
     fn heartbeat_feeds_owd_trend() {
         // A genuinely building queue must push the reported trend class to
         // "rising" (2). It climbs but dips to a flat baseline periodically -
-        // a CLEAN linear rise would be indistinguishable from clock skew and
+        // a clean linear rise would be indistinguishable from clock skew and
         // is removed by the skew correction, so the queue must touch baseline.
         let mut dec = Decoder::new();
         for i in 0..40u64 {
@@ -1926,7 +1934,7 @@ mod tests {
 
     #[test]
     fn tail_loss_recovered_by_timeout_arq() {
-        // Drop ALL parity (and one data shard) of the FINAL block - more
+        // Drop every parity shard (and one data shard) of the last block - more
         // than r losses, and no newer block exists to trigger a NAK.
         // Only timeout-driven ARQ (`drive_arq`) can recover it.
         let k = 4;
@@ -1951,7 +1959,7 @@ mod tests {
             }
         }
         assert!(delivered.is_empty(), "block not yet recoverable");
-        // No newer block: a non-driving feedback must NOT NAK.
+        // No newer block: a non-driving feedback must not NAK.
         assert_eq!(dec.feedback(false).nak_block, u32::MAX);
         // Timeout-driven feedback NAKs the stalled head.
         let fb = dec.feedback(true);
@@ -1968,7 +1976,7 @@ mod tests {
 
     #[test]
     fn missing_head_block_recovered_by_whole_block_nak() {
-        // A middle block that loses ALL its shards must still be
+        // A middle block that loses every one of its shards must still be
         // re-requested once a later block arrives, or delivery deadlocks
         // (the cross-host Direction-2 failure).
         let (k, r) = (4usize, 2usize);
@@ -1991,7 +1999,7 @@ mod tests {
                 }
             }
         };
-        // Deliver block 0, DROP all of block 1, deliver block 2.
+        // Deliver block 0, drop all of block 1, deliver block 2.
         feed(&mut dec, &blocks[0], &mut delivered);
         feed(&mut dec, &blocks[2], &mut delivered);
         assert_eq!(delivered, vec![0, 1, 2, 3], "only block 0 deliverable");
@@ -2009,13 +2017,13 @@ mod tests {
 
     #[test]
     fn fully_lost_tail_block_recovered_by_drain_nak() {
-        // Whole-datagram loss at the TAIL via the selective-NAK path the
-        // bridge uses (`missing_blocks`). Deliver block 0, then lose EVERY
+        // Whole-datagram loss at the tail via the selective-NAK path the
+        // bridge uses (`missing_blocks`). Deliver block 0, then lose every
         // shard of the final block 1: `next_deliver` advances to 1 while
-        // `highest_seen` stays 0, so block 1 sits ABOVE the
+        // `highest_seen` stays 0, so block 1 sits above the
         // [next_deliver, highest_seen) sweep. The drain must still
         // re-request it or delivery deadlocks on the tail - the cross-host
-        // 30%-loss TIMEOUT this guards against.
+        // 30%-loss timeout this guards against.
         let (k, r) = (4usize, 2usize);
         let mut enc = Encoder::new(k, r, 8);
         let mut dec = Decoder::new();
@@ -2036,12 +2044,12 @@ mod tests {
                 }
             }
         };
-        // Deliver block 0 fully; DROP every shard of the tail block 1.
+        // Deliver block 0 fully; drop every shard of the tail block 1.
         feed(&mut dec, &blocks[0], &mut delivered);
         assert_eq!(delivered, vec![0, 1, 2, 3], "block 0 delivered, tail unseen");
 
         // Without a drain the unseen tail is not chased (shards could still
-        // be in flight); under a drain it MUST be re-requested in full.
+        // be in flight); under a drain it has to be re-requested in full.
         assert!(
             dec.missing_blocks(64, false).is_empty(),
             "no drain: unseen tail not yet re-requested"
@@ -2092,7 +2100,7 @@ mod tests {
         for pkt in &wire {
             let bid = u32::from_le_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]);
             let is_outer = bid & 0x8000_0000 != 0;
-            // Erase the ENTIRE second data block (id 1).
+            // Erase the entire second data block (id 1).
             if !is_outer && bid == 1 {
                 continue;
             }
@@ -2213,8 +2221,8 @@ mod tests {
     fn parity_is_controller_driven_not_self_adapting() {
         let mut enc = Encoder::new(8, 1, 8);
         assert_eq!(enc.parity(), 1);
-        // on_feedback must NOT change parity any more - that is the
-        // fusion controller's job via set_parity.
+        // on_feedback leaves parity alone; the fusion controller sets it
+        // through set_parity.
         enc.on_feedback(&Feedback {
             ack_through: 0,
             nak_block: NAK_NONE,
@@ -2249,12 +2257,12 @@ mod tests {
 
         // Shard 0 original.
         dec.on_packet(&dgrams[0]);
-        // Shard 1 arrives FIRST as an ARQ retransmit (premature NAK), filling
+        // Shard 1 arrives first as an ARQ retransmit (premature NAK), filling
         // the slot and counting as a wire loss.
         let mut rtx1 = dgrams[1].clone();
         rtx1[8] |= FLAG_RETRANSMIT;
         dec.on_packet(&rtx1);
-        // The late ORIGINAL of shard 1 now arrives: the D-SACK duplicate.
+        // The late original of shard 1 now arrives: the D-SACK duplicate.
         let out = dec.on_packet(&dgrams[1]);
         assert!(out.is_empty(), "block still incomplete (2 of 4)");
         // Complete the block with the remaining originals; it decodes/delivers.

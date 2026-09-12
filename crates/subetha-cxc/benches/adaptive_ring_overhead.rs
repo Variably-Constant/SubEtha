@@ -2,12 +2,12 @@
 //!
 //! Covers tracker items 10 + 11 in one harness:
 //!
-//! - Item 10 - adaptive dispatch overhead vs native. Measures the
+//! - Adaptive dispatch overhead vs native. Measures the
 //!   per-op cost of `AdaptiveRing::try_send` / `try_recv` (one
 //!   Acquire load on `shape_tag` + branch) against the raw
 //!   underlying primitive call. The delta is the dispatch tax.
 //!
-//! - Item 11 - pinned-path throughput matches the native primitive.
+//! - Pinned-path throughput matches the native primitive.
 //!   `PinnedRing` captures the current shape + generation and goes
 //!   directly to the matching backend with no shape-tag load and
 //!   no branch. The bench asserts the pinned column lands within

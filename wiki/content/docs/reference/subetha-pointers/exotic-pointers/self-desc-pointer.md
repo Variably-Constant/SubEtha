@@ -13,7 +13,7 @@ weight: 110
 
 A pointer that carries its own `(type_id, layout_shape)` description
 in the stolen high bits of an 8-byte slot. Heterogeneous containers
-dispatch on type WITHOUT a vtable indirection: the type ID is the
+dispatch on type without a vtable indirection: the type ID is the
 high byte, and the switch compiles to a jump table inline at the
 call site. Same shape as JVM compressed-klass pointers but lighter
 weight: 8 bits of type plus 3 bits of layout shape, leaving 53 bits
@@ -46,9 +46,9 @@ for the virtual address.
 - **8 shape values exhausted.** `LayoutShape` is 3 bits encoding
   8 shapes: Scalar, FixedArray, RaggedArray, Tree, Graph,
   HashBucket, Sparse, UserDefined. `UserDefined` is the escape
-  hatch for caller-specific extensions but only ONE value.
+  hatch for caller-specific extensions but only one value.
 - **No drop semantics.** `SelfDescPointer<T>` is `Copy`; it does
-  NOT own the target.
+  not own the target.
 - **In-process only.** The address is a real virtual address.
   Cross-process sharing needs composition with a region-table
   primitive (e.g. `KTower2`) or address relocation.
@@ -57,7 +57,7 @@ for the virtual address.
   the address survives the update. There is no method to update
   the address (would require a new `from_raw`).
 - **Layout dispatch is the caller's job.** The pointer carries the
-  `LayoutShape` byte but does NOT change how the target is laid
+  `LayoutShape` byte but does not change how the target is laid
   out. The caller's dispatch table (one per shape) is what makes
   the shape useful.
 
@@ -299,7 +299,7 @@ comparison would mix the two). The 4-way table separates the costs:
 - **Arc and Box are within noise of each other here.** The loop calls
   only `kind()` (a vtable dispatch); it never clones or drops the
   smart pointer, so the atomic refcount is never exercised. On this
-  host `Box<dyn>` measured slightly SLOWER than `Arc<dyn>` (2.77 us
+  host `Box<dyn>` measured slightly slower than `Arc<dyn>` (2.77 us
   vs 2.45 us), i.e. the two `dyn Trait` shapes land in the same band
   and the choice between them is dominated by layout / measurement
   noise, not by refcounting.
@@ -335,7 +335,7 @@ architectural floor for "dispatch on a closed type universe of
 **When enum is the right choice:**
 
 - Closed type universe with variant-specific payloads (the enum
-  IS the value, not a pointer to it).
+  is the value, not a pointer to it).
 - Read-once values (no need for type-tag updates).
 
 ---
@@ -372,10 +372,10 @@ the bench:
   `set_layout_shape` but no `set_address`. Updating the address
   requires constructing a new `SelfDescPointer`.
 - **`LayoutShape` is informational only.** The pointer stores the
-  shape byte but does NOT change how the target is laid out. The
+  shape byte but does not change how the target is laid out. The
   caller's dispatch table is what makes the shape useful.
 - **The `Hash` impl hashes the whole u64.** Two pointers with the
-  same address but different type_id or shape are NOT equal under
+  same address but different type_id or shape are not equal under
   this impl. This is the desired behavior for type-tag-aware
   dictionaries but may surprise callers expecting address-based
   equality.
@@ -405,7 +405,7 @@ the bench:
   real machine pointer. For cross-process sharing compose with
   a region-table primitive.
 - **Don't confuse `SelfDescPointer<T>` with `*const T`.** Same
-  size but the encoded form is NOT a valid machine address.
+  size but the encoded form is not a valid machine address.
   `p.raw() as *const T` will segfault on dereference. Use
   `p.as_raw()` which masks the high bits.
 

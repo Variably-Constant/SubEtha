@@ -1,7 +1,7 @@
 //! Cache-line stewardship: instruction-level hints the compiler
 //! never emits on its own.
 //!
-//! LLVM treats every store identically; it has no model of WHICH
+//! LLVM treats every store identically; it has no model of which
 //! core reads a line next. These wrappers encode that knowledge at
 //! the three points the substrate has it:
 //!
@@ -75,7 +75,7 @@ pub fn cldemote(addr: *const u8) {
 }
 
 /// Store fence: orders all prior stores (including non-temporal
-/// ones, which `Release` ordering alone does NOT cover) before any
+/// ones, which `Release` ordering alone leaves unordered) before any
 /// later store. Required between a streaming copy and the
 /// sequence-publish store that makes it visible.
 #[inline(always)]

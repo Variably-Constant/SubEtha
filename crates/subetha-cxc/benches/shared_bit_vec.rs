@@ -1,7 +1,7 @@
 //! Bench: SharedBitVec vs Mutex<Vec<bool>> (the naive baseline) and
 //! Mutex<Vec<u64>> (the manual bit-packed baseline).
 //!
-//! Architectural claim: SharedBitVec is faster than both AND
+//! Architectural claim: SharedBitVec is faster than both and
 //! provides cross-process visibility neither baseline can match.
 //! The win comes from:
 //! - Atomic per-word RMW (fetch_or / fetch_and) instead of Mutex

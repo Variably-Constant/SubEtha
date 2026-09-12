@@ -7,11 +7,11 @@
 //! the number that sizes the schema-elision and embedded-parity layers:
 //! their budget is the same `slot_size - H`.
 //!
-//! Method is dep-free and CONSERVATIVE: per-byte-position order-0 Shannon
+//! Method is dep-free and conservative: per-byte-position order-0 Shannon
 //! entropy is a lower bound on the slack (a real compressor exploits
 //! higher-order and cross-field structure this misses, and arithmetic
 //! prediction of counter fields shows up as entropy here), so the free
-//! fraction reported is a FLOOR - the true slack is at least this.
+//! fraction reported is a floor - the true slack is at least this.
 //!
 //! Layouts mirror the real marshal paths:
 //! - `PassSlot` (56 B): `closure_id: u32 @0`, `token: u32 @4`,

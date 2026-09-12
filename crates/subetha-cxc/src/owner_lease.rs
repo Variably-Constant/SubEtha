@@ -34,7 +34,7 @@
 //! +-----------------------------+
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of};
 use std::path::Path;
@@ -79,6 +79,51 @@ pub enum LeaseError {
 
 impl From<std::io::Error> for LeaseError {
     fn from(e: std::io::Error) -> Self { Self::IoError(e.kind()) }
+}
+
+/// Write a fresh lease header and a zeroed payload, leaving the magic at
+/// zero, and hand back the payload's address for the caller to fill.
+/// [`publish_lease_magic`] finishes the job.
+///
+/// The magic is what an attacher spins on, so it goes last and stays out
+/// of this function: a region carrying the magic with an unwritten
+/// payload is one another process can attach to and read as real. Both
+/// [`OwnerLease`] and [`RawOwnerLease`](crate::raw_owner_lease::RawOwnerLease)
+/// lay out through here, so the layout has one implementation and the two
+/// cannot drift into disagreeing about the same file.
+///
+/// # Safety
+/// `ptr` addresses at least [`LEASE_FILE_SIZE`] writable bytes, and
+/// `payload_size` is no larger than [`PAYLOAD_BYTES`].
+pub(crate) unsafe fn begin_lease_region(ptr: *mut u8, payload_size: usize) -> *mut u8 {
+    let hdr = ptr as *mut LeaseHeader;
+    unsafe {
+        std::ptr::write(hdr, LeaseHeader {
+            magic: 0,
+            payload_size: payload_size as u32,
+            seq_version: AtomicU32::new(0),
+            owner_pid: AtomicU32::new(NO_OWNER),
+            lease_term: AtomicU32::new(0),
+            heartbeat_epoch: AtomicU64::new(0),
+            global_epoch: AtomicU64::new(0),
+            _pad: [0; 24],
+        });
+        let payload_ptr = ptr.add(size_of::<LeaseHeader>()) as *mut LeasePayload;
+        std::ptr::write(payload_ptr, LeasePayload { bytes: [0; PAYLOAD_BYTES], _pad: [0; 16] });
+        (*payload_ptr).bytes.as_mut_ptr()
+    }
+}
+
+/// Publish the magic, which is what tells an attacher the region is
+/// ready. Every field must be in place first.
+///
+/// # Safety
+/// `ptr` addresses a region [`begin_lease_region`] has laid out.
+pub(crate) unsafe fn publish_lease_magic(ptr: *mut u8) {
+    unsafe {
+        let hdr = ptr as *mut LeaseHeader;
+        std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr).magic), LEASE_MAGIC);
+    }
 }
 
 pub struct OwnerLease<T: Copy + 'static> {
@@ -126,7 +171,7 @@ impl<T: Copy + 'static> OwnerLease<T> {
         })
     }
 
-    /// Reinitialise the lease at `path`, stripping whatever owner and term a
+    /// Reinitialize the lease at `path`, stripping whatever owner and term a
     /// live holder has. For a caller that knows it owns the path.
     pub fn reset(path: impl AsRef<Path>, initial: T) -> Result<Self, LeaseError> {
         Self::check_layout()?;
@@ -148,29 +193,16 @@ impl<T: Copy + 'static> OwnerLease<T> {
     /// # Safety
     /// `ptr` addresses at least [`LEASE_FILE_SIZE`] writable zeroed bytes.
     unsafe fn init_region(ptr: *mut u8, initial: T) {
-        let hdr = ptr as *mut LeaseHeader;
         unsafe {
-            std::ptr::write(hdr, LeaseHeader {
-                magic: 0,
-                payload_size: size_of::<T>() as u32,
-                seq_version: AtomicU32::new(0),
-                owner_pid: AtomicU32::new(NO_OWNER),
-                lease_term: AtomicU32::new(0),
-                heartbeat_epoch: AtomicU64::new(0),
-                global_epoch: AtomicU64::new(0),
-                _pad: [0; 24],
-            });
-            let payload_ptr = ptr.add(size_of::<LeaseHeader>()) as *mut LeasePayload;
-            std::ptr::write(payload_ptr, LeasePayload { bytes: [0; PAYLOAD_BYTES], _pad: [0; 16] });
-            let dst = (*payload_ptr).bytes.as_mut_ptr() as *mut T;
-            std::ptr::write_unaligned(dst, initial);
-            std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr).magic), LEASE_MAGIC);
+            let payload = begin_lease_region(ptr, size_of::<T>());
+            std::ptr::write_unaligned(payload as *mut T, initial);
+            publish_lease_magic(ptr);
         }
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, LeaseError> {
         Self::check_layout()?;
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < LEASE_FILE_SIZE as u64 {
             return Err(LeaseError::LayoutMismatch);
         }

@@ -7,12 +7,12 @@
 //! so the fill ratio legitimately crosses the grow and shrink
 //! thresholds every half-period - followed by a genuine sustained
 //! regime shift to measure reaction latency. The gated arms run
-//! their policies with ZERO fixed hysteresis so the comparison
+//! their policies with zero fixed hysteresis so the comparison
 //! isolates mechanism quality (timer vs conviction), not stacking.
 //!
 //! Ordering scenario: three short inversion-noise bursts separated
 //! by clean windows, then a sustained inversion regime. The
-//! auto-order arm is one-way by design, so the question is WHERE
+//! auto-order arm is one-way by design, so the question is where
 //! each arm spends its single flip: on the first noise burst
 //! (premature) or inside the sustained regime (justified).
 //!
@@ -47,7 +47,7 @@ enum Arm {
     Baseline,
     Gated,
     GatedMin,
-    /// Gate + min-samples STACKED with the production hysteresis -
+    /// Gate + min-samples stacked with the production hysteresis -
     /// the timer caps the follow rate at long oscillation periods,
     /// the gate starves noise below its conviction window.
     GatedHyst,
@@ -81,7 +81,7 @@ fn run_capacity_arm(arm: Arm) -> (Vec<PhaseStats>, f64, u64) {
     ring.register_consumer().unwrap();
 
     // The gated arms zero the policy's fixed hysteresis so the
-    // gate is the ONLY damper - mechanism vs mechanism, no
+    // gate is the only damper - mechanism vs mechanism, no
     // stacking. The baseline keeps the production default.
     let hysteresis = match arm {
         Arm::Baseline | Arm::GatedHyst => Duration::from_millis(100),
@@ -268,16 +268,16 @@ struct OrderingResult {
 }
 
 /// The proposal under bench: should `spawn_with_qos` enable the
-/// ordering auto-arm gate BY DEFAULT? Both arms run the IDENTICAL
+/// ordering auto-arm gate by default? Both arms run the identical
 /// policy a realistic caller gets (`DefaultOrderingPolicy::default`,
-/// 100 ms hysteresis) so the ONLY difference is whether the auto-arm
+/// 100 ms hysteresis) so the only difference is whether the auto-arm
 /// is gated - isolating the proposal, not stacking dampers.
 #[derive(Clone, Copy, PartialEq)]
 enum OrderArm {
     /// Today's behavior: 100 ms timer, no gate
     /// (`spawn_with_qos_gated` with a disabled config).
     UngatedToday,
-    /// The proposal: 100 ms timer AND the auto-arm gate on by
+    /// The proposal: 100 ms timer and the auto-arm gate on by
     /// default (`spawn_with_qos`).
     GatedDefault,
 }
@@ -446,8 +446,8 @@ fn run_ordering_arm(arm: OrderArm) -> OrderingResult {
     }
 }
 
-/// Declaration promptness: an EXPLICIT `GlobalFifo` declaration is
-/// caller intent, not noise - it must NOT be delayed by the gate.
+/// Declaration promptness: an explicit `GlobalFifo` declaration is
+/// caller intent, not noise - it must not be delayed by the gate.
 /// Measures the latency from declaring GlobalFifo to the merge flag
 /// arming. The proposal is only acceptable if the gated default is
 /// as prompt as ungated here (it bypasses the gate for declarations).

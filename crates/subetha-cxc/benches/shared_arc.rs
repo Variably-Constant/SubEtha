@@ -5,21 +5,20 @@
 //! hold is a slot claim in a mapping rather than an increment of a
 //! word the allocator handed out.
 //!
-//! Fairness, audited against the three questions the house rule asks:
+//! Fairness:
 //!
 //! 1. Both arms take a hold and drop it. `Arc::clone` plus drop is the
 //!    whole of what `Arc` does; `SharedArc::open` plus drop maps the
 //!    file, validates the header and claims a slot.
 //! 2. The open arm's cost is dominated by the mmap, not by the slot
-//!    claim, and saying so is the point rather than a caveat - so the
-//!    slot claim is ALSO measured on its own through `holders()`, and
-//!    both numbers are reported.
+//!    claim, so the slot claim is also measured on its own through
+//!    `holders()`, and both numbers are reported.
 //! 3. Reading the value is measured separately from taking a hold,
 //!    because a caller opens once and reads many times.
 //!
-//! What the numbers do NOT show: `Arc` cannot address a value in
+//! What the numbers do not show: `Arc` cannot address a value in
 //! another process at any price, and its count cannot survive the
-//! death of a holder. Those are the reasons to pay the difference.
+//! death of a holder.
 
 use std::hint::black_box;
 use std::sync::Arc;

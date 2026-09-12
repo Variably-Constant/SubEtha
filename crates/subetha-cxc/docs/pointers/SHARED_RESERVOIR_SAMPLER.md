@@ -64,7 +64,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700.
   benched separately.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process recording**: N processes each record into
   the same reservoir; the mutex baseline cannot.

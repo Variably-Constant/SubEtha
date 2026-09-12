@@ -248,7 +248,7 @@ budget.
   payload size (16 bytes), same capacity (4096), same busy-spin
   loop on Full / Empty across all variants.
 - **Single-trial variance is high** on Windows due to scheduler
-  noise; best-of-5 with warmup is what stabilises the comparison.
+  noise; best-of-5 with warmup is what stabilizes the comparison.
 - **Cross-thread, in-process**: this bench runs both sides in the
   same process. Cross-process numbers for the `SharedRing`-backed
   `Channel<u64>` are in

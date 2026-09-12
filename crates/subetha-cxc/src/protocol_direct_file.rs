@@ -5,7 +5,7 @@
 //! with peers, `DirectFileRing` opens a file in unbuffered mode and
 //! reads/writes via positioned I/O. The page cache is bypassed: every
 //! write goes directly to the underlying block device, every read comes
-//! directly from the device. Useful when the substrate IS the buffer
+//! directly from the device. Useful when the substrate is the buffer
 //! (the caller does its own caching and does not want the kernel
 //! double-buffering) - common in database storage engines.
 //!
@@ -30,7 +30,7 @@
 //!
 //! # Coordination
 //!
-//! Head/tail counters live in a SEPARATE small MMF
+//! Head/tail counters live in a separate small MMF
 //! ([`SharedAtomicU64`]) because writing them through the unbuffered
 //! data path would defeat their purpose (atomic visibility across
 //! processes). The data file holds payload slots only; the control
@@ -159,7 +159,7 @@ fn open_unbuffered(path: &Path, create_new: bool) -> std::io::Result<std::fs::Fi
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_FLAG_NO_BUFFERING, FILE_FLAG_WRITE_THROUGH,
         };
-        // NO_BUFFERING bypasses the cache (the O_DIRECT analogue);
+        // NO_BUFFERING bypasses the cache (the O_DIRECT analog);
         // WRITE_THROUGH forces each write to the device so an
         // independent reader process sees it.
         opts.custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);

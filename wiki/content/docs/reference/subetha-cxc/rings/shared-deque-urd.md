@@ -60,7 +60,7 @@ contended atomic.
 |---|---|---|
 | Per-item dispatch, single thief, no batching | `SharedDeque` (Chase-Lev) | Lowest constant per push. |
 | Producer batches K items per call (no contention required) | `SharedDequeKhpd` | One Release-store per 3 items via `publish_batch`. |
-| Multiple thieves AND the workload is contention-bound at the steal site | `SharedDequeUrd` | Per-thief mailboxes mean **zero CAS contention**; owner picks target. |
+| Multiple thieves and the workload is contention-bound at the steal site | `SharedDequeUrd` | Per-thief mailboxes mean **zero CAS contention**; owner picks target. |
 | Low-power idle waits with `UMWAIT` available | `SharedDequeUrd` | Hardware-mediated wake instead of busy-spin (Zen 5+ / Intel Tiger Lake+). |
 
 ## Cost summary
@@ -118,7 +118,7 @@ reads [`subetha_core::has_waitpkg`](../../subetha-core/):
 - **`Waitpkg`** (`UMONITOR` + `UMWAIT`): the thief calls `UMONITOR`
   to arm the hardware monitor on its mailbox state byte, then
   `UMWAIT` to suspend until the line transitions or a TSC deadline
-  fires. Power-efficient; the thief does NOT burn pipeline slots
+  fires. Power-efficient; the thief does not burn pipeline slots
   polling. Available on Intel Tremont (2019), Tiger Lake+ (2020),
   and AMD Zen 5 (2024).
 - **`PauseSpin`** (`std::hint::spin_loop`): tight Acquire-load loop

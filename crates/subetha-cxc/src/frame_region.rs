@@ -17,7 +17,7 @@
 //! and is handed to the next allocation regardless of which consumer
 //! freed it, so no FIFO bookkeeping is needed across consumers.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -146,9 +146,7 @@ impl FrameRegion {
     ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
         let total = frame_region_file_size(block_size, block_count);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(total as u64)?;
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         unsafe { init_region(mmap.as_mut_ptr(), block_size, block_count) };
@@ -162,7 +160,7 @@ impl FrameRegion {
     ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
         let total = frame_region_file_size(block_size, block_count);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             return Err(RingError::LayoutMismatch);
         }
@@ -199,12 +197,12 @@ impl FrameRegion {
     }
 
     /// Create-or-open a named ShmFs frame region. The first attacher
-    /// CAS-initialises the layout and publishes the magic; racing
+    /// CAS-initializes the layout and publishes the magic; racing
     /// attachers spin until it lands, so a late-joining consumer never
     /// wipes a region a producer already filled. This is the shared
     /// payload region the cross-process offset-frame path needs: the
     /// producer create-or-opens it on the first offset `send_frame`,
-    /// and every consumer create-or-opens the SAME region on the first
+    /// and every consumer create-or-opens the same region on the first
     /// offset `recv_frame` (the descriptor it popped implies the
     /// producer already created it).
     pub fn create_or_open_shm(
@@ -263,9 +261,7 @@ impl FrameRegion {
     ) -> Result<Self, RingError> {
         validate(block_size, block_count)?;
         let total = frame_region_file_size(block_size, block_count);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(false)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_or_open(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             file.set_len(total as u64)?;
         }
@@ -404,6 +400,21 @@ impl FrameRegion {
                 payload.as_ptr(), self.block_ptr(idx), payload.len(),
             );
         }
+    }
+
+    /// Copy `len` bytes out of block `idx` into `out`, for a caller that
+    /// already has the buffer. Returns what it copied, which is `len`
+    /// clamped to the block and to the buffer.
+    pub fn read_block(&self, idx: u32, len: usize, out: &mut [u8]) -> usize {
+        if idx as usize >= self.block_count {
+            return 0;
+        }
+        let n = len.min(self.block_size).min(out.len());
+        // SAFETY: the index is inside the region and `n` inside the block.
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.block_ptr(idx), out.as_mut_ptr(), n);
+        }
+        n
     }
 
     /// Copy `len` bytes out of block `idx` into `out` (appended).

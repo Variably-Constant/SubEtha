@@ -16,7 +16,7 @@ use subetha_pointers::k_tower_pointer::KTower2;
 // KTower2 resolve cost vs native (region_id, offset) struct
 // vs pre-resolved direct pointer.
 //
-// AUDIT (rule 3b): comparing KTower's 1 indirection (table lookup +
+// Audit: comparing KTower's 1 indirection (table lookup +
 // offset add + deref) against a pre-resolved *const u64 (zero
 // indirection) is a surplus-indirection asymmetry. The fair
 // contender is a native (region_id: u32, offset: u32) tuple doing
@@ -25,7 +25,7 @@ use subetha_pointers::k_tower_pointer::KTower2;
 // layout - so the bench isolates the KTower API cost vs the
 // raw-encoding cost. The 'direct_ptr' contender is the absolute
 // floor (pre-resolved access, the alternative when cross-process
-// portability is NOT needed).
+// portability is not needed).
 // =========================================================
 
 fn ktower_resolve(c: &mut Criterion) {

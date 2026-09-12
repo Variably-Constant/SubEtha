@@ -66,7 +66,7 @@ let n = conn.recv(&mut buf)?;
 - Per-VM substrate endpoints (one substrate process on the host,
   one in each guest, talking via vsock).
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Cross-host (use [`QuicBridge`](../../bridges/quic-bridge/) or
   [`TcpBridge`](../../bridges/tcp-bridge/)).

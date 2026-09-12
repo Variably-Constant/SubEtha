@@ -18,10 +18,8 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-// subetha-core was historically `no_std`, but the per-thread sequential id
-// machinery in [`observation::thread_id`] requires `thread_local!`,
-// which is std-only. Every dependent already pulls in std, so the
-// no_std attribute was removed to keep the substrate consistent.
+// The crate links std: the per-thread sequential id machinery in
+// [`observation::thread_id`] needs `thread_local!`.
 
 pub mod axis_signature;
 pub mod cpuid;

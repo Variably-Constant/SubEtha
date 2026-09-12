@@ -122,7 +122,7 @@ match HLL's idempotent re-insert semantics.
   representative of churn-pattern workloads.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cardinality scaling**: HLL is constant memory; HashSet
   grows linearly. At 1B items HashSet costs ~32 GB; HLL

@@ -9,8 +9,8 @@
 //!    wireless - the relevant signal on a wired / virtual link where no
 //!    RSSI exists.
 //!  - **Windows**: both `WlanQueryInterface` connection signal quality
-//!    (0..100, the RSSI-equivalent) on a Wi-Fi interface AND the
-//!    `GetIfTable2` discard / error counters on ANY adapter (the Ethernet
+//!    (0..100, the RSSI-equivalent) on a Wi-Fi interface and the
+//!    `GetIfTable2` discard / error counters on any adapter (the Ethernet
 //!    path, and a fallback where there is no Wi-Fi). The worse of the two
 //!    wins, so wired and wireless links are both covered.
 //!  - **macOS / other**: a stub returning "unknown" until a CoreWLAN
@@ -65,7 +65,7 @@ pub struct LinkSnapshot {
     /// (Windows WLAN has no retry counter; Linux nl80211 does).
     pub retry_rate: Option<f32>,
     /// The raw first-hop PHY rate in kbit/s (Windows `ulTxRate`, Linux nl80211
-    /// `tx_bitrate`). This is `nominal` - the rate a SINGLE Wi-Fi hop can carry -
+    /// `tx_bitrate`). This is `nominal` - the rate a single Wi-Fi hop can carry -
     /// which the mesh-hop detector compares against the measured end-to-end
     /// `BtlBw`: each single-radio backhaul hop roughly halves throughput, so
     /// `round(log2(nominal / BtlBw))` is the backhaul-hop count. `None` off
@@ -533,7 +533,7 @@ mod windows_net {
 
     /// Reads the adapter's real-time health two ways and keeps the worse:
     /// `WlanQueryInterface` signal quality on Wi-Fi, and the `GetIfTable2`
-    /// discard/error counters on ANY adapter (the Ethernet path, and a
+    /// discard/error counters on any adapter (the Ethernet path, and a
     /// fallback when there is no Wi-Fi). The drop rate is a delta between
     /// samples on the busiest up, non-loopback interface.
     pub struct WindowsSensor {

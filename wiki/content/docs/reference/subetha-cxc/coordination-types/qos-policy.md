@@ -50,7 +50,7 @@ is the same shape for the ordering declaration.
 Ordering need is semantic - it lives in the application, not the
 traffic - so the substrate never auto-changes the guarantee on a
 heuristic. What it observes on its own is the cross-producer
-INVERSION RATE on stamped rings, which it reports (and acts on only
+inversion rate on stamped rings, which it reports (and acts on only
 when the caller pre-authorized an `auto_order` threshold). See the
 [adaptive ordering page](../../rings/adaptive-ordering/) for the
 full declaration / detection / ordered-switch architecture.

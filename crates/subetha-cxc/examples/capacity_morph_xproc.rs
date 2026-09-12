@@ -1,6 +1,6 @@
 //! Cross-process capacity-morph E2E: the consumer / orchestrator.
 //!
-//! Proves the capacity morph survives a REAL cross-process consumer
+//! Proves the capacity morph survives a real cross-process consumer
 //! end to end. Two OS processes; the data path is file-backed shared
 //! memory (mmap), the morph coordination is a shared-memory control
 //! atomic. The producer (`capacity_morph_xproc_producer`, spawned
@@ -8,11 +8,11 @@
 //! `AdaptiveRing`, publishing the current `(capacity, epoch)` into the
 //! control atomic. This consumer follows the control, opens each
 //! backing by its deterministic name, and drains them in epoch order,
-//! asserting the global sequence arrives EXACTLY ONCE, IN ORDER,
+//! asserting the global sequence arrives exactly once, in order,
 //! across every morph boundary and across the process boundary.
 //!
 //! This is the genuine cross-process test the in-process morph
-//! experiments could not give: the morph creates a NEW shared backing
+//! experiments could not give: the morph creates a new shared backing
 //! a separate process must discover and switch to, mid-stream, with
 //! zero loss and zero reorder.
 //!

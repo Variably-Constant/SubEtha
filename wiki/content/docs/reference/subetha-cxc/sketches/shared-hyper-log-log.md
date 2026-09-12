@@ -41,9 +41,9 @@ error ~= `1.04 / sqrt(2^p)`.
   ~0.8%; p=16 -> ~0.4%.
 - **No `merge` method**: the API exposes no merge/union and no
   per-register accessor, so two separate HLLs cannot be combined
-  through this type. The cross-process pattern is instead a SINGLE
+  through this type. The cross-process pattern is instead a single
   shared HLL that every process opens and inserts into (the
-  registers ARE the shared union).
+  registers are the shared union).
 - **`create` obtains**: it initializes an empty estimator only when
   the path does not yet exist, and otherwise attaches with live
   registers in place - racing creators all reach the same estimator.
@@ -140,7 +140,7 @@ match HLL's idempotent re-insert semantics.
   representative of churn-pattern workloads.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cardinality scaling**: HLL is constant memory; HashSet
   grows linearly. At 1B items HashSet costs ~32 GB; HLL
@@ -200,7 +200,7 @@ question and an HashSet costs prohibitive memory.
 
 ### Pattern: shared-union cardinality across shards
 
-Every shard process opens the SAME HLL and inserts into it; the
+Every shard process opens the same HLL and inserts into it; the
 registers accumulate the union directly (each insert is an
 idempotent fetch_max), so a central reader's `estimate()` is the
 union cardinality - the approximate equivalent of

@@ -205,7 +205,7 @@ impl<'a> PinnedEndpoint<'a> {
 
     /// One Acquire load on the registry's generation counter.
     /// Returns `true` while the pin is current; `false` if any
-    /// `bind` / `unbind` has happened on ANY endpoint in the
+    /// `bind` / `unbind` has happened on any endpoint in the
     /// registry since pin time.
     ///
     /// The coarse-grained check is intentional: a registry-wide

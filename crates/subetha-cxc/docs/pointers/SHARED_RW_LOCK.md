@@ -8,7 +8,7 @@
 ![Priority](https://img.shields.io/badge/policy-writer--priority-informational)
 
 Cross-process reader-writer lock with writer priority. Multiple
-concurrent readers OR exactly one writer. When a writer is waiting,
+concurrent readers or exactly one writer. When a writer is waiting,
 new readers block to prevent writer starvation. State is one
 `AtomicU64` packed as 1-bit writer-active + 31-bit waiting-writers
 count + 32-bit reader count; all transitions are single CAS.
@@ -145,7 +145,7 @@ parking_lot in the uncontended fast path (~1 ns) and ties under
 - **Same workload**: try_read / try_write / 4-reader concurrent.
 - **MMF lifecycle managed**.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process contention**: bench is in-process. The
   architectural lever (cross-process visibility) is what std and
@@ -203,7 +203,7 @@ shared across processes. Readers concurrent; writers rare.
 
 ### Pattern: serialize cross-process writes
 
-When two processes need to coordinate writes to the SAME
+When two processes need to coordinate writes to the same
 SharedCell / SharedVec / etc., wrap the access in a SharedRWLock
 to serialize the write critical sections.
 

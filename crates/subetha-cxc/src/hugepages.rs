@@ -101,10 +101,10 @@ impl crate::spsc_ring::RegionOwner for HugepageRegion {
     }
 }
 
-/// A CROSS-PROCESS hugepage-backed region: a file on a `hugetlbfs` mount,
+/// A cross-process hugepage-backed region: a file on a `hugetlbfs` mount,
 /// mmap'd `MAP_SHARED`. Unrelated processes open the same path and mmap it,
 /// so a ring laid out in the region is shared through hugepage physical
-/// memory. This is the Linux analogue of the Windows large-page
+/// memory. This is the Linux analog of the Windows large-page
 /// `LargePageSection` (named, openable by a second process); the
 /// anonymous [`HugepageRegion`] above is in-process / fork-shared only.
 ///
@@ -332,7 +332,7 @@ mod tests {
         };
         assert_eq!(a.len(), HUGEPAGE_2MB);
 
-        // A second independent map of the SAME file.
+        // A second independent map of that same file.
         let mut b = SharedHugepageRegion::open(&path, 1, HugepageSize::Mb2)
             .expect("open second map of the same hugetlbfs file");
 

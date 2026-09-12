@@ -58,7 +58,7 @@ is a different primitive shape and is not what this implements.
 |   top: AtomicI64            |
 |   bottom: AtomicI64         |
 +-----------------------------+
-| Slot[0]  (slot_bytes)       |  marshalled T payload
+| Slot[0]  (slot_bytes)       |  marshaled T payload
 | Slot[1]  ...                |
 +-----------------------------+
 ```

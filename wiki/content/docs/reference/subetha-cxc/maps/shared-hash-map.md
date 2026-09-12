@@ -65,7 +65,7 @@ makes keys irreproducible).
 block-beta
   columns 1
   hdr["MapHeader - 64 B: magic, capacity, count, key/value sizes"]
-  s0["Slot 0 - 64 B: state, version, cached hash, payload K + V (48 B serialised)"]
+  s0["Slot 0 - 64 B: state, version, cached hash, payload K + V (48 B serialized)"]
   s1["Slot 1 - same shape"]
   dots["..."]
   classDef hdrC fill:#1e3a8a,color:#ffffff
@@ -77,7 +77,7 @@ block-beta
 ```
 
 Each slot is 64 bytes (one cache line): state + version + cached
-hash + payload (K + V serialised in 48 bytes).
+hash + payload (K + V serialized in 48 bytes).
 
 ---
 
@@ -135,6 +135,12 @@ event to every other prober. Every writer takes a slot's SeqLock by
 CAS even -> odd, so two writers updating one key take turns rather
 than overlapping.
 
+A walk is held to the same rule. `SharedHashMap::snapshot`, and
+`RawHashMap::next_entry` behind it, pass over a slot that is claimed
+and not yet published, rather than handing back its zeroed payload -
+which is what a lookup for that key already does by waiting on a hash
+of 0.
+
 ---
 
 ## Bench evidence
@@ -168,11 +174,11 @@ architectural lever.
 - **Same key/value type** (u64/u64) across all variants.
 - **MMF lifecycle managed**.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process get throughput**: each process can read the same
   map concurrently with no lock acquire.
-- **Multi-thread insert contention on the SAME slot**: the CAS
+- **Multi-thread insert contention on the same slot**: the CAS
   protocol handles it via retry; the bench is single-threaded.
 
 ---

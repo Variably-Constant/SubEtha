@@ -19,8 +19,8 @@
 //!
 //! # Policy
 //!
-//! From the bead specification:
-//! - `max_fan_in >= fan_in_threshold` AND `max_fan_out >=
+//! The recommendation:
+//! - `max_fan_in >= fan_in_threshold` and `max_fan_out >=
 //!    fan_out_threshold` → `AllToAllMesh`
 //! - `max_fan_out >= fan_out_threshold` → `BroadcastTree`
 //! - otherwise → `PointToPoint`
@@ -42,18 +42,15 @@
 //! +---------------------------+
 //! ```
 //!
-//! # Why separate observer from transport
+//! # Observer and transport
 //!
-//! Each process picks its OWN role in a topology (publisher /
-//! subscriber for BroadcastTree; node index for Mesh), which is
-//! intrinsically per-process. The observer is the SHARED part
-//! (everyone reads the same recommendation). The transport
-//! instantiation is the per-process part. Keeping them separate
-//! avoids forcing all processes to share a single transport-
-//! switching state machine they can't all participate in
-//! symmetrically.
+//! The observer is shared: every process reads the same
+//! recommendation. The transport is per process: each process picks
+//! its own role in the topology (publisher or subscriber for
+//! BroadcastTree, a node index for AllToAllMesh) and builds the
+//! transport for that role.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -63,7 +60,7 @@ use memmap2::{MmapMut, MmapOptions};
 pub const TOPOLOGY_MAGIC: u64 = 0x4150_544F_504F_3031;
 
 /// Default thresholds: 3 fan-out for BroadcastTree, 3 fan-in for
-/// AllToAllMesh. Match the bead specification.
+/// AllToAllMesh.
 pub const DEFAULT_FAN_OUT_THRESHOLD: u32 = 3;
 pub const DEFAULT_FAN_IN_THRESHOLD: u32 = 3;
 
@@ -263,7 +260,7 @@ impl SharedTopologyMap {
         expected_n_nodes: usize,
     ) -> Result<Self, TopologyError> {
         let total = topology_file_size(expected_n_nodes);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(TopologyError::LayoutMismatch);
         }
@@ -358,7 +355,7 @@ impl SharedTopologyMap {
     }
 
     /// Compute the recommended topology from observed stats. Pure
-    /// function over the current edge-count snapshot; does NOT
+    /// function over the current edge-count snapshot; does not
     /// mutate the published recommendation. Use
     /// `publish_recommendation` to cache it for O(1) reads.
     pub fn recommend(&self) -> TopologyKind {
@@ -378,7 +375,7 @@ impl SharedTopologyMap {
         kind
     }
 
-    /// Compute the recommendation AND publish it to the header so
+    /// Compute the recommendation and publish it to the header so
     /// other processes can read it at O(1) via
     /// `read_recommendation`. Bumps `recommendation_epoch`.
     /// Returns the published recommendation.

@@ -27,7 +27,7 @@ counter; any other process or thread can call
 > baseline** (current_progress 1.01 ns vs Arc<AtomicU64> 824 ps;
 > fraction 2.79 ns vs 2.69 ns; advance 8.53 ns vs 8.55 ns;
 > cycle_100 683.46 ns vs 685.26 ns). The MMF substrate adds
-> cross-process visibility AND disk persistence at no
+> cross-process visibility and disk persistence at no
 > measurable per-op cost over the in-process atomic primitives.
 > The naive baseline cannot do either at any cost.
 
@@ -38,7 +38,7 @@ counter; any other process or thread can call
 - **`R: Copy + 'static`, fixed payload** sized to
   `SharedCell::PAYLOAD_BYTES` (52 bytes).
 - **Four MMF files**: progress + total + done + result. Pass
-  BASE PATH; the wrapper appends extensions.
+  base path; the wrapper appends extensions.
 - **Progress uses Relaxed ordering**: progress is
   observational; the done flag carries the happens-before edge.
 - **`begin(total)` resets progress=0 + done=false**: starts a
@@ -205,7 +205,7 @@ is statistically indistinguishable from the in-process
    restart; a completed task is recoverable.
 
 Both capabilities cost ZERO measurable nanoseconds at the
-microbench level. The reason: the MMF-backed atomics ARE the
+microbench level. The reason: the MMF-backed atomics are the
 same hardware atomics the in-process baseline uses, just with
 the data living in an mmap-backed page instead of a heap-
 allocated AtomicU64.
@@ -223,7 +223,7 @@ allocated AtomicU64.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   cleanup of all four files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process observation**: a separate dashboard / CLI
   / supervisor process opens the same task and reads progress

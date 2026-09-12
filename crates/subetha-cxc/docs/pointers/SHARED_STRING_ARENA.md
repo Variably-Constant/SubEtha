@@ -69,7 +69,7 @@ Any process resolves the same StringRef to the same bytes.
   full-arena overflow branch.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process string interning**: any process interns; any
   process resolves the StringRef. Mutex<Vec<String>> cannot.

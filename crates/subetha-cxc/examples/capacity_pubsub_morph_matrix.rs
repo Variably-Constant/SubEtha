@@ -1,4 +1,4 @@
-//! Parameterised end-to-end demonstration of
+//! Parameterized end-to-end demonstration of
 //! `CapacityPubSubRing` across the Subscribers x Locale x Size
 //! matrix.
 //!
@@ -40,7 +40,7 @@ fn main() {
 
     let ring = construct(&locale);
 
-    // Subscribe all subscribers FIRST so they see history from
+    // Subscribe all subscribers first so they see history from
     // the start (subscribe_from_oldest captures the chain head
     // at construction).
     let subscribers: Vec<_> = (0..subs)

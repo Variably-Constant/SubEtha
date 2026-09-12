@@ -1,7 +1,7 @@
 //! Bench: SharedHyperLogLog vs Mutex<HashSet<Vec<u8>>>.
 //!
 //! Architectural claim: HLL trades exactness for fixed-size memory
-//! (constant 2^p bytes regardless of cardinality) AND ~1 atomic op
+//! (constant 2^p bytes regardless of cardinality) and ~1 atomic op
 //! per insert. HashSet pays unbounded memory growth + lock + hash
 //! + bucket lookup per insert.
 

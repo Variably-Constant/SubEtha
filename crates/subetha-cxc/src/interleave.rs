@@ -8,7 +8,7 @@
 //! With interleave depth D, the datagrams of D blocks ship column-major:
 //! shard 0 of blocks 0..D, then shard 1 of blocks 0..D, and so on. The
 //! datagrams of any one block are then spaced D apart on the wire, so a
-//! burst of up to D consecutive losses removes at most ONE shard from
+//! burst of up to D consecutive losses removes at most one shard from
 //! each block - back inside FEC's r-parity budget.
 //!
 //! This is purely a sender-side reordering. The receiver routes every
@@ -93,7 +93,7 @@ impl Interleaver {
         // For each shard column, emit that column's datagram from every block
         // that has one. Block i's shards land at output positions separated by
         // the number of blocks, so a burst of <= depth consecutive losses hits
-        // at most one shard per block. The datagram is MOVED out, not cloned:
+        // at most one shard per block. The datagram is moved out, not cloned:
         // `blocks` is owned here and dropped on return, so swapping in an empty
         // Vec transfers ownership with no per-datagram allocation or byte copy.
         for col in 0..max_len {
@@ -153,7 +153,7 @@ mod tests {
     }
 
     /// The core property: with depth D, any window of D consecutive
-    /// emitted datagrams contains at most ONE shard from any block.
+    /// emitted datagrams contains at most one shard from any block.
     fn burst_property(depth: usize, shards: usize) {
         let blocks = make_blocks(depth, shards);
         let mut il = Interleaver::new(depth);

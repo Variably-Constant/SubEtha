@@ -4,7 +4,7 @@
 //! the winner initializes over a zeroed mapping and everyone else attaches to
 //! what the winner built. [`reset`] truncates and reinitializes.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use memmap2::{MmapMut, MmapOptions};
 
 /// How long an attacher waits for the elected creator to finish initializing
-/// before giving up. Bounded so a creator that dies mid-initialisation surfaces
+/// before giving up. Bounded so a creator that dies mid-initialization surfaces
 /// as an error rather than an unbounded spin.
 pub(crate) const INIT_WAIT: Duration = Duration::from_secs(5);
 
@@ -20,7 +20,7 @@ pub(crate) const INIT_WAIT: Duration = Duration::from_secs(5);
 /// creation election.
 ///
 /// `total` is the region size. `init` runs exactly once, on the winner, over a
-/// zeroed mapping; it must publish whatever `ready` tests LAST, because
+/// zeroed mapping; it must publish whatever `ready` tests last, because
 /// attachers spin on it. `ready` reports whether a mapping is fully
 /// initialized - normally a magic-number check.
 ///
@@ -36,7 +36,7 @@ where
     I: FnOnce(*mut u8),
     R: Fn(*const u8) -> bool,
 {
-    match OpenOptions::new().read(true).write(true).create_new(true).open(path) {
+    match crate::region_file::create_new(path) {
         Ok(file) => {
             file.set_len(total as u64)?;
             let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
@@ -113,7 +113,7 @@ fn try_attach<R>(path: &Path, total: usize, ready: &R) -> io::Result<Option<(Fil
 where
     R: Fn(*const u8) -> bool,
 {
-    let file = match OpenOptions::new().read(true).write(true).open(path) {
+    let file = match crate::region_file::open_existing(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -135,7 +135,7 @@ where
     Ok(Some((file, mmap)))
 }
 
-/// Truncate and reinitialise the region at `path`, discarding any state a live
+/// Truncate and reinitialize the region at `path`, discarding any state a live
 /// peer holds. For a caller that knows it owns the path.
 ///
 /// On Windows this errors while any process still maps the region
@@ -145,12 +145,7 @@ pub(crate) fn reset<I>(path: &Path, total: usize, init: I) -> io::Result<(File, 
 where
     I: FnOnce(*mut u8),
 {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
+    let file = crate::region_file::create_truncated(path)?;
     file.set_len(total as u64)?;
     let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
     unsafe {
@@ -190,7 +185,7 @@ mod tests {
         unsafe { std::ptr::read_unaligned(ptr as *const u64) == MAGIC }
     }
 
-    /// Racing callers all attach to one region, and exactly one initialises it.
+    /// Racing callers all attach to one region, and exactly one initializes it.
     #[test]
     fn exactly_one_caller_initialises() {
         let p = tmp("elect");
@@ -211,7 +206,7 @@ mod tests {
                     has_magic,
                 )
                 .expect("attach");
-                assert!(has_magic(m.as_ptr()), "attached to an uninitialised region");
+                assert!(has_magic(m.as_ptr()), "attached to an uninitialized region");
             }));
         }
         for h in hs {

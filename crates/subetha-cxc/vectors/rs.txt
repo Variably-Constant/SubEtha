@@ -1,0 +1,96 @@
+# SubEtha block Cauchy Reed-Solomon interoperability vectors
+#
+# Regenerate with SUBETHA_REGENERATE_VECTORS=1; the test that
+# writes this file also compares it, so the code cannot move
+# without these moving.
+#
+# GF(256) with primitive polynomial 0x11D, generator 2.
+# Cauchy entry for parity row j and data column c, over a
+# (k, r) code, is the field inverse of ((k + j) XOR c). Data
+# indices 0..k and parity indices k..k+r are disjoint, so the
+# XOR is never zero and every square submatrix of [I_k ; C] is
+# invertible - which is what makes any k of the k + r shards
+# sufficient.
+#
+# Data shard i, byte b, of a shard_len-byte shard:
+#     (i * 131 + b * 17 + 7) & 0xff
+# so an implementation needs no random source to reproduce it.
+#
+# A lost pattern names the shard indices withheld from the
+# decoder: 0..k are data, k..k+r are parity. Every pattern
+# here withholds exactly r, which is the most a (k, r) code
+# can carry and therefore the case that fails first if the
+# matrix or its inversion is wrong.
+
+[code smallest] k=1 r=1 shard_len=16
+cauchy row  0: 01
+parity  0: 0718293a4b5c6d7e8fa0b1c2d3e4f506
+lost 1 of 2: 1
+recovered: every data shard equals the rule above
+
+[code light-parity] k=4 r=1 shard_len=16
+cauchy row  0: 47 a7 7a ba
+parity  0: fb466a9495d1f5097a69ef11e3f621e5
+lost 1 of 5: 1
+recovered: every data shard equals the rule above
+
+[code typical-block] k=8 r=2 shard_len=16
+cauchy row  0: ad 9d dd 98 3d aa 5d 96
+cauchy row  1: 9d ad 98 dd aa 3d 96 5d
+parity  0: 4f32caadd0cc931a23e8576adbf5b4ed
+parity  1: 500c8485cab632b33fba81c727a38b94
+lost 2 of 10: 1 8
+recovered: every data shard equals the rule above
+
+[code controller-ceiling] k=8 r=6 shard_len=16
+cauchy row  0: ad 9d dd 98 3d aa 5d 96
+cauchy row  1: 9d ad 98 dd aa 3d 96 5d
+cauchy row  2: dd 98 ad 9d 5d 96 3d aa
+cauchy row  3: 98 dd 9d ad 96 5d aa 3d
+cauchy row  4: 3d aa 5d 96 ad 9d dd 98
+cauchy row  5: aa 3d 96 5d 9d ad 98 dd
+parity  0: 4f32caadd0cc931a23e8576adbf5b4ed
+parity  1: 500c8485cab632b33fba81c727a38b94
+parity  2: 182263bae04e887e91a1593a0e951826
+parity  3: 04327bec1ce326ed8ed8a24014bd7274
+parity  4: 7469a0b06b07da19bf65f7611e8f8946
+parity  5: 364bb3c93c71f4d154333d3f4cdde36e
+lost 6 of 14: 1 6 11 2 7 12
+recovered: every data shard equals the rule above
+
+[code bitmap-bound] k=16 r=16 shard_len=16
+cauchy row  0: d8 72 c0 58 e0 3e 4c 66 90 de 55 80 a0 83 4b 2a
+cauchy row  1: 72 d8 58 c0 3e e0 66 4c de 90 80 55 83 a0 2a 4b
+cauchy row  2: c0 58 d8 72 4c 66 e0 3e 55 80 90 de 4b 2a a0 83
+cauchy row  3: 58 c0 72 d8 66 4c 3e e0 80 55 de 90 2a 4b 83 a0
+cauchy row  4: e0 3e 4c 66 d8 72 c0 58 a0 83 4b 2a 90 de 55 80
+cauchy row  5: 3e e0 66 4c 72 d8 58 c0 83 a0 2a 4b de 90 80 55
+cauchy row  6: 4c 66 e0 3e c0 58 d8 72 4b 2a a0 83 55 80 90 de
+cauchy row  7: 66 4c 3e e0 58 c0 72 d8 2a 4b 83 a0 80 55 de 90
+cauchy row  8: 90 de 55 80 a0 83 4b 2a d8 72 c0 58 e0 3e 4c 66
+cauchy row  9: de 90 80 55 83 a0 2a 4b 72 d8 58 c0 3e e0 66 4c
+cauchy row 10: 55 80 90 de 4b 2a a0 83 c0 58 d8 72 4c 66 e0 3e
+cauchy row 11: 80 55 de 90 2a 4b 83 a0 58 c0 72 d8 66 4c 3e e0
+cauchy row 12: a0 83 4b 2a 90 de 55 80 e0 3e 4c 66 d8 72 c0 58
+cauchy row 13: 83 a0 2a 4b de 90 80 55 3e e0 66 4c 72 d8 58 c0
+cauchy row 14: 4b 2a a0 83 55 80 90 de 4c 66 e0 3e c0 58 d8 72
+cauchy row 15: 2a 4b 83 a0 80 55 de 90 66 4c 3e e0 58 c0 72 d8
+parity  0: ec9214ef4a7b5cd793708d3728aa6ae9
+parity  1: 415dda347281222e492dd79347945545
+parity  2: ada25ff3bb0d402b5121bdd964aa5f9b
+parity  3: c8393a71c7a991a2c9e78123306521a5
+parity  4: 1135f1c0e3eee3fc5bcb9adf77c5b607
+parity  5: 14e6b66c91cbea2ce52ccea0534463dc
+parity  6: 4143eb3da1567326c48913d1fb55e14b
+parity  7: 4325ea039f295403d57afef402cc57c9
+parity  8: b824cd0264969fef4acc59e463cdb3bc
+parity  9: 861acc6466a80ffdd2caab2bb9373b27
+parity 10: b64b91c1338d95a4264b66c8269f3792
+parity 11: c4e7d6123642933ffc05daf6503b505d
+parity 12: e0561d1eefbea05dfa8208ebeb62af42
+parity 13: 9cd478858a3fd0feeb031072ea47e024
+parity 14: 5513fd7a66f9d5f90cf48058da9ac940
+parity 15: 6dc833b5cb60ddd4b20b5dd939e58c93
+lost 16 of 32: 1 8 15 22 29 4 11 18 25 0 7 14 21 28 3 10
+recovered: every data shard equals the rule above
+

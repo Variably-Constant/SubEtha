@@ -42,7 +42,7 @@
 //! +---------------------------+
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -62,7 +62,14 @@ pub struct StackHeader {
     pub head: AtomicU64,       // (counter << 32) | top_index (NIL when empty)
     pub free_head: AtomicU64,  // free-list of returned slots
     pub bump_next: AtomicU32,
-    _pad2: [u8; 28],
+    _pad3: u32,
+    /// The element layout the creator declared: a caller-chosen tag and
+    /// the element's alignment. A typed stack writes `align_of::<T>()`
+    /// and a zero tag; a raw attacher refuses a region whose tag or
+    /// alignment differs from its own.
+    pub layout_tag: u64,
+    pub alignment: u32,
+    _pad2: [u8; 12],
 }
 
 const _: () = {
@@ -87,11 +94,11 @@ impl From<std::io::Error> for StackError {
 }
 
 #[inline]
-fn pack(counter: u32, index: u32) -> u64 {
+pub(crate) fn pack(counter: u32, index: u32) -> u64 {
     ((counter as u64) << 32) | (index as u64)
 }
 #[inline]
-fn unpack(v: u64) -> (u32, u32) {
+pub(crate) fn unpack(v: u64) -> (u32, u32) {
     ((v >> 32) as u32, v as u32)
 }
 
@@ -165,6 +172,8 @@ impl<T: Copy + 'static> SharedTreiberStack<T> {
         unsafe {
             (*hdr).capacity = capacity as u32;
             (*hdr).slot_size = size_of::<T>() as u32;
+            (*hdr).alignment = std::mem::align_of::<T>() as u32;
+            (*hdr).layout_tag = 0;
             std::ptr::write(&raw mut (*hdr).head, AtomicU64::new(pack(0, STACK_NIL)));
             std::ptr::write(&raw mut (*hdr).free_head, AtomicU64::new(pack(0, STACK_NIL)));
             std::ptr::write_volatile(&raw mut (*hdr).magic, STACK_MAGIC);
@@ -199,7 +208,7 @@ impl<T: Copy + 'static> SharedTreiberStack<T> {
         path: impl AsRef<Path>, expected_capacity: usize,
     ) -> Result<Self, StackError> {
         let total = stack_file_size(expected_capacity, size_of::<T>());
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(StackError::LayoutMismatch);
         }

@@ -35,7 +35,7 @@ pub struct TemporalSensor {
     /// `window_cap`.
     owd_window: VecDeque<(u64, f64)>,
     window_cap: usize,
-    /// A LONGER `(recv_ts, owd)` window for the clock-skew estimate. Skew is a
+    /// A longer `(recv_ts, owd)` window for the clock-skew estimate. Skew is a
     /// slow, stable quantity (a fixed crystal-frequency difference), so it is
     /// measured over many round trips - long enough that the linear drift rises
     /// above the per-packet jitter that swamps it on a short window.
@@ -132,10 +132,10 @@ impl TemporalSensor {
         }
     }
 
-    /// Estimated clock skew: the slope of the line lying BELOW all
+    /// Estimated clock skew: the slope of the line lying below all
     /// `(recv_ts, owd)` samples (Moon-Skelly-Towsley). The minimum OWD for each
     /// time is the queue-free path, whose drift is purely the relative clock
-    /// rate; queueing only ever adds delay ABOVE that line. Computed from the
+    /// rate; queueing only ever adds delay above that line. Computed from the
     /// lower convex hull of the window (the queue-free minimum points), whose
     /// least-squares slope is the skew. Same units as `owd_trend`.
     pub fn skew(&self) -> f64 {

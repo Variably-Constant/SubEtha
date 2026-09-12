@@ -12,7 +12,7 @@
 //!     SubscriberPosition, reads its persisted position, and
 //!     resumes consumption from that point.
 //!  5. Verify: subscriber #2 consumes ITEMS_AFTER_CRASH +
-//!     (ITEMS_BEFORE_CRASH - CONSUMED_BEFORE_CRASH) items, AND
+//!     (ITEMS_BEFORE_CRASH - CONSUMED_BEFORE_CRASH) items, and
 //!     the values match the producer's contiguous sequence with no
 //!     gap and no duplication.
 //!
@@ -113,7 +113,7 @@ fn main() {
             .expect("position reopen");
         let resume_pos = position.get();
         println!("    sub2 reads checkpointed position = {resume_pos}");
-        // The ring's INTERNAL tail counter has advanced as sub1
+        // The ring's internal tail counter has advanced as sub1
         // popped items. Sub2 doesn't pop "from position 0"; it pops
         // the next available items from the ring (which started at
         // position resume_pos after sub1's CONSUMED_BEFORE_CRASH

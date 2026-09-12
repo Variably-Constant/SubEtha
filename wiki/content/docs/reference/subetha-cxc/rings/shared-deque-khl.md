@@ -13,14 +13,14 @@ weight: 75
 ![Hot path](https://img.shields.io/badge/hot_path-publish__batch-informational)
 
 K-axis Hierarchical LCRQ deque backed by a memory-mapped file.
-**Novel SubEtha-native hybrid** that pulls three amortization levers
+**SubEtha-native hybrid** that pulls three amortization levers
 the four base primitives pull individually:
 
 1. **KHPD's 3-items-per-Release-store** - each slot carries up to
-   `KHL_ITEMS_PER_SLOT = 3` `LineItem` payloads, published by ONE
+   `KHL_ITEMS_PER_SLOT = 3` `LineItem` payloads, published by one
    Release-store on the slot's Vyukov sequence number.
 2. **LOH's K-slots-per-counter-update** - `publish_batch` reserves
-   `ceil(K / 3)` slots with ONE update of the producer tail counter.
+   `ceil(K / 3)` slots with one update of the producer tail counter.
 3. **Chase-Lev's owner-private tail counter** - the producer's
    tail-counter update is a single Release-store (not a `LOCK XADD`),
    because the contract is "single owner process pushes."
@@ -30,7 +30,7 @@ the four base primitives pull individually:
 > bottom only), [`SharedDequeKhpd`](shared-deque-khpd/) (per-slot
 > amortization only), [`SharedDequeLoh`](shared-deque-loh/) (per-batch
 > amortization only), and [`SharedDequeUrd`](shared-deque-urd/)
-> (per-thief mailbox). KHL combines KHPD's per-slot packing AS the
+> (per-thief mailbox). KHL combines KHPD's per-slot packing as the
 > per-slot payload of LOH's Vyukov-sequence-number ring with
 > Chase-Lev's owner-private counter.
 
@@ -43,7 +43,7 @@ the four base primitives pull individually:
   62 bits, `n_items` bit-packed into the low 2 bits), 8 reserved
   bytes aligning the items to offset 16, and 3 * 16 = 48 bytes of
   items. Packing `n_items` into the sequence word means the
-  producer's ONE Release-store publishes the protocol state AND
+  producer's one Release-store publishes the protocol state and
   the payload count.
 - **Single owner, N thieves**: the owner is the only writer to the
   tail counter (Chase-Lev contract); any number of thieves race on
@@ -51,7 +51,7 @@ the four base primitives pull individually:
 - **Cross-process backed by MMF.** Thieves open the same file via
   `SharedDequeKhl::open` and call `steal_slot()` in a tight loop.
 - **`capacity` rounds up to the next power of two** (min 2). Capacity
-  is in SLOTS; total item capacity is `capacity * 3`.
+  is in slots; total item capacity is `capacity * 3`.
 
 ---
 
@@ -165,7 +165,7 @@ block-beta
 ```
 
 The Vyukov sequence per slot has the standard three-state
-protocol, run on the INDEX VALUE in the high 62 bits of
+protocol, run on the index value in the high 62 bits of
 `packed_sequence` (`idx_value = packed >> 2`,
 `n_items = packed & 3`):
 
@@ -179,7 +179,7 @@ protocol, run on the INDEX VALUE in the high 62 bits of
 The tail counter is **owner-private** (Chase-Lev style): the owner
 process is the only writer; a thief Acquire-load on `tail` learns
 the high watermark of reserved slots, and the owner's Release-store
-on `tail` provides the synchronisation ordering thieves need.
+on `tail` provides the synchronization ordering thieves need.
 
 ## See also
 

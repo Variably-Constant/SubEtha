@@ -21,7 +21,7 @@
 //!
 //! The lost-wake race is closed by the standard register-then-recheck:
 //! a poll that finds the ring empty registers its `Waker`, then checks
-//! the ring ONCE more before returning `Pending`, so an item that
+//! the ring once more before returning `Pending`, so an item that
 //! landed between the first check and the registration is never missed.
 
 use std::future::Future;

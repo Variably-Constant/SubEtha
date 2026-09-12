@@ -4,7 +4,7 @@ weight: 80
 
 # Ownership and configuration
 
-Three primitives that coordinate WHO owns or has the right to
+Three primitives that coordinate who owns or has the right to
 access a shared resource across processes. The shape sits
 between mutex (mutual exclusion of access) and leader election
 (exclusive ownership with a designated holder).
@@ -41,7 +41,7 @@ caller that owns the path.
 
 `PAYLOAD_BYTES = 48` caps the payload type `T`. `NO_OWNER` (pid 0) is
 the sentinel for "unowned". The grace period is measured in epochs,
-not wall time, which makes the lease behaviour deterministic across
+not wall time, which makes the lease behavior deterministic across
 processes that disagree on wall clock; the owner renews by calling
 `beat` before `grace_epochs` elapse.
 
@@ -61,7 +61,7 @@ Canonical doc:
 Single-leader election. One process at a time is the elected
 leader; the election protocol uses CAS on a leader-id field plus
 a heartbeat-driven grace period (same pattern as `OwnerLease`,
-specialised for the leader-vs-followers shape).
+specialized for the leader-vs-followers shape).
 
 ```rust,no_run
 pub fn create(path: impl AsRef<Path>) -> Result<Self, LeaderError>;  // attaches if the path exists
@@ -131,7 +131,7 @@ Canonical doc:
 |---|---|
 | Time-bounded exclusive resource access | `OwnerLease` |
 | Single-leader-many-followers role assignment | `SharedLeaderElection` |
-| At-most-once cross-process lazy initialisation | `LazyConfig` |
+| At-most-once cross-process lazy initialization | `LazyConfig` |
 | Multi-reader exclusive write lock (no leader semantics) | `SharedRWLock` (see [shared-locks.md](shared-locks.md)) |
 
 ## See also

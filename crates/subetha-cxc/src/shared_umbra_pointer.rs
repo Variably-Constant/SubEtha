@@ -62,7 +62,7 @@ use crate::shared_region::{OffsetPtr, RegionError, SharedRegion};
 ///
 /// # User-addressable extension bytes
 ///
-/// Bytes 8..16 are a TAG (1 byte) + PAYLOAD (7 bytes) that callers
+/// Bytes 8..16 are a tag (1 byte) plus payload (7 bytes) that callers
 /// can use to attach typed metadata to the pointer. Access via the
 /// [`UmbraExtension`] trait + `set_ext` / `ext` methods:
 ///
@@ -96,19 +96,19 @@ pub struct SharedUmbraPointer<T: Copy + 'static> {
 
 /// Marker trait for user-defined extension types stored in
 /// SharedUmbraPointer's reserved bytes. Each implementor declares
-/// a unique TAG so different consumers don't misinterpret each
+/// a unique `TAG` so different consumers don't misinterpret each
 /// other's payloads.
 ///
 /// # Implementor responsibility
 ///
-/// `TAG` MUST be globally unique across all `UmbraExtension`
+/// `TAG` is globally unique across all `UmbraExtension`
 /// implementations that may be present in the same shared memory.
-/// Two implementations sharing a TAG value will silently
-/// misinterpret each other's payloads. Reserve TAG values in your
+/// Two implementations sharing a `TAG` value will silently
+/// misinterpret each other's payloads. Reserve `TAG` values in your
 /// application by registering them in a central location (e.g. a
 /// doc comment listing claimed tags).
 ///
-/// TAG 0 is reserved for "no extension set".
+/// `TAG` 0 is reserved for "no extension set".
 pub trait UmbraExtension: Copy + 'static {
     const TAG: u8;
 }
@@ -129,7 +129,7 @@ impl<T: Copy + 'static> Clone for SharedUmbraPointer<T> {
 impl<T: Copy + 'static> Copy for SharedUmbraPointer<T> {}
 
 impl<T: Copy + 'static> PartialEq for SharedUmbraPointer<T> {
-    /// Full equality: same target AND same prefix. Use
+    /// Full equality: same target and same prefix. Use
     /// `prefix_eq` for the fast-path prefix-only check.
     fn eq(&self, other: &Self) -> bool {
         self.target == other.target && self.prefix == other.prefix
@@ -196,13 +196,13 @@ impl<T: Copy + 'static> SharedUmbraPointer<T> {
     }
 
     /// Read a typed extension. Returns `None` if no extension is
-    /// set (tag=0) OR if the stored tag does not match `E::TAG`.
+    /// set (tag=0) or if the stored tag does not match `E::TAG`.
     ///
     /// # Safety
     ///
     /// Even with tag validation, this is `unsafe` because the
     /// tag-uniqueness contract is on the caller. Two
-    /// `UmbraExtension` implementations sharing a TAG value will
+    /// `UmbraExtension` implementations sharing a `TAG` value will
     /// silently misinterpret each other's payloads. The payload
     /// bytes must also be a valid representation of `E` (relevant
     /// for enums with restricted discriminants).
@@ -272,7 +272,7 @@ impl<T: Copy + 'static> SharedUmbraPointer<T> {
     #[inline]
     pub fn is_nil(&self) -> bool { self.target.is_nil() }
 
-    /// Prefix-only comparison. Single in-register check; does NOT
+    /// Prefix-only comparison. Single in-register check; does not
     /// touch the region MMF. Use as the first step in a staged
     /// equality check.
     #[inline]
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn prefix_eq_does_not_touch_region() {
-        // Two SharedUmbraPointers with the SAME prefix but
+        // Two SharedUmbraPointers with one prefix between them but
         // different (invalid) OffsetPtr indices. prefix_eq returns
         // true without resolving either target. matches_prefix
         // against the same query prefix likewise.
@@ -429,7 +429,7 @@ mod tests {
             .filter(|p| p.matches_prefix(query))
             .collect();
         assert!(matches.is_empty(), "no prefix in 1..=100 should equal 999");
-        // Sanity: a prefix that DOES match resolves correctly.
+        // Sanity: a prefix that does match resolves correctly.
         let hit: &SharedUmbraPointer<u64> = pointers.iter()
             .find(|p| p.matches_prefix(42))
             .expect("prefix 42 should exist (i=41)");
@@ -449,7 +449,7 @@ mod tests {
         ).unwrap();
         // The SharedUmbraPointer struct is Copy + Pod, so we can
         // pretend we ferried it through shared memory by literal
-        // byte-copy. The destination MUST be aligned to align_of
+        // byte-copy. The destination is aligned to align_of
         // SharedUmbraPointer<u64> (16 bytes); a plain `[u8; 16]`
         // has alignment 1 and would produce a misaligned read on
         // architectures that fault on unaligned u64 access. Use
@@ -460,7 +460,7 @@ mod tests {
         // SAFETY: buf is the size_of::<SharedUmbraPointer<u64>>() == 16
         // bytes correctly aligned, fully owned, and writable. Source
         // is a valid SharedUmbraPointer<u64> by construction. The
-        // copy initialises every byte of buf.
+        // copy initializes every byte of buf.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &u as *const SharedUmbraPointer<u64> as *const u8,
@@ -468,11 +468,11 @@ mod tests {
                 std::mem::size_of::<SharedUmbraPointer<u64>>(),
             );
         }
-        // SAFETY: buf was fully initialised by the copy above; its
+        // SAFETY: buf was fully initialized by the copy above; its
         // bytes are a valid SharedUmbraPointer<u64> (the trait is
         // Copy + has no Drop), so assume_init is sound.
         let recovered: SharedUmbraPointer<u64> = unsafe { buf.assume_init() };
-        // Reader resolves the byte-recovered pointer through ITS
+        // Reader resolves the byte-recovered pointer through its
         // mapping of the same region file.
         assert_eq!(recovered.prefix, 0xABCD_EF01);
         assert_eq!(recovered.resolve(&reader_region).unwrap(), 7777);
@@ -492,7 +492,7 @@ mod tests {
 
     // Note: an 8-byte extension type like `struct MvccEpoch(u64)`
     // would fail the compile-time size guard
-    // (ExtSizeCheck::<MvccEpoch>::CHECK fires the const_assert).
+    // (`ExtSizeCheck::<MvccEpoch>::CHECK` fires the const_assert).
     // Tests use the 6-byte Epoch48 variant below to stay within
     // the 7-byte payload budget.
 

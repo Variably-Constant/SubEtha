@@ -6,7 +6,7 @@
 //!  1. Create a process-local VirtualEndpointRegistry.
 //!  2. Bind two endpoints by id: one Local (to a LocaleAdaptiveRing),
 //!     one Remote (placeholder address; no QUIC needed for this E2E).
-//!  3. Pin the local endpoint and walk the FIVE-axis pin chain:
+//!  3. Pin the local endpoint and walk the five-axis pin chain:
 //!     VirtualEndpoint -> Local -> LocaleAdaptiveRing -> AdaptiveRing
 //!     -> PinnedRing -> SpscRingCore. Round-trip items through the
 //!     native primitive at the bottom.

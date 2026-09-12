@@ -1,4 +1,4 @@
-//! Cross-HOST bridge harness: one role per machine, real LAN hop.
+//! Cross-host bridge harness: one role per machine, real LAN hop.
 //!
 //! Exercises the three bridge stacks between two physical hosts:
 //!
@@ -12,20 +12,20 @@
 //!
 //! - **oneway**: the client host's app pushes `--items` sequenced
 //!   slots into its local ring; the bridge ships them across the
-//!   wire; the server host's app drains its local ring and ASSERTS
+//!   wire; the server host's app drains its local ring and asserts
 //!   strict sequence order + count + sum. Both sides print
 //!   machine-parsable `RESULT` lines (client ship rate, server
 //!   first-to-last drain rate).
-//! - **rtt**: both hosts run a server AND a client (two rings
+//! - **rtt**: both hosts run a server and a client (two rings
 //!   each); the `ping` role round-trips `--rounds` items through
 //!   ring -> wire -> remote ring -> remote app echo -> wire -> ring
 //!   and reports min/avg/p50/p99/max round-trip latency. The `pong`
 //!   role echoes. Both roles print `BOUND` after their server binds
-//!   and then WAIT FOR A LINE ON STDIN before connecting their
+//!   and then wait for a line on stdin before connecting their
 //!   client - the orchestrator releases both once both are bound,
 //!   so neither side races the other's listener.
 //!
-//! Certificates (QUIC only): generate ONE self-signed pair anywhere
+//! Certificates (QUIC only): generate one self-signed pair anywhere
 //! with `--gen-cert <cert.der> <key.der>`, ship both files to every
 //! host that runs a QUIC server and the cert file to every host
 //! that runs a QUIC client. The SNI is the fixed string
@@ -83,7 +83,7 @@ enum Transport {
     /// ships MTU-sized items as forward-error-corrected datagrams, so
     /// it is measured at its natural framing for a goodput head-to-head.
     Sens,
-    /// Raw UDP one-way blast: NO reliability, NO congestion control.
+    /// Raw UDP one-way blast: no reliability, no congestion control.
     /// The unprotected-datagram reference - it reveals both the raw
     /// link ceiling (clean) and how much a bare datagram stream loses
     /// when the link drops or rate-limits (delivery ratio reported
@@ -132,8 +132,8 @@ struct Args {
     /// bridges take wire loss from netem instead, since TCP/QUIC handle
     /// loss in the kernel/quinn, not the app).
     loss: u32,
-    /// Sens-O-Matic receiver-side REVERSE-path loss: drop this percent of
-    /// OUTGOING feedback, to exercise bidirectional loss accounting (forward
+    /// Sens-O-Matic receiver-side reverse-path loss: drop this percent of
+    /// outgoing feedback, to exercise bidirectional loss accounting (forward
     /// `--loss` vs reverse `--fb-loss`) without per-direction netem.
     fb_loss: u32,
     seed: u64,
@@ -200,10 +200,10 @@ struct Args {
     /// it self-sizes to the path and ProbeBW grows it to fill a high-BDP link.
     bbr_cwnd: bool,
     /// RLC repair cadence: one repair symbol per this many source symbols. Lower
-    /// = more parity = more induced loss recovered FORWARD (no ARQ stall), so a
+    /// = more parity = more induced loss recovered forward (no ARQ stall), so a
     /// pushed rate converts to goodput instead of retransmits. 0 = default (4).
     rlc_step: usize,
-    /// Batch steady-state DATA datagrams into one `sendmsg` via UDP GSO
+    /// Batch steady-state data datagrams into one `sendmsg` via UDP GSO
     /// (`UDP_SEGMENT`), collapsing the per-symbol syscall cost (Sens/RLC only).
     gso: bool,
     /// Static rate pacing: spread the in-flight window over the RTT so a larger
@@ -215,7 +215,7 @@ struct Args {
     pace_mbit: f64,
     /// Adaptive FEC-push start rate in Mbit/s (0 = off): closed-loop pacing that
     /// probes up while the FEC absorbs the induced loss and backs off to the
-    /// delivered rate on a path drop - fills headroom AND survives variance.
+    /// delivered rate on a path drop - fills headroom and survives variance.
     adaptive_push: f64,
 }
 
@@ -915,7 +915,7 @@ async fn run_rtt(args: &Args, is_ping: bool) -> Result<(), Box<dyn std::error::E
 
 // ===================================================================
 // Raw UDP one-way blast: the unprotected-datagram reference. No
-// reliability, no congestion control, no FEC - it characterises both
+// reliability, no congestion control, no FEC - it characterizes both
 // the raw link ceiling (clean) and how a bare datagram stream fares
 // when the link drops (delivery ratio reported alongside goodput).
 // ===================================================================
@@ -925,7 +925,7 @@ async fn run_rtt(args: &Args, is_ping: bool) -> Result<(), Box<dyn std::error::E
 const UDP_EOF_MARKER: u64 = u64::MAX;
 
 /// Bind a UDP socket with generous SO_RCVBUF / SO_SNDBUF, so the loss
-/// the bench measures is the LINK's (netem), not a socket-buffer
+/// the bench measures is the link's (netem), not a socket-buffer
 /// overflow - the same buffer treatment the reliable transports get.
 fn bind_udp_blast(addr: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
@@ -1002,7 +1002,7 @@ fn udp_blast_server(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     let secs = first_to_last_ns as f64 / 1e9;
     let delivery_ratio = received as f64 / items as f64;
-    // Goodput is DELIVERED bytes / time - it does not credit UDP for
+    // Goodput is delivered bytes / time - it does not credit UDP for
     // datagrams the link dropped. delivery_ratio carries the loss.
     let goodput = received as f64 * item_bytes as f64 * 8.0 / secs / 1e6;
     println!(
@@ -1028,7 +1028,7 @@ fn udp_blast_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         // Raw blast: no flow control, no pacing. A blocking socket
         // self-limits only when its own send buffer fills; the link's
         // qdisc drops whatever exceeds the rate. A real UDP blaster
-        // does NOT retry a dropped datagram, so neither do we.
+        // leaves a dropped datagram unretried, so neither do we.
         loop {
             match sock.send(&buf) {
                 Ok(_) => break,
@@ -1086,7 +1086,7 @@ fn sens_oneway_server(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let (mut got, mut sum) = (0u64, 0u64);
     let mut t_first: Option<Instant> = None;
     let t0 = Instant::now();
-    // Item 16: log the Sprout forecast on a slow cadence so a variable-rate run
+    // Log the Sprout forecast on a slow cadence so a variable-rate run
     // shows it tracking - and a conservative lower bound leading - the rate steps.
     let mut last_fc_log = Instant::now();
     while got < items {
@@ -1148,7 +1148,7 @@ fn sens_oneway_server(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // The peer's link class (from its Link frame): 0 unknown / 1 loopback /
     // 2 wired / 3 Wi-Fi / 4 cellular, plus a normalized quality.
     let (peer_link_class, peer_link_quality) = recv.peer_link();
-    // Active OS path-event observer (item 12): how many route / carrier / MTU
+    // Active OS path-event observer: how many route / carrier / MTU
     // events this end's netlink watcher fired, the local egress MTU it reads,
     // and the sender's MTU it learned from the `Pmtu` frame. Flapping a route
     // or dropping the MTU on this host mid-run bumps `net_events` and `pmtu`.
@@ -1159,18 +1159,18 @@ fn sens_oneway_server(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // spikes it toward 1.0 (the live shift has since decayed) - the direct
     // proof the observer fired on the side that experienced the event.
     let path_shift_peak = recv.net_event_shift_peak();
-    // WBest available-bandwidth estimate (item 13): the receiver measured the
+    // WBest available-bandwidth estimate: the receiver measured the
     // dispersion of the sender's probe pairs / train.
     let (wbest_avail, wbest_cap) = recv.wbest_bps();
     let wbest_avail_mbit = wbest_avail as f64 / 1e6;
     let wbest_cap_mbit = wbest_cap as f64 / 1e6;
-    // AccECN (item 15): how many of the sender's ECN-capable packets we saw and
+    // AccECN: how many of the sender's ECN-capable packets we saw and
     // how many the AQM marked CE - the raw counters behind the graded ce_rate.
     let (ce_count, ect_count) = recv.accecn_counts();
-    // Sprout forecast (item 16): the receiver's final 5th-percentile next-tick
+    // Sprout forecast: the receiver's final 5th-percentile next-tick
     // deliverable-rate prediction.
     let forecast_mbit = recv.forecast_bps() as f64 / 1e6;
-    // LEO cadence (item 17): the handover period the receiver detected from the
+    // LEO cadence: the handover period the receiver detected from the
     // OWD autocorrelation, its confidence, and the predicted time to next spike.
     let (leo_period_s, leo_conf, leo_to_spike_s) = recv.leo_cadence().unwrap_or((0.0, 0.0, 0.0));
     println!(
@@ -1271,7 +1271,7 @@ fn sens_oneway_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // the OS wireless read is unavailable.
     let rtt_bimodality = send.rtt_bimodality();
     let rtt_wifi_conf = send.rtt_wifi_confidence();
-    // Active OS path-event observer (item 12): events this end's watcher fired,
+    // Active OS path-event observer: events this end's watcher fired,
     // this end's egress MTU, the peer's MTU learned from its `Pmtu` frame, and
     // the event-driven path-shift contribution the controller fused.
     let net_events = send.net_event_count();
@@ -1280,13 +1280,13 @@ fn sens_oneway_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // Peak event-driven path shift over the run: a mid-transfer route / MTU
     // event spikes this to ~1.0 even though the live shift has since decayed.
     let path_shift_evt = send.net_event_shift_peak();
-    // WBest active-probe estimate (item 13): the receiver's available-bandwidth /
+    // WBest active-probe estimate: the receiver's available-bandwidth /
     // effective-capacity report. The capacity cross-checks the passive BtlBw
     // above; the available bandwidth tracks a rate-limited / loaded bottleneck.
     let (avail_bw, wbest_cap) = send.avail_bw_bps();
     let avail_bw_mbit = avail_bw as f64 / 1e6;
     let wbest_cap_mbit = wbest_cap as f64 / 1e6;
-    // Trace mini-traceroute + path asymmetry (item 14): the hops the Trace sweep
+    // Trace mini-traceroute + path asymmetry: the hops the Trace sweep
     // discovered toward the peer (router IP + per-hop RTT) and the forward vs
     // reverse hop-count asymmetry.
     let trace = send.trace_hops();
@@ -1297,10 +1297,10 @@ fn sens_oneway_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let fmt_opt = |o: Option<u8>| o.map(|v| v.to_string()).unwrap_or_else(|| "na".into());
     let (asym_fwd, asym_rev, asym) = (fmt_opt(asym_fwd), fmt_opt(asym_rev), fmt_opt(asym));
     let trace_hops = trace.len();
-    // AccECN graded CE rate (item 15): the fraction of our ECN-capable packets an
+    // AccECN graded CE rate: the fraction of our ECN-capable packets an
     // AQM marked CE - a graded congestion signal that leads loss.
     let ce_rate = send.ce_rate();
-    // Sprout forecast (item 16): the receiver's 5th-percentile next-tick
+    // Sprout forecast: the receiver's 5th-percentile next-tick
     // deliverable-rate prediction, which pre-sizes the window ahead of a dip.
     let forecast_mbit = send.forecast_bps() as f64 / 1e6;
     println!(
@@ -1420,7 +1420,7 @@ fn sens_rlc_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let (items, item_bytes) = (args.items, args.item_bytes.max(16));
     // Window 32, one repair every 4 source symbols (code rate 4/5, matching the
     // block-RS k=8 r=2 baseline for a fair A/B), dense coefficients. These are
-    // the INITIAL parameters; with adaptation on (the default) the sensing
+    // the initial parameters; with adaptation on (the default) the sensing
     // feedback retunes the window / cadence / density during the run. --rlc-static
     // pins them here for the static baseline.
     let step = if args.rlc_step > 0 { args.rlc_step } else { 4 };
@@ -1449,8 +1449,8 @@ fn sens_rlc_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.rlc_static {
         send = send.with_static_params();
     }
-    // --sim-path-event arms the OS path-event observer (item 12) so a synthesized
-    // route / carrier change mid-stream drives a PROACTIVE, validated migration.
+    // --sim-path-event arms the OS path-event observer so a synthesized
+    // route / carrier change mid-stream drives a proactive, validated migration.
     if args.sim_path_event {
         send = send.with_path_observer(None);
     }
@@ -1682,7 +1682,7 @@ fn sens_auto_client(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     for seq in 0..items {
         // Operator-driven switch schedule: force the handover at the scheduled
-        // item BEFORE sending it, so item `at` is the first carried on the new
+        // item ahead of sending it, so item `at` is the first carried on the new
         // code. Exercises the RS->RLC stream-resync deterministically.
         for (at, code) in &args.switch_seq {
             if seq == *at {
@@ -1992,7 +1992,7 @@ fn sens_rtt(args: &Args, is_ping: bool) -> Result<(), Box<dyn std::error::Error>
 /// Request-response round-trip latency over the sliding-window RLC transport -
 /// the FEC counterpart to `sens_rtt` (which is the block-RS path). Each round is
 /// one item sent and echoed back; under loss the window parity recovers a lost
-/// round FORWARD with no retransmit round trip, so the tail latency stays low
+/// round forward with no retransmit round trip, so the tail latency stays low
 /// where an ARQ stream (TCP/QUIC) stalls for a retransmit. Optional `--tls`
 /// measures the encrypted transport; the AEAD seal/open is per-packet (no extra
 /// round trips), so the plaintext and TLS round-trip times differ only by
@@ -2023,7 +2023,7 @@ fn sens_rlc_rtt(args: &Args, is_ping: bool) -> Result<(), Box<dyn std::error::Er
         let key = args.key.as_ref().ok_or("--tls needs --key")?;
         // Two independent RLC sessions (ping->pong and pong->ping) each carry a
         // TLS 1.3 handshake. Serialize them by opposite ordering so neither side
-        // blocks its peer: ping drives its SENDER session first, then its
+        // blocks its peer: ping drives its sender session first, then its
         // receiver; pong drives its receiver first, then its sender.
         if is_ping {
             send = send.with_tls_client(subetha_cxc::rlc_crypto::client_config(cert)?)?;

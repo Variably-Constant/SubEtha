@@ -1,11 +1,11 @@
 //! `fd_handoff`: live cross-process handle handoff (cross-platform).
 //!
 //! Hands a live OS handle to a shared kernel object from one process to
-//! another, so the receiver attaches to the SAME object WITHOUT
+//! another, so the receiver attaches to that same object without
 //! re-opening it by name / path. Only the irreducible per-OS syscall is
 //! gated; the verb-pair shape is shared:
 //!
-//! - Unix (`#[cfg(unix)]`): SCM_RIGHTS over a UNIX domain socket. The
+//! - Unix (`#[cfg(unix)]`): SCM_RIGHTS over a Unix domain socket. The
 //!   sender's `sendmsg` carries the fd in ancillary data; the receiver's
 //!   `recvmsg` gets a duplicated fd referring to the same kernel file
 //!   table entry. Pair: `send_fd` / `recv_fd` (+ `accept_one` /
@@ -13,23 +13,23 @@
 //! - Windows (`#[cfg(windows)]`): `DuplicateHandle` into the target
 //!   process. The sender injects the handle into the receiver's handle
 //!   table (via `OpenProcess(PROCESS_DUP_HANDLE)`) and sends the
-//!   resulting target-valid handle VALUE over any byte stream; the
+//!   resulting target-valid handle value over any byte stream; the
 //!   receiver uses it directly. Pair: `send_handle` / `recv_handle`
 //!   (+ `create_anon_mapping` / `map_handle` for an anonymous,
-//!   nameless shared region - the analogue of a Unix memfd).
+//!   nameless shared region - the analog of a Unix memfd).
 //!
 //! For the substrate this enables a sender process to hand the
 //! underlying handle of a shared region (ShmFile / file-backed
 //! `SpscRingCore` on unix, a file mapping on Windows) to a receiver,
 //! which attaches and observes the same region without opening it by
-//! path. Per the substrate's design choice this is a VERB pair (send /
-//! recv on existing rings), NOT a new Locale variant; the locale axis
+//! path. Per the substrate's design choice this is a verb pair (send /
+//! recv on existing rings) rather than a new Locale variant; the locale axis
 //! stays at three members (Anon / ShmFs / File).
 
 #![cfg(any(unix, windows))]
 
 // ---------------------------------------------------------------------
-// Unix: SCM_RIGHTS fd passing over a UNIX domain socket.
+// Unix: SCM_RIGHTS fd passing over a Unix domain socket.
 // ---------------------------------------------------------------------
 
 #[cfg(unix)]
@@ -173,8 +173,8 @@ mod dup_handle {
         GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE,
     };
 
-    /// Create an anonymous (pagefile-backed, NO name) shared file
-    /// mapping of `size` bytes - the Windows analogue of a Unix memfd.
+    /// Create an anonymous (pagefile-backed, no name) shared file
+    /// mapping of `size` bytes - the Windows analog of a Unix memfd.
     /// Because it has no name, the only way a peer reaches the region is
     /// the handle handed over by [`send_handle`]. Returns the handle as
     /// an integer value (mirroring the unix `RawFd`), so the public API
@@ -189,7 +189,7 @@ mod dup_handle {
                 PAGE_READWRITE | SEC_COMMIT,
                 (len >> 32) as u32,
                 (len & 0xFFFF_FFFF) as u32,
-                std::ptr::null(), // NO name -> anonymous
+                std::ptr::null(), // No name -> anonymous
             )
         };
         if handle.is_null() {
@@ -212,7 +212,7 @@ mod dup_handle {
         }
     }
 
-    /// Unmap a base pointer previously returned by [`map_handle`].
+    /// Unmap a base pointer that [`map_handle`] returned.
     pub fn unmap(base: *mut u8) {
         unsafe {
             UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
@@ -228,7 +228,7 @@ mod dup_handle {
         }
     }
 
-    /// Duplicate `handle` INTO the process `target_pid` and write the
+    /// Duplicate `handle` into the process `target_pid` and write the
     /// resulting target-valid handle value over `stream` (8 LE bytes).
     /// The Windows parallel to SCM_RIGHTS: rather than pushing the
     /// handle through ancillary socket data, inject it into the target's
@@ -266,7 +266,7 @@ mod dup_handle {
     }
 
     /// Receive a handle value (8 LE bytes) from `stream`. Because the
-    /// sender duplicated the handle INTO this process, the value is a
+    /// sender duplicated the handle into this process, the value is a
     /// valid handle here; map it with [`map_handle`].
     pub fn recv_handle<R: Read>(stream: &mut R) -> io::Result<u64> {
         let mut buf = [0u8; 8];
@@ -286,7 +286,7 @@ mod tests_unix {
     use std::os::unix::net::UnixStream;
 
     /// Over an in-process socketpair, a fd sent via SCM_RIGHTS arrives as
-    /// a duplicate that refers to the SAME kernel file entry: data written
+    /// a duplicate that refers to one and the same kernel file entry: data written
     /// through one fd is visible through the other.
     #[test]
     fn scm_rights_fd_shares_the_kernel_file() {
@@ -318,7 +318,7 @@ mod tests_unix {
         assert_eq!(n, 21, "pread via dup'd fd");
         assert_eq!(&buf, b"shared-via-scm-rights");
 
-        // Append through the dup, observe it through the ORIGINAL fd: same
+        // Append through the dup, observe it through the original fd: same
         // kernel file entry, not a copy.
         let m = unsafe {
             libc::pwrite(dup, b"!".as_ptr() as *const libc::c_void, 1, 21)
@@ -352,7 +352,7 @@ mod tests_windows {
     use std::io::Cursor;
 
     /// In-process proof of the duplicate-into-target mechanism: duplicate
-    /// an anonymous mapping handle into THIS process (target_pid = our
+    /// an anonymous mapping handle into this process (target_pid = our
     /// own pid), then map the received handle. A write through one view
     /// is visible through the other - the same kernel section object, not
     /// a copy. (Cross-process coverage is `fd_handoff_xproc`.)

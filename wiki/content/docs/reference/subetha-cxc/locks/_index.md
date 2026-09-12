@@ -1,11 +1,11 @@
 ---
-title: "Locks & Synchronisation"
+title: "Locks & Synchronization"
 weight: 250
 sidebar:
   open: true
 ---
 
-# Cross-process locks and synchronisation primitives
+# Cross-process locks and synchronization primitives
 
 Mutual exclusion, semaphores, rate-limiting, and logical clocks.
 

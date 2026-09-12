@@ -19,8 +19,8 @@ correctly with no lost updates.
 > faster**, lock-free vs lock-acquire); set at 8.20 ns vs
 > `Mutex<Vec<u64>>` 17.22 ns (**2.1x faster**). 8x storage
 > density vs `Vec<bool>` (1 bit/slot vs 1 byte/slot). The
-> architectural lever stacks: lock-free per-op cost AND
-> cross-process visibility AND 8x denser layout.
+> architectural lever stacks: lock-free per-op cost and
+> cross-process visibility and 8x denser layout.
 
 **Constraints (read first):**
 
@@ -97,7 +97,7 @@ boundary words carefully:
   that touches only bits `[lo_bit..64)`.
 - **Interior words** (fully covered): plain Release-store.
   Overwriting all 64 bits is safe because no concurrent writer
-  is modifying bits THIS call expects to keep; we're
+  is modifying bits this call expects to keep; we're
   setting / clearing every bit in the word.
 - **Last word** (partial cover at low end): RMW with a mask
   that touches only bits `[0..hi_bit)`.
@@ -150,7 +150,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
 - **MMF lifecycle managed**: create + ops + drop + `remove_file`
   per bench; no leaks across runs.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Multi-thread / multi-process concurrent set**: the atomic RMW
   scales linearly until cache-line contention dominates. The
@@ -270,7 +270,7 @@ corresponding bit. Duplicates are detected by `set` returning
   capacity_bits.** Open will fail with `LayoutMismatch`. Pin
   capacity in a shared spec.
 
-- **Wrapping in a Mutex.** Pointless; the atomic RMW IS the
+- **Wrapping in a Mutex.** Pointless; the atomic RMW is the
   synchronization mechanism.
 
 ---

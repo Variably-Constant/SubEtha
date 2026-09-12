@@ -77,7 +77,7 @@ mod tests {
 
     /// Build `d` data blocks of `block_len` bytes with recognizable
     /// content, compute the outer parity, then verify that dropping every
-    /// pattern of up to `r_outer` WHOLE blocks recovers the data exactly.
+    /// pattern of up to `r_outer` whole blocks recovers the data exactly.
     fn exhaustive_whole_block_recovery(d: usize, r_outer: usize, block_len: usize) {
         let seg = SegmentCode::new(d, r_outer).expect("segment code");
         let data: Vec<Vec<u8>> = (0..d)

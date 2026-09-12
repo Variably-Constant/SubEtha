@@ -133,7 +133,7 @@ ratio cannot pin one instance's drain so long that other
 instances on the same node never get scanned.
 
 **`drained_ops == 0` short-circuit.** If nothing was popped, the
-sidecar skips the stats-lock acquisition AND the policy decision.
+sidecar skips the stats-lock acquisition and the policy decision.
 An idle instance costs the scan thread one ring head-vs-tail
 comparison (no atomic RMW; the comparison is on the consumer's
 private head and a release-loaded tail), then continue. Tens of

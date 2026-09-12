@@ -1,7 +1,7 @@
 //! `SpscRingCore` - Lamport 1983 single-producer / single-consumer
 //! ring backed by a memory-mapped file.
 //!
-//! This is the SPSC-specialised counterpart of
+//! This is the SPSC-specialized counterpart of
 //! [`SharedRing`](crate::SharedRing). Where `SharedRing` carries
 //! the Vyukov MPMC protocol (per-slot sequence number, CAS on the
 //! producer / consumer counters), `SpscRingCore` strips the protocol
@@ -49,7 +49,7 @@
 //! No heal_stuck_slot equivalent is needed or possible here.
 
 use std::cell::UnsafeCell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -158,6 +158,38 @@ pub struct SpscRingCore {
 unsafe impl Send for SpscRingCore {}
 unsafe impl Sync for SpscRingCore {}
 
+thread_local! {
+    /// Who this thread is popping as, for the two-reader panic to name.
+    /// A core knows nothing about consumers, so the layer that does sets
+    /// this before it calls down. Debug builds only; a plain cell, so it
+    /// costs nothing another thread can observe.
+    static POP_CONTEXT: std::cell::Cell<(usize, u8, usize)> =
+        const { std::cell::Cell::new((usize::MAX, u8::MAX, usize::MAX)) };
+}
+
+/// Record who is about to pop, for the two-reader panic. See
+/// [`POP_CONTEXT`].
+pub(crate) fn set_pop_context(consumer: usize, shape: u8) {
+    POP_CONTEXT.with(|c| {
+        let (_, _, ring) = c.get();
+        c.set((consumer, shape, ring));
+    });
+}
+
+/// Record which ring of a grid is about to be popped, so the panic can
+/// dump that ring's history rather than the whole trace.
+pub(crate) fn set_pop_ring(ring: usize) {
+    POP_CONTEXT.with(|c| {
+        let (consumer, shape, _) = c.get();
+        c.set((consumer, shape, ring));
+    });
+}
+
+#[cfg(debug_assertions)]
+fn pop_context() -> (usize, u8, usize) {
+    POP_CONTEXT.with(|c| c.get())
+}
+
 fn init_spsc_layout(mmap: &mut MmapMut, capacity: usize) {
     unsafe { init_spsc_layout_raw(mmap.as_mut_ptr(), capacity) };
 }
@@ -246,7 +278,7 @@ impl SpscRingCore {
 
     /// Open an existing file-backed ring. Validates magic + capacity.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, RingError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = spsc_ring_file_size(expected_capacity);
         let actual_len = file.metadata()?.len();
         if (actual_len as usize) < total {
@@ -295,7 +327,7 @@ impl SpscRingCore {
     }
 
     /// Open an existing named ShmFs-backed ring. Validates magic +
-    /// capacity. Does NOT re-initialize the layout - the layout must
+    /// capacity, and leaves the layout as it found it - the layout must
     /// already be present from a prior `create_from_shm` on the same
     /// logical name.
     pub fn open_from_shm(
@@ -346,7 +378,7 @@ impl SpscRingCore {
 
     /// Attach to an existing ring already laid out in `region` - e.g. a
     /// `LargePageSection` another process created under the same name.
-    /// Validates the header and does NOT re-initialise.
+    /// Validates the header and leaves the layout as it found it.
     pub fn open_in_region<R: RegionOwner>(
         mut region: R, expected_capacity: usize,
     ) -> Result<Self, RingError> {
@@ -460,13 +492,35 @@ impl SpscRingCore {
             let src = (*slot.payload.get()).as_ptr();
             std::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), SPSC_PAYLOAD_BYTES);
         }
+        // One reader by contract, so a plain store is what a release
+        // build does. A debug build claims the advance instead: only a
+        // second reader can have moved `tail` since it was read, and
+        // catching that here names the moment rather than leaving a
+        // duplicate to be inferred from what a consumer received.
+        #[cfg(debug_assertions)]
+        if header
+            .tail
+            .compare_exchange(tail, tail + 1, Ordering::Release, Ordering::Relaxed)
+            .is_err()
+        {
+            let (consumer, shape, ring) = pop_context();
+            let history = crate::ring_trace::recent_for(ring, 40).join("\n  ");
+            panic!(
+                "two readers on one SPSC core: tail moved from {tail} while this pop \
+                 was copying slot {}, so both readers take the same item.\n  \
+                 this reader is consumer {consumer} on backing {shape}, ring {ring}\n  \
+                 what happened to ring {ring} before this, oldest first:\n  {history}",
+                tail as usize % self.capacity
+            );
+        }
+        #[cfg(not(debug_assertions))]
         header.tail.store(tail + 1, Ordering::Release);
         // The freed slot's next toucher is the producer core.
         crate::cache_ops::cldemote(slot as *const SpscSlot as *const u8);
         Ok(SPSC_PAYLOAD_BYTES)
     }
 
-    /// Peek the next slot WITHOUT copying or releasing it. Returns
+    /// Peek the next slot without copying or releasing it. Returns
     /// a [`PeekedSlot`] guard that derefs to `&[u8]` pointing
     /// directly into the mapped region. Caller passes this slice to
     /// downstream consumers (e.g. quinn's `SendStream::write_all`)
@@ -517,7 +571,7 @@ impl SpscRingCore {
 
 /// Zero-copy view into the next consumer slot of an [`SpscRingCore`].
 ///
-/// Derefs to `&[u8]` pointing INTO the mapped region; pass that
+/// Derefs to `&[u8]` pointing into the mapped region; pass that
 /// slice directly to downstream consumers (network egress, file
 /// writers) without an intermediate stack copy. Call
 /// [`PeekedSlot::confirm`] when done to release the slot;
@@ -634,12 +688,12 @@ mod tests {
         let capacity = 8;
         let size = spsc_ring_file_size(capacity);
 
-        // Producer side: create the ring (initialises layout).
+        // Producer side: create the ring (initializes layout).
         let shm_a = ShmFile::create_or_open_named(&name, size).expect("shm A");
         let producer_ring = SpscRingCore::create_from_shm(shm_a, capacity).unwrap();
 
-        // Consumer side: open the SAME named region; layout already
-        // initialised so use open_from_shm.
+        // Consumer side: open that same named region; layout already
+        // initialized so use open_from_shm.
         let shm_b = ShmFile::create_or_open_named(&name, size).expect("shm B");
         let consumer_ring = SpscRingCore::open_from_shm(shm_b, capacity).unwrap();
 
@@ -711,7 +765,7 @@ mod tests {
         let payload = [0x5Au8; SPSC_PAYLOAD_BYTES];
         ring.try_push(&payload).unwrap();
 
-        // Peek and drop WITHOUT confirming: the slot must stay.
+        // Peek and drop without confirming: the slot must stay.
         {
             let peek = ring.peek_slot().unwrap();
             assert_eq!(peek.as_slice(), &payload[..]);
@@ -793,9 +847,9 @@ mod tests {
     }
 
     #[test]
-    fn open_in_region_attaches_to_initialised_layout() {
+    fn open_in_region_attaches_to_initialized_layout() {
         // Lay a ring out in a region, push an item, then attach a second
-        // handle to the SAME bytes via open_in_region (no re-init) and
+        // handle to those same bytes via open_in_region (no re-init) and
         // drain through it - the cross-process LargePageSection path in
         // miniature, with a heap region standing in for the section.
         let cap = 8usize;
@@ -829,7 +883,7 @@ mod tests {
         consumer.try_pop(&mut out).unwrap();
         assert_eq!(out, payload);
         // `whole` is declared before the views, so scope order drops it
-        // LAST - the backing bytes outlive both ring handles.
+        // last - the backing bytes outlive both ring handles.
     }
 
     #[test]

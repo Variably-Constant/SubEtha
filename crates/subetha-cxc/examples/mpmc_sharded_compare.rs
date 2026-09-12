@@ -9,9 +9,9 @@
 //! producer is the sole writer of its own ring, no CAS at all. It
 //! trades global cross-producer FIFO for per-producer FIFO.
 //!
-//! Fair comparison: SAME total buffer (Vyukov gets one ring of
+//! Fair comparison: same total buffer (Vyukov gets one ring of
 //! `TOTAL_CAP`; the sharded grid gets `n_prod` shards of
-//! `TOTAL_CAP / n_prod` each), SAME producer/consumer thread counts,
+//! `TOTAL_CAP / n_prod` each), same producer/consumer thread counts,
 //! pinned, interleaved rounds, exact count + sum integrity.
 //!
 //! Run:
@@ -47,7 +47,7 @@ fn expected_sum(np: usize, per_prod: u64) -> u64 {
     s
 }
 
-/// Vyukov shared-ring MPMC: np producers + nc consumers on ONE ring.
+/// Vyukov shared-ring MPMC: np producers + nc consumers on one ring.
 fn measure_vyukov(np: usize, nc: usize, total: u64) -> (f64, bool) {
     let ring = Arc::new(SharedRing::create_anon(TOTAL_CAP).unwrap());
     let per_prod = total / np as u64;

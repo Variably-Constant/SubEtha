@@ -18,7 +18,7 @@
 //!    held, and both are reported. Measuring only the empty case would
 //!    hide the scan the design pays for.
 //!
-//! What the numbers do NOT show: the reap. A refcount has no
+//! What the numbers do not show: the reap. A refcount has no
 //! equivalent, because there is nothing in it to probe - which is the
 //! reason the table exists and the reason a bench cannot express its
 //! value.

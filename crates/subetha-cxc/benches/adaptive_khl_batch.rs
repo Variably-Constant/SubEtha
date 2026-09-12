@@ -13,7 +13,7 @@
 //!  - Sized for the workload: a sweep over batch size, capacity sized
 //!    to hold one batch.
 //!
-//! The decision this settles: routing batches to KHL must BEAT the ring
+//! The decision this settles: routing batches to KHL must beat the ring
 //! per-item path (the default active backing), not just the deque, or
 //! the wiring should gate on a deque-shaped workload.
 //!

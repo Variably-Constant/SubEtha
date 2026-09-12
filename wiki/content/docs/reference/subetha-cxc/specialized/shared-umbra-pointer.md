@@ -11,8 +11,8 @@ weight: 70
 ![Layout](https://img.shields.io/badge/layout-OffsetPtr_%2B_prefix_%2B_ext-success)
 ![Scope](https://img.shields.io/badge/Scope-cross--process-brightgreen)
 
-A 16-byte cross-process pointer that carries a 4-byte CONTENT
-PREFIX inline. Filter scans match on the prefix in-register
+A 16-byte cross-process pointer that carries a 4-byte content
+prefix inline. Filter scans match on the prefix in-register
 before touching the underlying value in the SharedRegion. The
 direct cross-process lift of in-process `UmbraPointer<T>` (one
 field swap: `*const T` becomes `OffsetPtr<T>`); everything else
@@ -39,7 +39,7 @@ extension API (tag + payload) for caller metadata.
   `T: Copy + 'static` (no `Default` bound). The region stores
   `T` by value in fixed-size slots; non-Copy types are not
   supported.
-- **16-byte alignment is REQUIRED.** `#[repr(C, align(16))]` on
+- **16-byte alignment is required.** `#[repr(C, align(16))]` on
   the struct. The layout is verified by a `const _: ()` block
   that asserts `size_of` and `align_of` of
   `SharedUmbraPointer<u64>` are both 16. SIMD scans depend on
@@ -50,8 +50,8 @@ extension API (tag + payload) for caller metadata.
 - **NIL is all zero.** The `NIL` associated const sets `target =
   OffsetPtr::NIL` (u32::MAX), `prefix = 0`, `ext_tag = 0`,
   `ext_payload = [0; 7]`. A freshly-zeroed 16-byte MMF slot
-  IS NIL (technically, `target.is_nil()` is the right check).
-- **Prefix is caller-supplied OR caller-computed.** Source
+  is NIL (technically, `target.is_nil()` is the right check).
+- **Prefix is caller-supplied or caller-computed.** Source
   exposes three constructors: explicit prefix (`from_region_alloc`),
   content-prefix (`from_region_alloc_content_prefix`, first 4
   bytes of T in native endian), or hash-prefix
@@ -77,9 +77,9 @@ extension API (tag + payload) for caller metadata.
   (`region.get(self.target)`); use only after a prefix check
   unless the value is needed unconditionally.
 - **In-process only via heap pointers.** A `SharedUmbraPointer`
-  written by process A and read by process B works ONLY when
+  written by process A and read by process B works only when
   both have the same `SharedRegion` mapped. The OffsetPtr is an
-  index into THAT region; without the region, the pointer is
+  index into that region; without the region, the pointer is
   meaningless.
 
 ---
@@ -265,7 +265,7 @@ TAG 0 is reserved for "no extension set". TAG values 1..=255 are
 caller-defined; allocate them in your application by a central
 registry (doc comment, constants module, etc.).
 
-`set_ext<E>` and `ext<E>` are NOT atomic. Don't share a
+`set_ext<E>` and `ext<E>` are not atomic. Don't share a
 SharedUmbraPointer mutably across threads without synchronization.
 
 ---
@@ -403,7 +403,7 @@ L1-resident prefix compare.
 **2.12x speedup.** The architectural sweet spot. The
 resolve-every path is dominated by the 9 999 unnecessary region
 reads. The prefix-filter path pays the in-register check for all
-entries and ONE region read for the actual hit.
+entries and one region read for the actual hit.
 
 For larger T (the bench uses `Wide = 32 bytes`; real-world rows
 or packets can be hundreds of bytes), the gap widens: the
@@ -454,18 +454,18 @@ All confirmed against the source or the bench:
   copies the first 4 bytes of `T` and reads them with
   `u32::from_le_bytes`. Cross-architecture transit needs an
   endianness contract.
-- **The extension READ (`ext<E>()`) is `unsafe`.** The
+- **The extension read (`ext<E>()`) is `unsafe`.** The
   tag-uniqueness contract is the caller's responsibility. A
   central tag registry is essential at the application level.
 - **7-byte extension limit** enforced by the `ExtSizeCheck<E>`
   const-assertion. Larger metadata needs an OffsetPtr to a
   separate region.
-- **Extensions are NOT atomic.** `set_ext` and `ext` write /
+- **Extensions are not atomic.** `set_ext` and `ext` write /
   read across the tag + payload boundary without
   synchronization. For concurrent writers use external locking
   (e.g. SharedRwLock).
 - **`PartialEq` / `Eq` are over (target, prefix) only.** The
-  struct implements `PartialEq`/`Eq` manually (it does NOT
+  struct implements `PartialEq`/`Eq` manually (it does not
   implement `Hash`). Two pointers with the same target+prefix
   but different extensions compare equal. This is by design (the
   extension is metadata, not identity).

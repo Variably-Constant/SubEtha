@@ -53,7 +53,7 @@ the full AdaptiveRing shape axis on top.
   propagated to the inner `AdaptiveRing` instances, which grow their
   per-producer backings on demand past them.
 - **Initial locale is `Locale::Anon`**; the cheapest backing.
-- **Registrations apply to ALL THREE backings in lockstep**:
+- **Registrations apply to all three backings in lockstep**:
   `register_producer()` / `register_consumer()` register the same
   id on Anon + File + ShmFs so a subsequent morph finds the right
   active peer count.
@@ -83,18 +83,18 @@ file-backing ring files.
 ## Ordering stamps (global-FIFO axis across locales)
 
 `create_with_ordering_stamps(...)` is the stamped twin of `create`: it turns on
-the [ordering-stamp](../adaptive-ordering/) axis on ALL THREE locale backings
+the [ordering-stamp](../adaptive-ordering/) axis on all three locale backings
 (one stamp kind picked once so the backings agree). The surface mirrors the
 other adaptive wrappers: `is_stamped()` reports whether stamps are on,
-`ordering_mode() -> Option<OrderingMode>` reads the ACTIVE backing's live mode,
+`ordering_mode() -> Option<OrderingMode>` reads the active backing's live mode,
 `set_ordering_mode(mode)` flips it on all three backings (so the discipline
 follows the ring across migrations), and `inversions()` sums cross-producer
 inversions across the three backings.
 
 A locale migration of a merge-mode ring re-stamps items as the transfer drains
-them: the drain order IS stamp order under the merge, so the destination
+them: the drain order is stamp order under the merge, so the destination
 preserves global order. (Under `Unordered` the transfer's round-robin drain can
-reorder across producers, the same caveat as shape morphs.)
+reorder across producers, as a shape morph's drain can.)
 
 ## Worked example
 
@@ -130,7 +130,7 @@ let _shmfs_ring = pin_locale.as_shmfs().expect("shmfs");
 ## Sidecar + hysteresis-gated policy
 
 The wrapper ships with `LocaleAdaptiveRingSidecar` - a background
-scanner thread that honours application-driven locale requests
+scanner thread that honors application-driven locale requests
 under a hysteresis cooldown so rapid-flip requests collapse into a
 single migration. The migration cost (every in-flight item copies
 between backings) is paid once per cooldown window, not once per
@@ -203,7 +203,7 @@ exercises the full three-locale walk (anon -> shmfs -> file)
 through the four-axis pin chain.
 
 [`examples/locale_migrate_sidecar_e2e.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/locale_migrate_sidecar_e2e.rs)
-exercises the sidecar's hysteresis behaviour: 4 rapid user
+exercises the sidecar's hysteresis behavior: 4 rapid user
 requests collapse into 3 migrations because one falls inside the
 cooldown window. Prints every observed migration with a timestamp
 so the trace is human-auditable.
@@ -218,7 +218,7 @@ so the trace is human-auditable.
   one pin protocol instead of constructing per-locale rings
   manually.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Pure in-process workloads (use `AdaptiveRing` alone; `Anon` is
   the only relevant locale).

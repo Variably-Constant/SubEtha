@@ -3,7 +3,7 @@
 //!
 //! Classic Mesa-style condvar interface: waiters check a user-owned
 //! predicate, park if not satisfied, and resume when a notifier
-//! advances the predicate AND calls `notify_*`. The substrate uses
+//! advances the predicate and calls `notify_*`. The substrate uses
 //! a monotonic generation counter so each `wait` parks at
 //! `target = current_gen + 1`; every `notify_*` bumps the generation
 //! and fires `wake_(one_)up_to(new_gen)`, which wakes parked waiters
@@ -13,39 +13,38 @@
 //!
 //! Two processes mmap the same condvar base; both call `wait` /
 //! `notify_*` directly. On Linux the wake call crosses the process
-//! boundary via SHARED `futex` (keyed by inode + offset, so two
-//! different mmaps of the same file page DO match). On Windows /
+//! boundary via shared `futex` (keyed by inode + offset, so two
+//! different mmaps of the same file page do match). On Windows /
 //! macOS the primitive runs intra-process via `WaitOnAddress` /
 //! spin fallback.
 //!
-//! # Intra-process sharing: use Arc::clone, NOT create+open
+//! # Intra-process sharing: use Arc::clone rather than create+open
 //!
-//! Within ONE process, share a single `SharedCondvar` through
+//! Within a single process, share one `SharedCondvar` through
 //! `Arc<SharedCondvar>` + `Arc::clone`. Calling `create` and then
 //! `open` on the same path in the same process produces two
 //! independent mmaps with different virtual-address ranges aliased
 //! to the same file pages. Windows `WaitOnAddress` is keyed by
-//! virtual address, so a `notify_*` on the second handle does NOT
+//! virtual address, so a `notify_*` on the second handle leaves a
 //! reach a `wait` on the first handle - the wake hashtable lookup
-//! misses on the differing virtual address. Linux SHARED `futex`
+//! misses on the differing virtual address. Linux shared `futex`
 //! keys by the underlying file page, which works across separate
 //! mmaps, but the rule "use one `Arc<SharedCondvar>` per process"
 //! is cross-platform safe.
 //!
-//! The `open` constructor is exclusively for joiners in SEPARATE
+//! The `open` constructor is exclusively for joiners in separate
 //! processes that need to find the file the creator already
-//! initialised.
+//! initialized.
 //!
 //! # Predicate ownership
 //!
-//! The condvar does NOT own the predicate atom; the caller passes
+//! The condvar leaves the predicate atom to the caller, who passes
 //! a closure that returns the current predicate value. This matches
 //! `parking_lot::Condvar::wait_while` semantics and lets the same
 //! condvar guard predicates held in any cross-process atom
 //! (`SharedAtomicU32`, a field in a `SharedCell`, an offset into
 //! an MMF struct, etc.).
 
-use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,7 +100,7 @@ impl From<io::Error> for CondvarError {
 ///
 /// Variant payloads are held purely for their `Drop` side effects:
 /// dropping the `MmapMut` unmaps, dropping the `File` releases the
-/// fd. The `GenAtom::ptr` field reads through them, so they ARE
+/// fd. The `GenAtom::ptr` field reads through them, so they are
 /// load-bearing despite never being named.
 #[allow(dead_code)]
 enum GenBacking {
@@ -153,7 +152,7 @@ impl GenAtom {
     }
 
     fn open_file(path: &Path) -> Result<Self, CondvarError> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let file = crate::region_file::open_existing(path)?;
         let meta = file.metadata()?;
         if (meta.len() as usize) < GEN_REGION_SIZE {
             return Err(CondvarError::LayoutMismatch);
@@ -171,7 +170,7 @@ impl GenAtom {
     #[inline]
     fn atom(&self) -> &AtomicU64 {
         // SAFETY: ptr points GEN_OFFSET bytes into an mmap owned by
-        // this struct; AtomicU64 was initialised in create_*
+        // this struct; AtomicU64 was initialized in create_*
         // (or read from a peer's create_* on open_file).
         unsafe { &*self.ptr }
     }
@@ -246,7 +245,7 @@ impl SharedCondvar {
             if predicate() {
                 return Ok(());
             }
-            // Snapshot generation BEFORE re-checking. If a notify
+            // Snapshot generation ahead of re-checking. If a notify
             // slips in between predicate() and try_park, the
             // snapshot is older than the bumped generation, so the
             // wake call's wake_*_up_to(new_gen) matches our slot's
@@ -262,7 +261,7 @@ impl SharedCondvar {
         }
     }
 
-    /// Park until `predicate()` returns true OR `timeout` elapses.
+    /// Park until `predicate()` returns true or `timeout` elapses.
     /// On `Err(Timeout)` the predicate is guaranteed to have been
     /// false at the point of return.
     pub fn wait_timeout<F: FnMut() -> bool>(
@@ -427,16 +426,16 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_millis(10));
     }
 
-    /// Intra-process file-backed sharing uses Arc::clone (NOT
+    /// Intra-process file-backed sharing uses Arc::clone rather than
     /// create+open). The `open` constructor is for callers in
-    /// SEPARATE processes joining a file the creator already
-    /// initialised; calling `open` in the SAME process as `create`
+    /// separate processes joining a file the creator already
+    /// initialized; calling `open` in the process that called `create`
     /// produces a second mmap with a different virtual-address
     /// range aliased to the same file pages. On Windows that
     /// breaks the wake path because `WaitOnAddress` /
     /// `WakeByAddressSingle` are keyed by virtual address, not by
     /// the underlying file page. Cross-process Linux works via
-    /// SHARED `futex` (keyed by inode-offset); see
+    /// shared `futex` (keyed by inode-offset); see
     /// `examples/condvar_xproc_*.rs` + the matching sweep script
     /// for that path.
     #[test]

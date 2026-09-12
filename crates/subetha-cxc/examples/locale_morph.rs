@@ -81,7 +81,7 @@ fn main() {
     }
 
     // ----- stage 2 -----
-    // Push a small in-flight batch into the anon backing WITHOUT
+    // Push a small in-flight batch into the anon backing without
     // draining; then migrate to file. The migration transfers
     // these items into the file backing.
     println!();

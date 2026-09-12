@@ -1,14 +1,14 @@
 # Cross-Host LAN Bridge Performance
 
 This document measures three byte-stream bridges - `TcpBridge`,
-`QuicBridge`, and `BlockingTcpBridge` - between two PHYSICAL hosts over a
+`QuicBridge`, and `BlockingTcpBridge` - between two physical hosts over a
 real LAN hop, not loopback, not two processes on one machine. They are
 three of the six transports `bridge_lan` carries: the others are the
 TCP+TLS bridge (`tcptls`, the encrypted-TCP contender - identical framing
 to `TcpBridge` inside a rustls 1.3 record layer), **Sens-O-Matic**
 (`sens`, the reliable-UDP FEC transport), and a raw-UDP reference (`udp`,
 unreliable, reports its delivery ratio). Sens-O-Matic is the transport
-built for this doc's lossy Wi-Fi hop; it is summarised under
+built for this doc's lossy Wi-Fi hop; it is summarized under
 [Sens-O-Matic on the lossy hop](#sens-o-matic-on-the-lossy-hop) below and
 measured in full in
 [SENS_O_MATIC_PERFORMANCE.md](SENS_O_MATIC_PERFORMANCE.md).
@@ -32,7 +32,7 @@ The Windows host is one end of every pair; the Ubuntu and FreeBSD
 peers were measured in separate sessions on the same hypervisor
 host. Baseline ICMP RTT between the hosts: ~1 ms. The Wi-Fi hop
 caps sustained throughput in the low-hundreds of Mbit/s; the
-numbers below measure the BRIDGES at that wire's ceiling, not the
+numbers below measure the bridges at that wire's ceiling, not the
 bridges' own ceiling (on loopback the same TCP bridge moves
 3.2 Gbit/s).
 
@@ -45,7 +45,7 @@ bridges' own ceiling (on loopback the same TCP bridge moves
 | `BlockingTcpBridge` (parked rings) | 213 Mbit/s | 270 Mbit/s | 255 Mbit/s | 238 Mbit/s | PASS, all four |
 
 On FreeBSD the blocking bridge's ring endpoints park on the native
-`_umtx_op` waker arm (the non-PRIVATE, physical-address-keyed umtx
+`_umtx_op` waker arm (the non-private, physical-address-keyed umtx
 ops) rather than a polling fallback - the same zero-CPU-idle
 property the Linux futex arm provides.
 
@@ -65,9 +65,10 @@ with the SNI naming the cert rather than the wire address.
 
 The same rtt mode with both bridge halves on one machine isolates
 the stack's own cost from the wire. The calibration point: a raw
-8-byte TCP socket ping-pong on the Windows Ryzen 7 2700 round-trips at ~73 µs
-(one-way 36.7 µs in the IPC leaderboard), so the TCP bridge's full
-ring -> wire -> ring -> echo chain matches a bare socket.
+8-byte TCP socket ping-pong on the Windows Ryzen 7 2700 round-trips at
+59.2 µs (one-way 29.6 µs in the IPC leaderboard), so the TCP bridge's
+full ring -> wire -> ring -> echo chain sits about a fifth above a bare
+socket at the median, shipping 64-byte items against that socket's 8.
 
 | Bridge | min | p50 | p99 |
 |---|---:|---:|---:|
@@ -106,12 +107,10 @@ outliers (one ~1 s stall per 2,000 rounds on the TCP runs) are
 Wi-Fi power-save / retransmit artifacts on the wireless hop,
 present in raw ICMP on the same link.
 
-## What the LAN run exposed (and fixed)
+## The bridge data path
 
-Loopback smoke-testing the harness caught a real data-path flaw in
-all three bridges: one `write_all` await and one 64-byte
-`read_exact` per item - a syscall-per-slot wire path that capped
-TCP loopback at 26 Mbit/s. The fix that shipped:
+All three bridges move slots in bursts, never one socket call per
+slot:
 
 - **Burst-batched egress** (all bridges): every already-available
   ring slot (up to `EGRESS_BATCH_SLOTS = 256`, 16 KiB) goes out in
@@ -124,12 +123,12 @@ TCP loopback at 26 Mbit/s. The fix that shipped:
 - **`TCP_NODELAY` on both ends** (TCP bridges): a lone
   latency-sensitive slot is never parked on Nagle's timer; the
   batched writes keep segments MSS-filled under load regardless.
-- The blocking bridge parks for the FIRST item only, then
-  burst-drains via `try_pop`, preserving zero-CPU-idle while
-  fixing its per-item `spawn_blocking` round trip.
+- The blocking bridge parks for the first item only, then
+  burst-drains via `try_pop`, preserving zero-CPU-idle with no
+  per-item `spawn_blocking` round trip.
 
-After the fix, the same loopback run moved 3.2 Gbit/s (157
-ns/item) - a 123x improvement - and the LAN runs above saturate
+With this data path the loopback run moves 3.2 Gbit/s (157
+ns/item), and the LAN runs above saturate
 the physical wire.
 
 ## Sens-O-Matic on the lossy hop
@@ -146,7 +145,7 @@ hop. Sens-O-Matic ships MTU-sized items as forward-error-corrected
 datagrams and recovers loss inside its parity budget with no retransmit
 round-trip, so the wire never stalls behind a gap - the receiver buffers
 out of order across a deep flow window and drains in order once the
-parity (or a single selective-NAK round-trip) fills it. On the SAME
+parity (or a single selective-NAK round-trip) fills it. On the same
 Win -> Ubuntu Wi-Fi hop, measured with MTU datagrams, it holds flat
 through loss:
 

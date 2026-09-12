@@ -20,7 +20,7 @@ fd of a [`ShmFile`](../../specialized/shm-file/) or file-backed
 process; the receiver mmaps the duplicated fd and observes the
 same shared region without re-opening the file by path.
 
-This is a VERB pair (send / recv operations), NOT a new
+This is a verb pair (send / recv operations), not a new
 [`Locale`](../../rings/locale-adaptive-ring/) variant. The locale
 axis stays at three members (Anon / ShmFs / File); fd-passing
 operates on whichever backing exposes a file fd.
@@ -73,7 +73,7 @@ let received_fd = recv_fd(&stream)?;
 - The sending process needs to relinquish its handle but the
   ring must stay alive.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Both processes already have filesystem access to the ring's
   path: open it by path directly via

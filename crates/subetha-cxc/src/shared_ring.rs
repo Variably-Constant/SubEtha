@@ -1,7 +1,7 @@
 //! `SharedRing<P>` - cross-thread / cross-process lock-free MPMC ring
 //! backed by a memory-mapped file.
 //!
-//! One mechanism gives you THREE deployment modes:
+//! One mechanism gives you three deployment modes:
 //!
 //! 1. **Cross-thread**: multiple threads in one process map the same
 //!    file; lock-free CAS handles concurrency.
@@ -30,8 +30,8 @@
 //! ```
 //!
 //! Each slot is exactly one cache line (64 bytes). The state field
-//! advances through EMPTY -> CLAIMED_BY_PRODUCER -> PUBLISHED ->
-//! CLAIMED_BY_CONSUMER -> EMPTY in a closed loop.
+//! advances through empty -> claimed by producer -> published ->
+//! claimed by consumer -> empty in a closed loop.
 //!
 //! # Concurrency protocol
 //!
@@ -57,7 +57,7 @@
 //! This is the classic Vyukov MPMC bounded-queue protocol.
 
 use std::cell::UnsafeCell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -256,12 +256,12 @@ impl Consumer {
 /// once on the first [`try_push`](LazySharedRing::try_push) or
 /// [`try_pop`](LazySharedRing::try_pop) call.
 ///
-/// **When NOT to reach for this:** in-process-only one-shots
+/// **When not to reach for this:** in-process-only one-shots
 /// (use [`SharedRing::create_anon`] instead, which skips the file
 /// entirely), or hot paths that always send (the lazy branch costs
 /// one extra atomic load per op vs holding `&SharedRing` directly).
 ///
-/// **Hot-path tip:** materialise once outside your loop and reuse
+/// **Hot-path tip:** materialize once outside your loop and reuse
 /// the returned `&SharedRing` reference so the lazy branch lives
 /// outside the inner loop.
 pub struct LazySharedRing {
@@ -283,7 +283,7 @@ impl LazySharedRing {
         }
     }
 
-    /// Materialise the inner ring, paying the setup cost on the
+    /// Materialize the inner ring, paying the setup cost on the
     /// first call and returning the cached reference thereafter.
     pub fn get(&self) -> Result<&SharedRing, RingError> {
         if let Some(ring) = self.inner.get() {
@@ -299,30 +299,30 @@ impl LazySharedRing {
         }
     }
 
-    /// Whether the underlying ring has been materialised yet.
-    pub fn is_initialised(&self) -> bool {
+    /// Whether the underlying ring has been materialized yet.
+    pub fn is_initialized(&self) -> bool {
         self.inner.get().is_some()
     }
 
-    /// Forwarded [`SharedRing::try_push`]; materialises on first call.
+    /// Forwarded [`SharedRing::try_push`]; materializes on first call.
     pub fn try_push(&self, payload: &[u8]) -> Result<(), RingError> {
         self.get()?.try_push(payload)
     }
 
-    /// Forwarded [`SharedRing::try_pop`]; materialises on first call.
+    /// Forwarded [`SharedRing::try_pop`]; materializes on first call.
     pub fn try_pop(&self, out: &mut [u8]) -> Result<usize, RingError> {
         self.get()?.try_pop(out)
     }
 }
 
-/// Initialise the Vyukov ring layout in a freshly-mapped buffer.
+/// Initialize the Vyukov ring layout in a freshly-mapped buffer.
 /// Sets the header magic + capacity + counters, then writes each
 /// slot's sequence number to its index (Vyukov: slot[i] is ready
 /// for producer i).
 ///
 /// Shared by [`SharedRing::create`] (file-backed),
 /// [`SharedRing::create_anon`] (anonymous), and the lazy
-/// initialiser triggered on first use.
+/// initializer triggered on first use.
 fn init_ring_layout(mmap: &mut MmapMut, capacity: usize) {
     unsafe { init_ring_layout_raw(mmap.as_mut_ptr(), capacity) };
 }
@@ -422,11 +422,9 @@ pub enum RingError {
     /// heartbeat goes stale past the grace window) a later pop
     /// acquires the lease automatically.
     NotDrainer,
-    /// A shape morph was requested while the previous shape's
-    /// backing still holds an undrained backlog. The consumer
-    /// drains it through the normal pop path (the stale walk);
-    /// retry the morph once it has caught up - the sidecar's scan
-    /// loop does exactly that.
+    /// Reserved. The adaptive ring walks every backing it has used
+    /// for the ring's life, so a morph is never deferred behind one
+    /// and nothing returns this.
     StaleBacklog,
     /// I/O error opening or mapping the file.
     IoError(std::io::ErrorKind),
@@ -437,17 +435,15 @@ impl From<std::io::Error> for RingError {
 }
 
 impl SharedRing {
-    /// Create or initialise a new ring backed by `path`. `capacity`
+    /// Create or initialize a new ring backed by `path`. `capacity`
     /// must be a power of two. The file is truncated to the exact
     /// size needed. Use [`SharedRing::open`] to attach to an
-    /// existing ring without re-initialising.
+    /// existing ring without re-initializing.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, RingError> {
         assert!(capacity.is_power_of_two() && capacity >= 2,
                 "capacity must be pow2 >= 2");
         let total = ring_file_size(capacity);
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(total as u64)?;
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         // No warm-up here: init below writes every slot line, so the
@@ -472,9 +468,9 @@ impl SharedRing {
     /// that do not need cross-process or disk-persistent semantics.
     /// Skips the file create + ftruncate + first-page-fault cost
     /// `create` pays (~600 us on Zen+ R7 2700 / Windows 11), so
-    /// short-lived sessions amortise much faster.
+    /// short-lived sessions amortize much faster.
     ///
-    /// **Do NOT use when:** another process needs to attach to the
+    /// **Do not use when:** another process needs to attach to the
     /// same ring (use [`SharedRing::create`] + [`SharedRing::open`]
     /// for that path), or when durability across restart matters.
     pub fn create_anon(capacity: usize) -> Result<Self, RingError> {
@@ -519,7 +515,7 @@ impl SharedRing {
     }
 
     /// Open an existing named ShmFs-backed ring. Validates magic +
-    /// capacity. Does NOT re-initialize.
+    /// capacity. Leaves the layout as it found it.
     pub fn open_from_shm(
         mut shm: crate::shm_file::ShmFile,
         expected_capacity: usize,
@@ -576,7 +572,7 @@ impl SharedRing {
 
     /// Attach to an existing Vyukov ring already laid out in `region`
     /// (e.g. a named `LargePageSection` another process created).
-    /// Validates the header; does NOT re-initialise.
+    /// Validates the header and leaves the layout as it found it.
     pub fn open_in_region<R: crate::spsc_ring::RegionOwner>(
         mut region: R, expected_capacity: usize,
     ) -> Result<Self, RingError> {
@@ -612,10 +608,10 @@ impl SharedRing {
 
     /// Open an existing ring at `path`. Validates magic + capacity.
     /// Returns [`RingError::LayoutMismatch`] when the file's size
-    /// does not match a ring of `expected_capacity` slots, OR when
+    /// does not match a ring of `expected_capacity` slots, or when
     /// the on-disk header reports different magic / capacity.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, RingError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = ring_file_size(expected_capacity);
         // File-size pre-check: refuse to map past EOF so callers
         // get a clean LayoutMismatch instead of the OS's
@@ -808,7 +804,7 @@ impl SharedRing {
         Ok(PAYLOAD_BYTES)
     }
 
-    /// The publish signal for the consumer's NEXT pop: the
+    /// The publish signal for the consumer's next pop: the
     /// sequence atom of the slot at the current consumer position.
     /// A producer publishing that slot Release-stores this exact
     /// atom, so a monitor-wait armed on it wakes on the publish.
@@ -1128,7 +1124,7 @@ mod tests {
         // Heal sees seq=1, not 0, so CAS fails -> Ok(false).
         assert!(!ring.heal_stuck_slot(0).unwrap());
 
-        // Consumer drains the original published payload, NOT a
+        // Consumer drains the original published payload rather than a
         // tombstone: heal did not corrupt the slot.
         let mut out = [0u8; PAYLOAD_BYTES];
         ring.try_pop(&mut out).unwrap();
@@ -1237,7 +1233,7 @@ mod tests {
             p[..4].copy_from_slice(&i.to_le_bytes());
             ring.try_push(&p).unwrap();
         }
-        // Fifth push must fail with Full, matching file-backed behaviour.
+        // Fifth push must fail with Full, matching file-backed behavior.
         assert_eq!(ring.try_push(&[0u8; PAYLOAD_BYTES]).unwrap_err(), RingError::Full);
     }
 
@@ -1245,11 +1241,11 @@ mod tests {
     fn lazy_ring_defers_setup_until_first_use() {
         let p = tmp_path("lazy-defer");
         let lazy = LazySharedRing::new(&p, 8);
-        // is_initialised stays false until something forces materialisation.
-        assert!(!lazy.is_initialised());
+        // is_initialized stays false until something forces materialization.
+        assert!(!lazy.is_initialized());
         // First try_push triggers create.
         lazy.try_push(&[1u8; 8]).unwrap();
-        assert!(lazy.is_initialised());
+        assert!(lazy.is_initialized());
         // Subsequent pop reads back the same byte.
         let mut out = [0u8; PAYLOAD_BYTES];
         let n = lazy.try_pop(&mut out).unwrap();
@@ -1273,7 +1269,7 @@ mod tests {
         let lazy = LazySharedRing::new(&p, 8);
         let r1 = lazy.get().unwrap() as *const SharedRing;
         let r2 = lazy.get().unwrap() as *const SharedRing;
-        // Second .get() must return the same materialised instance.
+        // Second .get() must return the same materialized instance.
         assert_eq!(r1, r2, "OnceLock returned different instances across calls");
     }
 
@@ -1373,7 +1369,7 @@ mod tests {
     #[test]
     fn cross_handle_in_process_sees_writes() {
         // Two SharedRing handles to the same file in one process: a
-        // proxy for cross-process behaviour (they map the same pages).
+        // proxy for cross-process behavior (they map the same pages).
         let p = tmp_path("cross-handle");
         let producer = SharedRing::create(&p, 16).unwrap();
         let consumer = SharedRing::open(&p, 16).unwrap();
@@ -1454,9 +1450,9 @@ mod tests {
     }
 
     #[test]
-    fn open_in_region_attaches_to_initialised_layout() {
+    fn open_in_region_attaches_to_initialized_layout() {
         // One backing, two views: producer lays the Vyukov ring out and
-        // pushes; a second handle opens the SAME bytes via
+        // pushes; a second handle opens those same bytes via
         // open_in_region (no re-init) and drains - the cross-process
         // LargePageSection attach in miniature.
         let cap = 8usize;

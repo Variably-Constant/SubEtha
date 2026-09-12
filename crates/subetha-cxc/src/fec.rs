@@ -1,7 +1,7 @@
 //! Forward error correction over GF(256): systematic Cauchy
 //! Reed-Solomon erasure coding.
 //!
-//! Packet loss on UDP is an *erasure* - the receiver knows WHICH
+//! Packet loss on UDP is an *erasure* - the receiver knows which
 //! packet is missing from the gap in the sequence numbers - so the
 //! decoder recovers from any K survivors out of K + R coded packets
 //! without needing to locate the error. This is the FEC half of the
@@ -301,6 +301,47 @@ pub fn gf_mul_add_backend(backend: GfBackend, out: &mut [u8], src: &[u8], coef: 
 fn gf_mul_add_scalar(out: &mut [u8], src: &[u8], coef: u8) {
     for (o, &s) in out.iter_mut().zip(src) {
         *o ^= gf::mul(coef, s);
+    }
+}
+
+/// Bytes a scale copies aside at a time. Sized to stay in L1 so the
+/// copy and the clear are cache-resident, and to need no allocation on
+/// a decode path that scales once per pivot.
+const SCALE_CHUNK: usize = 1024;
+
+/// `v[i] = gf::mul(coef, v[i])` in place, through the auto-detected
+/// fastest backend. The counterpart to [`gf_mul_add_auto`] for callers
+/// that scale a vector rather than accumulate into one, which the RLC
+/// decoder does once per pivot to normalize a row.
+pub fn gf_mul_auto(v: &mut [u8], coef: u8) {
+    gf_mul_backend(current_backend(), v, coef);
+}
+
+/// [`gf_mul_auto`] through a specific [`GfBackend`] - the A/B-bench and
+/// cross-check entry point, matching [`gf_mul_add_backend`].
+///
+/// A scale is expressed as `out = 0; out ^= src * coef`, so it runs on
+/// the multiply-add kernels and contributes no vector code of its own.
+/// That is deliberate rather than merely convenient: the AVX-512 and
+/// GFNI rungs cannot execute on any host in the gate set, so a second
+/// family of kernels would double the surface that ships without ever
+/// having run. The cost is a copy and a clear per chunk, both L1-
+/// resident and both far cheaper than the byte-at-a-time multiply they
+/// replace.
+pub fn gf_mul_backend(backend: GfBackend, v: &mut [u8], coef: u8) {
+    if coef == 1 {
+        return;
+    }
+    if coef == 0 {
+        v.fill(0);
+        return;
+    }
+    let mut scratch = [0u8; SCALE_CHUNK];
+    for chunk in v.chunks_mut(SCALE_CHUNK) {
+        let n = chunk.len();
+        scratch[..n].copy_from_slice(chunk);
+        chunk.fill(0);
+        gf_mul_add_backend(backend, chunk, &scratch[..n], coef);
     }
 }
 
@@ -820,7 +861,160 @@ mod tests {
         }
     }
 
-    /// Exhaustively check that EVERY loss pattern dropping up to `r`
+    /// The geometries the interoperability vectors are emitted at.
+    ///
+    /// `parity_r` is what the controller can ask for - `fusion::raw_target`
+    /// clamps it to 1..=6, and zero means Passthrough, where no code runs
+    /// and there is nothing to encode. The last row is the r the block's
+    /// `u32` shard bitmap allows rather than anything the controller
+    /// requests, kept because a table that only covers the common range
+    /// cannot show an implementation its indexing breaks at the bound.
+    const VECTOR_GEOMETRIES: &[(&str, usize, usize)] = &[
+        ("smallest", 1, 1),
+        ("light-parity", 4, 1),
+        ("typical-block", 8, 2),
+        ("controller-ceiling", 8, 6),
+        ("bitmap-bound", 16, 16),
+    ];
+
+    /// Interoperability vectors for a second implementation of the block
+    /// code, regenerated here and compared against the committed file so
+    /// a change to the format has to change the vectors with it.
+    ///
+    /// Set `SUBETHA_REGENERATE_VECTORS=1` to rewrite the file. Every
+    /// value is derived from published constants: the field polynomial,
+    /// the Cauchy rule, and a stated data rule. Nothing is seeded, so an
+    /// implementation holding only the specification produces the same
+    /// bytes.
+    #[test]
+    fn the_interoperability_vectors_match_the_committed_file() {
+        const SHARD_LEN: usize = 16;
+        let mut out = String::new();
+        out.push_str(
+            "# SubEtha block Cauchy Reed-Solomon interoperability vectors\n\
+             #\n\
+             # Regenerate with SUBETHA_REGENERATE_VECTORS=1; the test that\n\
+             # writes this file also compares it, so the code cannot move\n\
+             # without these moving.\n\
+             #\n\
+             # GF(256) with primitive polynomial 0x11D, generator 2.\n\
+             # Cauchy entry for parity row j and data column c, over a\n\
+             # (k, r) code, is the field inverse of ((k + j) XOR c). Data\n\
+             # indices 0..k and parity indices k..k+r are disjoint, so the\n\
+             # XOR is never zero and every square submatrix of [I_k ; C] is\n\
+             # invertible - which is what makes any k of the k + r shards\n\
+             # sufficient.\n\
+             #\n\
+             # Data shard i, byte b, of a shard_len-byte shard:\n\
+             #     (i * 131 + b * 17 + 7) & 0xff\n\
+             # so an implementation needs no random source to reproduce it.\n\
+             #\n\
+             # A lost pattern names the shard indices withheld from the\n\
+             # decoder: 0..k are data, k..k+r are parity. Every pattern\n\
+             # here withholds exactly r, which is the most a (k, r) code\n\
+             # can carry and therefore the case that fails first if the\n\
+             # matrix or its inversion is wrong.\n\n",
+        );
+
+        for (name, k, r) in VECTOR_GEOMETRIES {
+            let (k, r) = (*k, *r);
+            let code = RsCode::new(k, r).expect("a code the geometry table names");
+            out.push_str(&format!(
+                "[code {name}] k={k} r={r} shard_len={SHARD_LEN}\n"
+            ));
+
+            // The matrix is derived, not stored, so printing it lets an
+            // implementation check its field inverse and its indexing
+            // separately from its encode.
+            for j in 0..r {
+                let row: Vec<String> = (0..k)
+                    .map(|c| format!("{:02x}", gf::inv(((k + j) as u8) ^ c as u8)))
+                    .collect();
+                out.push_str(&format!("cauchy row {j:2}: {}\n", row.join(" ")));
+            }
+
+            let data: Vec<Vec<u8>> = (0..k)
+                .map(|i| (0..SHARD_LEN).map(|b| ((i * 131 + b * 17 + 7) & 0xff) as u8).collect())
+                .collect();
+            let mut parity: Vec<Vec<u8>> = vec![vec![0u8; SHARD_LEN]; r];
+            {
+                let dr: Vec<&[u8]> = data.iter().map(|s| s.as_slice()).collect();
+                let mut pr: Vec<&mut [u8]> = parity.iter_mut().map(|s| s.as_mut_slice()).collect();
+                code.encode(&dr, &mut pr).expect("encode the stated data");
+            }
+            for (j, p) in parity.iter().enumerate() {
+                let hex: Vec<String> = p.iter().map(|b| format!("{b:02x}")).collect();
+                out.push_str(&format!("parity {j:2}: {}\n", hex.join("")));
+            }
+
+            // Withhold exactly r shards, spread across the data and parity
+            // halves rather than taken from one end, so the surviving set
+            // is not the trivial one. The stride is coprime with n, so the
+            // r indices it visits are distinct.
+            fn gcd(a: usize, b: usize) -> usize {
+                if b == 0 { a } else { gcd(b, a % b) }
+            }
+            let n = k + r;
+            let stride = [7usize, 5, 3, 11, 13]
+                .into_iter()
+                .find(|s| gcd(*s, n) == 1)
+                .expect("one of the strides is coprime with the geometry's shard count");
+            let lost: Vec<usize> = (0..r).map(|i| (i * stride + 1) % n).collect();
+            let mut distinct = lost.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            assert_eq!(distinct.len(), r, "{name}: the pattern withholds {r} distinct shards");
+            let mut shards: Vec<Option<Vec<u8>>> = data
+                .iter()
+                .chain(parity.iter())
+                .map(|s| Some(s.clone()))
+                .collect();
+            for idx in &lost {
+                shards[*idx] = None;
+            }
+            code.decode(&mut shards).expect("r erasures are recoverable");
+            for (i, d) in data.iter().enumerate() {
+                assert_eq!(
+                    shards[i].as_ref().expect("every data shard is present after decode"),
+                    d,
+                    "{name}: data shard {i} came back different from what was sent",
+                );
+            }
+            let names: Vec<String> = lost.iter().map(|i| i.to_string()).collect();
+            out.push_str(&format!(
+                "lost {} of {n}: {}\nrecovered: every data shard equals the rule above\n\n",
+                lost.len(),
+                names.join(" "),
+            ));
+        }
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("vectors")
+            .join("rs.txt");
+        if std::env::var_os("SUBETHA_REGENERATE_VECTORS").is_some() {
+            std::fs::create_dir_all(path.parent().expect("the vectors directory has a parent"))
+                .expect("create the vectors directory");
+            std::fs::write(&path, &out).expect("write the vectors file");
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the vectors file at {} could not be read ({e}); regenerate it with \
+                 SUBETHA_REGENERATE_VECTORS=1",
+                path.display()
+            )
+        });
+        assert_eq!(
+            committed.replace("\r\n", "\n"),
+            out,
+            "the block code moved and {} did not follow; regenerate it with \
+             SUBETHA_REGENERATE_VECTORS=1 and read the diff before committing, \
+             because a change here is a change a second implementation has to make too",
+            path.display(),
+        );
+    }
+
+    /// Exhaustively check that every loss pattern dropping up to `r`
     /// shards recovers the original data exactly. This validates the
     /// Cauchy matrix construction and the decoder together.
     fn exhaustive_recovery(k: usize, r: usize, len: usize) {
@@ -1001,6 +1195,86 @@ mod tests {
                     "affine(coef={coef}, x={x}) != gf::mul"
                 );
             }
+        }
+    }
+
+    /// The scale primitive against a byte-at-a-time reference, on every
+    /// backend this host can run.
+    ///
+    /// The lengths are the point. A scale copies aside in `SCALE_CHUNK`
+    /// blocks and each vector rung has a scalar tail, so a test at one
+    /// convenient length exercises neither boundary: it would pass with
+    /// the final partial chunk dropped, or with the tail of the last
+    /// register never written. The coefficients cover the two shortcut
+    /// branches, 0 and 1, which return without reaching a kernel at all.
+    #[test]
+    fn scaling_matches_a_byte_at_a_time_reference_on_every_available_backend() {
+        use GfBackend::*;
+        let candidates = [Scalar, AffineScalar, Ssse3, Avx2, Avx512Pshufb, Gfni256, Gfni512, Neon];
+        let lengths = [
+            0,
+            1,
+            15,
+            SCALE_CHUNK - 1,
+            SCALE_CHUNK,
+            SCALE_CHUNK + 1,
+            2 * SCALE_CHUNK + 37,
+        ];
+        for len in lengths {
+            let start: Vec<u8> = (0..len).map(|i| ((i * 73 + 11) & 0xff) as u8).collect();
+            for coef in [0u8, 1, 2, 7, 100, 255] {
+                let want: Vec<u8> = start.iter().map(|&b| gf::mul(coef, b)).collect();
+                for &b in &candidates {
+                    if !b.available() {
+                        continue;
+                    }
+                    let mut got = start.clone();
+                    gf_mul_backend(b, &mut got, coef);
+                    assert_eq!(
+                        got,
+                        want,
+                        "backend {} disagrees scaling {len} bytes by {coef}",
+                        b.name()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Name the rungs this host cannot run, so a green suite does not
+    /// read as coverage it does not have.
+    ///
+    /// A rung whose ISA is absent is skipped by every cross-check here,
+    /// and a skip that prints nothing is indistinguishable from a pass.
+    /// Zen 3 hosts the current gate set, so `avx512f`, `avx512bw` and
+    /// `gfni` are all absent and three rungs ship having never executed
+    /// their vector code on any machine that runs the tests. The affine
+    /// emulation covers the field arithmetic those rungs implement; it
+    /// does not cover their intrinsics, lane handling or scalar tails.
+    #[test]
+    fn every_backend_reports_whether_this_host_can_run_it() {
+        use GfBackend::*;
+        let candidates = [Scalar, AffineScalar, Ssse3, Avx2, Avx512Pshufb, Gfni256, Gfni512, Neon];
+        let mut unrunnable = Vec::new();
+        for &b in &candidates {
+            if b.available() {
+                println!("GF rung {:<14} runnable here", b.name());
+            } else {
+                println!("GF rung {:<14} NOT runnable here - untested by this run", b.name());
+                unrunnable.push(b.name());
+            }
+        }
+        assert!(
+            GfBackend::Scalar.available() && GfBackend::AffineScalar.available(),
+            "the scalar floor and the affine emulation must run on every host"
+        );
+        if !unrunnable.is_empty() {
+            println!(
+                "GF ladder: {} of {} rungs did not execute here: {}",
+                unrunnable.len(),
+                candidates.len(),
+                unrunnable.join(", ")
+            );
         }
     }
 

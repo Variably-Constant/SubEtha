@@ -23,7 +23,7 @@
 //! Each slot is one cache line so cross-process writes to different
 //! slots never false-share.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -130,7 +130,7 @@ impl HeartbeatTable {
         })
     }
 
-    /// Reinitialise the table at `path`, discarding every live registration.
+    /// Reinitialize the table at `path`, discarding every live registration.
     /// For a caller that knows it owns the path.
     pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, HeartbeatError> {
         assert!(capacity >= 1);
@@ -178,8 +178,16 @@ impl HeartbeatTable {
     }
 
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, HeartbeatError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = heartbeat_file_size(expected_capacity);
+        // The length is checked before the map rather than after: a
+        // caller declaring more slots than the file holds is a layout
+        // disagreement, and mapping past the end of the file reports it
+        // as an operating-system failure instead, which names the
+        // symptom rather than the cause.
+        if (file.metadata()?.len() as usize) < total {
+            return Err(HeartbeatError::LayoutMismatch);
+        }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         let header = unsafe { &*(mmap.as_ptr() as *const HeartbeatHeader) };
         if header.magic != HEARTBEAT_MAGIC || header.capacity != expected_capacity as u64 {
@@ -310,7 +318,7 @@ pub struct HeartbeatSnapshot {
     pub role: u32,
 }
 
-/// Crate-internal accessor for the watchdog module. NOT pub-exported
+/// Crate-internal accessor for the watchdog module. Not pub-exported
 /// from the crate (only re-exported intra-crate).
 #[doc(hidden)]
 pub fn __slot_for_watchdog(table: &HeartbeatTable, idx: usize) -> &HeartbeatSlot {

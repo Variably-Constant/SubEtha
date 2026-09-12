@@ -31,7 +31,7 @@ barrier the way `std::sync::Barrier` or `MPI_Barrier` does.
 
 - **Native sidecar integration**: the struct carries a `HandshakeHeader` + `ObservationRing` and implements `subetha_sidecar::AdaptiveInstance`. Wrap in `SidecarBox::new` to register with the global sidecar; raw `create()` / `open()` return the unregistered type unchanged.
 
-- **State is ONE packed `AtomicU64`**: `(epoch << 32) | arrived`.
+- **State is one packed `AtomicU64`**: `(epoch << 32) | arrived`.
   Both register-as-arrived and release-the-barrier are single CAS
   ops, so there is no ordering puzzle between two separate
   atomics.
@@ -143,7 +143,7 @@ graph LR
 threshold is `arrived >= quorum` rather than
 `arrived >= live_peer_count`. Use cases:
 
-- Two-phase commit prepare: need MAJORITY commitment, not
+- Two-phase commit prepare: need majority commitment, not
   unanimity.
 - Read quorums: any 3 of 5 replicas confirm before proceeding.
 - Speculative parallel work: stop as soon as N out of M finish.
@@ -223,7 +223,7 @@ any cost** - is:
 - **Heartbeat scan workload**: 8-slot table, 4 live peers, 4
   empty slots - representative of typical worker-pool sizes.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process release**: the barrier runs unchanged across
   processes; the `std::sync::Barrier` baseline cannot.

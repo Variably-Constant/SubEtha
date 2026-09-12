@@ -153,7 +153,7 @@ fn speculative_hedging(c: &mut Criterion) {
 
     c.bench_function("shared_async.speculative_2_hedged/sequential_fast", |b| {
         b.iter(|| {
-            // Sequential baseline: assume we KNEW which path was fast.
+            // Sequential baseline: assume we knew which path was fast.
             // This is the "perfect oracle" lower bound for any
             // hedging primitive.
             thread::sleep(Duration::from_millis(2));
@@ -166,7 +166,7 @@ fn speculative_hedging(c: &mut Criterion) {
 // Speculative same-speed overhead.
 //
 // All N workers run the same-cost closure. The bench measures the
-// overhead of redundant compute when there is NO hedging benefit
+// overhead of redundant compute when there is no hedging benefit
 // (the workers are interchangeable). The fastest-wins still applies
 // but expected wall time approaches the single-worker time.
 // =========================================================

@@ -31,7 +31,7 @@ SharedRegion's generation parity.
 - **`T: Copy + Default + 'static`**: fixed-size payload per
   node.
 - **Single-writer, multi-reader**: push/pop/remove must be
-  serialised externally; reads are lock-free.
+  serialized externally; reads are lock-free.
 - **NodeHandle returned at insert**: pass to `remove(h)` for
   O(1) removal. Generation parity flags stale handles.
 - **Bounded capacity at create**: SharedRegion-backed.
@@ -95,7 +95,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
    time the list empties; the SharedLinkedList's per-allocate
    cost is higher than VecDeque's contiguous push. The pure
    per-op pop_front is ~30 ns; the high number reflects refill
-   amortization. The architectural win is NOT raw pop speed.
+   amortization. The architectural win is not raw pop speed.
 3. **iter_100: linked-list cache pattern loses to
    VecDeque** (3.62x slower) and to std::LinkedList (1.59x).
    Per-node SharedRegion lookups jump through the region
@@ -120,7 +120,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
   push cost into the pop measurement.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process operation**: any process can open the list
   and read iterators; mutex baselines cannot.
@@ -184,14 +184,14 @@ adjustments.
 ### Pattern: deduplicated FIFO with O(1) cancellation
 
 External hash table maps key -> handle; on cancellation,
-remove the handle from the list AND the hash entry. Both O(1).
+remove the handle from the list and the hash entry. Both O(1).
 
 ---
 
 ## Known limitations
 
 - **Single-writer**: concurrent push/pop/remove require
-  external serialisation.
+  external serialization.
 - **Iteration is linked-list-cache**: per-node region lookups.
   Use VecDeque for sequential-access-heavy workloads.
 - **Bounded capacity at create**.
@@ -208,7 +208,7 @@ remove the handle from the list AND the hash entry. Both O(1).
   handle has a different generation. Operating on the old
   handle returns an error (generation parity mismatch).
 
-- **Concurrent writers without synchronisation.** Multiple
+- **Concurrent writers without synchronization.** Multiple
   threads calling `push_back` simultaneously can corrupt the
   head/tail pointers. Wrap in a mutex if multiple writers.
 

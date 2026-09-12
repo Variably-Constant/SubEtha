@@ -1,7 +1,7 @@
 //! Versioned/MVCC pointers - time-travel addressing for snapshot
 //! isolation, immutable trees, and distributed clocks.
 //!
-//! Three pointer flavours sharing a common shape `(version, target)`:
+//! Three pointer flavors sharing a common shape `(version, target)`:
 //!
 //! | Type                     | Version | Use case                                |
 //! |--------------------------|---------|-----------------------------------------|

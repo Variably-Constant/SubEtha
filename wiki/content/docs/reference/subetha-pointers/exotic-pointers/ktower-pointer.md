@@ -15,7 +15,7 @@ Recursive pow2-of-pow2 address decomposition. A `KTower2<T>` is a
 two-segment `(region_id: u32, offset: u32)` pair packed into a u64;
 a `KTower3<T>` is a three-segment `(zone: u16, region: u16, offset:
 u32)` packed into a u64. Resolution goes through a caller-supplied
-region table. The pointer carries an INDEX, not a virtual address.
+region table. The pointer carries an index, not a virtual address.
 This is the userspace analog of the hardware MMU's page-table
 indirection, lifted from physical pages to arbitrary regions.
 
@@ -33,10 +33,10 @@ indirection, lifted from physical pages to arbitrary regions.
   segments are indices. Two processes resolve a `KTower2` to the
   same logical address if their region tables hold the same set of
   region base pointers in the same order. They will resolve to
-  DIFFERENT machine addresses (each process maps the regions at its
+  different machine addresses (each process maps the regions at its
   own VA), which is the entire point.
 - **`resolve` is `unsafe`.** The caller asserts that `region_id` is
-  a valid index into the supplied region table AND that the
+  a valid index into the supplied region table and that the
   resulting `base + offset` is a valid `T`.
 - **`resolve` reads `region_table[self.region_id() as usize]`
   unchecked.** Out-of-range region IDs trigger Rust's slice
@@ -46,7 +46,7 @@ indirection, lifted from physical pages to arbitrary regions.
 - **Capacity ceiling per segment is pow2:** `KTower2` allows 2^32
   regions by 2^32 offset (16 EiB per region); `KTower3` allows
   2^16 zones by 2^16 regions by 2^32 offset.
-- **`offset` is in BYTES, not in `T`.** The caller is responsible
+- **`offset` is in bytes, not in `T`.** The caller is responsible
   for stride. The `resolve` method does `base.add(offset)` then
   casts to `*const T`, so any alignment requirement of `T` must be
   satisfied by the offset value.
@@ -58,7 +58,7 @@ indirection, lifted from physical pages to arbitrary regions.
   `*const T`. For mutable resolution the caller writes their own
   unsafe `*mut T` cast from the same encoded form.
 - **No drop semantics, no ownership.** `KTower2<T>` is `Copy` and
-  `#[repr(transparent)]` over `u64`. It does NOT own the region
+  `#[repr(transparent)]` over `u64`. It does not own the region
   table or the region storage.
 - **`new` is safe and `const`.** Construction cannot fail. Any
   `(u32, u32)` pair is a valid encoding. Validity at resolve time
@@ -117,8 +117,8 @@ indirection layer (zone_table -> region_table -> offset), making
 one word.
 
 Both variants are 8 bytes total. Same slot size as a native
-pointer, but the address space is now multi-segment AND
-position-independent (because every segment is an INDEX, not a
+pointer, but the address space is now multi-segment and
+position-independent (because every segment is an index, not a
 virtual address).
 
 ---
@@ -131,9 +131,9 @@ choices:
 
 | Encoding | Size | Resolve cost | Cross-process? |
 |---|---|---|---|
-| `(*const u8, u32)` struct | 16 bytes | 1 add + 1 deref | NO (raw VA inside) |
-| `(u32, u32)` tuple + region table | 8 bytes | 1 table load + 1 add + 1 deref | YES |
-| `KTower2<T>` (u64 packed) + region table | 8 bytes | 1 table load + 1 add + 1 deref | YES |
+| `(*const u8, u32)` struct | 16 bytes | 1 add + 1 deref | no (raw VA inside) |
+| `(u32, u32)` tuple + region table | 8 bytes | 1 table load + 1 add + 1 deref | yes |
+| `KTower2<T>` (u64 packed) + region table | 8 bytes | 1 table load + 1 add + 1 deref | yes |
 
 The bottom two rows do logically the same thing. The packing into
 a `u64` was expected to help codegen (a `#[repr(transparent)] u64`
@@ -229,7 +229,7 @@ KTower2<T>      = (region_id: u32, offset: u32)
                 = KTower2<KTower2<KTower2<KTower2<T>>>>    -- 4 levels
 ```
 
-At each level `N`, the `region_id` indexes into a TABLE OF
+At each level `N`, the `region_id` indexes into a table of
 `KTower2` pointers at level `N-1`. At the leaf (level 0), the
 `offset` is the actual byte offset within a physical region. The
 recursion depth is a runtime / type-level choice:
@@ -279,7 +279,7 @@ tiers. The same `KTower2` encoding resolves through both:
 use subetha_pointers::k_tower_pointer::KTower2;
 
 // Two regions: "hot" (RAM-backed Vec) and "warm" (SSD-mmap'd file,
-// modelled here as a Vec for the example).
+// modeled here as a Vec for the example).
 let region_hot:  Vec<u64> = vec![10, 20, 30, 40];
 let region_warm: Vec<u64> = vec![100, 200, 300, 400];
 
@@ -304,7 +304,7 @@ assert_eq!(v, 200);
 
 The encoded form is 8 bytes. The 16-byte equivalent would be a
 `(*const u8, u32)` struct carrying the real RAM address, which
-loses cross-process portability AND doubles the storage cost.
+loses cross-process portability and doubles the storage cost.
 
 ---
 
@@ -327,7 +327,7 @@ estimate of each [low, mid, high] triple).
 just the zero-indirection `direct_ptr`.** Comparing KTower only against
 `direct_ptr` is a surplus-indirection asymmetry: KTower pays for the
 table lookup while that contender does not. The native `(u32, u32)`
-struct contender does the SAME table lookup + offset add + deref,
+struct contender does the same table lookup + offset add + deref,
 isolating the encoding cost from the indirection cost - the honest
 3-way comparison the table above reports.
 
@@ -337,13 +337,13 @@ isolating the encoding cost from the indirection cost - the honest
   is the price of cross-process portability and tiered-storage
   addressing: no encoding that carries a region index can pay less
   than one table lookup + one add.
-- **The native `(u32, u32)` tuple is FASTER than the KTower2 API
+- **The native `(u32, u32)` tuple is faster than the KTower2 API
   here, by ~1.31x** (1.98 us vs 2.60 us) - the opposite of the
   packed-u64 "cleaner codegen" expectation. On this CPU /
   toolchain the shift+mask the packed form adds (to split the u64
   into region_id and offset) costs more than reading two adjacent
   `u32`s from the tuple. The "packed u64 wins on codegen" claim
-  does NOT reproduce on Zen+; treat KTower2's value as the
+  does not reproduce on Zen+; treat KTower2's value as the
   position-independent / cross-process encoding, not a per-lookup
   speedup over an equivalent tuple. Re-run on the target hardware
   before assuming either ordering.
@@ -403,7 +403,7 @@ the bench:
   caller's job today (compose `KTower2` of `KTower2`).
 - **Codegen of the u64-packed form is not a guaranteed win.** On
   the measured Windows x86_64 / Zen+ build the packed encoding was
-  ~1.31x SLOWER than the native `(u32, u32)` tuple (the shift+mask
+  ~1.31x slower than the native `(u32, u32)` tuple (the shift+mask
   to split the u64 cost more than two adjacent u32 loads). The
   ordering is host- and toolchain-dependent; KTower2's durable
   value is position-independence and cross-process portability,
@@ -425,18 +425,18 @@ the bench:
 - **Don't change a region's base mid-iteration.** If the caller is
   iterating `for p in pointers { p.resolve(&table) }` and another
   thread rebinds `table[i]`, the iterator may resolve some
-  pointers to the OLD base and some to the new one. Use a read
+  pointers to the old base and some to the new one. Use a read
   lock or a generation counter to detect rebinds.
 - **Don't forget alignment.** `offset` is in bytes; `*const T`
   must satisfy `T`'s alignment. If `T` is `u64` (8-byte aligned),
-  offsets must be multiples of 8. The `resolve` method does NOT
+  offsets must be multiples of 8. The `resolve` method does not
   check.
 - **Don't pack a `region_id` from untrusted input without
   bounds-checking.** The `new` constructor accepts any `u32`;
   passing a `region_id` that exceeds the table size will panic at
   resolve time. Validate at the trust boundary.
 - **Don't confuse `KTower2<T>` with `*const T`.** They are the
-  same size but the encoded form is NOT a valid machine address.
+  same size but the encoded form is not a valid machine address.
   Passing `p.raw() as *const T` to anything that wants a real
   pointer will segfault.
 

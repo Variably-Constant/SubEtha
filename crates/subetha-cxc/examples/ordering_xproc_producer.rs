@@ -1,4 +1,4 @@
-//! Cross-process ordering E2E: one producer PROCESS.
+//! Cross-process ordering E2E: one producer process.
 //!
 //! Attaches to a stamped file-backed `AdaptiveRing` another process
 //! created (`ordering_xproc_consumer` is the normal orchestrator,
@@ -36,9 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_items: u64 = args[3].parse()?;
     let max_producers: usize = args[4].parse()?;
 
-    // Attach: validates the ring backings AND the ordering region
+    // Attach: validates the ring backings and the ordering region
     // (magic checked, stamp kind adopted from the creator, nothing
-    // re-initialised).
+    // re-initialized).
     let ring = AdaptiveRing::open(prefix, max_producers, 1, CAPACITY)
         .map_err(|e| format!("open ring: {e:?}"))?
         .with_ordering_stamps()

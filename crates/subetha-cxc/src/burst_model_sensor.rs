@@ -1,8 +1,8 @@
 //! Gilbert-Elliott burst-loss model fitted online from the loss trace, giving
-//! a REAL mean burst length instead of a jitter-ratio heuristic.
+//! a real mean burst length instead of a jitter-ratio heuristic.
 //!
 //! Wireless loss is bursty - a fade or a collision drops several frames in a
-//! row - so the loss process is well modelled by a two-state Markov chain: a
+//! row - so the loss process is well modeled by a two-state Markov chain: a
 //! Good state (no loss) and a Bad state (loss), with `p = P(Good -> Bad)` and
 //! `r = P(Bad -> Good)`. Fitting `(p, r)` from the observed loss sequence
 //! yields the mean burst length `1 / r` (the interleave depth needed to spread
@@ -44,7 +44,7 @@ const MAX_MEAN_BURST: f64 = 64.0;
 pub struct BurstModel {
     n: u64,
     losses: u64,
-    /// Count of adjacent samples that were BOTH losses (for `E[X_t X_{t+1}]`).
+    /// Count of adjacent samples that were both losses (for `E[X_t X_{t+1}]`).
     pairs: u64,
     have_prev: bool,
     prev_lost: bool,

@@ -14,7 +14,7 @@
 //! The boxed prefix is `0xFFF8_0000_0000_0000` (sign=1 + all-ones
 //! exponent + qNaN bit). Real float NaNs from computation usually
 //! have sign=0, so we don't collide with them. To be safe, every
-//! `from_f64(NaN)` canonicalises the bit pattern to
+//! `from_f64(NaN)` canonicalizes the bit pattern to
 //! `0x7FF8_0000_0000_0000` (positive canonical qNaN) so the stored
 //! bits never look boxed when they aren't.
 //!
@@ -33,7 +33,7 @@
 //!
 //! # Cross-process angle
 //!
-//! When tag = 4 (OffsetPtr), the payload is a 32-bit INDEX, not a
+//! When tag = 4 (OffsetPtr), the payload is a 32-bit index, not a
 //! virtual address. Same `u64` bit pattern resolves to the same
 //! pointer in every process that maps the underlying SharedRegion.
 //! That's what makes this primitive cross-process safe where V8 /
@@ -105,7 +105,7 @@ impl SharedNaNValue {
 
     // ----- constructors -----
 
-    /// Wrap an `f64`. NaN inputs are canonicalised to the positive
+    /// Wrap an `f64`. NaN inputs are canonicalized to the positive
     /// canonical qNaN so the resulting bits never look boxed.
     pub fn from_f64(v: f64) -> Self {
         if v.is_nan() {
@@ -136,7 +136,7 @@ impl SharedNaNValue {
         Self { raw: pack(TAG_OFFSET_PTR, p.index as u64) }
     }
 
-    /// Construct from raw bits. Useful for serialisation /
+    /// Construct from raw bits. Useful for serialization /
     /// cross-process passing.
     #[inline]
     pub const fn from_raw(raw: u64) -> Self { Self { raw } }
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn f64_nan_canonicalised() {
-        // A specific NaN input gets canonicalised; we lose the
+        // A specific NaN input gets canonicalized; we lose the
         // specific bit pattern but the result is still .is_nan().
         let n = SharedNaNValue::from_f64(f64::NAN);
         assert!(n.is_f64());
@@ -278,12 +278,12 @@ mod tests {
     #[test]
     fn f64_with_sign_1_nan_doesnt_collide_with_boxed() {
         // Construct a "boxed-looking" NaN by hand. from_f64 should
-        // detect it as NaN and canonicalise.
+        // detect it as NaN and canonicalize.
         let evil = f64::from_bits(0xFFF8_FFFF_FFFF_FFFF);
         assert!(evil.is_nan());
         let n = SharedNaNValue::from_f64(evil);
         assert!(n.is_f64());
-        // After canonicalisation it's the positive canonical qNaN.
+        // After canonicalization it's the positive canonical qNaN.
         assert_eq!(n.raw(), CANONICAL_QNAN);
     }
 

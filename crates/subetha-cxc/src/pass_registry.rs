@@ -1,13 +1,13 @@
 //! Closure registry for cross-process `Pass<F>` dispatch.
 //!
-//! Rust closures cannot be safely serialised across process
+//! Rust closures cannot be safely serialized across process
 //! boundaries; they reference function pointers that are not
 //! position-stable, and they may capture variables of arbitrary
 //! types. The PSC / Ray / Akka pattern is to register closures by
-//! ID at startup; the wire protocol carries the ID + serialised
+//! ID at startup; the wire protocol carries the ID + serialized
 //! args, not the closure code.
 //!
-//! Each process must register the SAME ID -> closure mapping at
+//! Each process must register the same ID -> closure mapping at
 //! startup (typically via a macro that all participating binaries
 //! call). A `Pass { id, args }` can then be dispatched by any
 //! process, including failover targets.
@@ -17,7 +17,7 @@ use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
 
-/// A passable unit of work: a closure ID plus its serialised args.
+/// A passable unit of work: a closure ID plus its serialized args.
 #[derive(Debug, Clone)]
 pub struct Pass {
     pub closure_id: u32,
@@ -25,7 +25,7 @@ pub struct Pass {
 }
 
 /// Outcome of running a Pass; arbitrary bytes that the originator
-/// can deserialise.
+/// can deserialize.
 pub type PassResult = Result<Vec<u8>, PassError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,7 @@ pub enum PassError {
 }
 
 /// Closure handler signature. Args are raw bytes; result is raw
-/// bytes. Caller-supplied (de)serialisation.
+/// bytes. Caller-supplied (de)serialization.
 pub type PassHandler = Box<dyn Fn(&[u8]) -> PassResult + Send + Sync + 'static>;
 
 struct Registry {
@@ -91,7 +91,7 @@ macro_rules! register_pass {
     ($id:expr, $name:expr, $handler:expr) => {{
         // Registration returns Option<PassHandler>: Some = replaced
         // prior handler, None = first registration. The prior must
-        // be dropped IMMEDIATELY (not held for the macro scope) so
+        // be dropped immediately (not held for the macro scope) so
         // a `let _prior =` binding is wrong - use explicit drop.
         drop($crate::pass_registry::register($id, $handler));
         let _name = $name;  // name is for documentation; not stored
@@ -154,7 +154,7 @@ mod tests {
         register(id_b, |_| Ok(vec![]));
         assert!(is_registered(id_a));
         assert!(is_registered(id_b));
-        // The registry is GLOBAL and sibling tests register and
+        // The registry is global and sibling tests register and
         // unregister concurrently, so a before/after count delta is
         // not a stable property. What must hold: the count includes
         // the two registrations this test owns right now.

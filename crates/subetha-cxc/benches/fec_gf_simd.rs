@@ -7,7 +7,7 @@
 //!  - **primitive**: `gf_mul_add` over a fixed buffer - the raw per-rung
 //!    throughput of the inner step.
 //!  - **end-to-end encode**: `RsCode::encode` of a realistic `(k, r, shard)`
-//!    block - the speedup production actually sees, since encode IS the hot
+//!    block - the speedup production actually sees, since encode is the hot
 //!    path.
 //!
 //! Only backends `available()` on this host run. An AVX2 box reports

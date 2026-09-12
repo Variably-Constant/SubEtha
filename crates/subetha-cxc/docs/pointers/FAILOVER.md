@@ -10,7 +10,7 @@
 Scans a `HeartbeatTable` and reclaims in-flight work whose owning
 process has stopped beating. Each scan ticks the global epoch by
 one and identifies every slot with
-`last_seen_epoch < global - grace_epochs` AND a non-zero
+`last_seen_epoch < global - grace_epochs` and a non-zero
 in-flight bitmap; those slots are returned in a `ReclaimReport`
 so the caller (typically a scheduler) can reassign the work.
 
@@ -24,12 +24,12 @@ so the caller (typically a scheduler) can reassign the work.
 
 **Constraints (read first):**
 
-- **Sidecar integration**: `FailoverWatchdog` itself does NOT implement `subetha_sidecar::AdaptiveInstance` because its `'a` borrowed lifetime on the underlying `HeartbeatTable` cannot satisfy the trait's `'static` bound. The per-scan `liveness::OP_SCAN` observation is pushed to the borrowed `HeartbeatTable`'s sidecar ring instead, so any policy attached at the table level still sees scan activity.
+- **Sidecar integration**: `FailoverWatchdog` itself does not implement `subetha_sidecar::AdaptiveInstance` because its `'a` borrowed lifetime on the underlying `HeartbeatTable` cannot satisfy the trait's `'static` bound. The per-scan `liveness::OP_SCAN` observation is pushed to the borrowed `HeartbeatTable`'s sidecar ring instead, so any policy attached at the table level still sees scan activity.
 
 - **Borrows an external `HeartbeatTable`**: FailoverWatchdog does
   not own the table; it scans someone else's.
 - **`grace_epochs` is the staleness threshold**: a slot must
-  miss STRICTLY MORE than `grace_epochs` beats to be reclaimed.
+  miss strictly more than `grace_epochs` beats to be reclaimed.
   At lag == grace, the slot is still considered alive.
 - **`scan()` ticks the global epoch by one**: each scan call
   advances the comparison baseline. Schedule scans at a fixed
@@ -175,7 +175,7 @@ The story the numbers tell:
 - **Variable workload sizes**: 64 (typical worker pool), 1024
   (large cluster) - measures the linear-scan cost at two scales.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process scan**: the watchdog in process A scans the
   same heartbeat table that process B's workers beat. The naive
@@ -303,10 +303,10 @@ external coordinator.
 
 - **Forgetting that `lag == grace` is alive.** The strict-
   greater-than means a worker just barely missing the grace
-  window is NOT dead yet. Tune cadence and grace together.
+  window is not dead yet. Tune cadence and grace together.
 
 - **Treating the in-flight bitmap as the work specification.**
-  The bitmap is 64 bits; it identifies WHICH work units a
+  The bitmap is 64 bits; it identifies which work units a
   worker is processing, not what those units mean. The
   scheduler owns the bit-to-task mapping.
 

@@ -1,4 +1,4 @@
-//! Both adaptive front doors do sync AND async on one handle. A channel
+//! Both adaptive front doors do sync and async on one handle. A channel
 //! built the normal way - `AutoIpc::new(path).build_channel()` or
 //! `.build_adaptive()` - answers `recv()` (sync), `recv_blocking()`, and
 //! `recv_async().await` (and the send equivalents), not a second type.

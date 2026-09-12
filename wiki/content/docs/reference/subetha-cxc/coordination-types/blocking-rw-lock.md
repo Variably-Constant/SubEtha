@@ -76,7 +76,7 @@ impl BlockingRWLock {
 The read/write acquire calls return a `BlockingReadGuard<'_>` /
 `BlockingWriteGuard<'_>` RAII guard whose `Drop` releases the inner read/write
 state and then calls the private `signal_unlock` (bump the wakeup atom +
-`wake_up_to(new_gen)`). Both readers and writers park on the SAME waker, so an
+`wake_up_to(new_gen)`). Both readers and writers park on the same waker, so an
 unlock's `wake_up_to` re-checks every parker and the underlying
 writer-priority policy picks the next holder. `BlockingRWLockError` has five
 variants: `Lock(RWLockError)`, `Waker(WakerError)`, `Timeout` (a

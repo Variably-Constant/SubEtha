@@ -1,4 +1,4 @@
-//! Item 13: WBest available-bandwidth estimator (receiver side).
+//! WBest available-bandwidth estimator (receiver side).
 //!
 //! WBest (Li, Claypool & Kinicki, "WBest: a Bandwidth Estimation Tool for IEEE
 //! 802.11 Wireless Networks", LCN 2008) estimates the available bandwidth on a
@@ -19,7 +19,7 @@
 //!
 //! `C_e` enters the available-bandwidth equation squared, so a capacity error is
 //! amplified - which is why stage 1 takes the median and why the result is
-//! cross-checked against the passive BBR `BtlBw` (item 6) at the call site rather
+//! cross-checked against the passive BBR `BtlBw` at the call site rather
 //! than trusted blind.
 //!
 //! This estimator is the receiver-side measurement half: it is fed each probe's

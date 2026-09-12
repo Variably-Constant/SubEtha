@@ -19,7 +19,7 @@
 //!
 //! # How many producers, how many consumers
 //!
-//! Several queue primitives here give ONE thread ownership of one end.
+//! Several queue primitives here give a single thread ownership of one end.
 //! Exceeding that is not slow, it is a data race, and the usual symptom
 //! is a hang rather than an error. The counts are the first thing to
 //! check when picking one:
@@ -62,7 +62,7 @@
 //! belongs to, what priority it has, whether the peer is alive,
 //! when the data needs to hit disk. The protocol layer here names
 //! each of those as a first-class field so the application can
-//! reason about (and direct) the substrate's behaviour.
+//! reason about (and direct) the substrate's behavior.
 //!
 //! The win over OS pipes/sockets is the same shape as QUIC over
 //! TCP: userspace transport eliminates the kernel from the hot
@@ -104,6 +104,38 @@ pub mod api;
 pub mod dispatch_deque;
 pub mod message_transport;
 pub mod mmf_dispatcher;
+pub mod cross_process_notifier;
+pub mod raw_btree_map;
+pub mod raw_cell;
+pub mod raw_deque;
+pub mod raw_graph;
+pub mod shared_array;
+pub mod raw_hash_map;
+pub mod raw_linked_list;
+pub mod raw_k_tower;
+pub mod raw_lru_cache;
+pub mod raw_owner_lease;
+pub mod raw_region;
+pub mod raw_time_point;
+pub mod raw_umbra_pointer;
+pub mod raw_universal;
+/// A debug-build trace of what happened to a ring's ownership and its
+/// pops, so a two-reader failure can say what the other thread did.
+#[cfg(debug_assertions)]
+pub mod ring_trace;
+pub mod raw_slab;
+/// The laned versioned map with its key and value sizes given at run
+/// time, for callers that cannot name them in the type system.
+pub mod raw_laned_versioned_map;
+/// The versioned B-tree map with its key and value sizes given at run
+/// time, for callers that cannot name them in the type system.
+pub mod raw_versioned_btree_map;
+/// The versioned slab with its value size and chain depth given at run
+/// time, for callers that cannot name them in the type system.
+pub mod raw_versioned_slab;
+pub mod raw_treiber_stack;
+pub mod raw_vec;
+pub mod shared_holder_table;
 pub mod shared_deque;
 pub mod shared_deque_fcl;
 pub mod shared_deque_khl;
@@ -156,8 +188,30 @@ pub mod blocking_tcp_bridge;
 pub mod bbr;
 pub mod cache_ops;
 pub mod control_frame;
+/// The wire specification's packet-type table, read back so the modules
+/// owning those constants assert against it.
+#[cfg(test)]
+mod spec_doc;
 pub mod control_table;
 pub mod fec;
+/// Residue erasure coding, behind the `residue-fec` feature and off by
+/// default.
+///
+/// It is correct and its seven tests pass, and it is not what a caller
+/// wants: it encodes about 210 times slower than [`rlc_fec`] and
+/// recovers about 135 times slower, it costs slightly more on the wire,
+/// and it is a block code, so a loss waits for the rest of its block
+/// where the sliding window does not. The one thing it had that
+/// [`rlc_fec`] did not - a construction that generates no coefficient -
+/// the published taps now have too.
+///
+/// It stays because it rests on none of the reasoning the taps rest on,
+/// so it is the fallback if that reasoning does not survive review. It
+/// is gated rather than published because its own notes say the
+/// optimizations worth trying would change its moduli and its chunk
+/// mapping, and a published module is an API promise not to.
+#[cfg(feature = "residue-fec")]
+pub mod residue_fec;
 pub mod rlc_fec;
 pub mod rlc_control;
 #[cfg(feature = "tls")]
@@ -203,6 +257,10 @@ pub mod net_tune;
 pub mod ordering;
 pub mod peer_directory;
 pub mod protocol_pubsub;
+/// Opening and removing a file-backed region, in one place, so a
+/// removal means the same thing on every platform.
+pub mod region_file;
+pub mod ring_holders;
 pub mod qos_policy;
 pub mod replay_positions;
 pub mod laned_versioned_map;
@@ -521,6 +579,16 @@ pub use shared_treiber_stack::{
     stack_file_size, SharedTreiberStack, StackError, StackHeader,
     STACK_MAGIC, STACK_NIL,
 };
+pub use raw_treiber_stack::{ElementLayout, RawTreiberStack};
+pub use cross_process_notifier::{Notifier, NotifierSet, NotifyError, NotifyPlace, NotifyRecord, NOTIFY_MAGIC};
+pub use raw_deque::{raw_deque_file_size, raw_slot_bytes, RawDeque};
+pub use raw_hash_map::RawHashMap;
+pub use raw_btree_map::{node_geometry, raw_btree_file_size, NodeGeometry, RawBTreeMap, RAW_BTREE_MAGIC};
+pub use raw_cell::RawCell;
+pub use raw_linked_list::{raw_node_geometry, raw_node_layout, RawLinkedList};
+pub use raw_region::{raw_region_file_size, raw_region_links_offset, raw_region_slots_offset, RawRegion};
+pub use raw_slab::{raw_slab_data_offset, raw_slab_file_size, raw_slab_geometry, RawSlab};
+pub use raw_vec::{raw_vec_data_offset, raw_vec_file_size, raw_vec_geometry, RawVec, VEC_SLOT_PREFIX};
 pub use shared_umbra_pointer::SharedUmbraPointer;
 pub use shared_universal::{
     SharedUniversal, Strategy as UniversalStrategy, UniversalError,

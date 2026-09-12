@@ -12,12 +12,12 @@ weight: 80
 ![Convention](https://img.shields.io/badge/Ray%2FAkka_pattern-yes-informational)
 
 In-process closure registry for cross-process `Pass<F>` dispatch.
-Rust closures cannot be safely serialised across process
+Rust closures cannot be safely serialized across process
 boundaries (they reference function pointers that are not
 position-stable, and capture variables of arbitrary types).
 The Ray / Akka pattern is to register closures by ID at
-startup; the wire protocol carries the ID + serialised args,
-not the closure code. Each process registers the SAME
+startup; the wire protocol carries the ID + serialized args,
+not the closure code. Each process registers the same
 ID -> closure mapping; any process can dispatch via
 `Pass { id, args }`.
 
@@ -37,7 +37,7 @@ ID -> closure mapping; any process can dispatch via
 - **Same ID must register the same closure in every
   participating process**: if process A's id=42 differs from
   process B's id=42, the dispatch is silently wrong.
-- **Args are raw bytes**: caller chooses (de)serialisation. The
+- **Args are raw bytes**: caller chooses (de)serialization. The
   registry does not interpret args.
 - **Re-register overwrites**: `register(id, f)` returns the
   previous handler if any.
@@ -133,7 +133,7 @@ binds the name only for documentation.
 present) - call it on graceful shutdown so the boxed `dyn Fn` and anything it
 captured drop. `is_registered(id) -> bool` and `registered_count() -> usize`
 are the read-side probes (one RwLock-read each); `registered_count` reports the
-number of handlers in THIS process's registry.
+number of handlers in this process's registry.
 
 ---
 
@@ -183,7 +183,7 @@ the result.
   the binary's benches; each function uses a distinct ID range
   to avoid cross-contamination.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process dispatch**: the architectural claim. Process
   A sends `Pass { id, args }` via any IPC; Process B's registry
@@ -287,13 +287,13 @@ at startup; it picks up the work unchanged.
 ## Known limitations
 
 - **In-process static registry**: not MMF-backed. Multiple
-  processes do NOT share the registry; each registers its own
+  processes do not share the registry; each registers its own
   mapping.
 - **Registration is global per-process**: there is one
   registry, not multiple instances. Calling `register` from a
   library affects every other library in the same binary.
 - **No type safety on args**: `&[u8]` -> `PassResult`. Callers
-  must agree on serialisation format.
+  must agree on serialization format.
 - **Replaced handler is dropped immediately**: any state
   captured by the prior handler is dropped on re-register.
 - **RwLock-write on register blocks all readers**: high-

@@ -1,6 +1,6 @@
 //! Cross-process E2E for `DirectFileRing` (unbuffered file I/O).
 //!
-//! Proves the page-cache-bypass path works ACROSS PROCESSES, which is
+//! Proves the page-cache-bypass path works across processes, which is
 //! the primitive's reason to exist: a producer process writes payload
 //! slots with the page cache bypassed (straight to the block device),
 //! a separate consumer process reads them back the same way, and the

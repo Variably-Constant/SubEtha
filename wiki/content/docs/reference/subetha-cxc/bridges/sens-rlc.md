@@ -12,14 +12,33 @@ weight: 65
 
 The second erasure code of the [Sens-O-Matic](../reliable-udp-bridge/)
 protocol. Where the block Reed-Solomon code groups items into blocks of `k`
-source + `r` parity shards, the **sliding-window Random Linear Code**
+source + `r` parity shards, the **sliding-window linear code**
 ([`rlc_fec`](../../../)) ships items as source symbols interleaved with
-RLC repair symbols and recovers a lost symbol from the *next* repair -
+repair symbols and recovers a lost symbol from the *next* repair -
 rather than waiting for the rest of a block, which is the lower-latency
 recovery shape on a streaming workload. The two codes share the GF(2^8)
 field and the committed SIMD multiply ladder; this one lives in
 [`sens_rlc`](../../../), types `SensOMaticRlcSender` /
 `SensOMaticRlcReceiver`.
+
+The coefficients are a **published table of constants**, not values
+either end generates. A repair multiplies the newest symbol in its window
+by the first tap, the one before it by the second, and so on, with one
+tap for every position the widest window can hold. The density threshold
+says what *fraction* of the window carries a coefficient, spread across
+its whole depth rather than filling the newest end: at full density every
+position is in, at the lowest one position in sixteen, and at every depth
+either way. (Reading the density as a reach instead would cap a repair at
+the first sixteen symbols however wide the window, which makes the
+controller's answer to a long burst - widening the window - do nothing.)
+
+A fixed generator is enough because the code is convolutional: successive
+repairs cover windows that have shifted, so their equations differ
+although the generator does not. Each repair names its generator in the
+high nibble of its density byte, so a decoder reads the choice off the
+stream rather than from its own configuration, and a repair naming a
+generator this build does not read is counted and dropped rather than
+decoded with the wrong coefficients.
 
 It adds two things the block-RS code does not have: an **adaptive
 controller** and **optional TLS 1.3**.
@@ -49,7 +68,7 @@ FEC cover the residual loss, rather than probing into the cliff.
 
 ## One window per peer
 
-The connection id identifies the SESSION, and the receiver keeps a
+The connection id identifies the session, and the receiver keeps a
 decode window per id: its own delivery frontier, loss estimate, gap
 tracking and path validation. A node receiving from several peers at
 once - a replication mesh, where every member ships to every other -
@@ -63,7 +82,7 @@ because a session is never rebound to a different id.
 
 `poll_from()` returns `(connection_id, item)` and is the call a
 multi-peer node wants. `poll()` is the same drain with the tag
-dropped. Ordering is guaranteed WITHIN a connection id; nothing orders
+dropped. Ordering is guaranteed within a connection id; nothing orders
 one peer against another, since they are independent streams.
 `live_sessions()` lists the ids with a window.
 
@@ -172,7 +191,7 @@ confidence intervals, and methodology in
 On the clean LAN the RLC code moves ~890 Mbit/s (FEC parity is the gap to
 the raw stream bridges). Under loss it holds where the TCP bridges collapse:
 **~870 Mbit/s at 3% LAN loss and ~550 at 8%, versus ~115 and ~10 for the TCP
-bridges**, with a ~30 ms p99 round-trip against their 204-254 ms (a lost TCP
+bridges**, with a ~30 ms p99 round-trip against their 204-255 ms (a lost TCP
 segment head-of-line-blocks the whole stream; the RLC code recovers in-band).
 Over the real internet it holds ~260 Mbit/s through 3-8% loss where
 `TcpTlsBridge` collapses to single digits, statistically tied with QUIC at

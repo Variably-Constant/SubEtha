@@ -64,7 +64,7 @@ loops beyond CAS-retry, no underflow.
   stack at 0/1 size).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process push/pop**: any process pushes; any process
   pops. The Vec baseline is in-process only.
@@ -122,7 +122,7 @@ free list; the standalone primitive exposes the same shape.
 
 ### Pattern: undo / history stack
 
-LIFO semantics match undo. Cross-process LET multiple processes
+LIFO semantics match undo. Cross-process, it lets multiple processes
 share the same history.
 
 ---

@@ -31,7 +31,7 @@ pub struct Scenario {
 pub static ALL: &[Scenario] = &[
     Scenario {
         name: "failover",
-        about: "a KILLED process's in-flight work is reclaimed by the watchdog",
+        about: "a killed process's in-flight work is reclaimed by the watchdog",
         parent: failover::parent,
         child: failover::child,
     },
@@ -49,7 +49,7 @@ pub static ALL: &[Scenario] = &[
     },
     Scenario {
         name: "session-restart",
-        about: "a KILLED peer's replacement session is delivered, not discarded",
+        about: "a killed peer's replacement session is delivered, not discarded",
         parent: session_restart::parent,
         child: session_restart::child,
     },
@@ -61,7 +61,7 @@ pub static ALL: &[Scenario] = &[
     },
     Scenario {
         name: "receiver-restart",
-        about: "the mirror: a replacement RECEIVER joins a stream already in progress",
+        about: "the mirror: a replacement receiver joins a stream already in progress",
         parent: receiver_restart::parent,
         child: receiver_restart::child,
     },

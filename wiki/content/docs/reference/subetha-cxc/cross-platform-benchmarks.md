@@ -90,7 +90,7 @@ lock/unlock dominates at small N - and trails it at 100k keys, where the
 in-process map's pointer-direct nodes win over the mmf's seqlock +
 position-independent addressing. Zen+ / Windows is the exception at
 small N: on re-measurement the two are level on hits (25.2 vs 26.0),
-though the miss case still favours the B-tree. Read the small-N result
+though the miss case still favors the B-tree. Read the small-N result
 as "a cross-process ordered map costs nothing here", not as a win.
 
 ---

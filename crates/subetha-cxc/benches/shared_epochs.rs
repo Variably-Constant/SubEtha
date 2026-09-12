@@ -24,7 +24,7 @@
 //!    so it is measured with the table half full and again with it
 //!    empty, and both numbers are reported.
 //!
-//! What the numbers do NOT show: cross-process visibility, which is the
+//! What the numbers do not show: cross-process visibility, which is the
 //! whole reason for the shared table and which the baseline cannot do
 //! at any price; and the dead-owner reap, which has no baseline at all
 //! because a process-local pin set cannot outlive its process.

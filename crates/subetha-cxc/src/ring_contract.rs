@@ -1,9 +1,9 @@
 //! `RingContract` - the declared operation envelope for a ring.
 //!
-//! A [`RingContract`] is the USER OVERRIDE on the otherwise fully
+//! A [`RingContract`] is the user override on the otherwise fully
 //! automatic ring: peer-count ceilings, an ordering contract, and a
 //! capacity bound, declared as one validated artifact every attaching
-//! party agrees on. An `AdaptiveRing` WITHOUT a declared contract is
+//! party agrees on. An `AdaptiveRing` without a declared contract is
 //! unbounded - peers grow the ring on demand and registration never
 //! fails; declaring a contract is the only thing that makes
 //! `TooManyProducers` / `TooManyConsumers` possible.
@@ -68,7 +68,7 @@ pub struct RingContract {
 }
 
 impl RingContract {
-    /// A contract that PINS the peer counts: registration past
+    /// A contract that pins the peer counts: registration past
     /// `max_producers` / `max_consumers` returns `TooManyProducers` /
     /// `TooManyConsumers` instead of growing the ring. No ordering
     /// constraint, no capacity bound. The common fixed-topology
@@ -83,7 +83,7 @@ impl RingContract {
     }
 
     /// The fully-unbounded contract: any peer counts, any capacity,
-    /// no ordering constraint. The DEFAULT for rings with no declared
+    /// no ordering constraint. The default for rings with no declared
     /// contract - registration never fails under it (peers grow the
     /// ring on demand up to the substrate slot ceilings).
     pub fn unbounded() -> Self {

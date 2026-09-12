@@ -46,7 +46,7 @@ There is no separate "shared memory" abstraction versus a
 | Cells | `SharedCell`, `SharedOnceCell` |
 | Locks | `SharedRWLock`, `SharedSemaphore`, `SharedRateLimiter`, `SharedFenceClock` |
 | Sketches | `SharedBloomFilter`, `SharedCountMinSketch`, `SharedHyperLogLog`, `SharedHistogram`, `SharedReservoirSampler` |
-| Arenas, handles | `SharedStringArena`, `SharedHandleTable`, `SharedRegion` |
+| Arenas, handles | `SharedStringArena`, `SharedHandleTable`, `SharedRegion`, `SharedArray` |
 | Ownership | `OwnerLease`, `SharedLeaderElection`, `LazyConfig` |
 | Coordination | `HeartbeatTable`, `EpochBarrier`, `FailoverWatchdog`, `EventStateLog`, `SharedVersionedChain`, `SharedTimePointTile`, `PriorityFanout`, `ProgressTask`, `BackgroundScheduler`, `SharedGraph`, `SharedTopologyMap`, `KTowerCascade`, `SharedAsyncPointer`, `PassRegistry` |
 | Pointer variants | `SharedUmbraPointer`, `SharedUniversal`, `SharedNaNValue`, `SharedNaNTaggedValue`, `OffsetPtr`, `TaggedOffsetPtr` |
@@ -71,6 +71,12 @@ of these.
 | `quic-bridge` | quinn, rcgen, rustls, tokio | `quic_bridge::{QuicBridgeClient, QuicBridgeServer, make_self_signed_pair, install_default_crypto_provider}` |
 | `tcp-bridge` | tokio (net + io-util + rt-multi-thread + macros) | `tcp_bridge::{TcpBridgeClient, TcpBridgeServer}` |
 | `wire-locale` | (no extra dep; uses libc) | `locale_wire::AfXdpSocket` (Linux 4.18+) |
+| `tls` | rustls, rcgen | A TLS 1.3 record layer for the Sens-O-Matic / RLC transport: the rustls handshake carried over the transport's own reliable delivery, and AEAD on every item |
+| `tcp-tls-bridge` | tokio-rustls (with `tcp-bridge` and `tls`) | The TcpBridge wire protocol inside that record layer |
+| `linux-futex-raw` | (no extra dep; uses libc) | The direct futex syscall surface on `CrossProcessWaker` (`FUTEX_WAIT_BITSET`, `FUTEX_REQUEUE`) |
+| `residue-fec` | (no extra dep) | `residue_fec`, a residue-number erasure code recovered by the Chinese remainder theorem. Not part of the published API: it is correct, and about 210 times slower to encode than the sliding-window RLC |
+| `zmq-bench` | zmq (links C libzmq) | The ZeroMQ contender in the `cross_process_compare` bench |
+| `iceoryx-bench` | iceoryx2 | The iceoryx2 contender in the `cross_process_compare` bench |
 
 Modules gated on `cfg(target_os = "linux")` are compiled away on
 other platforms; modules gated on `cfg(unix)` are excluded on
@@ -121,7 +127,7 @@ Three invariants hold across the family:
   produces the same slot in every process linking the crate.
 
 - **Power-of-2 capacity.** Slot index calculations reduce to
-  `hash & (capacity - 1)`. One AND instruction vs a divide on
+  `hash & (capacity - 1)`. One `AND` instruction vs a divide on
   every probe. Non-pow2 capacities return
   `MapError::InvalidCapacity` (and equivalents for the other
   primitives).
@@ -148,7 +154,7 @@ println!("ops_observed = {}", stats.ops_observed);
 ```
 
 The default `Policy` for MMF primitives is `NoMigrationPolicy`
-because the strategy IS the byte layout, which is not migrable
+because the strategy is the byte layout, which is not migrable
 in place.
 
 ## Requirements

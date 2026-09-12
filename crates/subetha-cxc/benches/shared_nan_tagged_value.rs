@@ -5,7 +5,7 @@
 //! Architectural claim: two-level discrimination (outer NaN tag +
 //! inner pointer tag) fits in 8 bytes with zero heap alloc. The
 //! Box<dyn Trait> baseline costs ~16 bytes (fat pointer = data
-//! pointer + vtable pointer) PLUS one heap allocation per value.
+//! pointer + vtable pointer) plus one heap allocation per value.
 
 use std::hint::black_box;
 

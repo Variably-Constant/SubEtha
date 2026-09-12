@@ -1,0 +1,75 @@
+[package]
+name = "subetha-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["ipc", "shared-memory", "ffi", "c-abi", "cross-process"]
+categories = ["concurrency", "development-tools::ffi"]
+readme = "README.md"
+description = "C ABI for SubEtha: generation-checked handles over the memory-mapped primitives, for C, C++, Go, Node and every language that binds through C."
+build = "build.rs"
+include = [
+    "src/**",
+    "build.rs",
+    "cbindgen.toml",
+    "include/subetha.h",
+    "subetha.def",
+    "README.md",
+]
+
+[lib]
+name = "subetha_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+# Entry points that exist so the C test suite can drive the panic path.
+# Never enabled in a shipped build.
+test-hooks = []
+# The transport families: the TCP bridge, the QUIC bridge and Sens-O-Matic.
+# They pull tokio, quinn and rustls, which an embedder that only wants the
+# memory-mapped primitives has no use for, so they are off by default.
+#
+# Their entry points exist in every build. Without this feature each one
+# answers SUBETHA_E_NOT_SUPPORTED naming the feature that was off, so
+# include/subetha.h and subetha.def stay one artifact and a C program
+# links against any build of the library.
+transports = ["tcp-bridge", "quic-bridge", "tls"]
+tcp-bridge = ["dep:tokio", "subetha-cxc/tcp-bridge"]
+quic-bridge = ["dep:tokio", "subetha-cxc/quic-bridge"]
+tcp-tls-bridge = ["tcp-bridge", "tls", "subetha-cxc/tcp-tls-bridge"]
+# TLS 1.3 on the Sens-O-Matic endpoint: the handshake rides the transport's
+# own reliable delivery and every item is AEAD-sealed. Pulls rustls and
+# rcgen, and no tokio - a Sens endpoint is synchronous, so a caller who
+# wants a confidential datagram transport and no bridge pays for neither.
+tls = ["subetha-cxc/tls"]
+
+[dependencies]
+subetha-cxc = { workspace = true }
+arc-swap = { workspace = true }
+parking_lot = { workspace = true }
+
+# A current-thread runtime for strict mode, which drives a bridge on the
+# calling thread, and a thread of its own for managed mode. `net` is named
+# here rather than left to arrive through subetha-cxc's own tokio features:
+# `enable_all` builds the io driver from it, and a socket awaited without
+# one panics for want of a reactor. Cargo unifies features, so this would
+# work today by way of that crate and break the moment it stopped asking.
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "time", "net"] }
+
+# membarrier, so a destroy can fence every thread and a call can publish
+# that it is in flight with a plain store. Already in the tree by way of
+# memmap2.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+cbindgen = "0.28"
+criterion = { workspace = true }
+
+[[bench]]
+name = "ffi_overhead"
+harness = false

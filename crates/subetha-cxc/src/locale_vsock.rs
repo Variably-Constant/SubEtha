@@ -176,7 +176,7 @@ mod vsock_impl {
         /// Bind + listen on `port` for loopback connections.
         pub fn listen_loopback(port: u32) -> io::Result<Self> {
             let s = VsockSocket::new()?;
-            // Bind to ANY so loopback (CID_LOCAL) connectors reach us.
+            // Bind to any so loopback (CID_LOCAL) connectors reach us.
             s.bind(VMADDR_CID_ANY, port)?;
             s.listen(16)?;
             Ok(Self { inner: s })

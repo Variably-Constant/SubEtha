@@ -2,7 +2,7 @@
 //! build-beside-and-repatch, A/B/C at identical workloads.
 //!
 //! Scenario per trial: quiet SPSC steady state, then a burst that
-//! needs BOTH more queueing depth (capacity x8) and more producers
+//! needs both more queueing depth (capacity x8) and more producers
 //! (shape -> MPMC); after the transition, four producers flood the
 //! ring and the consumer drains everything with per-producer FIFO
 //! checks.
@@ -11,13 +11,13 @@
 //!   sequential - capacity morph, then the second policy's earliest
 //!                legal action one hysteresis window later (100 ms,
 //!                the default policy cooldown), then the in-place
-//!                shape morph. The cadence IS the cost under test.
+//!                shape morph. The cadence is the cost under test.
 //!   compound   - one morph_to_config carrying both axes.
 //!   repatch    - prewarm_config builds the full target during the
 //!                steady phase; the morph consumes it = swap only.
 //!
 //! Built-in bench audit (asserted, not printed):
-//!   engagement - compound/repatch assert ONE pin invalidation and
+//!   engagement - compound/repatch assert one pin invalidation and
 //!                repatch asserts the warm hit; sequential asserts
 //!                its two distinct invalidation events.
 //!   endpoint   - every arm asserts the identical final config

@@ -3,7 +3,7 @@
 //!
 //! Architectural claim: storing the tag inline via high-bit stealing
 //! is comparable to or faster than storing it as a separate field,
-//! AND uses half the memory (4 bytes vs 8 bytes after Rust padding).
+//! and uses half the memory (4 bytes vs 8 bytes after Rust padding).
 //! The win matters when arrays of pointer+tag pairs are stored
 //! densely (graph nodes, tree children).
 //!

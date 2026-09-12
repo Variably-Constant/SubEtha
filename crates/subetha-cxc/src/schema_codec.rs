@@ -254,7 +254,7 @@ mod tests {
         out
     }
 
-    /// Round-trip is byte-exact on real marshaled slots, AND the constant
+    /// Round-trip is byte-exact on real marshaled slots, and the constant
     /// model actually compresses.
     #[test]
     fn roundtrip_exact_on_real_fatline_slots() {

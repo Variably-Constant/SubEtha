@@ -40,7 +40,7 @@ mod linux {
 
     /// The clock the txtimes + the SO_TXTIME socket use. `etf` is conventionally
     /// driven from CLOCK_TAI; `SUBETHA_TXTIME_CLOCK=monotonic` overrides it (for
-    /// the fq path). The qdisc's clockid MUST match this.
+    /// the fq path). The qdisc's clockid must match this.
     fn pace_clock() -> libc::clockid_t {
         match std::env::var("SUBETHA_TXTIME_CLOCK").as_deref() {
             Ok("monotonic") => libc::CLOCK_MONOTONIC,
@@ -181,7 +181,7 @@ mod linux {
                 if r == 0 { "ok" } else { "FAILED" }
             );
         }
-        // EDT diagnostic: a fixed per-packet gap (ms) via txtime, with NO app
+        // EDT diagnostic: a fixed per-packet gap (ms) via txtime, with no app
         // throttle, so any spacing at the receiver came purely from fq honoring
         // the departure time.
         let edt_gap_ms: u64 = std::env::var("SUBETHA_EDT_GAP_MS")

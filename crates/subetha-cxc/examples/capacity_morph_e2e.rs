@@ -2,10 +2,10 @@
 //!
 //! Runs a producer and a consumer on separate OS threads, a
 //! sustained workload of N items, and a third thread driving
-//! capacity morphs (grow + shrink + grow + shrink) WHILE the
+//! capacity morphs (grow + shrink + grow + shrink) while the
 //! producer is pushing and the consumer is draining. The morph
 //! cadence is tight (microsecond-scale sleep between morphs) to
-//! maximise exposure of the producer-vs-morph race window the
+//! maximize exposure of the producer-vs-morph race window the
 //! stale-list design closes. Asserts no item is lost or duplicated
 //! by sorting the consumed-vector and comparing against the
 //! complete `0..N_ITEMS` ID set.
@@ -103,8 +103,8 @@ fn main() {
     // Integrity: every item ID in 0..N_ITEMS appeared exactly
     // once. Sort-then-compare is the correct check for this design
     // because cross-backing order is not strictly preserved (items
-    // a producer pushed to OLD via a pre-swap ArcSwap snapshot can
-    // be consumed AFTER items it pushed to NEW post-swap). Within
+    // a producer pushed to old via a pre-swap ArcSwap snapshot can
+    // be consumed after items it pushed to new post-swap). Within
     // each backing the SPSC FIFO is preserved; sort proves "no
     // loss + no dup" which is the load-bearing invariant.
     let mut sorted = got.clone();
@@ -112,7 +112,7 @@ fn main() {
     let expected: Vec<u64> = (0..N_ITEMS).collect();
     let integrity_ok = sorted == expected;
 
-    // Reordering audit. With 1P/1C SPSC, global FIFO IS
+    // Reordering audit. With 1P/1C SPSC, global FIFO is
     // preserved across morphs (the single producer's pushes are
     // sequential, and the consumer drains stale backings oldest-
     // first then active, so items pushed via a pre-swap ArcSwap

@@ -1,12 +1,12 @@
 //! `SharedRWLock` - cross-process reader-writer lock with writer
 //! priority.
 //!
-//! Multiple concurrent readers OR exactly one writer. When a writer
+//! Multiple concurrent readers or exactly one writer. When a writer
 //! is waiting, new readers block to prevent writer starvation.
 //!
 //! # State encoding
 //!
-//! ONE AtomicU64 packed:
+//! A single AtomicU64 packed:
 //! - bit 63: writer active (1 if a writer holds the lock)
 //! - bits 32-62: writers waiting count (31 bits)
 //! - bits 0-31: reader count (32 bits)
@@ -30,7 +30,7 @@
 //! a resource whose holder might die: it takes over on a heartbeat
 //! that has gone stale past a grace window.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,7 +41,7 @@ pub const RWLOCK_MAGIC: u64 = 0x4150_5257_4C4F_434B;
 
 /// How long a caller that lost the `create_new` election waits for the winner
 /// to publish the magic before giving up. Bounded so a creator that dies
-/// mid-initialisation surfaces as an error rather than an unbounded spin.
+/// mid-initialization surfaces as an error rather than an unbounded spin.
 const CREATE_RACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 const WRITER_BIT: u64 = 1u64 << 63;
@@ -102,9 +102,7 @@ impl SharedRWLock {
     /// path.
     pub fn reset(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
         let total = size_of::<RWLockHeader>();
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(total as u64)?;
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         let hdr = mmap.as_mut_ptr() as *mut RWLockHeader;
@@ -126,19 +124,14 @@ impl SharedRWLock {
     /// caller running it against a live lock clears a writer flag another
     /// holder owns and mutual exclusion is silently lost. An exists-then-create
     /// check does not close that: the check and the create are separate steps.
-    /// Here exactly one caller wins an exclusive `create_new` and initialises;
+    /// Here exactly one caller wins an exclusive `create_new` and initializes;
     /// the rest open and wait for the magic to appear.
     ///
     /// Use this for any lock a peer may reach first. [`create`](Self::create)
     /// stays the right call only when the caller knows it owns the path.
     pub fn create_or_open(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
         let total = size_of::<RWLockHeader>();
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path.as_ref())
-        {
+        match crate::region_file::create_new(path.as_ref()) {
             Ok(file) => {
                 file.set_len(total as u64)?;
                 let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
@@ -177,7 +170,7 @@ impl SharedRWLock {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RWLockError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < size_of::<RWLockHeader>() as u64 {
             return Err(RWLockError::LayoutMismatch);
         }
@@ -228,7 +221,7 @@ impl SharedRWLock {
     }
 
     /// Acquire a read lock, blocking with backoff until available.
-    /// Writer-priority: blocks if any writer is active OR waiting.
+    /// Writer-priority: blocks if any writer is active or waiting.
     pub fn read_lock(&self) -> ReadGuard<'_> {
         let mut spins = 0u32;
         loop {
@@ -280,26 +273,23 @@ impl SharedRWLock {
     /// Acquire a write lock, blocking until available. Registers
     /// as "waiting" so new readers will block.
     pub fn write_lock(&self) -> WriteGuard<'_> {
-        // Register as waiting.
-        self.state().fetch_add(1u64 << WAITING_SHIFT, Ordering::AcqRel);
+        self.register_waiting_writer();
         let mut spins = 0u32;
         loop {
-            let s = self.state().load(Ordering::Acquire);
-            let writer_active = (s & WRITER_BIT) != 0;
-            let readers = s & READERS_MASK;
-            if !writer_active && readers == 0 {
-                // Try to claim: set writer bit + decrement waiting.
-                let new = (s & READERS_MASK) | WRITER_BIT
-                    | ((((s & WAITING_MASK) >> WAITING_SHIFT) - 1) << WAITING_SHIFT);
-                if self.state().compare_exchange(
-                    s, new, Ordering::AcqRel, Ordering::Acquire,
-                ).is_ok() {
+            match self.try_write_lock_registered() {
+                Ok(g) => {
                     self.ring_sidecar.push_op(
                         crate::sidecar_ops::rw_lock::OP_WRITE,
                         if spins > 0 { 1 } else { 0 }, // contention
                     );
-                    return WriteGuard { lock: self };
+                    return g;
                 }
+                // Someone holds it, which is what there is to wait for;
+                // the registration stands for the next try.
+                Err(RWLockError::WouldBlock) => {}
+                // The claim reports nothing else. Naming the rest keeps a
+                // variant added later from turning into a silent spin.
+                Err(e) => panic!("a write claim reported {e:?}, which is not a contention state"),
             }
             spins += 1;
             if spins < 32 {
@@ -308,6 +298,58 @@ impl SharedRWLock {
                 std::thread::yield_now();
             } else {
                 std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+        }
+    }
+
+    /// Register as a writer waiting for the lock, which holds new readers
+    /// off until the registration goes.
+    ///
+    /// For a caller that waits on its own schedule rather than inside
+    /// [`write_lock`](Self::write_lock) - one under a deadline, or one
+    /// that must stay interruptible. It must then either take the lock
+    /// through [`try_write_lock_registered`](Self::try_write_lock_registered),
+    /// which clears the registration as it claims, or give the
+    /// registration back with
+    /// [`unregister_waiting_writer`](Self::unregister_waiting_writer).
+    /// A caller that does neither holds every reader off for the life of
+    /// the file.
+    pub fn register_waiting_writer(&self) {
+        self.state().fetch_add(1u64 << WAITING_SHIFT, Ordering::AcqRel);
+    }
+
+    /// Give back a registration
+    /// [`register_waiting_writer`](Self::register_waiting_writer) took,
+    /// for a caller that stopped trying before it claimed the lock.
+    pub fn unregister_waiting_writer(&self) {
+        self.state().fetch_sub(1u64 << WAITING_SHIFT, Ordering::AcqRel);
+    }
+
+    /// [`try_write_lock`](Self::try_write_lock) for a caller that has
+    /// registered as waiting: the claim clears its registration in the
+    /// same compare-exchange that sets the writer bit, so no reader can
+    /// slip in between the two.
+    ///
+    /// The registration stands on refusal, so a caller retries without
+    /// re-registering and gives it back with
+    /// [`unregister_waiting_writer`](Self::unregister_waiting_writer)
+    /// when it stops.
+    pub fn try_write_lock_registered(&self) -> Result<WriteGuard<'_>, RWLockError> {
+        loop {
+            let s = self.state().load(Ordering::Acquire);
+            let writer_active = (s & WRITER_BIT) != 0;
+            let readers = s & READERS_MASK;
+            if writer_active || readers > 0 {
+                return Err(RWLockError::WouldBlock);
+            }
+            // Set the writer bit and drop this caller's registration
+            // together.
+            let new = (s & READERS_MASK) | WRITER_BIT
+                | ((((s & WAITING_MASK) >> WAITING_SHIFT) - 1) << WAITING_SHIFT);
+            if self.state().compare_exchange(
+                s, new, Ordering::AcqRel, Ordering::Acquire,
+            ).is_ok() {
+                return Ok(WriteGuard { lock: self });
             }
         }
     }

@@ -1,10 +1,10 @@
 //! `reactor`: the bridge that makes a SubEtha ring a first-class async
-//! source ACROSS processes, not just across threads.
+//! source across processes, not just across threads.
 //!
 //! Intra-process async is direct: the producer holds the consumer's
 //! `Waker` and fires it on push (see [`crate::waker_ring`]). Across
 //! processes the producer is in another address space and cannot touch
-//! a local `Waker`, so a parked future needs something in THIS process
+//! a local `Waker`, so a parked future needs something in this process
 //! to notice the cross-process publish and fire its `Waker`. That is
 //! the reactor: one background thread per process that blocks on the
 //! MMF [`CrossProcessWaker`], and when another process publishes, fires
@@ -24,7 +24,7 @@
 //!    the consumer bridges the publish to the local `Waker`.
 //!
 //! Unlike [`crate::async_ring`], which spawns one OS thread per
-//! in-flight future, the reactor uses ONE thread per process regardless
+//! in-flight future, the reactor uses one thread per process regardless
 //! of how many futures park on the ring.
 //!
 //! # `block_on`
@@ -149,7 +149,7 @@ impl ReactiveSender {
 
 /// Consumer half. `recv()` is an `.await`-able future that resolves
 /// when an item arrives, suspending the task until then - off-thread
-/// across threads OR across processes, behind the same call.
+/// across threads or across processes, behind the same call.
 pub struct ReactiveReceiver {
     ring: Arc<SpscRingCore>,
     slot: Arc<Mutex<Option<Waker>>>,

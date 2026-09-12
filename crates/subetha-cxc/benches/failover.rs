@@ -2,7 +2,7 @@
 //! heartbeat scan baseline. The architectural claim: a subetha
 //! watchdog scans N MMF-backed heartbeat slots with one atomic
 //! load each + cross-process visibility, where the naive baseline
-//! pays a mutex lock per slot AND can only run in-process.
+//! pays a mutex lock per slot and can only run in-process.
 //!
 //! Workloads:
 //! - scan with 64 slots, all alive (no reclaim)

@@ -154,7 +154,7 @@ impl HolderTable {
         Some(i)
     }
 
-    /// Claim ONE named slot, or report that it is already held.
+    /// Claim a single named slot, or report that it is already held.
     ///
     /// [`reserve`](Self::reserve) takes whichever slot is free, which is
     /// what a caller wants when the slots are interchangeable. A caller

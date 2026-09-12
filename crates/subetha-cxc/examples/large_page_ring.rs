@@ -1,5 +1,5 @@
 //! Rings backed by real large / huge pages - not a standalone region
-//! that nothing reads, but the actual MPMC grid laid out IN the page
+//! that nothing reads, but the actual MPMC grid laid out in the page
 //! and streamed through.
 //!
 //! Three legs, one per ring family:
@@ -20,7 +20,7 @@
 //!    OSes). The parent lays a ring out in a large-page region a second
 //!    process can attach to - a named `LargePageSection` on Windows, a
 //!    hugetlbfs-backed `SharedHugepageRegion` on Linux - spawns a child
-//!    that attaches to the SAME region, and streams items parent ->
+//!    that attaches to that same region, and streams items parent ->
 //!    child through shared large-page physical memory. Only the
 //!    region-attach mechanism (named section vs hugetlbfs path) is
 //!    gated; the ring and the producer/consumer loop are shared.
@@ -362,7 +362,7 @@ fn run_cross_process_section() {
             return;
         }
     };
-    // Lay the SPSC ring out IN the shared section (writes the header).
+    // Lay the SPSC ring out in the shared section (writes the header).
     let ring = SpscRingCore::create_in_region(section, CAPACITY)
         .expect("ring laid out in the large-page section");
     println!("parent created section {name} ({bytes} bytes), ring header written");
@@ -440,7 +440,7 @@ fn windows_child_drain(name: &str, capacity: usize, count: u32) {
 // ---------------------------------------------------------------------
 // Leg 3 (Linux): cross-process SPSC ring on a hugetlbfs-backed region.
 //
-// The Linux analogue of the Windows named section: a hugetlbfs file
+// The Linux analog of the Windows named section: a hugetlbfs file
 // mmap'd MAP_SHARED. A second process opens the same path and maps it,
 // so the ring lives in shared hugepage physical memory. The attach
 // mechanism (path vs section name) is the only platform-gated part.
@@ -486,7 +486,7 @@ fn run_cross_process_section() {
             return;
         }
     };
-    // Lay the SPSC ring out IN the shared hugepage region (writes header).
+    // Lay the SPSC ring out in the shared hugepage region (writes header).
     let ring = SpscRingCore::create_in_region(region, CAPACITY)
         .expect("ring laid out in the hugetlbfs region");
     println!("parent created hugetlbfs region {} ({pages} hugepage(s)), \

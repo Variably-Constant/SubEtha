@@ -78,7 +78,7 @@ either:
 - Holds the next level's u32 index (when `i < DEPTH - 1`), or
 - Holds T itself (when `i == DEPTH - 1`, the leaf).
 
-The cascade ITSELF is `DEPTH * 4` bytes. Resolution walks
+The cascade itself is `DEPTH * 4` bytes. Resolution walks
 DEPTH region lookups; with each region cache-aligned and flat-
 indexed, the access pattern is N cache-line reads.
 
@@ -219,7 +219,7 @@ cascade's advantage shows in the **resolution** path
 - **Loud overflow**: `.expect("cascade overflow")` panics rather
   than silently returning Err.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process resolution**: the cascade resolves to the same
   T in any process that maps the same N regions. The hashmap is
@@ -342,7 +342,7 @@ bits resolve to the same data, no relocation pass needed.
 - **Mixing cascades across regions.** A cascade's raw bits
   resolve only against the specific N regions it was created
   from. Two resolvers with the same DEPTH but different region
-  files do NOT share cascade bits.
+  files do not share cascade bits.
 
 - **Overwriting `top_idx` in `insert_at_top`.** Calling twice
   with the same `top_idx` overwrites the previous chain; the

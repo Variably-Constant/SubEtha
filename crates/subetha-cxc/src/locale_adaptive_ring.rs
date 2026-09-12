@@ -156,18 +156,18 @@ impl LocaleAdaptiveRing {
         })
     }
 
-    /// As [`create`](Self::create) with ordering stamps on ALL
-    /// THREE locale backings (one stamp kind picked once so the
+    /// As [`create`](Self::create) with ordering stamps on all
+    /// three locale backings (one stamp kind picked once so the
     /// backings agree), letting the ordering axis compose with
     /// locale migrations. The ordering mode is applied to all three
     /// backings via [`set_ordering_mode`](Self::set_ordering_mode)
     /// so the discipline follows the ring across migrations.
     ///
     /// Locale migration of a merge-mode ring re-stamps items as the
-    /// transfer drains them: the drain order IS stamp order under
-    /// the merge, so the destination preserves global order. (Under
-    /// `Unordered` the transfer's round-robin drain can reorder
-    /// across producers - the same caveat as shape morphs.) The
+    /// transfer drains them: under the merge the drain order is stamp
+    /// order, so the destination preserves global order. Under
+    /// `Unordered` the transfer's round-robin drain can reorder items
+    /// across producers, as a shape morph can. The
     /// migrating thread auto-acquires the drainer lease; a live
     /// drainer in another process makes `migrate_to` fail with the
     /// transfer's `NotDrainer` error rather than corrupting order.
@@ -215,12 +215,66 @@ impl LocaleAdaptiveRing {
         })
     }
 
+    /// Attach to the ring another handle created under `base_path` with
+    /// the same counts and capacity, without re-initializing any backing:
+    /// the locale tag and generation are opened, the file and
+    /// shared-memory backings are opened, and this handle's anonymous
+    /// backing is its own. With `stamped` the backings' ordering regions
+    /// are attached and the creator's stamp kind adopted. An absent
+    /// backing is an I/O error and one of another shape a
+    /// `LayoutMismatch`.
+    pub fn open(
+        base_path: impl Into<PathBuf>,
+        max_producers: usize,
+        max_consumers: usize,
+        capacity: usize,
+        stamped: bool,
+    ) -> Result<Self, RingError> {
+        let base_path: PathBuf = base_path.into();
+
+        let tag_path = with_suffix(&base_path, ".locale.tag.bin");
+        let gen_path = with_suffix(&base_path, ".locale.gen.bin");
+        let file_ring_prefix = with_suffix(&base_path, ".locale.file.ring");
+
+        let atomic_error = |e: crate::shared_atomic::SharedAtomicError| match e {
+            crate::shared_atomic::SharedAtomicError::LayoutMismatch => RingError::LayoutMismatch,
+            crate::shared_atomic::SharedAtomicError::IoError(kind) => RingError::IoError(kind),
+        };
+        let locale_tag = Arc::new(SharedAtomicU32::open(&tag_path).map_err(atomic_error)?);
+        let locale_generation = Arc::new(SharedAtomicU64::open(&gen_path).map_err(atomic_error)?);
+
+        let anon = AdaptiveRing::create_anon(max_producers, max_consumers, capacity)?;
+        let file = AdaptiveRing::open(&file_ring_prefix, max_producers, max_consumers, capacity)?;
+        let shmfs_name_prefix = shmfs_name_prefix_for(&base_path);
+        let shmfs = AdaptiveRing::open_shmfs(&shmfs_name_prefix, max_producers, max_consumers, capacity)?;
+        let (anon, file, shmfs) = if stamped {
+            let file = file.with_ordering_stamps()?;
+            let kind = file.stamp_kind().unwrap_or_else(default_stamp_kind);
+            (
+                anon.with_ordering_stamps_kind(kind)?,
+                file,
+                shmfs.with_ordering_stamps_kind(kind)?,
+            )
+        } else {
+            (anon, file, shmfs)
+        };
+
+        Ok(Self {
+            locale_tag,
+            locale_generation,
+            anon,
+            file,
+            shmfs,
+            base_path,
+        })
+    }
+
     /// Whether the backings carry ordering stamps.
     pub fn is_stamped(&self) -> bool {
         self.anon.is_stamped()
     }
 
-    /// Live ordering mode of the ACTIVE locale backing (`None`
+    /// Live ordering mode of the active locale backing (`None`
     /// when unstamped).
     pub fn ordering_mode(&self) -> Option<OrderingMode> {
         match self.current_locale() {
@@ -230,7 +284,7 @@ impl LocaleAdaptiveRing {
         }
     }
 
-    /// Flip the ordering mode on ALL THREE backings so the
+    /// Flip the ordering mode on all three backings so the
     /// discipline follows the ring across locale migrations.
     pub fn set_ordering_mode(&self, mode: OrderingMode) -> Result<(), RingError> {
         self.anon.set_ordering_mode(mode)?;
@@ -266,7 +320,7 @@ impl LocaleAdaptiveRing {
     /// Direct access to the ShmFs backing.
     pub fn shmfs_ring(&self) -> &AdaptiveRing { &self.shmfs }
 
-    /// Register a producer on ALL THREE locale backings so the
+    /// Register a producer on all three locale backings so the
     /// active locale always has the registration regardless of which
     /// one is live. Returns the producer_id (same on all backings
     /// since they are sized identically and called in lockstep).
@@ -281,7 +335,7 @@ impl LocaleAdaptiveRing {
         Ok(anon_id)
     }
 
-    /// Register a consumer on ALL THREE locale backings.
+    /// Register a consumer on all three locale backings.
     pub fn register_consumer(&self) -> Result<usize, crate::adaptive_ring::AdaptiveError> {
         let anon_id = self.anon.register_consumer()?;
         let file_id = self.file.register_consumer()?;
@@ -381,7 +435,7 @@ impl LocaleAdaptiveRing {
 /// removed reads as absent and is fine; any other refusal is a file left
 /// behind, reported because a Drop has no caller to hand it to.
 fn remove_laid_out(path: &Path) {
-    match std::fs::remove_file(path) {
+    match crate::region_file::remove(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => eprintln!("subetha: locale ring file {} not removed: {e}", path.display()),
@@ -476,7 +530,7 @@ impl<'a> PinnedLocale<'a> {
 }
 
 // ===================================================================
-// Sidecar locale policy: serialised locale migrations with
+// Sidecar locale policy: serialized locale migrations with
 // hysteresis. Mirrors the shape-morph
 // `AdaptiveRingSidecar` / `DefaultRingShapePolicy` design and the
 // capacity-morph `CapacityAdaptiveRingSidecar` /
@@ -486,7 +540,7 @@ impl<'a> PinnedLocale<'a> {
 // knows when it needs cross-process visibility (-> File / ShmFs)
 // vs in-process only (-> Anon). The sidecar lets the application
 // express that intent through a target-locale setter and the
-// policy serialises the migration under a cooldown so rapid
+// policy serializes the migration under a cooldown so rapid
 // oscillation does not thrash the underlying transfer (every
 // migration copies the in-flight items across backings).
 // ===================================================================
@@ -516,7 +570,7 @@ pub trait LocalePolicy: Send + Sync + 'static {
     fn decide(&self, observation: &LocalePolicyObservation) -> Option<Locale>;
 }
 
-/// Default locale policy: honour the application's requested
+/// Default locale policy: honor the application's requested
 /// locale once `since_last_migrate >= hysteresis`. Default
 /// hysteresis 250 ms (locale migrations cost more than shape
 /// morphs because every in-flight item is copied across backings,
@@ -551,7 +605,7 @@ impl LocalePolicy for DefaultLocalePolicy {
 /// application calls to express intent ("I want this on shmfs
 /// now"). The scanner samples this on every tick, builds a
 /// [`LocalePolicyObservation`], asks the policy, and only migrates
-/// when the policy returns `Some` AND the hysteresis cooldown has
+/// when the policy returns `Some` and the hysteresis cooldown has
 /// elapsed.
 pub struct LocaleAdaptiveRingSidecar {
     handle: Option<std::thread::JoinHandle<()>>,

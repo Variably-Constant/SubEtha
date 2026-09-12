@@ -28,7 +28,7 @@ tree is untouched and no existing user pays for versioning.
 
 **Constraints (read first):**
 
-- **`capacity` is a NODE count**, as `SharedBTreeMap::create` takes, not
+- **`capacity` is a node count**, as `SharedBTreeMap::create` takes, not
   an entry count. `max_pins` is how many scans may hold a pin at once.
 - **`len()` counts tombstones too.** It is entries the tree holds, live
   and superseded alike.
@@ -89,7 +89,7 @@ nothing else.
 - **The range is measured tombstoned as well as clean**, because a
   clean tree hides the filter entirely.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **The plain tree has no answer to a scan that must not see a
   concurrent write.** It is not a faster way of doing the same thing.
@@ -162,7 +162,7 @@ assert_eq!(
 
 ### Resuming a chunked scan
 
-The limit counts entries EXAMINED, not returned, so a range dense in
+The limit counts entries examined, not returned, so a range dense in
 tombstones returns fewer than `limit` while more remain. Resume from the
 cursor, not from the last row:
 

@@ -3,7 +3,7 @@
 //! Arc<AtomicBool> done + Arc<Mutex<R>> result).
 //!
 //! Architectural claim: ProgressTask matches the in-process baseline
-//! on hot reader paths (the dominant observer cost) AND adds
+//! on hot reader paths (the dominant observer cost) and adds
 //! cross-process visibility + disk persistence at the same cost,
 //! which the in-process baseline cannot provide.
 //!

@@ -80,7 +80,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
   (drained pre-bench).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process limiting**: N processes share one bucket.
   Each acquire racing for the same tokens via lock-free CAS.
@@ -164,7 +164,7 @@ refill at the design point of the consuming downstream.
   may consume between read and use. Always use
   `try_acquire(n)` to atomically check-and-take.
 
-- **Wrapping in a Mutex.** Pointless; the CAS protocol IS the
+- **Wrapping in a Mutex.** Pointless; the CAS protocol is the
   synchronization.
 
 ---

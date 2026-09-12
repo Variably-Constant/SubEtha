@@ -2,7 +2,7 @@
 //! design cube, spanning both the concurrent-data-structure domain
 //! (deque variants) and the exotic-pointer domain.
 //!
-//! Every variant in the MMF-deque family AND every exotic pointer
+//! Every variant in the MMF-deque family and every exotic pointer
 //! type has a constrained **direction signature**: the set of axis
 //! values it engages at a non-default value. The dispatcher routes
 //! per call by satisfying the workload's required signature against
@@ -20,7 +20,7 @@
 //! 3. **K_consumer**: mailboxes per thief. shared or N per-thief.
 //! 4. **K_counter_share**: producer counter ownership. shared or owner-private.
 //! 5. **K_radius**: coherence distance of publish. Local or Distant (CPUID-dispatched).
-//! 6. **K_gating**: synchronisation granularity. counter-only or per-slot.
+//! 6. **K_gating**: synchronization granularity. counter-only or per-slot.
 //!
 //! ## The pointer-domain axes (bits 6..=12)
 //!

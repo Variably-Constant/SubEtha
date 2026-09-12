@@ -167,7 +167,7 @@ budget.
 - **Crash recovery is "restart the sole producer"**: Lamport has
   no claimed-but-never-published pathology - a producer either
   published (head moved) or did not. The Vyukov
-  [shared-ring](../shared-ring/) CAN strand a slot when a producer
+  [shared-ring](../shared-ring/) can strand a slot when a producer
   dies between its election CAS and its publish, which is what its
   `heal_stuck_slot(pos)` recovery API exists for; no equivalent is
   needed here.

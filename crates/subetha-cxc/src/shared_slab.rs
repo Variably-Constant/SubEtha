@@ -1,6 +1,38 @@
 //! `SharedSlab<T>` - a fixed-capacity MMF slab of records, each slot its
 //! own SeqLock cell, addressed by an index the caller chooses.
 //!
+//! # If your records are written once
+//!
+//! Every slot carries an 8-byte prefix and is rounded up to a 64-byte
+//! line, so a `SharedSlab<u8>` spends 64 bytes per byte of payload, a
+//! `SharedSlab<u32>` 16 bytes per byte, and a `SharedSlab<u64>` 8. That
+//! buys the per-slot SeqLock, which is what lets a reader take a record
+//! while a writer replaces it.
+//!
+//! A table baked at build time and never written again pays that and
+//! uses none of it. [`SharedArray`](crate::shared_array::SharedArray) is
+//! the flat alternative: stride exactly the element size, no per-element
+//! word, read-only for every process once sealed. It cannot be written
+//! while it is read, which is the whole of what it gives up.
+//!
+//! # Packing, when the lock is wanted and the padding is not
+//!
+//! The waste falls on each slot rather than on each byte, so an element
+//! that fills the 56-byte payload pays almost nothing for the same lock:
+//!
+//! ```text
+//!   SharedSlab<u64>       64.000 bytes per value      8.00x
+//!   SharedSlab<[u64; 7]>   9.143 bytes per value      1.14x
+//!   SharedSlab<u8>        64.000 bytes per byte      64.00x
+//!   SharedSlab<[u8; 56]>   1.143 bytes per byte       1.14x
+//! ```
+//!
+//! A caller that batches its elements into a slot-sized array keeps the
+//! seqlock and loses the padding, at the cost of locking a group rather
+//! than an element. Note the cliff on the other side: 56 bytes of payload
+//! fits one slot and 57 takes two, so `(8 + 57).div_ceil(64) * 64` is 128
+//! and the overhead jumps back to 2.25x.
+//!
 //! # Where it sits
 //!
 //! [`SharedVec`](crate::shared_vec::SharedVec) is append-plus-index: a
@@ -48,12 +80,12 @@
 //! # Concurrency
 //!
 //! One writer per slot, any number of readers, no coordination between
-//! slots. Two writers on the SAME slot are a data race the SeqLock does
+//! slots. Two writers on one slot are a data race the SeqLock does
 //! not resolve - it makes a torn read detectable, not a torn write
 //! safe - so a caller writing the same index from two threads
-//! serialises that itself.
+//! serializes that itself.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -69,14 +101,14 @@ pub const SLAB_SLOT_PREFIX: usize = 8;
 
 /// How this process mapped the file. `MmapMut` demands a read+write
 /// file handle, which a consumer holding read access alone cannot get.
-enum Mapping {
+pub(crate) enum Mapping {
     Writable(MmapMut),
     ReadOnly(Mmap),
 }
 
 impl Mapping {
     #[inline]
-    fn as_ptr(&self) -> *const u8 {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
         match self {
             Mapping::Writable(m) => m.as_ptr(),
             Mapping::ReadOnly(m) => m.as_ptr(),
@@ -84,11 +116,11 @@ impl Mapping {
     }
 
     #[inline]
-    fn is_writable(&self) -> bool {
+    pub(crate) fn is_writable(&self) -> bool {
         matches!(self, Mapping::Writable(_))
     }
 
-    fn flush(&self) -> Result<(), std::io::Error> {
+    pub(crate) fn flush(&self) -> Result<(), std::io::Error> {
         match self {
             Mapping::Writable(m) => m.flush(),
             Mapping::ReadOnly(_) => Ok(()),
@@ -102,7 +134,17 @@ pub struct SlabHeader {
     /// Full stride of one slot, version word included.
     pub slot_size: u32,
     pub capacity: u64,
-    _pad: [u8; 48],
+    /// Where the record lies within its slot.
+    pub payload_offset: u32,
+    /// Bytes one record takes.
+    pub element_size: u32,
+    /// The record's alignment, as the creator stated it.
+    pub alignment: u32,
+    _pad0: u32,
+    /// A tag the creator chose for the record type; an open that states
+    /// another is refused.
+    pub layout_tag: u64,
+    _pad: [u8; 24],
 }
 
 const _: () = {
@@ -125,6 +167,9 @@ pub enum SlabError {
     OutOfBounds,
     LayoutMismatch,
     ReadOnly,
+    /// A record argument is not the record size, or an output buffer is
+    /// shorter than one.
+    PayloadTooLarge,
     IoError(std::io::ErrorKind),
 }
 
@@ -140,6 +185,7 @@ impl std::fmt::Display for SlabError {
             SlabError::OutOfBounds => write!(f, "slot index out of bounds"),
             SlabError::LayoutMismatch => write!(f, "slab layout mismatch"),
             SlabError::ReadOnly => write!(f, "slab opened read-only"),
+            SlabError::PayloadTooLarge => write!(f, "record bytes are not the record size"),
             SlabError::IoError(k) => write!(f, "slab io error: {k:?}"),
         }
     }
@@ -207,7 +253,7 @@ impl<T: Copy + 'static> SharedSlab<T> {
 
     /// Attach to an existing slab.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> Result<Self, SlabError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = slab_file_size::<T>(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(SlabError::LayoutMismatch);
@@ -235,7 +281,7 @@ impl<T: Copy + 'static> SharedSlab<T> {
         path: impl AsRef<Path>,
         expected_capacity: usize,
     ) -> Result<Self, SlabError> {
-        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        let file = crate::region_file::open_read_only(path.as_ref())?;
         let total = slab_file_size::<T>(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(SlabError::LayoutMismatch);
@@ -265,6 +311,10 @@ impl<T: Copy + 'static> SharedSlab<T> {
         unsafe {
             (*hdr).slot_size = slot_size as u32;
             (*hdr).capacity = capacity as u64;
+            (*hdr).payload_offset = SLAB_SLOT_PREFIX as u32;
+            (*hdr).element_size = size_of::<T>() as u32;
+            (*hdr).alignment = std::mem::align_of::<T>() as u32;
+            (*hdr).layout_tag = 0;
             std::ptr::write_volatile(&raw mut (*hdr).magic, SLAB_MAGIC);
         }
     }
@@ -277,12 +327,18 @@ impl<T: Copy + 'static> SharedSlab<T> {
     /// Whether the header on disk is the one this mapping expects. The
     /// slot size is checked as well as the capacity: two callers whose
     /// `T` differs in size derive different strides from the same file
-    /// and would read each other's records at the wrong offset.
+    /// and would read each other's records at the wrong offset. A payload
+    /// offset or element size at zero records nothing and constrains
+    /// nothing; one that is set must be this type's, and the tag must be
+    /// the typed slab's own, zero.
     fn validate(&self, expected_capacity: usize) -> Result<(), SlabError> {
         let hdr = self.header();
         if hdr.magic != SLAB_MAGIC
             || hdr.capacity != expected_capacity as u64
             || hdr.slot_size as usize != slab_slot_size::<T>()
+            || (hdr.payload_offset != 0 && hdr.payload_offset as usize != SLAB_SLOT_PREFIX)
+            || (hdr.element_size != 0 && hdr.element_size as usize != size_of::<T>())
+            || hdr.layout_tag != 0
         {
             return Err(SlabError::LayoutMismatch);
         }
@@ -353,7 +409,7 @@ impl<T: Copy + 'static> SharedSlab<T> {
     /// Write the record at `i`.
     ///
     /// One writer per slot. Two writers on the same slot race: the
-    /// SeqLock makes a torn READ detectable, and does not make a torn
+    /// SeqLock makes a torn read detectable, and does not make a torn
     /// write safe.
     pub fn set(&self, i: usize, value: T) -> Result<(), SlabError> {
         if i >= self.capacity {

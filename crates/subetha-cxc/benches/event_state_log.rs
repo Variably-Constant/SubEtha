@@ -3,7 +3,7 @@
 //! `Mutex<State>` for the materialized view).
 //!
 //! The architectural claim: EventStateLog gives you cross-process
-//! event-sourcing AND disk persistence (the ring file IS the durable
+//! event-sourcing and disk persistence (the ring file is the durable
 //! log) at lock-free MMF cost; the naive in-process baseline gives
 //! you neither. This bench shows the *single-process* cost difference
 //! so we can quantify what the user pays / gains for the additional

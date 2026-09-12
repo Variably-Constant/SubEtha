@@ -10,7 +10,7 @@
 //!   contention on the consumer side.
 //!
 //! The bench measures **producer-call wall time only** via
-//! `iter_custom`; the drain catch-up wait sits OUTSIDE the timed
+//! `iter_custom`; the drain catch-up wait sits outside the timed
 //! window. Each iter produces K=64 items and waits until all 64
 //! items have been observed by the union of N=4 drain threads.
 //!

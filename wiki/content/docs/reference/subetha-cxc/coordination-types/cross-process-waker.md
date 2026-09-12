@@ -14,10 +14,10 @@ weight: 50
 
 Cross-process wake / park primitive: a fixed-size array of waiter
 slots stored inside a memory-mapped file (MMF). Each slot is the
-state atom that a parked consumer waits on AND that a remote
+state atom that a parked consumer waits on and that a remote
 producer can flip via a single direct-syscall wake. The pattern
 is the userspace `futex`, ported to MMF substrate so it works
-across process boundaries on Linux (via SHARED `futex`) and
+across process boundaries on Linux (via shared `futex`) and
 across threads anywhere else.
 
 > **The "futex slot in MMF" primitive.** Two cooperating processes
@@ -37,17 +37,17 @@ across threads anywhere else.
 - **Anonymous (`create_anon`)**, **file-backed (`create` / `open`)**,
   or **shmfs-backed (`create_from_shm` / `open_from_shm`)**: same
   byte layout, same protocol.
-- **Cross-process wake works on Linux/WSL via SHARED `futex`**
+- **Cross-process wake works on Linux/WSL via shared `futex`**
   (no `FUTEX_PRIVATE_FLAG`) **and on FreeBSD via
-  `_umtx_op(UMTX_OP_WAIT_UINT / UMTX_OP_WAKE)`** - the non-PRIVATE
-  umtx ops, whose sleep queues the kernel keys by PHYSICAL address
+  `_umtx_op(UMTX_OP_WAIT_UINT / UMTX_OP_WAKE)`** - the non-private
+  umtx ops, whose sleep queues the kernel keys by physical address
   precisely so process-shared synchronization works (per
   `_umtx_op(2)`); proven by the cross-process waker sweep on
   FreeBSD 15 (5/5 runs, parks observed and woken across two
   processes sharing an MMF). **On Windows, cross-process wake
   rides the hardware [monitor tier](#the-monitor-wait-tier)**:
   `WaitOnAddress` is intra-process only, but MONITORX/UMONITOR
-  monitors key on PHYSICAL addresses, so a store from another
+  monitors key on physical addresses, so a store from another
   process to the shared MMF line wakes the waiter - proven by the
   two-process waker E2E on Windows (50,000 items, parks observed,
   producer completing in 336 ms where the monitor-less baseline
@@ -77,7 +77,7 @@ One cache line per slot keeps parkers from false-sharing; the
 header's `parked_mask` word is what lets a producer's wake scan
 answer the nobody-is-parked case from a single line.
 
-Slot `state` IS the wait/wake atomic. The platform wait syscall
+Slot `state` is the wait/wake atomic. The platform wait syscall
 takes `&slot.state` plus the expected `PARKED` value; the wake
 syscall takes the same address.
 
@@ -102,9 +102,9 @@ syscall takes the same address.
 3. Release-store `state = PARKED`.
 4. Platform wait on `&slot.state` expecting `PARKED`. Every wait
    first runs the bounded MONITOR tier (below); on budget expiry:
-   - Linux: `futex(FUTEX_WAIT)` SHARED, no `FUTEX_PRIVATE_FLAG`;
+   - Linux: `futex(FUTEX_WAIT)` shared, no `FUTEX_PRIVATE_FLAG`;
      crosses process boundaries.
-   - FreeBSD: `_umtx_op(UMTX_OP_WAIT_UINT)`, non-PRIVATE;
+   - FreeBSD: `_umtx_op(UMTX_OP_WAIT_UINT)`, non-private;
      crosses process boundaries.
    - Windows, anon-backed: `WaitOnAddress(state, &PARKED,
      sizeof(u32), timeout_ms)`; intra-process only per Microsoft
@@ -124,12 +124,12 @@ between spin and park: `MONITORX`/`MWAITX` (AMD, CPUID
 `8000_0001` ECX bit 29), `UMONITOR`/`UMWAIT` (WAITPKG, CPUID
 `7.0` ECX bit 5), or `LDAXR`+`WFE` on aarch64 (base ISA - a
 remote store to the armed line flips the global exclusive
-monitor Exclusive-to-Open, which IS the wake event, no `SEV`
+monitor Exclusive-to-Open, which is the wake event, no `SEV`
 required; the budget runs on `CNTVCT_EL0` ticks), probed once
 and cached. The waiter arms a
 monitor on the slot's cache line and light-sleeps (C0.1) with a
-hardware deadline; ANY store to the line wakes it - so the
-producer's state-CAS IS the wake, no syscall on either side, and
+hardware deadline; any store to the line wakes it - so the
+producer's state-CAS is the wake, no syscall on either side, and
 the wake crosses process boundaries because monitors are
 physical-address based. The tier takes a bounded budget
 (`SUBETHA_MONITOR_WAIT_CYCLES`, default ~90k cycles = tens of
@@ -149,20 +149,20 @@ park.
 
 `wake_up_to(seq)` first loads the header's `parked_mask` word
 (one bit per slot index below 64, maintained at park/release):
-a zero mask answers the common nobody-is-parked case from ONE
+a zero mask answers the common nobody-is-parked case from one
 cache line instead of touching every slot line. For each
 candidate slot whose `state == PARKED` and `target_seq <= seq`:
 
 1. CAS `state` from PARKED to WOKEN.
 2. Platform wake syscall on `&slot.state`:
-   - Linux: `futex(FUTEX_WAKE)` SHARED.
-   - FreeBSD: `_umtx_op(UMTX_OP_WAKE)` SHARED.
+   - Linux: `futex(FUTEX_WAKE)` shared.
+   - FreeBSD: `_umtx_op(UMTX_OP_WAKE)` shared.
    - Windows: `WakeByAddressSingle(&state)`.
-   - macOS 14.4+: `os_sync_wake_by_address_any` (SHARED for
+   - macOS 14.4+: `os_sync_wake_by_address_any` (shared for
      cross-process backings).
 
 Returns the count woken. Two narrower variants share this scan:
-`wake_one_up_to(seq)` wakes AT MOST ONE qualifying slot (the
+`wake_one_up_to(seq)` wakes at most one qualifying slot (the
 Mesa-condvar `notify_one` shape, so the other parked waiters stay
 parked) and returns 0 or 1; `wake_all()` wakes every PARKED slot
 regardless of `target_seq` (shutdown / drain, so blocked consumers
@@ -174,7 +174,7 @@ Classic futex idiom: between the consumer's "ring empty" check
 and `try_park`, a producer can publish and call `wake_up_to`
 which finds zero PARKED slots. The fix is the caller's
 double-check after `try_park`: re-poll the underlying primitive's
-non-blocking surface BEFORE actually calling `wait`. If data is
+non-blocking surface before actually calling `wait`. If data is
 now present, `release` the slot and proceed. The combined
 unsafe window is the few nanoseconds between `state = PARKED`
 and the re-poll load.
@@ -271,7 +271,7 @@ worked example pair: `examples/waker_xproc_producer.rs` +
   would fail the test (parks observed: ~3125 / 50000 calls).
 - **Cross-process (Linux/WSL):** `examples/waker_xproc_producer.rs` +
   `examples/waker_xproc_consumer.rs` ship 50000 items between
-  two SEPARATE binaries through a file-backed MMF; observe
+  two separate binaries through a file-backed MMF; observe
   ~290 to 320 cross-process parks per run (0.6% of recvs), both
   processes exit `rc=0`.
 - **Sweep:** the intra-process e2e (Windows) and the cross-process

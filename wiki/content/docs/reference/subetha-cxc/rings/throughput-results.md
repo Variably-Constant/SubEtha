@@ -8,9 +8,9 @@ Auto-generated from `throughput_sweep.csv`. Numbers are sustained throughput in 
 
 ## Headline: best sustained throughput per primitive
 
-Each row is the BEST observed throughput across the full matrix this primitive was benched at. Use as a "what should I pick" cheat-sheet; per-shape tables below show the full picture.
+Each row is the best observed throughput across the full matrix this primitive was benched at. Use as a "what should I pick" cheat-sheet; per-shape tables below show the full picture.
 
-Numbers are MEDIAN throughput across the runs for each cell (more robust than mean under run-to-run jitter; mean shown in deep-dive tables).
+Numbers are median throughput across the runs for each cell (more robust than mean under run-to-run jitter; mean shown in deep-dive tables).
 
 | Primitive | Best M items/s (median) | Locale | Cap | Eff. P | Eff. C |
 |---|---:|---|---:|---:|---:|
@@ -1989,7 +1989,7 @@ Numbers are MEDIAN throughput across the runs for each cell (more robust than me
 
 ## Skipped cells
 
-700 cells did not produce throughput numbers. The skip reasons are summarised below; cells skipped because of locale-not-supported (e.g. SPSC pair has no file/shmfs constructor today) are expected and not bugs. The `n_producers-*` rows are the composed `SharedRingMpmc` (raw modulus partition, which requires P >= C); the adaptive families measure those topologies via the MPMC ownership table instead of skipping them.
+700 cells did not produce throughput numbers. The skip reasons are summarized below; cells skipped because of locale-not-supported (e.g. SPSC pair has no file/shmfs constructor today) are expected and not bugs. The `n_producers-*` rows are the composed `SharedRingMpmc` (raw modulus partition, which requires P >= C); the adaptive families measure those topologies via the MPMC ownership table instead of skipping them.
 
 | Skip reason | Count |
 |---|---:|

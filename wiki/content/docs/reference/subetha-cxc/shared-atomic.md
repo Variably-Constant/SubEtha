@@ -79,7 +79,7 @@ inside a larger primitive (e.g., as the version field of a
 
 ## See also
 
-- [`SharedCell`](shared-cell.md) - the byte-wider analogue with
+- [`SharedCell`](shared-cell.md) - the byte-wider analog with
   a fixed-size payload.
 - [`SharedFenceClock`](shared-locks.md#sharedfenceclock) - hybrid
   logical clock built on shared atomics.

@@ -9,7 +9,7 @@
 //! [`ConfidenceGate`] replaces the fixed timer with conviction
 //! dynamics: a scalar `c in [floor, 1]` grows logistically
 //! (`c += rate * c * (1 - c)`) each scan the policy repeats the
-//! SAME recommendation, collapses multiplicatively (`c *= shock`)
+//! same recommendation, collapses multiplicatively (`c *= shock`)
 //! when the recommendation changes or an external regime-shift
 //! signal arrives, and the decision fires only when `c` crosses
 //! `threshold` with at least `min_samples` consecutive agreeing
@@ -140,7 +140,7 @@ impl<T: PartialEq + Copy> ConfidenceGate<T> {
                 }
             }
             (Some(r), _) => {
-                // New or REVERSED recommendation. A reversal is
+                // New or reversed recommendation. A reversal is
                 // direct evidence of oscillation - collapse
                 // conviction and start counting for the new target.
                 // First sighting never fires.
@@ -196,7 +196,7 @@ mod tests {
         // (first sighting resets, five agreements grow).
         assert_eq!(fired_at, Some(6),
                    "default dynamics fire on the 6th consecutive agreeing scan");
-        // Post-fire: conviction reset; an immediate repeat must NOT
+        // Post-fire: conviction reset; an immediate repeat must not
         // fire on the next scan.
         assert_eq!(g.observe(Some(512)), None,
                    "post-fire decisions need fresh conviction");

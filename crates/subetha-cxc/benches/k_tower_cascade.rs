@@ -1,7 +1,7 @@
 //! Bench: KTowerCascade resolution vs Mutex<HashMap<u64, T>>
 //! lookup on sparse address spaces.
 //!
-//! Architectural claim: for SPARSE address spaces, the
+//! Architectural claim: for sparse address spaces, the
 //! KTowerCascade walks at most DEPTH cache-line reads (one per
 //! region per level), with cache-friendly access patterns because
 //! the regions are MMF-aligned flat arrays. HashMap pays one hash
@@ -48,7 +48,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 // rehashes ~7-8 times as inserts accumulate, paying the actual
 // cost of using a hashmap at criterion's iter scale. The 1<<20
 // sizing captures the rehash cost as part of the workload, which
-// IS the honest cost of "insert many into a hashmap." Cascade
+// is the honest cost of "insert many into a hashmap." Cascade
 // disk footprint during the bench: ~2.1 GB (268M slots * 4 bytes
 // * 2 regions). Cleaned up after.
 fn insert_hot_presized(c: &mut Criterion) {
@@ -61,7 +61,7 @@ fn insert_hot_presized(c: &mut Criterion) {
     // exhausted. Criterion picks per-bench iter counts from the host's
     // measured throughput, and on fast silicon (Zen 4, Sapphire-Rapids
     // class) the warm-up + measurement window crosses `CAP` appends
-    // mid-bench. The recreate cost amortises across `CAP` appends, so
+    // mid-bench. The recreate cost amortizes across `CAP` appends, so
     // per-iter timing approaches the pure append cost (recreate adds
     // a few ms per ~270M appends = under 1% overhead at CAP=1<<28).
     let r = RefCell::new(
@@ -223,7 +223,7 @@ fn storage_density(c: &mut Criterion) {
 fn sparse_insertion(c: &mut Criterion) {
     const N: u64 = 100;
 
-    // iter_batched(PerIteration) on BOTH contenders so neither
+    // iter_batched(PerIteration) on both contenders so neither
     // fills across criterion's iters. Symmetric setup cost
     // (resolver create / hashmap allocate). The .expect surfaces
     // any sizing mistake loudly.

@@ -1,7 +1,7 @@
 //! Bench: what a whole-store scan costs when the store is split into
 //! `k` single-writer lanes instead of one tree.
 //!
-//! This is a DECISION bench, not a bench of a shipped primitive. Writer
+//! This is a decision bench, not a bench of a shipped primitive. Writer
 //! lanes would let `k` statements write a versioned index without
 //! contending, at the price of every ordered read becoming a `k`-way
 //! merge. The merge is the cost that decides whether lanes are worth
@@ -13,26 +13,26 @@
 //!
 //! Fairness, audited against the three questions the house rule asks:
 //!
-//! 1. Every arm holds the SAME entries and the same total node
+//! 1. Every arm holds one and the same entries and the same total node
 //!    capacity: `NODES` split `NODES / k` per lane. A `k`-lane arm is
 //!    not given more arena than the single tree.
 //! 2. Neither arm carries surplus work: every tree is created and
 //!    populated outside the measured loop, and every arm drains with
 //!    the same chunk limit through the same resume rule.
 //! 3. Keys are distributed round-robin across lanes, so every lane
-//!    spans the whole key range. That is the WORST case for a merge -
+//!    spans the whole key range. That is the worst case for a merge -
 //!    maximum interleaving, every lane contributing at every point -
 //!    and it is also the realistic one, because a statement claims
 //!    whichever lane is free rather than one chosen by key.
 //!
 //! The frontier rule under test: a lane that returns a cursor may still
 //! hold keys past it, so the merged output can only be trusted up to
-//! the SMALLEST cursor any lane reported. Emitting past that would
+//! the smallest cursor any lane reported. Emitting past that would
 //! publish a key before a smaller one that a lane has not yet been
 //! asked for. A lane whose cursor is `None` walked to the end of the
 //! range and bounds nothing.
 //!
-//! What the scan numbers do NOT show is the write side, and what the
+//! What the scan numbers leave out is the write side, and what the
 //! write side is actually being compared against.
 //!
 //! `SharedBTreeMap` is single-writer - its own docs state that
@@ -114,7 +114,7 @@ fn build(name: &str, k: usize) -> (std::path::PathBuf, Vec<Lane>) {
 /// smallest cursor reported, merges what is left, and resumes past the
 /// frontier so the drain cannot stall.
 ///
-/// The merge is a k-way selection over lane results that are ALREADY in
+/// The merge is a k-way selection over lane results that are already in
 /// key order, not a re-sort of their concatenation. A re-sort would
 /// charge the lane arm `O(n log n)` work that a real implementation
 /// would never do - the lanes hand back ordered runs - and would report
@@ -226,7 +226,7 @@ fn whole_store_scan(c: &mut Criterion) {
 /// `k` writers against `k` lanes, and the same `k` writers against one
 /// tree behind a mutex - the coordination lanes replace.
 ///
-/// Each writer rewrites its OWN key range every pass, so a key is
+/// Each writer rewrites its own key range every pass, so a key is
 /// updated in place rather than added: the arenas stay bounded and the
 /// measurement is steady-state write throughput, not arena growth.
 ///

@@ -1,11 +1,11 @@
 //! Use the substrate internally, Tokio externally. A SubEtha ring's
-//! `recv().await` is a plain `std::future::Future`, so it runs on ANY
+//! `recv().await` is a plain `std::future::Future`, so it runs on any
 //! executor - including Tokio. This drives a SubEtha `ReactiveReceiver`
 //! from a real `#[tokio::main]` runtime, with no SubEtha executor in
 //! the picture at all.
 //!
 //! The consumer is a `tokio::spawn`ed task. It `.await`s items off the
-//! SubEtha ring AND `.await`s `tokio::time::sleep` between batches, so
+//! SubEtha ring and `.await`s `tokio::time::sleep` between batches, so
 //! it is a first-class Tokio task coexisting with Tokio's own
 //! primitives. When the producer pauses, the ring drains and the recv
 //! future returns `Pending`, parking the Tokio task; the producer's

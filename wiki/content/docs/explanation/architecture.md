@@ -64,7 +64,7 @@ thread, it sleeps 200 µs between scans, and it touches each
 instance's stats once per scan. None of its work blocks any
 op-side thread.
 
-Splitting them lets each side optimise for its actual constraint.
+Splitting them lets each side optimize for its actual constraint.
 `HandshakeHeader::enter_op` is `#[inline(always)]` and compiles
 to two atomic RMWs. `Sidecar::scan_instances` is a normal Rust
 loop with locks and allocations; nobody cares.
@@ -83,7 +83,7 @@ MMF-backed primitives the dispatcher picks between based on
 declarative workload hints:
 
 - `SharedRing` for lock-free MPMC streaming.
-- The `SharedDeque` family (Chase-Lev plus the novel KHL / KHPD /
+- The `SharedDeque` family (Chase-Lev plus the SubEtha-native KHL / KHPD /
   LOH / URD variants) for work-stealing.
 - `SharedHashMap`, `SharedRWLock`, `SharedSemaphore`, `SharedLRUCache`,
   `SharedBTreeMap` for shaped storage.
@@ -123,21 +123,21 @@ the data.
 Every pointer here is `Marshal`-compatible, so it rides through
 any CXC primitive without translation.
 
-## How `send::<u64>` specialises
+## How `send::<u64>` specializes
 
 `AdaptiveIpc::send` carries an in-source
 `TypeId::of::<T>() == TypeId::of::<u64>()` branch
 ([`adaptive_ipc.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/adaptive_ipc.rs)).
-LLVM monomorphises the comparison to a constant per instantiation
+LLVM monomorphizes the comparison to a constant per instantiation
 and dead-code-eliminates the unused arm, so the right
-specialisation is picked at codegen time with no opt-in and no
+specialization is picked at codegen time with no opt-in and no
 nightly. The hand-rolled `send_u64` body runs with an 8-byte stack
 buffer (not the generic 56-byte `Marshal` payload) so the ring
 dispatch sees a concrete known-size payload LLVM inlines directly.
 The A/B harness (`benches/adaptive_send_specialized_ab.rs`)
 measures the two paths within noise of each other on the current
 toolchain - LLVM already inlines the generic `Marshal` path for
-`u64` to equivalent code - so the branch's value is the GUARANTEE
+`u64` to equivalent code - so the branch's value is the guarantee
 of the small-buffer path across toolchains, not a separate
 measured win.
 

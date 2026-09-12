@@ -8,7 +8,7 @@
 //! - [`LargePageRegion`]: private (single-process) memory backed
 //!   by large pages via `VirtualAlloc(MEM_LARGE_PAGES)`. Direct
 //!   parity with Linux `HugepageRegion`.
-//! - [`LargePageSection`]: NAMED pagefile-backed section created
+//! - [`LargePageSection`]: named pagefile-backed section created
 //!   with `CreateFileMappingW(SEC_LARGE_PAGES)` + mapped via
 //!   `MapViewOfFile`. Two processes that open the same section
 //!   name share the same large-page-backed physical memory - the
@@ -16,13 +16,13 @@
 //!
 //! # The privilege gate (different from Linux)
 //!
-//! Linux gates hugepages on RESERVATION (`/proc/sys/vm/nr_hugepages`);
-//! Windows gates large pages on an ACCOUNT PRIVILEGE:
+//! Linux gates hugepages on reservation (`/proc/sys/vm/nr_hugepages`);
+//! Windows gates large pages on an account privilege:
 //! `SeLockMemoryPrivilege` ("Lock pages in memory" in Local
 //! Security Policy). The privilege must be (a) granted to the
 //! user account (admin grants it in secpol.msc under Local
 //! Policies > User Rights Assignment, then the user logs off and
-//! on again so the token picks it up), AND (b) enabled in the
+//! on again so the token picks it up), and (b) enabled in the
 //! process token at runtime via [`enable_lock_memory_privilege`].
 //!
 //! When the privilege is absent, allocation fails with
@@ -30,7 +30,7 @@
 //! standard 4KB-page allocation exactly as they do on Linux when
 //! no hugepages are reserved.
 //!
-//! # File-backed mappings can NEVER use large pages on Windows
+//! # File-backed mappings can never use large pages on Windows
 //!
 //! `SEC_LARGE_PAGES` requires the section be pagefile-backed
 //! (`INVALID_HANDLE_VALUE` as the file handle). A mapping over a
@@ -82,7 +82,7 @@ pub fn large_page_minimum() -> usize {
 
 /// Enable `SeLockMemoryPrivilege` in the current process token.
 ///
-/// This can only ENABLE a privilege the account already HOLDS.
+/// This can only enable a privilege the account already holds.
 /// If "Lock pages in memory" has not been granted to the user in
 /// Local Security Policy, `AdjustTokenPrivileges` reports
 /// `ERROR_NOT_ALL_ASSIGNED` and this function returns an error
@@ -220,7 +220,7 @@ impl Drop for LargePageRegion {
     }
 }
 
-/// Cross-process NAMED large-page section. Pagefile-backed
+/// Cross-process named large-page section. Pagefile-backed
 /// (`SEC_LARGE_PAGES` requires it); two processes that pass the
 /// same `name` share the same large-page-backed physical memory.
 ///
@@ -377,7 +377,7 @@ mod tests {
 
     /// Exact-contract test: allocation either succeeds (account
     /// holds SeLockMemoryPrivilege) and the memory is usable, or
-    /// fails with PRECISELY the documented privilege /
+    /// fails with precisely the documented privilege /
     /// resource error. Any other outcome is a bug.
     #[test]
     fn allocate_succeeds_or_fails_with_documented_error() {
@@ -425,7 +425,7 @@ mod tests {
                 assert!(priv_ok, "section create succeeded but privilege-enable failed");
                 let s = section.as_mut_slice();
                 s[0] = 0x5A;
-                // Open a second view of the SAME section (cross-
+                // Open a second view of that same section (cross-
                 // handle, same process) and verify the byte is
                 // visible through it: proves the views alias the
                 // same physical large pages.

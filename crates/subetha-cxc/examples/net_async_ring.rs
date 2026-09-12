@@ -1,4 +1,4 @@
-//! async `recv().await` woken by a NETWORK packet - no async runtime,
+//! async `recv().await` woken by a network packet - no async runtime,
 //! no tokio. The last leg of the universal interface: the same
 //! `recv().await` that resolves on a thread's push or a sibling
 //! process's push also resolves on a remote host's packet, because all

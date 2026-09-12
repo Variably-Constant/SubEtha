@@ -3,16 +3,16 @@
 //!
 //! The architectural claim: SharedRing's lock-free protocol over a
 //! cache-line-aligned MMF layout matches or beats in-process
-//! channels for the SPSC and MPMC cases, AND it works cross-process
-//! AND it persists to disk - all from the same mechanism. The
+//! channels for the SPSC and MPMC cases, and it works cross-process,
+//! and it persists to disk - all from the same mechanism. The
 //! competitors don't offer that.
 //!
 //! # Safety / cost discipline
 //!
-//! The multi-thread benches PRE-SPAWN producer and consumer threads
-//! ONCE per bench function, then coordinate per-iteration work via
+//! The multi-thread benches pre-spawn producer and consumer threads
+//! once per bench function, then coordinate per-iteration work via
 //! `std::sync::Barrier`. The naive `b.iter(|| thread::spawn(...))`
-//! pattern spawns 2-8 OS threads PER iteration; criterion runs tens
+//! pattern spawns 2-8 OS threads for every iteration; criterion runs tens
 //! of thousands of iterations, so the naive pattern would create
 //! 100k+ OS threads and exhaust the kernel thread table. The barrier
 //! pattern keeps OS thread creation at exactly N (= producer count +
@@ -99,7 +99,7 @@ impl Drop for ProdConsPool {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         // Wake parked workers; they check stop, see true, exit
-        // without entering done.wait(), so main does NOT wait on
+        // without entering done.wait(), so main does not wait on
         // done barrier here.
         self.start.wait();
         let handles = std::mem::take(&mut self.handles);
@@ -146,7 +146,7 @@ fn spsc_round_trip(c: &mut Criterion) {
 }
 
 // =========================================================
-// SPSC throughput: producer thread + consumer thread, PRE-SPAWNED.
+// SPSC throughput: producer thread + consumer thread, pre-spawned.
 // =========================================================
 
 fn spsc_throughput(c: &mut Criterion) {
@@ -201,7 +201,7 @@ fn spsc_throughput(c: &mut Criterion) {
 }
 
 // =========================================================
-// MPMC scaling: 4 producers + 4 consumers, PRE-SPAWNED.
+// MPMC scaling: 4 producers + 4 consumers, pre-spawned.
 // =========================================================
 
 fn mpmc_4_4(c: &mut Criterion) {

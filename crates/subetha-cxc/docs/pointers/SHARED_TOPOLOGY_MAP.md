@@ -65,7 +65,7 @@ observed fan statistics.
   observation).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process flow observation**: any process records
   sends; coordinator reads recommendations.

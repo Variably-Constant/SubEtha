@@ -1,19 +1,19 @@
 //! SubEtha IPC stress test E2E.
 //!
-//! Five tiers of stress, each verifying CORRECTNESS + measuring
-//! THROUGHPUT. Real production workloads break differently from
+//! Five tiers of stress, each verifying correctness and measuring
+//! throughput. Real production workloads break differently from
 //! micro-benchmarks; this binary surfaces those failure modes.
 //!
 //! 1. SPSC sustained 1M items - throughput + sum check
 //! 2. MPMC 8P/8C 800k items - per-item ID set check
 //!    (verifies: no losses, no duplicates, no corruption)
 //! 3. AdaptiveIpc live migration under load - 200k items with
-//!    migrations happening WHILE producer pushes
+//!    migrations happening while the producer pushes
 //! 4. Service simulation - N workers handling requests from M
 //!    client threads (production request-response pattern)
 //! 5. Burst traffic with idle gaps - realistic bursty workload
 //!
-//! Each tier prints SAFETY VERDICT + throughput numbers.
+//! Each tier prints a safety verdict and its throughput numbers.
 //!
 //! Run: `cargo run --release --example stress_test -p subetha-cxc`
 
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ==========================================================================
-// TIER 1: SPSC sustained 1M items
+// Tier 1: SPSC sustained 1M items
 // ==========================================================================
 fn tier1_spsc_sustained() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TIER 1: SPSC sustained 1M items ---");
@@ -162,7 +162,7 @@ fn tier1_spsc_sustained() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ==========================================================================
-// TIER 2: MPMC 8P/8C 800k items - safety verification
+// Tier 2: MPMC 8P/8C 800k items - safety verification
 // ==========================================================================
 fn tier2_mpmc_safety() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TIER 2: MPMC 8P/8C 800k items - SAFETY (per-item ID set check) ---");
@@ -254,7 +254,7 @@ fn tier2_mpmc_safety() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ==========================================================================
-// TIER 3: AdaptiveIpc live migration under load
+// Tier 3: AdaptiveIpc live migration under load
 // ==========================================================================
 fn tier3_live_migration_under_load() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TIER 3: AdaptiveIpc live migration under load ---");
@@ -367,7 +367,7 @@ fn tier3_live_migration_under_load() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ==========================================================================
-// TIER 4: Service simulation - N workers, M clients
+// Tier 4: Service simulation - N workers, M clients
 // ==========================================================================
 fn tier4_service_simulation() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TIER 4: Service simulation - 4 workers handling requests from 4 clients ---");
@@ -494,7 +494,7 @@ fn tier4_service_simulation() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ==========================================================================
-// TIER 5: Burst traffic with idle gaps
+// Tier 5: Burst traffic with idle gaps
 // ==========================================================================
 fn tier5_burst_traffic() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TIER 5: Burst traffic (10 bursts of 10k items with 5ms idle gaps) ---");

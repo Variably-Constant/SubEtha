@@ -32,7 +32,7 @@
 //!
 //! Where LOH wins per the cost model: bursty dispatch where the
 //! per-burst migration amortizes over many items per cache-line
-//! bounce. Where LOH does NOT win: single-item request-reply,
+//! bounce. Where LOH does not win: single-item request-reply,
 //! because there's no batching to amortize against.
 //!
 //! ## Hot path API: [`publish_batch`](SharedDequeLoh::publish_batch)
@@ -48,7 +48,7 @@
 //! [`flush`](SharedDequeLoh::flush) pair is still exposed for callers
 //! that want to stage items incrementally and migrate later
 //! (autoflushes at a configurable threshold). Per-item `push` does
-//! NOT exercise the amortization lever; it pays the same Mutex on
+//! leave the amortization lever unexercised; it pays the same Mutex on
 //! every staged item.
 //!
 //! ## Layout
@@ -72,7 +72,7 @@
 //! [`SharedDequeKhpd`](crate::SharedDequeKhpd) and
 //! [`SharedDequeUrd`](crate::SharedDequeUrd) use, re-exported via
 //! [`crate::LineItem`] so consumers can ferry the same byte pattern
-//! across all three primitives without re-marshalling.
+//! across all three primitives without re-marshaling.
 //!
 //! ## When to use this vs `SharedDeque` / `SharedDequeKhpd`
 //!
@@ -91,7 +91,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering, fence};
@@ -271,12 +271,7 @@ impl SharedDequeLoh {
         let capacity = capacity.max(2).next_power_of_two();
         let size = loh_file_size(capacity);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::create_truncated(path.as_ref())?;
         file.set_len(size as u64)?;
 
         // SAFETY: `map_mut` is unsafe because the kernel cannot
@@ -304,7 +299,7 @@ impl SharedDequeLoh {
             std::ptr::write_bytes((*header_ptr)._pad_head.as_mut_ptr(), 0, 56);
         }
 
-        // Initialise each slot's sequence to its index. On first
+        // Initialize each slot's sequence to its index. On first
         // producer touch, `sequence == idx`, so the publisher knows
         // the slot is ready to publish (write payload, then
         // Release-store `idx + 1`).
@@ -341,10 +336,7 @@ impl SharedDequeLoh {
 
     /// Open an existing LOH file. Validates magic and capacity.
     pub fn open<P: AsRef<Path>>(path: P, flush_threshold: usize) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let size = file.metadata()?.len() as usize;
         if size < std::mem::size_of::<LohHeader>() {
             return Err(io::Error::new(
@@ -508,7 +500,7 @@ impl SharedDequeLoh {
 
         for (i, item) in items.iter().enumerate() {
             let idx = base + i as i64;
-            // Warm the NEXT slot's cache line while we publish this
+            // Warm the next slot's cache line while we publish this
             // one. The `i + 1 < n` guard avoids prefetching past the
             // reserved range.
             if i + 1 < n {
@@ -661,7 +653,7 @@ impl SharedDequeLoh {
         };
         // Release the slot for the next round at `head + capacity`.
         //
-        // SAFETY: still our slot; the Release synchronises with the
+        // SAFETY: still our slot; the Release synchronizes with the
         // next producer's Acquire-spin in `publish_at`.
         unsafe {
             (*slot)
@@ -916,7 +908,7 @@ mod tests {
                 }
             }
         }
-        // The TERMINAL flush must succeed or the tail of the run
+        // The terminal flush must succeed or the tail of the run
         // (up to flush_threshold - 1 items) stays stranded in the
         // process-local LIFO and the thieves spin on `consumed < n`
         // forever - flush() returning Full leaves items staged by

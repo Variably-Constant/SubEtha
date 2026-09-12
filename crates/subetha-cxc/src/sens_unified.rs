@@ -1,11 +1,11 @@
-//! Unified Sens-O-Matic endpoint: one transport that carries BOTH erasure
+//! Unified Sens-O-Matic endpoint: one transport that carries both erasure
 //! codes and switches between them mid-stream on the loss the receiver
 //! already measures and feeds back.
 //!
 //! Sens-O-Matic treats the erasure code as a swappable detail (like a cipher
 //! suite): the sliding-window Random Linear Code ([`crate::sens_rlc`]) and the
 //! block Cauchy Reed-Solomon code ([`crate::udp_bridge`]) deliver every item
-//! in order, differing only in HOW they recover loss. Their operating regimes
+//! in order, differing only in how they recover loss. Their operating regimes
 //! are complementary, and the boundary is a measured loss level:
 //!
 //!  - **RLC wins at low-to-moderate loss** - incremental forward recovery from
@@ -24,14 +24,14 @@
 //! for the loss level (RLC's flow window sized to the path BDP, RS's parity
 //! provisioned per loss). It is lower on a high-RTT path because RLC's rate-law
 //! margin grows with the round trip and drives the code to its redundancy
-//! ceiling at a lower loss. The loss-driven switch moves UP to RS at the
-//! crossover (~23.5%, `q8 = 60`) and back DOWN to RLC at ~12% (a wide hysteresis
+//! ceiling at a lower loss. The loss-driven switch moves up to RS at the
+//! crossover (~23.5%, `q8 = 60`) and back down to RLC at ~12% (a wide hysteresis
 //! band, so a loss level hovering at the boundary does not flap). A persistent
 //! RLC flow-block escapes to RS on its own, the backstop for a path whose
 //! crossover sits below the threshold, where RLC would stall before the loss
 //! reading crosses it.
 //!
-//! The switch is driven by the FEEDBACK frame's loss byte (`loss_q8`, the
+//! The switch is driven by the `FEEDBACK` frame's loss byte (`loss_q8`, the
 //! forward loss quantized to a `u8` as `loss * 256`), which both codes' senders
 //! already receive over the control plane. `CodeSwitchController` applies the
 //! threshold with immediate-up / conservative-down hysteresis (the same shape
@@ -69,7 +69,7 @@ pub enum SensCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodePolicy {
     /// Loss-driven with hysteresis. `up_q8` / `down_q8` are forward-loss
-    /// thresholds (quantized `loss * 256`, matching the FEEDBACK frame):
+    /// thresholds (quantized `loss * 256`, matching the `FEEDBACK` frame):
     /// switch RLC -> RS when loss sustains above `up_q8`, RS -> RLC when it
     /// sustains below `down_q8`. `up_q8 > down_q8` is the hysteresis band.
     Auto { up_q8: u8, down_q8: u8 },
@@ -81,9 +81,9 @@ pub enum CodePolicy {
 
 impl CodePolicy {
     /// The default loss-driven policy, thresholds set from the measured crossover
-    /// with RS provisioned to cover the loss: switch UP to RS at ~15%
+    /// with RS provisioned to cover the loss: switch up to RS at ~15%
     /// (`q8 = CROSSOVER_LOSS_Q8 = 38`, where RS overtakes RLC on both throughput
-    /// and bounded tail latency) and back DOWN to RLC at ~10% (`q8 = 26`). RLC
+    /// and bounded tail latency) and back down to RLC at ~10% (`q8 = 26`). RLC
     /// keeps the sub-crossover regime for its lower TTFD / median; the ~5-point
     /// hysteresis band keeps a loss level hovering at the boundary from flapping
     /// the code.
@@ -101,7 +101,7 @@ impl CodePolicy {
     }
 }
 
-/// Loss in q8 (the FEEDBACK frame's `loss * 256`) at the measured crossover
+/// Loss in q8 (the `FEEDBACK` frame's `loss * 256`) at the measured crossover
 /// where block-RS overtakes sliding-window RLC: ~15% (38/256). RS provisions
 /// parity to cover the loss (Encoder::set_parity_covering) and then wins both
 /// throughput and bounded tail latency from ~15% up; RLC keeps the low-loss
@@ -125,7 +125,7 @@ pub struct CodeSwitchController {
     up_hold: u32,
     down_hold: u32,
     switches: u64,
-    /// Set when a flow-block ESCAPE (not a loss-threshold up-switch) moved to RS:
+    /// Set when a flow-block escape (not a loss-threshold up-switch) moved to RS:
     /// RLC stalled at this loss, so a down-switch back would just stall again and
     /// flap. The latch suppresses the down-switch after a stall-escape (the loss
     /// estimate at a stall-loss can sit below the down threshold, which would
@@ -210,7 +210,7 @@ impl CodeSwitchController {
         None
     }
 
-    /// Align the controller to `to` for a switch driven OUTSIDE `observe` (the
+    /// Align the controller to `to` for a switch driven outside `observe` (the
     /// flow-block escape), counting it and resetting the hysteresis streaks so the
     /// band restarts from the new code. Returns whether it switched: a forced
     /// policy stays put (returns `false`), as does an already-on-`to` controller.
@@ -239,7 +239,7 @@ impl CodeSwitchController {
 // ---------------------------------------------------------------------------
 
 /// CODE_SWITCH control-frame type byte. Disjoint from RS data (1) / control
-/// (4), the RLC frames (10..=14), and QUIC (first byte has 0x40 set), so one
+/// (4), the RLC frames (10..=19), and QUIC (first byte has 0x40 set), so one
 /// socket demuxes all of them unambiguously by the first wire byte.
 pub const PKT_CODE_SWITCH: u8 = 9;
 
@@ -271,7 +271,7 @@ fn decode_code_switch(buf: &[u8]) -> Option<(u64, SensCode)> {
 pub(crate) type SwitchSignal = Arc<Mutex<Option<(u64, SensCode)>>>;
 
 /// Unified raw-loss feedback frame type byte. Disjoint from RS (1 / 4), RLC
-/// (10..=14), CODE_SWITCH (9), and QUIC (first byte 0x40 set).
+/// (10..=19), CODE_SWITCH (9), and QUIC (first byte 0x40 set).
 pub const PKT_UNIFIED_FB: u8 = 8;
 
 /// Wire: `[8][received u64-le]` - the receiver's cumulative count of forward
@@ -342,7 +342,7 @@ pub(crate) fn route_sens_inbound(
     }
     if b0 == 1 || b0 == 4 {
         rs_q.lock().unwrap().push_back((data, from, kts));
-    } else if (10..=14).contains(&b0)
+    } else if (10..=19).contains(&b0)
         || b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
         || b0 == crate::sens_rlc::PKT_RLC_PATH_RESPONSE
     {
@@ -387,7 +387,7 @@ pub(crate) fn route_sens_inbound(
 /// completed peer's keys to its session tag through
 /// [`completed_for`](Self::completed_for). Data from a peer that has not
 /// completed its handshake - keys derived and every flight this side sent
-/// acked - is dropped BEFORE the decoder sees it: to the transport that is
+/// acked - is dropped before the decoder sees it: to the transport that is
 /// link loss, which its own FEC and ARQ absorb, so an item reordered ahead
 /// of the peer's final flight is recovered rather than lost.
 #[cfg(feature = "tls")]
@@ -450,7 +450,7 @@ impl TlsListen {
             let (replies, kept) = match state {
                 PeerTls::Done { crypto, machine, .. } => {
                     // A crypto flight at sequence 0 against a completed peer
-                    // is a NEW ClientHello - the completed machine consumed
+                    // is a fresh ClientHello - the completed machine consumed
                     // the old one, so a replay of it cannot sit at 0 - which
                     // is a peer redialing from the same address. The old keys
                     // go (any session tag already bound keeps its clone) and
@@ -621,6 +621,7 @@ fn spawn_demux(
         Arc<TlsListen>,
     >,
     send_failures: Arc<AtomicU64>,
+    drops: Arc<crate::dgram::DropTally>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let stop_report = Arc::clone(&stop);
@@ -655,12 +656,12 @@ fn spawn_demux(
                 s[DEMUX_SLOT_LAST_ITER]
                     .store(demux_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
-            let io_ok = match crate::dgram::udp_recv_with_kts(&sock, &mut buf) {
+            let io_ok = match crate::dgram::udp_recv_with_kts(&sock, &mut buf, &drops) {
                 Ok((n, from, kts)) if n > 0 => {
                     let b0 = buf[0];
                     if let Some(s) = &stats {
                         s[1].fetch_add(1, Ordering::Relaxed);
-                        if (10..=14).contains(&b0)
+                        if (10..=19).contains(&b0)
                             || b0 == crate::sens_rlc::PKT_RLC_PATH_CHALLENGE
                             || b0 == crate::sens_rlc::PKT_RLC_PATH_RESPONSE
                         {
@@ -687,7 +688,7 @@ fn spawn_demux(
                         }
                         continue;
                     }
-                    // A multi-peer TLS listener drives its handshakes HERE, on
+                    // A multi-peer TLS listener drives its handshakes on
                     // the demux thread: a peer's keys publish before this same
                     // thread routes any later data frame from it, so the poll
                     // side never races the handshake. Data from a peer whose
@@ -706,15 +707,15 @@ fn spawn_demux(
                             }
                             continue;
                         }
-                        if (b0 == 1 || b0 == 4 || (10..=14).contains(&b0))
+                        if (b0 == 1 || b0 == 4 || (10..=19).contains(&b0))
                             && !tl.admits_data(from)
                         {
                             continue;
                         }
                     }
                     // Uniform link-loss injection on the forward data/repair
-                    // stream (RS data 1, RLC data 10 / repair 11): drop BEFORE
-                    // counting or routing, so the raw-loss estimate AND the codes
+                    // stream (RS data 1, RLC data 10 / repair 11): drop ahead of
+                    // counting or routing, so the raw-loss estimate and the codes
                     // both see a realistic lossy link. Control frames pass.
                     let is_fwd = b0 == 1 || b0 == 10 || b0 == 11;
                     let dropped =
@@ -833,7 +834,7 @@ const SWITCH_SAMPLE_PERIOD: Duration = Duration::from_millis(50);
 /// the flow window at connection start, and that growth reads as loss; wait for
 /// it to stabilize so the ramp does not trip a spurious switch.
 const SWITCH_WARMUP: Duration = Duration::from_millis(1000);
-/// Feedback windows accumulated AFTER the warmup before the loss estimate is
+/// Feedback windows accumulated past the warmup before the loss estimate is
 /// trusted to move the code. The decaying accumulator is cold at warmup-end (its
 /// first window's raw ratio dominates), so a start-of-stream retransmit burst
 /// reads as a spike that crosses the up threshold and flaps the code. Holding the
@@ -842,14 +843,14 @@ const MIN_ACCUM_WINDOWS: u32 = 6;
 /// Drain deadline for a code handover (the in-flight tail of the old code must
 /// be delivered before the new code starts, for in-order delivery).
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long RLC's DELIVERY FRONTIER may stay stuck (no item delivered while the
+/// How long RLC's delivery frontier may stay stuck (no item delivered while the
 /// send window is full) before the transport gives up on RLC and migrates to RS.
 /// This is the genuine-deadlock backstop: a frontier that does not advance for
 /// this long means RLC cannot decode the loss it is seeing (extreme loss past its
 /// redundancy ceiling), which the loss-driven `maybe_switch` cannot catch because
 /// a stalled sender produces no fresh loss sample. It is measured against frontier
 /// progress (the send loop resets the timer whenever a delivery lands), so a
-/// recoverable hard gap at sub-ceiling loss does NOT trip it - only a true stall.
+/// recoverable hard gap at sub-ceiling loss does not trip it - only a true stall.
 /// Measured against frontier progress, so it fires fast (the stalling unified RLC
 /// needs prompt rescue - a slower value starves it into a multi-second stall).
 const RLC_BLOCK_ESCAPE: Duration = Duration::from_millis(750);
@@ -923,7 +924,7 @@ pub struct UnifiedConfig {
     /// config; the default caps RLC ~2x below its capability on a high-BDP path).
     pub rlc_flow_window: u32,
     /// Receiver-side diagnostic loss injection (percent, 0 = off) applied to
-    /// BOTH decoders, with `seed` for reproducibility. Drives the loss-based
+    /// both decoders, with `seed` for reproducibility. Drives the loss-based
     /// switch without a real lossy link.
     pub debug_loss: u32,
     /// Seed for the reproducible `debug_loss` drop sequence.
@@ -990,6 +991,9 @@ pub struct UnifiedSensSender {
     /// and raw-loss feedback the socket refused. Each one is a peer left
     /// without an answer it was owed.
     demux_send_failures: Arc<AtomicU64>,
+    /// Receive-buffer drops on the demux socket, as far as this host counts
+    /// them.
+    demux_drops: Arc<crate::dgram::DropTally>,
     last_sample: Instant,
     /// Connection start, for the switch-evaluation warmup.
     started: Instant,
@@ -1001,7 +1005,7 @@ pub struct UnifiedSensSender {
     prev_sent: u64,
     prev_received: u64,
     /// Size-weighted decaying raw-loss estimate (-1 = uninitialized). Decay the
-    /// lost / sent COUNTS (`loss_acc` / `sent_acc`) and take their ratio, rather
+    /// lost / sent counts (`loss_acc` / `sent_acc`) and take their ratio, rather
     /// than EWMA-ing per-window ratios: a small feedback window with one drop
     /// reads a spuriously high ratio, and an equal-weight EWMA of ratios over-
     /// weights it, inflating the estimate at low loss (3% read as ~11%). Weighting
@@ -1011,10 +1015,18 @@ pub struct UnifiedSensSender {
     /// estimate's numerator / denominator); their ratio is `ewma_loss`.
     loss_acc: f64,
     sent_acc: f64,
+    /// Datagrams this sender put on the wire that the far end never
+    /// reported receiving, summed over every evaluated feedback window.
+    /// Undecayed, unlike `loss_acc`.
+    ///
+    /// A window smaller than `MIN_LOSS_SAMPLE` is not evaluated, so this
+    /// lags the wire by up to one feedback period and does not include a
+    /// trailing partial window.
+    missed_total: u64,
     /// Feedback windows accumulated since the warmup ended. The switch is gated on
     /// this reaching `MIN_ACCUM_WINDOWS` so a cold accumulator cannot flap the code.
     post_warm_windows: u32,
-    /// Recently-sent item payloads, kept so a code switch can RESEND the un-acked
+    /// Recently-sent item payloads, kept so a code switch can resend the un-acked
     /// tail over the new code instead of slowly draining the old one. Holds the
     /// global index range `[ring_base, items_total)`; the front is evicted once
     /// RLC confirms delivery (its `acked_through`) and is hard-capped so a stalled
@@ -1097,7 +1109,7 @@ impl UnifiedSensSender {
         // when TLS is on; size their symbols for the sealed width so pack_symbol
         // and the RS shard split never overflow.
         let wire_sym = cfg.symbol_len + seal_overhead;
-        // Left UNCONNECTED: the per-code demux sockets send via send_to(peer),
+        // Left unconnected: the per-code demux sockets send via send_to(peer),
         // and send_to on a connected socket is rejected on Windows. The demux
         // reader still only ever hears from `peer` on this private socket.
         // A clone for the demux thread: UdpSocket is Send, DgramSock is not
@@ -1145,6 +1157,8 @@ impl UnifiedSensSender {
             Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux_start = Instant::now();
         let demux_send_failures = Arc::new(AtomicU64::new(0));
+        let demux_drops = Arc::new(crate::dgram::DropTally::new());
+        crate::dgram::enable_drop_reporting_on(&thread_sock);
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -1159,6 +1173,7 @@ impl UnifiedSensSender {
             demux_start,
             None,
             Arc::clone(&demux_send_failures),
+            Arc::clone(&demux_drops),
         );
 
         Ok(Self {
@@ -1169,6 +1184,7 @@ impl UnifiedSensSender {
             demux_stats,
             demux_start,
             demux_send_failures,
+            demux_drops,
             active: cfg.policy.initial_code(),
             ctrl: CodeSwitchController::with_policy(cfg.policy),
             items_total: 0,
@@ -1183,6 +1199,7 @@ impl UnifiedSensSender {
             ewma_loss: -1.0,
             loss_acc: 0.0,
             sent_acc: 0.0,
+            missed_total: 0,
             post_warm_windows: 0,
             sent_ring: VecDeque::new(),
             ring_base: 0,
@@ -1279,7 +1296,7 @@ impl UnifiedSensSender {
     }
 
     /// `(last NAK received, last block id stamped on a retransmit)` for the
-    /// block-RS sender - what it is answering and emitting NOW.
+    /// block-RS sender - what it is answering and emitting at this moment.
     pub fn rs_last_nak_and_retx(&self) -> (Option<u32>, Option<u32>) {
         self.rs.last_nak_and_retx()
     }
@@ -1356,6 +1373,26 @@ impl UnifiedSensSender {
         self.demux_stats[DEMUX_SLOT_ERRORS].load(Ordering::Relaxed)
     }
 
+    /// Datagrams this endpoint's kernel dropped because the receive buffer
+    /// was full, and what the count is worth on this host. Distinct from
+    /// [`demux_errors`](Self::demux_errors), which counts frames that
+    /// reached the process and were then discarded.
+    pub fn kernel_drops(&self) -> (u64, crate::dgram::DropReport) {
+        self.demux_drops.read()
+    }
+
+    /// Datagrams this sender put on the wire that the far end never
+    /// reported receiving. Whatever became of them: a slow reader at the
+    /// far end, a full buffer, a lossy link. Only a sender can compute it,
+    /// since only a sender knows both counts.
+    ///
+    /// It advances a feedback window at a time and skips windows too small
+    /// to trust, so it lags the wire and excludes a trailing partial
+    /// window.
+    pub fn missed(&self) -> u64 {
+        self.missed_total
+    }
+
     /// Demux reader loop counters: `(iterations, recv_ok, would_block,
     /// rlc_frames_routed)`. Iterations frozen with the thread alive is
     /// a reader blocked inside the recv; iterations climbing with
@@ -1423,13 +1460,13 @@ impl UnifiedSensSender {
                 // try_send_item) instead of letting rlc.send_item block out of
                 // sight: when the window will not clear, RLC cannot decode the
                 // loss it is seeing (extreme loss past its redundancy ceiling), so
-                // a persistent block IS the trigger to migrate to RS. The loss-
+                // a persistent block is the trigger to migrate to RS. The loss-
                 // driven maybe_switch cannot catch this - a stalled sender emits no
                 // fresh loss sample, and the stall arrives inside the startup
                 // warmup. The handover resends the un-acked tail over RS (from the
                 // replay ring), so no slow RLC drain is needed.
                 // Progress-aware deadlock detection: escape only when RLC's
-                // delivery frontier is STUCK for RLC_BLOCK_ESCAPE, not merely when
+                // delivery frontier is stuck for `RLC_BLOCK_ESCAPE`, not merely when
                 // a single send flow-blocks while RLC is still delivering (slow but
                 // recovering). A blocked-but-advancing frontier is RLC working
                 // through loss at its own pace - that is the loss-threshold's job to
@@ -1537,7 +1574,7 @@ impl UnifiedSensSender {
         }
     }
 
-    /// RLC -> RS handover by RESEND (not drain): announce the boundary RLC has
+    /// RLC -> RS handover by resend (not drain): announce the boundary RLC has
     /// delivered to, switch, and resend the un-acked tail `[boundary,
     /// items_total)` over RS from the replay ring, in order. RS is reliable, so
     /// it recovers the tail fast at any loss - no waiting on RLC's slow frontier
@@ -1608,7 +1645,7 @@ impl UnifiedSensSender {
             self.prev_received = recv;
             return Ok(());
         }
-        // Align the window to FEEDBACK arrivals: skip ticks with no new report,
+        // Align the window to `FEEDBACK` arrivals: skip ticks with no new report,
         // so a tick landing between reports does not read a spurious 100% loss
         // (sent advanced, received not yet updated this window).
         if recv <= self.prev_received {
@@ -1622,14 +1659,15 @@ impl UnifiedSensSender {
         self.prev_sent = sent;
         self.prev_received = recv;
         let lost_d = sent_d.saturating_sub(recv_d) as f64;
-        // Size-weighted decaying loss: decay the lost / sent COUNTS and take their
-        // ratio, NOT an equal-weight EWMA of per-window ratios. A small feedback
+        // Size-weighted decaying loss: decay the lost / sent counts and take their
+        // ratio, rather than an equal-weight EWMA of per-window ratios. A small feedback
         // window with one drop reads a spuriously high ratio, and equal-weight
         // averaging over-read low loss ~3.5x (3% measured as ~11%); weighting by
         // datagram count makes large windows dominate so the estimate tracks the
         // true channel loss. The 0.95 decay (effective window ~20 feedback samples)
         // keeps it recent yet smooths the retransmit-burst windows that a tighter
         // decay let spike across the up threshold and flap the code.
+        self.missed_total += sent_d.saturating_sub(recv_d);
         self.loss_acc = 0.95 * self.loss_acc + lost_d;
         self.sent_acc = 0.95 * self.sent_acc + sent_d as f64;
         self.ewma_loss = if self.sent_acc > 0.0 {
@@ -1653,7 +1691,7 @@ impl UnifiedSensSender {
         Ok(())
     }
 
-    /// Code handover. RLC -> RS RESENDS the un-acked tail over RS (RS is reliable
+    /// Code handover. RLC -> RS resends the un-acked tail over RS (RS is reliable
     /// and fast at any loss, so it never waits on RLC's slow frontier recovery).
     /// RS -> RLC drains RS first (RS's ARQ clears its window quickly), then starts
     /// RLC from the fully-delivered boundary. In-order delivery holds either way.
@@ -1825,6 +1863,10 @@ pub struct UnifiedSensReceiver {
     /// wedges is the case that presents as a healthy, deaf process. `None`
     /// on a receiver fed by an external demux, which owns no reader here.
     demux_stats: Option<Arc<[AtomicU64; DEMUX_STAT_SLOTS]>>,
+    /// Receive-buffer drops on the demux socket. `None` where this receiver
+    /// runs no demux thread, so there is no socket of its own to report on
+    /// and the answer is that nothing is known.
+    demux_drops: Option<Arc<crate::dgram::DropTally>>,
     demux_start: Instant,
 }
 
@@ -1933,7 +1975,7 @@ impl UnifiedSensReceiver {
         let rs_q = new_demux_queue();
 
         // No per-code debug loss: the unified path injects loss uniformly at the
-        // demux (below), modelling a real lossy link AND letting the raw-loss
+        // demux (below), modeling a real lossy link and letting the raw-loss
         // estimate see it (a sub-receiver drop would be invisible to the demux
         // count).
         let mut rlc = SensOMaticRlcReceiver::bind("0.0.0.0:0", wire_sym)?;
@@ -1949,6 +1991,8 @@ impl UnifiedSensReceiver {
             Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
         let demux_start = Instant::now();
         let send_failures = Arc::new(AtomicU64::new(0));
+        let demux_drops = Arc::new(crate::dgram::DropTally::new());
+        crate::dgram::enable_drop_reporting_on(&thread_sock);
         let demux = spawn_demux(
             thread_sock,
             rlc_q,
@@ -1963,12 +2007,14 @@ impl UnifiedSensReceiver {
             demux_start,
             tls_listen.clone(),
             Arc::clone(&send_failures),
+            Arc::clone(&demux_drops),
         );
 
         Ok(Self {
             real,
             rlc,
             rs,
+            demux_drops: Some(demux_drops),
             active: cfg.policy.initial_code(),
             switch_signal,
             pending_switch: None,
@@ -1999,7 +2045,7 @@ impl UnifiedSensReceiver {
         })
     }
 
-    /// Build a receiver fed by an EXTERNAL demux (the one-port QUIC endpoint's
+    /// Build a receiver fed by an external demux (the one-port QUIC endpoint's
     /// socket routes Sens datagrams into `rlc_q` / `rs_q` / `switch_signal` and
     /// tallies `recv_counter`). `send_sock` is a clone of the shared socket for
     /// control + raw-loss feedback. No demux thread is spawned (the QUIC socket
@@ -2064,6 +2110,7 @@ impl UnifiedSensReceiver {
             // The QUIC endpoint owns the reader; this receiver has no
             // heartbeat of its own to report.
             demux_stats: None,
+            demux_drops: None,
             demux_start: Instant::now(),
         })
     }
@@ -2187,6 +2234,18 @@ impl UnifiedSensReceiver {
         Some(self.demux_stats.as_ref()?[DEMUX_SLOT_ERRORS].load(Ordering::Relaxed))
     }
 
+    /// Datagrams this receiver's kernel dropped because the receive buffer
+    /// was full, and what the count is worth on this host. A receiver with
+    /// no demux socket of its own reports
+    /// [`DropReport::Unknown`](crate::dgram::DropReport::Unknown) rather
+    /// than a zero that would read as none.
+    pub fn kernel_drops(&self) -> (u64, crate::dgram::DropReport) {
+        match &self.demux_drops {
+            Some(d) => d.read(),
+            None => (0, crate::dgram::DropReport::Unknown),
+        }
+    }
+
     /// Whether this receiver's demux reader thread is still running.
     pub fn demux_alive(&self) -> bool {
         self.demux.as_ref().is_some_and(|h| !h.is_finished())
@@ -2224,7 +2283,7 @@ impl UnifiedSensReceiver {
         self.rs.session_rejects(epoch)
     }
 
-    /// `(epoch, block_id)` of the last DATA datagram this window handed to
+    /// `(epoch, block_id)` of the last `DATA` datagram this window handed to
     /// its decoder, read off the wire before the decoder judged it.
     pub fn rs_session_last_data_seen(&self, epoch: u32) -> Option<(u32, u32)> {
         self.rs.session_last_data_seen(epoch)
@@ -2232,7 +2291,7 @@ impl UnifiedSensReceiver {
 
     /// `(pop_attempts, pop_yields, queue_ptr, queue_len)` of the block-RS
     /// receiver's inbound demux queue. A climbing `queue_len` means this
-    /// receiver is reading the PAST: the demux thread enqueues at the
+    /// receiver is reading what has already happened: the demux thread enqueues at the
     /// peer's rate while the poll loop drains one datagram per call.
     pub fn rs_inbound_queue(&self) -> Option<(u64, u64, u64, u64)> {
         self.rs.inbound_queue()
@@ -2268,7 +2327,7 @@ impl UnifiedSensReceiver {
         self.rlc.unattributed_frames()
     }
 
-    /// RLC DATA / REPAIR frames too short for their header, summed over
+    /// RLC `DATA` / `REPAIR` frames too short for their header, summed over
     /// every window; each was dropped without a decode.
     pub fn rlc_malformed_frames(&self) -> u64 {
         self.rlc.malformed_frames()
@@ -2378,7 +2437,7 @@ impl UnifiedSensReceiver {
         self.real.local_addr()
     }
 
-    /// Open one delivered item on a listening receiver with its OWN peer's
+    /// Open one delivered item on a listening receiver with that peer's own
     /// keys and packet number: the tag's next pn (each sender seals its
     /// stream 0, 1, 2...), and the keys bound to the tag - bound here on the
     /// tag's first item, by the session's admitted address, so a later
@@ -2479,7 +2538,7 @@ impl UnifiedSensReceiver {
         // One-port TLS: the handshake completes asynchronously on a thread (the
         // QUIC endpoint owns the socket), so until the keys are published, withhold
         // delivery. The decoders keep buffering inbound frames; the peer only sends
-        // data after ITS handshake finished, so the backlog is at most a few frames
+        // data after its own handshake finished, so the backlog is at most a few frames
         // and they open correctly once the keys land. (bind_tls sets the keys
         // inline before returning, so this gate is already clear there.)
         #[cfg(feature = "tls")]
@@ -2602,6 +2661,37 @@ impl Drop for UnifiedSensReceiver {
 mod tests {
     use super::*;
 
+    /// Whether a receiver thread keeps polling: until every expected item
+    /// is in and the senders have finished. A sender's final drain is
+    /// acked only by a receiver that is still polling; one that left on
+    /// its item count while a final ack was lost leaves the sender
+    /// retransmitting to nobody for the whole finish deadline.
+    fn still_receiving(got: usize, total: u64, senders_done: &std::sync::atomic::AtomicBool) -> bool {
+        (got as u64) < total || !senders_done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Finish a peer's stream: whether its final drain was acked. An
+    /// error finishing is the test's failure, named by peer.
+    fn finished(send: &mut UnifiedSensSender, peer: usize) -> bool {
+        match send.finish() {
+            Ok(acked) => acked,
+            Err(e) => panic!("peer {peer} could not finish its stream: {e}"),
+        }
+    }
+
+    /// The two frames belonging to neither code have rows in the
+    /// specification's packet-type table.
+    #[test]
+    fn the_cross_code_packet_types_are_in_the_wire_specification() {
+        crate::spec_doc::assert_listed(
+            "sens_unified",
+            &[
+                (PKT_UNIFIED_FB, "raw-loss feedback"),
+                (PKT_CODE_SWITCH, "code switch"),
+            ],
+        );
+    }
+
     #[test]
     fn forced_policies_never_switch() {
         for policy in [CodePolicy::ForceRlc, CodePolicy::ForceRs] {
@@ -2639,7 +2729,7 @@ mod tests {
 
     #[test]
     fn stall_escape_latches_rs_and_does_not_flap() {
-        // A flow-block escape to RS (RLC stalled at this loss) must NOT down-switch
+        // A flow-block escape to RS (RLC stalled at this loss) must not down-switch
         // back even when the loss estimate sits below the down threshold: returning
         // to a code that just stalled flaps, and the RS->RLC handover then corrupts
         // in-order delivery. The latch holds RS after a stall-escape.
@@ -2671,7 +2761,7 @@ mod tests {
         // Drive up to RS first.
         c.observe(80);
         assert_eq!(c.observe(80), Some(SensCode::Rs));
-        // Loss drops below the 10% down threshold (q8 26). It must SUSTAIN for
+        // Loss drops below the 10% down threshold (q8 26). It must sustain for
         // down_hold = 8 samples; a brief low spell does not relax the code.
         for _ in 0..7 {
             assert_eq!(c.observe(10), None, "down-switch must not fire early");
@@ -2695,28 +2785,7 @@ mod tests {
         assert_eq!(c.code(), SensCode::Rs, "RS holds inside the hysteresis band");
     }
 
-    // A real two-socket loopback round trip that forces an RLC -> RS handover
-    // mid-stream and asserts every item is delivered exactly once, in order,
-    // across the switch. Exercises the demux sockets, the drain-barrier, the
-    // CODE_SWITCH frame, and the receiver's boundary merge end to end.
-    /// Two concurrent senders through the unified endpoint, pinned to RLC (the
-    /// mesh shape, and the code Auto runs at low loss). Every item of both
-    /// streams must arrive, and `poll_from` must attribute each to the peer
-    /// that actually sent it.
-    ///
-    /// The tag assertion is the point. Delivery alone passes even when every
-    /// item is labelled with whoever spoke last, which is the misattribution a
-    /// mesh node cannot detect from its own side.
-    /// The same two-peer shape pinned to block-RS. The unified endpoint hands
-    /// its RS half a demux socket, which is shared and fed by a reader that
-    /// takes every source address, so that receiver has to route by session
-    /// epoch rather than serve one peer.
-    /// Three peers through the unified endpoint on block-RS. Two is not enough
-    /// to exercise admission: one peer always takes the free first-admission
-    /// slot, so a broken challenge path still delivers both. Three forces two
-    /// separate challenges, and the challenge answer travels back over the
-    /// sender's demux socket.
-    /// Two peers on DIFFERENT codes through one receiver. Under `Auto` each
+    /// Two peers on different codes through one receiver. Under `Auto` each
     /// sender runs its own switch controller, so a mesh whose links see
     /// different loss can have peers disagree about which code is live.
     ///
@@ -2724,7 +2793,7 @@ mod tests {
     /// peer sending the other code is never drained. This is the endpoint-wide
     /// switch boundary meeting a per-peer topology.
     #[test]
-    #[ignore = "subetha-11: one active code per endpoint; peers on different codes are not both drained"]
+    #[ignore = "one active code per endpoint; peers on different codes are not both drained"]
     fn unified_peers_on_different_codes_both_deliver() {
         use std::sync::mpsc;
         let sym = 64usize;
@@ -2745,12 +2814,16 @@ mod tests {
         let total = per_peer * 2;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<u64> = Vec::new();
             let start = Instant::now();
-            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(20) {
-                let items = recv.poll().unwrap_or_default();
+            while still_receiving(got.len(), total, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(20)
+            {
+                let items = recv.poll().expect("the receiver polls");
                 let empty = items.is_empty();
                 for it in items {
                     let mut s = [0u8; 8];
@@ -2761,7 +2834,7 @@ mod tests {
                     std::thread::sleep(Duration::from_micros(200));
                 }
             }
-            tx.send(got).ok();
+            tx.send(got).expect("the test thread is waiting for the receiver");
         });
 
         // One peer pinned to each code, which is the steady state a divergent
@@ -2779,15 +2852,17 @@ mod tests {
                         break;
                     }
                 }
-                send.finish().ok();
+                finished(&mut send, p)
             }));
         }
-        for h in handles {
-            h.join().ok();
+        let acked: Vec<bool> = handles.into_iter().map(|h| h.join().expect("a sender thread finishes")).collect();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
+        for (p, acked) in acked.iter().enumerate() {
+            assert!(acked, "peer {p}'s final drain was not acked while the receiver was still polling");
         }
 
         let got = rx.recv_timeout(Duration::from_secs(25)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         for p in 0..2u64 {
             let mine: Vec<u64> = got
                 .iter()
@@ -2868,7 +2943,7 @@ mod tests {
         );
     }
 
-    /// Three peers through the unified endpoint on ForceRlc, sending SPARSELY -
+    /// Three peers through the unified endpoint on ForceRlc, sending sparsely -
     /// one small item every 300ms - with one going silent partway. The
     /// consumer's topology: a heartbeat mesh where a node dies.
     ///
@@ -3002,7 +3077,7 @@ mod tests {
         );
     }
 
-    /// finish_within honours the caller's deadline instead of holding it
+    /// finish_within honors the caller's deadline instead of holding it
     /// for the two-minute default when the peer is gone.
     #[test]
     fn finish_within_returns_on_the_callers_deadline() {
@@ -3061,6 +3136,11 @@ mod tests {
         assert_eq!(recv.demux_errors(), Some(0), "no socket errors expected");
     }
 
+    /// Three peers through the unified endpoint on block-RS. Two is not enough
+    /// to exercise admission: one peer always takes the free first-admission
+    /// slot, so a broken challenge path still delivers both. Three forces two
+    /// separate challenges, and the challenge answer travels back over the
+    /// sender's demux socket.
     #[test]
     fn unified_three_peers_on_block_rs_all_deliver() {
         use std::sync::mpsc;
@@ -3083,12 +3163,16 @@ mod tests {
         let total = per_peer * peers;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<u64> = Vec::with_capacity(total as usize);
             let start = Instant::now();
-            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(30) {
-                let items = recv.poll().unwrap_or_default();
+            while still_receiving(got.len(), total, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(30)
+            {
+                let items = recv.poll().expect("the receiver polls");
                 let empty = items.is_empty();
                 for it in items {
                     let mut s = [0u8; 8];
@@ -3103,7 +3187,7 @@ mod tests {
             // delivers nothing distinguishes a datagram that never
             // arrived from one that arrived and was discarded.
             tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
-                .ok();
+                .expect("the test thread is waiting for the receiver");
         });
 
         let gate = Arc::new(std::sync::Barrier::new(peers as usize));
@@ -3126,25 +3210,27 @@ mod tests {
                     }
                     sent += 1;
                 }
-                send.finish().ok();
-                sent
+                (sent, finished(&mut send, p as usize))
             }));
         }
         // What each peer actually sent. The budget above can cut a
         // sender short, and asserting delivery of every item regardless
         // reports a slow test as the transport losing data.
-        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
-        for (p, n) in sent.iter().enumerate() {
+        let sent: Vec<(u64, bool)> =
+            handles.into_iter().map(|h| h.join().expect("a sender thread finishes")).collect();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
+        for (p, (n, acked)) in sent.iter().enumerate() {
             assert_eq!(
                 *n, per_peer,
                 "peer {p} sent {n} of {per_peer} before its budget ran out; \
                  that is this test being slow, not the transport",
             );
+            assert!(acked, "peer {p}'s final drain was not acked while the receiver was still polling");
         }
 
         let (got, probe, unroutable, demux_errs) =
             rx.recv_timeout(Duration::from_secs(35)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         // (iterations, recv_ok, would_block, rlc_frames_routed)
         let demux = format!(
             "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
@@ -3163,6 +3249,10 @@ mod tests {
         }
     }
 
+    /// The same two-peer shape pinned to block-RS. The unified endpoint hands
+    /// its RS half a demux socket, which is shared and fed by a reader that
+    /// takes every source address, so that receiver has to route by session
+    /// epoch rather than serve one peer.
     #[test]
     fn unified_two_peers_on_block_rs_both_deliver() {
         use std::sync::mpsc;
@@ -3185,12 +3275,16 @@ mod tests {
         let total = per_peer * peers;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<u64> = Vec::with_capacity(total as usize);
             let start = Instant::now();
-            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
-                let items = recv.poll().unwrap_or_default();
+            while still_receiving(got.len(), total, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(25)
+            {
+                let items = recv.poll().expect("the receiver polls");
                 let empty = items.is_empty();
                 for it in items {
                     let mut s = [0u8; 8];
@@ -3205,7 +3299,7 @@ mod tests {
             // delivers nothing distinguishes a datagram that never
             // arrived from one that arrived and was discarded.
             tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
-                .ok();
+                .expect("the test thread is waiting for the receiver");
         });
 
         let gate = Arc::new(std::sync::Barrier::new(peers as usize));
@@ -3228,25 +3322,27 @@ mod tests {
                     }
                     sent += 1;
                 }
-                send.finish().ok();
-                sent
+                (sent, finished(&mut send, p as usize))
             }));
         }
         // How many each peer actually sent. The budget above can cut a
         // sender short, and asserting delivery of every item regardless
         // reports a slow test as the transport losing data.
-        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
-        for (p, n) in sent.iter().enumerate() {
+        let sent: Vec<(u64, bool)> =
+            handles.into_iter().map(|h| h.join().expect("a sender thread finishes")).collect();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
+        for (p, (n, acked)) in sent.iter().enumerate() {
             assert_eq!(
                 *n, per_peer,
                 "peer {p} sent {n} of {per_peer} before its budget ran out; \
                  that is this test being slow, not the transport",
             );
+            assert!(acked, "peer {p}'s final drain was not acked while the receiver was still polling");
         }
 
         let (got, probe, unroutable, demux_errs) =
             rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         // (iterations, recv_ok, would_block, rlc_frames_routed)
         let demux = format!(
             "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
@@ -3265,6 +3361,14 @@ mod tests {
         }
     }
 
+    /// Two concurrent senders through the unified endpoint, pinned to RLC (the
+    /// mesh shape, and the code Auto runs at low loss). Every item of both
+    /// streams must arrive, and `poll_from` must attribute each to the peer
+    /// that actually sent it.
+    ///
+    /// The tag assertion is the point. Delivery alone passes even when every
+    /// item is labeled with whoever spoke last, which is the misattribution a
+    /// mesh node cannot detect from its own side.
     #[test]
     fn unified_two_peers_deliver_and_are_attributed_separately() {
         use std::sync::mpsc;
@@ -3287,12 +3391,16 @@ mod tests {
         let total = per_peer * peers;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<(u64, u64)> = Vec::with_capacity(total as usize);
             let start = Instant::now();
-            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
-                let items = recv.poll_from().unwrap_or_default();
+            while still_receiving(got.len(), total, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(25)
+            {
+                let items = recv.poll_from().expect("the receiver polls");
                 let empty = items.is_empty();
                 for (tag, it) in items {
                     let mut s = [0u8; 8];
@@ -3308,7 +3416,7 @@ mod tests {
             // or one that arrived and was discarded, and only these
             // separate the two.
             tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
-                .ok();
+                .expect("the test thread is waiting for the receiver");
         });
 
         let mut handles = Vec::new();
@@ -3328,25 +3436,27 @@ mod tests {
                     }
                     sent += 1;
                 }
-                send.finish().ok();
-                sent
+                (sent, finished(&mut send, p as usize))
             }));
         }
         // What each peer actually sent. The budget above can cut a
         // sender short, and asserting delivery of every item regardless
         // reports a slow test as the transport losing data.
-        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
-        for (p, n) in sent.iter().enumerate() {
+        let sent: Vec<(u64, bool)> =
+            handles.into_iter().map(|h| h.join().expect("a sender thread finishes")).collect();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
+        for (p, (n, acked)) in sent.iter().enumerate() {
             assert_eq!(
                 *n, per_peer,
                 "peer {p} sent {n} of {per_peer} before its budget ran out; \
                  that is this test being slow, not the transport",
             );
+            assert!(acked, "peer {p}'s final drain was not acked while the receiver was still polling");
         }
 
         let (got, probe, unroutable, demux_errs) =
             rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         // (iterations, recv_ok, would_block, rlc_frames_routed)
         let demux = format!(
             "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
@@ -3363,7 +3473,7 @@ mod tests {
                 (0..per_peer).collect::<Vec<_>>(),
                 "peer {p} must deliver every item in order alongside the other peer; {demux}",
             );
-            // Every item a peer sent must carry ONE tag, and the two peers'
+            // Every item a peer sent must carry exactly one tag, and the two peers'
             // tags must differ - otherwise the attribution is a label, not a
             // routing fact.
             let tags: std::collections::BTreeSet<u64> =
@@ -3385,15 +3495,15 @@ mod tests {
     ///
     /// When a sender exits, its socket closes, and the receiver's next
     /// feedback datagram to that address draws an ICMP port-unreachable.
-    /// On Windows that surfaces as WSAECONNRESET on the receiver's NEXT
+    /// On Windows that surfaces as WSAECONNRESET on the receiver's following
     /// recv, whatever peer the pending datagram belonged to - so one
     /// peer's departure repeatedly errors the shared demux socket while
     /// the survivor is still sending.
     ///
-    /// Written for subetha-25, where a run under load delivered every
-    /// item from one peer and NOTHING from the other, with the log
-    /// carrying 344 socket-error episodes and zero unroutable
-    /// datagrams. The demux counters ride the assertion so a failure
+    /// A run under load delivered every item from one peer and nothing
+    /// from the other, with the log carrying 344 socket-error episodes
+    /// and zero unroutable datagrams. The demux counters ride the
+    /// assertion so a failure
     /// says whether the survivor's datagrams stopped arriving or
     /// arrived and were discarded.
     #[test]
@@ -3417,14 +3527,16 @@ mod tests {
         let stayer_items: u64 = 120;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<u64> = Vec::new();
             let start = Instant::now();
-            while (got.len() as u64) < leaver_items + stayer_items
+            while still_receiving(got.len(), leaver_items + stayer_items, &receiver_watches)
                 && start.elapsed() < Duration::from_secs(60)
             {
-                let items = recv.poll().unwrap_or_default();
+                let items = recv.poll().expect("the receiver polls");
                 let empty = items.is_empty();
                 for it in items {
                     let mut s = [0u8; 8];
@@ -3436,7 +3548,7 @@ mod tests {
                 }
             }
             tx.send((got, recv.demux_probe(), recv.demux_unroutable(), recv.demux_errors()))
-                .ok();
+                .expect("the test thread is waiting for the receiver");
         });
 
         // The peer that leaves: sends a little, then drops its socket
@@ -3450,9 +3562,9 @@ mod tests {
                     break;
                 }
             }
-            send.finish().ok();
+            finished(&mut send, 0)
         });
-        leaver.join().unwrap();
+        assert!(leaver.join().unwrap(), "the leaving peer's final drain was not acked before it left");
 
         // The peer that stays, sending across the churn the departure
         // causes.
@@ -3467,18 +3579,19 @@ mod tests {
                 }
                 sent += 1;
             }
-            send.finish().ok();
-            sent
+            (sent, finished(&mut send, 1))
         });
-        let sent = stayer.join().unwrap();
+        let (sent, acked) = stayer.join().unwrap();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
         assert_eq!(
             sent, stayer_items,
             "the staying peer failed to SEND; that is not what this test is for",
         );
+        assert!(acked, "the staying peer's final drain was not acked while the receiver was still polling");
 
         let (got, probe, unroutable, demux_errs) =
             rx.recv_timeout(Duration::from_secs(70)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         let demux = format!(
             "demux probe {probe:?}, unroutable {unroutable:?}, socket errors {demux_errs:?}",
         );
@@ -3495,8 +3608,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unified_delivers_in_order_across_a_forced_switch() {
+    /// A two-socket loopback round trip of 4000 items with the code forced
+    /// at each `(index, code)` in `switches`, the receiver dropping `loss`
+    /// percent of what reaches its demux. Every item is delivered exactly
+    /// once and in order across every switch, the sender's final drain is
+    /// acked, and the receiver counts exactly the switches forced. Exercises
+    /// the demux sockets, the drain barrier, the CODE_SWITCH frame and the
+    /// receiver's boundary merge end to end.
+    ///
+    /// The loss sits below the automatic policy's up threshold, and a forced
+    /// move to RS latches the controller against the down move, so the
+    /// switches the receiver counts are the ones forced here and no other.
+    fn forced_switch_round_trip(loss: u32, switches: &[(u64, SensCode)]) {
         use std::sync::mpsc;
         let sym = 64usize;
         let cfg = UnifiedConfig {
@@ -3505,8 +3628,8 @@ mod tests {
             k: 8,
             r: 2,
             rlc_flow_window: 256,
-            debug_loss: 0,
-            seed: 1,
+            debug_loss: loss,
+            seed: 7,
             rlc_step: 4,
             rlc_static: false,
         };
@@ -3515,12 +3638,16 @@ mod tests {
         let n: u64 = 4000;
 
         let (tx, rx) = mpsc::channel();
+        let sender_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&sender_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<u64> = Vec::with_capacity(n as usize);
             let start = Instant::now();
-            while (got.len() as u64) < n && start.elapsed() < Duration::from_secs(25) {
-                let items = recv.poll().unwrap_or_default();
+            while still_receiving(got.len(), n, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(60)
+            {
+                let items = recv.poll().expect("the receiver polls");
                 let empty = items.is_empty();
                 for it in items {
                     let mut s = [0u8; 8];
@@ -3531,35 +3658,67 @@ mod tests {
                     std::thread::sleep(Duration::from_micros(200));
                 }
             }
-            tx.send((got, recv.switches())).ok();
+            tx.send((got, recv.switches())).expect("the test thread is waiting for the receiver");
         });
 
-        let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+        // The loss is the receiver's to inject; the sender sees a clean
+        // socket and learns of the loss through feedback, as it would on a
+        // real link.
+        let sender_cfg = UnifiedConfig { debug_loss: 0, ..cfg };
+        let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, sender_cfg).unwrap();
         // Items must leave room for the RLC symbol's length prefix
         // (item.len() + LEN_PREFIX <= symbol_len), so ship the 8-byte seq.
         let mut buf = vec![0u8; 8];
-        for seq in 0..n / 2 {
+        let mut pending = switches.iter();
+        let mut next = pending.next();
+        for seq in 0..n {
+            if let Some(&(at, code)) = next
+                && seq == at
+            {
+                send.force_switch(code).unwrap();
+                assert_eq!(send.active_code(), code);
+                next = pending.next();
+            }
             buf[..8].copy_from_slice(&seq.to_le_bytes());
             send.send_item(&buf).unwrap();
         }
-        send.force_switch(SensCode::Rs).unwrap();
-        assert_eq!(send.active_code(), SensCode::Rs);
-        for seq in n / 2..n {
-            buf[..8].copy_from_slice(&seq.to_le_bytes());
-            send.send_item(&buf).unwrap();
-        }
-        send.finish().unwrap();
+        let acked = send.finish().unwrap();
+        sender_done.store(true, std::sync::atomic::Ordering::Release);
+        assert!(acked, "the sender's final drain was acked at {loss}% loss");
 
-        let (got, rswitches) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        rh.join().ok();
-        assert_eq!(got.len() as u64, n, "every item delivered exactly once");
+        let (got, rswitches) = rx.recv_timeout(Duration::from_secs(70)).unwrap();
+        rh.join().expect("the receiver thread finishes");
+        assert_eq!(got.len() as u64, n, "every item delivered exactly once at {loss}% loss");
         for (i, &v) in got.iter().enumerate() {
-            assert_eq!(v, i as u64, "delivery in order across the switch at index {i}");
+            assert_eq!(v, i as u64, "delivery in order across the switches at index {i}, {loss}% loss");
         }
-        assert!(rswitches >= 1, "receiver followed the code switch");
+        assert_eq!(rswitches, switches.len() as u64, "the receiver followed every forced switch and no other");
     }
 
-    /// The listening receiver is up BEFORE either peer dials, each peer runs
+    /// The RLC -> RS handover on a clean channel: the boundary is reached
+    /// with no gap to close.
+    #[test]
+    fn unified_delivers_in_order_across_a_forced_switch() {
+        forced_switch_round_trip(0, &[(2000, SensCode::Rs)]);
+    }
+
+    /// The RLC -> RS handover with the receiver dropping one datagram in
+    /// twenty, so the un-acked tail the boundary exists for is genuinely
+    /// non-empty and is resent over RS from the boundary.
+    #[test]
+    fn unified_delivers_in_order_across_a_forced_switch_under_loss() {
+        forced_switch_round_trip(5, &[(2000, SensCode::Rs)]);
+    }
+
+    /// Out to RS and back to RLC under the same loss: the return drains RS
+    /// through its ARQ and re-bases the decoder to the boundary on both
+    /// sides, with the tail of each leg lossy.
+    #[test]
+    fn unified_delivers_in_order_out_to_rs_and_back_under_loss() {
+        forced_switch_round_trip(5, &[(1300, SensCode::Rs), (2700, SensCode::Rlc)]);
+    }
+
+    /// The listening receiver is up before either peer dials, each peer runs
     /// its own handshake against a cert issued for a chosen name, and every
     /// item opens with its own peer's keys and packet numbers: complete
     /// in-order delivery per peer, distinct attribution, nothing unopened.
@@ -3591,12 +3750,16 @@ mod tests {
         let total = per_peer * peers;
 
         let (tx, rx) = mpsc::channel();
+        let senders_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&senders_done);
         let rh = std::thread::spawn(move || {
             let mut recv = recv;
             let mut got: Vec<(u64, u64)> = Vec::with_capacity(total as usize);
             let start = Instant::now();
-            while (got.len() as u64) < total && start.elapsed() < Duration::from_secs(25) {
-                let items = recv.poll_from().unwrap_or_default();
+            while still_receiving(got.len(), total, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(25)
+            {
+                let items = recv.poll_from().expect("the receiver polls");
                 let empty = items.is_empty();
                 for (tag, it) in items {
                     let mut s = [0u8; 8];
@@ -3614,7 +3777,7 @@ mod tests {
                 recv.handshake_failures(),
                 recv.tls_preauth_dropped(),
             ))
-            .ok();
+            .expect("the test thread is waiting for the receiver");
         });
 
         let mut handles = Vec::new();
@@ -3642,22 +3805,24 @@ mod tests {
                     }
                     sent += 1;
                 }
-                send.finish().ok();
-                sent
+                (sent, finished(&mut send, p as usize))
             }));
         }
-        let sent: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap_or(0)).collect();
-        for (p, n) in sent.iter().enumerate() {
+        let sent: Vec<(u64, bool)> =
+            handles.into_iter().map(|h| h.join().expect("a sender thread finishes")).collect();
+        senders_done.store(true, std::sync::atomic::Ordering::Release);
+        for (p, (n, acked)) in sent.iter().enumerate() {
             assert_eq!(
                 *n, per_peer,
                 "peer {p} sent {n} of {per_peer} before its budget ran out; \
                  that is this test being slow, not the transport",
             );
+            assert!(acked, "peer {p}'s final drain was not acked while the receiver was still polling");
         }
 
         let (got, unopened, refusals, failures, preauth) =
             rx.recv_timeout(Duration::from_secs(30)).unwrap();
-        rh.join().ok();
+        rh.join().expect("the receiver thread finishes");
         let diag = format!(
             "unopened {unopened}, refusals {refusals}, failures {failures}, \
              preauth_dropped {preauth}",
@@ -3734,7 +3899,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
-    /// A ClientHello past the pending cap is refused AND counted: a refused
+    /// A ClientHello past the pending cap is refused and counted: a refused
     /// peer otherwise reads exactly like one whose datagrams never arrived.
     #[cfg(feature = "tls")]
     #[test]

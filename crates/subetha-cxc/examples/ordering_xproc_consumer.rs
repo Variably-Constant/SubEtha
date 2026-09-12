@@ -1,20 +1,20 @@
 //! Cross-process ordering E2E: the consumer / orchestrator process.
 //!
-//! Creates a STAMPED file-backed `AdaptiveRing`, spawns N
-//! `ordering_xproc_producer` PROCESSES (real processes, not
+//! Creates a stamped file-backed `AdaptiveRing`, spawns N
+//! `ordering_xproc_producer` processes (real processes, not
 //! threads), and drains their concurrent streams in two phases:
 //!
 //! 1. **Unordered** (the composed default): per-producer FIFO only.
 //!    The consumer counts cross-producer inversions through the
 //!    shared header counter and reports the rate - the runtime
 //!    signal that makes the invisible ordering property observable.
-//!    With N concurrent producer processes this phase MUST observe
+//!    With N concurrent producer processes this phase must observe
 //!    inversions (asserted).
 //! 2. Mid-traffic the consumer flips the MMF-resident ordering flag
 //!    to `MergeByStamp` - one Release store, no drain, no data
 //!    movement, in-flight backlog retroactively ordered - and keeps
-//!    draining. From the flip point the consumer asserts MONOTONE
-//!    STAMPS on every pop and zero new inversions.
+//!    draining. From the flip point the consumer asserts monotone
+//!    stamps on every pop and zero new inversions.
 //!
 //! Across both phases: zero items lost (every producer's full
 //! sequence accounted for) and per-producer FIFO never violated.

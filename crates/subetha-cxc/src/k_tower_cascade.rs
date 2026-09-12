@@ -20,20 +20,20 @@
 //! `SharedRegion<KTowerCascade<T, N-i-1>>` if `i < N-1`, or
 //! `SharedRegion<T>` if `i == N-1` (the leaf).
 //!
-//! # Why this matters
+//! # Properties
 //!
-//! - **Sparse address spaces**: with DEPTH=4 and u32 per level, the
+//! - **Sparse address spaces**: with `DEPTH` = 4 and u32 per level, the
 //!   total addressable space is 2^128 logical slots, but you only
 //!   pay storage for the branches you actually populate. Empty
 //!   subtrees take zero space.
 //! - **Userspace MMU**: this is the same mechanism the hardware MMU
 //!   uses (PML4 -> PDPT -> PD -> PT, four levels of 9-bit indices)
 //!   lifted to userspace and made position-independent.
-//! - **Cross-process**: every level uses INDICES, not virtual
+//! - **Cross-process**: every level uses indices, not virtual
 //!   addresses, so the cascade resolves identically in any process
 //!   that maps the same N regions.
-//! - **Adaptive depth**: callers pick DEPTH per workload. Hot dense
-//!   data uses DEPTH=1; cold sparse data uses DEPTH=4 or higher.
+//! - **Adaptive depth**: callers pick `DEPTH` per workload. Hot dense
+//!   data uses `DEPTH` = 1; cold sparse data uses `DEPTH` = 4 or higher.
 
 use std::marker::PhantomData;
 use std::path::Path;
@@ -96,7 +96,7 @@ impl<T, const DEPTH: usize> KTowerCascade<T, DEPTH> {
         self.indices.iter().all(|&i| i == NIL_INDEX)
     }
 
-    /// Index at a specific level (0 = top, DEPTH-1 = leaf).
+    /// Index at a specific level (0 = top, `DEPTH - 1` = leaf).
     pub fn level(self, level: usize) -> u32 {
         self.indices[level]
     }
@@ -128,7 +128,7 @@ impl From<std::io::Error> for CascadeError {
 }
 
 // Concrete 2-level resolver: simplest case, equivalent to KTower2.
-// Generalises to N-level via repeated nesting below.
+// Generalizes to N-level via repeated nesting below.
 
 /// Two-level cascade resolver: one inner SharedRegion holding T, one
 /// outer SharedRegion of `KTowerCascade<T, 1>` slots that ref the
@@ -206,8 +206,8 @@ impl<T: Copy + Default + 'static> CascadeResolver2<T> {
         let outer_slot = if outer_idx < self.outer.capacity() as u32 {
             // Check whether this outer slot has been allocated.
             // The simplest contract: the caller's outer_idx is the
-            // SLOT INDEX in `outer`, so we allocate sequentially and
-            // require outer_idx to be < self.outer.len() OR exactly
+            // slot index in `outer`, so we allocate sequentially and
+            // require outer_idx to be < self.outer.len() or exactly
             // self.outer.len() (next free slot).
             let cur_len = self.outer.len() as u32;
             if outer_idx == cur_len {
@@ -241,7 +241,7 @@ impl<T: Copy + Default + 'static> CascadeResolver2<T> {
         if inner_cascade.indices[0] != c.indices[1] {
             // The cascade we received doesn't match what's currently
             // at this outer slot - either stale or pointing at the
-            // wrong leaf. Honour the cascade's claim by reading the
+            // wrong leaf. Honor the cascade's claim by reading the
             // leaf directly.
         }
         if c.indices[1] == NIL_INDEX { return Err(CascadeError::NilAtLevel(1)); }
@@ -331,10 +331,10 @@ impl<T: Copy + Default + 'static, const DEPTH: usize> CascadeResolverN<T, DEPTH>
         Ok(self.leaf.allocate(value)?.index)
     }
 
-    /// Insert at a chosen TOP-LEVEL slot. Every intermediate level
+    /// Insert at a chosen top-level slot. Every intermediate level
     /// and the leaf are auto-allocated to fresh slots. Returns the
     /// full cascade. Calling twice with the same `top_idx` will
-    /// OVERWRITE the previous top-level chain (the orphaned
+    /// overwrite the previous top-level chain (the orphaned
     /// intermediates remain in their regions but become unreachable
     /// from `top_idx`).
     ///
@@ -360,7 +360,7 @@ impl<T: Copy + Default + 'static, const DEPTH: usize> CascadeResolverN<T, DEPTH>
         full[DEPTH - 1] = self.leaf.allocate(value)?.index;
         // For each intermediate level from leaf-side back toward the
         // top, allocate a fresh slot whose value points at the next
-        // level. The TOP slot is the caller-chosen top_idx.
+        // level. The top slot is the caller-chosen top_idx.
         for level in (1..DEPTH - 1).rev() {
             let p = self.intermediate[level].allocate(full[level + 1])?;
             full[level] = p.index;
@@ -379,7 +379,7 @@ impl<T: Copy + Default + 'static, const DEPTH: usize> CascadeResolverN<T, DEPTH>
     /// Append a fresh entry. Picks the next free top slot
     /// automatically. Equivalent to
     /// `insert_at_top(intermediate[0].len() as u32, value)` for
-    /// DEPTH > 1, or `(allocate leaf, return its index)` for DEPTH=1.
+    /// `DEPTH > 1`, or `(allocate leaf, return its index)` for `DEPTH == 1`.
     pub fn append(
         &self, value: T,
     ) -> Result<KTowerCascade<T, DEPTH>, CascadeError> {
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn cascade_bits_are_position_independent() {
-        // The whole point: the same [u32; DEPTH] resolves to the
+        // The same `[u32; DEPTH]` resolves to the
         // same value in any process that maps the same regions.
         let lp = tmp("pi-leaf");
         let i0 = tmp("pi-i0");

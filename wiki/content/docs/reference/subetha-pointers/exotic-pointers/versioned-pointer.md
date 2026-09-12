@@ -13,7 +13,7 @@ weight: 120
 ![Scope](https://img.shields.io/badge/Scope-in--process-yellow)
 
 Time-travel pointers for MVCC snapshot isolation, immutable
-trees, and distributed causal ordering. Three pointer flavours
+trees, and distributed causal ordering. Three pointer flavors
 share a common shape `(version, target)`:
 
 | Type | Version field | Use case |
@@ -200,8 +200,8 @@ compile time.
 
 `HybridLogicalClock` lexicographic compare. For
 `(physical_a, logical_a)` vs `(physical_b, logical_b)`,
-`a <= b` holds when `physical_a < physical_b`, OR when both
-physical values are equal AND `logical_a <= logical_b`. When
+`a <= b` holds when `physical_a < physical_b`, or when both
+physical values are equal and `logical_a <= logical_b`. When
 physical timestamps differ, only the physical compare runs
 (~1 ns). When they collide, the logical counter
 disambiguates. The architectural value: high-frequency event
@@ -239,7 +239,7 @@ receiver-side update used by CockroachDB / Spanner / Yugabyte.
 | `Some(Less)` | every component <=, at least one < (self happens-before other) |
 | `Some(Greater)` | every component >=, at least one > (other happens-before self) |
 | `Some(Equal)` | every component equal (same event) |
-| `None` | incomparable: some component <, another > (CONCURRENT) |
+| `None` | incomparable: some component <, another > (concurrent) |
 
 The `None` case is the architectural distinguisher. A single
 timestamp can't represent "we don't know which came first";
@@ -265,7 +265,7 @@ flowchart LR
 
 `read_at(snapshot_version)` walks newest-first until it finds
 a node with `version <= snapshot_version`. O(depth-from-head)
-linear walk. The architectural value is NOT speed (BTreeMap
+linear walk. The architectural value is not speed (BTreeMap
 beats this by ~44-104x; see bench) but **persistent historical
 lineage**: cloning an `Arc<VersionNode>` retains the entire
 chain at that point, allowing snapshot forks that BTreeMap
@@ -294,7 +294,7 @@ cannot express without a full copy.
 |---|---|---|
 | `new(physical, logical)` | `const fn(u64, u64) -> Self` | Manual constructor |
 | `now()` | `fn() -> Self` | Wall-clock physical, logical=0 |
-| `advance(new_physical)` | `fn(&self, u64) -> Self` | Increment logical OR jump physical |
+| `advance(new_physical)` | `fn(&self, u64) -> Self` | Increment logical or jump physical |
 | `merge(received, local_physical)` | `fn(&self, &Self, u64) -> Self` | Receiver-side HLC update |
 | `Ord` / `PartialOrd` | manual impl | Lexicographic compare (physical, then logical) |
 
@@ -446,7 +446,7 @@ tick). Snapshot HLC(8, 32) lands mid-tick.
 |---|---:|---:|---:|
 | `hlc.tie_breaking_scan/native_tuple_compare` | 1.31 us | 1.28 ns | correct (~544) |
 | `hlc.tie_breaking_scan/hlc_pointer` | 983 ns | 0.96 ns | correct (~544) |
-| `hlc.tie_breaking_scan/single_u64_lossy` | 556 ns | 0.54 ns | **WRONG** (576 - overcounts by 32) |
+| `hlc.tie_breaking_scan/single_u64_lossy` | 556 ns | 0.54 ns | **wrong** (576 - overcounts by 32) |
 
 `hlc_pointer` is **1.33x faster than the tuple baseline** (same
 data, different layout - HLC's compile-time-known field layout
@@ -467,7 +467,7 @@ concurrent relations.
 
 | Workload | Time | Per-pair | Capability |
 |---|---:|---:|---|
-| `vector_clock.causal_classify/native_max_compare` | 1.79 us | 1.74 ns | LOSES concurrency detection |
+| `vector_clock.causal_classify/native_max_compare` | 1.79 us | 1.74 ns | Loses concurrency detection |
 | `vector_clock.causal_classify/vector_clock_cmp` | 3.92 us | 3.83 ns | detects concurrent (None) |
 | `vector_clock.causal_classify/vector_clock_pointer_read_at` | 5.55 us | 5.42 ns | scan + read filter |
 
@@ -595,7 +595,7 @@ suffixes consume new memory.
 <details>
 <summary><b>Pitfall 1: assuming `read_at(None)` means "not found"</b></summary>
 
-`VectorClockPointer::read_at` returns `None` for TWO cases:
+`VectorClockPointer::read_at` returns `None` for two cases:
 
 1. **Future event**: the pointer's clock is after the snapshot.
 2. **Concurrent event**: the pointer's clock is incomparable
@@ -624,7 +624,7 @@ local_clock = received;  // ignores local progress, breaks HLC invariant
 ```
 
 The HLC invariant is that the receiver's clock dominates both
-the local and received clocks AND the local wall clock.
+the local and received clocks and the local wall clock.
 `merge(received, local_physical)` is the canonical update.
 
 </details>

@@ -91,7 +91,7 @@ create. Indexable `get(i)` is lock-free.
   pre-populated for get.
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process append + read**: any process pushes; any
   process reads. The mutex baselines cannot.

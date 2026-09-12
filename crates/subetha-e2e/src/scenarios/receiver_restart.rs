@@ -1,5 +1,5 @@
 //! The mirror of [`session_restart`](super::session_restart): the
-//! RECEIVING end restarts, mid-stream.
+//! receiving end restarts, mid-stream.
 //!
 //! A replacement receiver binds the same port and meets a sender already
 //! well into its id space - a decode window at the bottom against traffic
@@ -87,7 +87,7 @@ fn spawn_receiver(h: &Harness, port: u16, marker: &Path) -> Result<Child, BoxErr
 }
 
 /// Bind and drop a socket to learn a free port. The replacement receiver
-/// must rebind the SAME port, so it cannot be chosen by the OS at bind.
+/// must rebind the same port, so it cannot be chosen by the OS at bind.
 fn reserve_port() -> Result<u16, BoxErr> {
     let s = std::net::UdpSocket::bind("127.0.0.1:0")?;
     Ok(s.local_addr()?.port())

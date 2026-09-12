@@ -1,11 +1,11 @@
 //! Reaction-latency test: does the unified policy's hysteresis cost
-//! reaction time on a GENUINE sustained shift (not oscillation)?
+//! reaction time on a genuine sustained shift (not oscillation)?
 //!
 //! This is the missing evidence for unified-policy default-vs-opt-in.
 //! The morph-thrash bench showed the unified policy wins under
 //! oscillation (where reluctance to reconfigure helps). The open
 //! question is the opposite regime: an abrupt, sustained load step
-//! where the ring MUST grow fast to relieve backpressure - exactly
+//! where the ring must grow fast to relieve backpressure - exactly
 //! where the cost-function transition hysteresis plus the confidence
 //! gate could make the unified policy react slower than the eager
 //! threshold policy.
@@ -13,17 +13,17 @@
 //! Workload (fixed 4P/1C MPSC, so only the capacity axis moves):
 //!   settle  - small bounded bursts the floor capacity (64) absorbs;
 //!             both policies sit at the floor.
-//!   SHIFT   - the burst size steps up abruptly and stays high; each
+//!   shift   - the burst size steps up abruptly and stays high; each
 //!             burst now needs a bigger ring to absorb. A fast
-//!             consumer drains between bursts, so capacity GENUINELY
-//!             reduces backpressure - and a slow-reacting policy pays
+//!             consumer drains between bursts, so capacity really does
+//!             reduce backpressure - and a slow-reacting policy pays
 //!             backpressure on every burst until it grows. Measure
 //!             reaction time and the backpressure accumulated during
 //!             the climb.
 //!
 //! Contenders: the eager threshold policy (DefaultCapacityPolicy,
 //! 100 ms hysteresis) via CapacityAdaptiveRingSidecar vs UnifiedSidecar
-//! (cost descent + confidence gate). Both drive the SAME ring type.
+//! (cost descent + confidence gate). Both drive the same ring type.
 //!
 //! Built-in bench audit (asserted): integrity (exactly-once); both
 //! arms reach the same ceiling capacity; the shift is a single
@@ -146,7 +146,7 @@ fn run_arm(arm: Arm) -> ArmResult {
             while run_c.load(Ordering::Acquire) {
                 // One burst then a gap. Burst size steps up at the
                 // shift; each burst item retries on backpressure so
-                // nothing is lost, and each STALL is counted.
+                // nothing is lost, and each stall is counted.
                 let burst = if flood_c.load(Ordering::Acquire) {
                     SHIFT_BURST
                 } else {
@@ -209,7 +209,7 @@ fn run_arm(arm: Arm) -> ArmResult {
 
     // Settle phase: small bursts the floor absorbs.
     std::thread::sleep(Duration::from_millis(1500));
-    // THE SHIFT: burst size steps up and stays high. Reset the
+    // The shift: burst size steps up and stays high. Reset the
     // backpressure counter here so it measures only the post-shift
     // climb + steady state.
     backpressure.store(0, Ordering::Release);

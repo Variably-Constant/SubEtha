@@ -102,7 +102,7 @@ in the same `0..n` order.
 ## Morph protocol (stale-list, atomic state swap)
 
 ```text
-1. Take morph_lock (serialises concurrent morphs).
+1. Take morph_lock (serializes concurrent morphs).
 2. Validate: new_capacity is pow2 >= 2.
 3. If old_capacity == new_capacity: no-op return.
 4. Warm-cache probe: if a prewarmed backing matches new_capacity,
@@ -119,8 +119,11 @@ in the same `0..n` order.
        active: new,
        stale: prune(old_state.stale) ++ [old.active],
    }
-   Prune drops any prior-stale entries where every subscriber has
-   caught up (is_fully_drained() == true).
+   Prune drops a prior-stale entry where every subscriber has caught
+   up (is_fully_drained() == true) and that the stale list alone
+   holds (Arc strong count 1): the producer pushes into the active
+   backing of the state it loaded, so an entry a loaded snapshot still
+   names stays on the list for the push that snapshot may yet deliver.
 9. state.store(new_state) -> single atomic publish.
 10. capacity_atom.store(new_capacity, Release).
 11. Release morph_lock.
@@ -128,7 +131,7 @@ in the same `0..n` order.
 
 The atomic publish gives subscribers a consistent
 `(active, stale)` snapshot across the morph: a subscriber that
-loads state mid-morph sees either the pre-morph snapshot OR the
+loads state mid-morph sees either the pre-morph snapshot or the
 post-morph snapshot, never a half-state where active and stale
 disagree.
 
@@ -156,7 +159,7 @@ the broadcast-ring-specific predicate is `lag(idx) == 0` instead of
 Allocating a fresh backing (file create + ftruncate + first-page-fault, or a
 named-shm region) is the expensive part of a morph. When the next target
 capacity is predictable, `prewarm(capacity)` builds that backing in a one-slot
-cache OFF the morph lock's critical path; the next `morph_capacity_to(capacity)`
+cache off the morph lock's critical path; the next `morph_capacity_to(capacity)`
 consumes it and skips allocation entirely. This is the same warm-cache design
 `CapacityAdaptiveRing` uses.
 
@@ -172,7 +175,7 @@ Re-prewarming the cached capacity is a no-op; prewarming a different capacity
 replaces the slot. `warm_capacity()` reports what is cached, `warm_hits()`
 counts consumed predictions, and `clear_warm()` drops the cached backing
 (releasing its memory, and its file / shm region for non-anon locales). A morph
-whose target does NOT match the cached capacity leaves the cache intact and
+whose target does not match the cached capacity leaves the cache intact and
 allocates cold.
 
 ## Pinned handoff
@@ -248,7 +251,7 @@ morph events. Both Windows and Linux pass clean.
 ## Constraints
 
 - **Power-of-two capacity preserved.**
-- **Grow AND shrink both succeed unconditionally.** In-flight items
+- **Grow and shrink both succeed unconditionally.** In-flight items
   physically stay in the old backing as part of the stale list;
   subscribers drain them at their own pace.
 - **Subscribers register at the wrapper, not the backing.** The

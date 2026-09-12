@@ -146,7 +146,7 @@ where
     /// Obtain the map at `tree_path` with its epoch table at
     /// `epochs_path`, initializing either that does not yet exist.
     ///
-    /// `capacity` is a NODE count, as [`SharedBTreeMap::create`] takes;
+    /// `capacity` is a node count, as [`SharedBTreeMap::create`] takes;
     /// `max_pins` is how many scans may hold a pin at once.
     pub fn create(
         tree_path: impl AsRef<Path>,
@@ -302,7 +302,7 @@ where
     /// them.
     ///
     /// Resume from a partial result with `Bound::Excluded(last_key)`.
-    /// The limit counts entries EXAMINED, not entries returned, so a
+    /// The limit counts entries examined, not entries returned, so a
     /// range dense in tombstones can return fewer than `limit` while
     /// more remain; resume from the last key of the underlying walk,
     /// which [`range_at_with_cursor`](Self::range_at_with_cursor)

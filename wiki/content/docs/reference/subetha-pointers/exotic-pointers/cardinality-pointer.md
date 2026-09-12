@@ -32,7 +32,7 @@ deciding whether to scan / sort-merge / hash-join over it.
   pointer; meaningless across processes.
 - **`from_raw` is `unsafe` and panics on out-of-envelope
   addresses.** Its `assert!(addr & !ADDR_MASK == 0)` is a runtime
-  check that fires in BOTH debug and release builds when the high
+  check that fires in both debug and release builds when the high
   byte of the address is non-zero. For trusted hot paths where the
   caller has verified the envelope, use `from_raw_unchecked`
   (which silently masks the address - a real correctness hazard
@@ -308,7 +308,7 @@ Two design choices keep the comparison honest:
    inside the native loop body would compare "cardinality-pointer's
    pre-computed byte read" against "compute-log2-every-query."
 
-2. A `dispatch_*` variant reads BOTH the pointer and the tier per
+2. A `dispatch_*` variant reads both the pointer and the tier per
    entry (the realistic query-planner workload); a tier-only walk
    exercises only the classify decision.
 
@@ -333,7 +333,7 @@ Two design choices keep the comparison honest:
 The architectural claim for CardinalityPointer is that packing the
 tier into the pointer gives a single-stream, single-load dispatch
 that should beat the two-array `parallel_vecs` layout. **On this
-host (Zen+ R7 2700, N=10 000) that claim does NOT hold for the
+host (Zen+ R7 2700, N=10 000) that claim does not hold for the
 dispatch case**: `parallel_vecs` is the fastest dispatch path at
 6.28 us, ~1.5x faster than `inline` (9.50 us). The two separate
 streams (a `Vec<*const u64>` and a `Vec<u8>`) are both small enough
@@ -558,7 +558,7 @@ let p = unsafe {
 
 For 5-level paging environments, use a different pointer-tagging
 scheme that reserves bits compatible with the wider address
-envelope, OR enforce a custom allocator that returns addresses
+envelope, or enforce a custom allocator that returns addresses
 in the 56-bit envelope.
 
 </details>

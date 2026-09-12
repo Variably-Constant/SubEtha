@@ -8,7 +8,7 @@
 //! without any kernel involvement on the hot path. That's a win
 //! when the consumer can keep up - try_recv either returns an item
 //! or returns `Empty` and the caller decides what to do. The
-//! pattern breaks down when the consumer wants to BLOCK on an empty
+//! pattern breaks down when the consumer wants to block on an empty
 //! ring without spinning: there's no kernel-side handle to wait on,
 //! and a busy-wait burns one CPU per blocked consumer.
 //!
@@ -23,24 +23,24 @@
 //! # Cross-platform wake
 //!
 //! The primitive calls the platform's wait / wake syscalls
-//! directly (NOT via the `atomic-wait` crate, which hard-codes
+//! directly, rather than via the `atomic-wait` crate, which hard-codes
 //! `FUTEX_PRIVATE_FLAG` on Linux and so cannot work across
 //! processes):
 //!
 //! - Linux / Android: `futex(FUTEX_WAIT)` / `futex(FUTEX_WAKE)`
-//!   without the PRIVATE flag - the kernel hashes by the page's
+//!   without `FUTEX_PRIVATE_FLAG` - the kernel hashes by the page's
 //!   physical address so any process that mapped the same MMF
 //!   page joins the same wait queue.
 //! - FreeBSD: `_umtx_op(UMTX_OP_WAIT_UINT)` /
-//!   `_umtx_op(UMTX_OP_WAKE)` - the non-PRIVATE umtx ops, whose
-//!   sleep queues the kernel keys by PHYSICAL address exactly so
+//!   `_umtx_op(UMTX_OP_WAKE)` - the umtx ops without the `_PRIVATE` suffix, whose
+//!   sleep queues the kernel keys by physical address exactly so
 //!   process-shared synchronization works (per `_umtx_op(2)`).
 //!   Same cross-process semantics as the Linux arm.
 //! - Windows: `WaitOnAddress` / `WakeByAddressSingle` for
 //!   process-private (anon-backed) wakers - those calls are
-//!   INTRA-PROCESS only per Microsoft's docs. Cross-process
+//!   intra-process only per Microsoft's docs. Cross-process
 //!   (file / named-shm backed) wakers wait on the hardware
-//!   MONITOR tier instead (`crate::monitor_wait`): monitors are
+//!   `MONITOR` tier instead (`crate::monitor_wait`): monitors are
 //!   physical-address based, so a store from another process to
 //!   the shared MMF line wakes the waiter - the platform's only
 //!   non-polling cross-process wake. On Windows hosts without
@@ -67,7 +67,7 @@
 //! |   _pad                                |
 //! +--------------------------------------+ offset 64
 //! | WakerSlot[0] (64 bytes)              |
-//! |   state: AtomicU32 (FREE/PARKED/WOKEN)|
+//! |   state: AtomicU32 (STATE_*)          |
 //! |   _pad                                |
 //! |   target_seq: AtomicU64               |
 //! |   _pad                                |
@@ -83,31 +83,31 @@
 //!
 //! ## Consumer (parker) side
 //!
-//! 1. Scan slots for one with `state == FREE`.
-//! 2. CAS that slot's state from FREE to a transient RESERVED state.
+//! 1. Scan slots for one with `state == STATE_FREE`.
+//! 2. CAS that slot's state from `STATE_FREE` to the transient `STATE_RESERVED`.
 //! 3. Write `target_seq` (the sequence we want to be woken at).
-//! 4. Store state from RESERVED to PARKED with Release ordering -
+//! 4. Store state from `STATE_RESERVED` to `STATE_PARKED` with Release ordering -
 //!    this publishes the slot to producers and is the
 //!    happens-before edge for `target_seq`.
 //! 5. Call the platform's wait syscall on `&slot.state` with
-//!    expected = PARKED. The kernel verifies `state == PARKED`
+//!    expected = `STATE_PARKED`. The kernel verifies `state == STATE_PARKED`
 //!    before sleeping (Linux's futex_wait semantics; Windows'
 //!    WaitOnAddress likewise); if a producer's wake-CAS already
-//!    landed (state == WOKEN), wait returns immediately without
+//!    landed (`state == STATE_WOKEN`), wait returns immediately without
 //!    entering the kernel sleep path.
-//! 6. On return, store state back to FREE and release the slot.
+//! 6. On return, store state back to `STATE_FREE` and release the slot.
 //!
 //! ## Producer (waker) side
 //!
 //! On every successful publish, call `wake_up_to(producer_seq)`.
 //! That scans slots:
 //!
-//! 1. Acquire-load `state`. If not PARKED, skip.
+//! 1. Acquire-load `state`. If it is not `STATE_PARKED`, skip.
 //! 2. Relaxed-load `target_seq`. The Acquire on `state` acquired
 //!    the parker's Release-store, so prior writes (incl. target_seq)
 //!    are visible.
-//! 3. If `producer_seq >= target_seq`, CAS state from PARKED to
-//!    WOKEN. On CAS success, call the platform's wake-one syscall
+//! 3. If `producer_seq >= target_seq`, CAS state from `STATE_PARKED` to
+//!    `STATE_WOKEN`. On CAS success, call the platform's wake-one syscall
 //!    on `&slot.state` and increment the wake counter.
 //!
 //! The CAS guards against a double-wake when multiple producers
@@ -116,7 +116,7 @@
 //! # Wake-before-park race
 //!
 //! Between a blocked-recv's "try_recv returned Empty" check and
-//! its `try_park` call, a producer can publish AND call wake_up_to
+//! its `try_park` call, a producer can publish and call wake_up_to
 //! that finds zero parked slots. The standard recovery is the
 //! double-check in the blocking-recv wrapper: after parking,
 //! re-call try_recv before calling wait. If try_recv succeeds,
@@ -130,7 +130,7 @@
 //! `FUTEX_WAIT_BITSET`, `FUTEX_REQUEUE`, or other ops the portable
 //! `atomic-wait` abstraction does not expose. Linux-only.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -154,10 +154,10 @@ struct WakerHeader {
     magic: u64,
     capacity: u32,
     _pad0: [u8; 4],
-    /// One bit per slot index (< 64): set while the slot is
-    /// PARKED-ish. Producers' wake scans load this word first; a
+    /// One bit per slot index (< 64): set while a parker holds the
+    /// slot. Producers' wake scans load this word first; a
     /// zero mask makes the no-waiters case - the overwhelmingly
-    /// common one on a healthy ring - ONE cache line instead of
+    /// common one on a healthy ring - a single cache line instead of
     /// `capacity` slot lines. The bit is advisory: stale-set bits
     /// are filtered by the per-slot state check, and a not-yet-set
     /// bit is covered by the parker's pre-wait double-check, the
@@ -225,6 +225,15 @@ impl WakerToken {
     /// The slot index this token is bound to. Useful for
     /// debugging / instrumentation.
     pub fn slot_index(&self) -> u32 { self.slot }
+
+    /// A token for `slot`, for a caller that carried the index across a
+    /// boundary this type cannot travel over.
+    ///
+    /// The index is all a token holds, so this reconstructs one exactly.
+    /// It also grants whatever the index names: `wait` and `release` act
+    /// on that slot whoever parked it, so a caller handing indices out
+    /// keeps track of which parker owns which.
+    pub fn from_slot(slot: u32) -> Self { Self { slot } }
 }
 
 /// Bytes required for a waker region holding `capacity` slots.
@@ -289,10 +298,10 @@ impl CrossProcessWaker {
     }
 
     /// File-backed waker, cross-process visible via the OS page cache.
-    /// Initialises the region only when `path` does not yet exist; otherwise
+    /// Initializes the region only when `path` does not yet exist; otherwise
     /// attaches, leaving parked waiters in place. A region built with a
     /// different capacity is a `LayoutMismatch`. [`reset`](Self::reset)
-    /// reinitialises.
+    /// reinitializes.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, WakerError> {
         assert!(capacity >= 1, "capacity must be >= 1");
         let total = waker_region_size(capacity);
@@ -315,7 +324,7 @@ impl CrossProcessWaker {
         })
     }
 
-    /// Reinitialise the waker at `path`, discarding any parked waiters a live
+    /// Reinitialize the waker at `path`, discarding any parked waiters a live
     /// peer holds. For a caller that knows it owns the path.
     pub fn reset(path: impl AsRef<Path>, capacity: usize) -> Result<Self, WakerError> {
         assert!(capacity >= 1, "capacity must be >= 1");
@@ -338,7 +347,7 @@ impl CrossProcessWaker {
         expected_capacity: usize,
     ) -> Result<Self, WakerError> {
         let total = waker_region_size(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             return Err(WakerError::LayoutMismatch);
         }
@@ -418,7 +427,7 @@ impl CrossProcessWaker {
     pub fn try_park(&self, target_seq: u64) -> Result<WakerToken, WakerError> {
         for idx in 0..self.capacity {
             let slot = self.slot(idx);
-            // FREE -> RESERVED CAS. On success, this slot is
+            // STATE_FREE -> STATE_RESERVED CAS. On success, this slot is
             // ours; on failure, another parker beat us to it,
             // try the next slot.
             if slot
@@ -431,7 +440,7 @@ impl CrossProcessWaker {
                 )
                 .is_ok()
             {
-                // Write target_seq before publishing as PARKED.
+                // Write target_seq before publishing as STATE_PARKED.
                 // The Release store on state below is the
                 // happens-before edge for this Relaxed store.
                 slot.target_seq.store(target_seq, Ordering::Relaxed);
@@ -446,7 +455,7 @@ impl CrossProcessWaker {
 
     /// Block until either some producer wakes this token or the
     /// optional timeout elapses. After return (Ok or Err), the
-    /// token's slot is released; the caller does NOT need to
+    /// token's slot is released; the caller does not need to
     /// call `release` separately.
     ///
     /// If the slot's state was already transitioned to `WOKEN`
@@ -519,14 +528,13 @@ impl CrossProcessWaker {
             }
             Some(d) => {
                 // Deadline re-check loop. The wait syscall is only a
-                // hint: futex and the MONITOR/MWAIT tier may both wake
-                // SPURIOUSLY, so `state` - not the syscall's return -
+                // hint: futex and the `MONITOR` / `MWAIT` tier can both
+                // wake spuriously, so `state`, not the syscall's return,
                 // is the authority. A spurious wake re-loops and waits
                 // the remaining time; only a real producer transition
-                // (state != PARKED) returns Ok, and only an elapsed
-                // deadline returns Timeout. Without this loop a single
-                // spurious wake returned Ok, making waits end early and
-                // freeing the slot before a wake_all could see it.
+                // (state != STATE_PARKED) returns Ok, and only an elapsed
+                // deadline returns Timeout, so a wait neither ends early
+                // nor frees the slot before a wake_all can see it.
                 let deadline = Instant::now() + d;
                 loop {
                     if slot.state.load(Ordering::Acquire) != STATE_PARKED {
@@ -567,9 +575,11 @@ impl CrossProcessWaker {
         self.mask_clear(token.slot as usize);
     }
 
-    /// Producer's post-publish wake call. Scans every slot;
-    /// for each PARKED slot whose `target_seq <= seq`, CASes
-    /// state to WOKEN and fires a single-slot wake. Returns the
+    /// Producer's post-publish wake call. Scans the candidate slots
+    /// (the ones the parked mask marks, or every slot when capacity
+    /// exceeds 64); for each `STATE_PARKED` slot whose
+    /// `target_seq <= seq`, CASes state to `STATE_WOKEN` and fires a
+    /// single-slot wake. Returns the
     /// number of consumers woken.
     pub fn wake_up_to(&self, seq: u64) -> usize {
         let mut count = 0usize;
@@ -605,7 +615,7 @@ impl CrossProcessWaker {
         count
     }
 
-    /// Wake AT MOST ONE PARKED slot whose `target_seq <= seq`. Used
+    /// Wake at most one parked slot whose `target_seq <= seq`. Used
     /// by Mesa-style condvar `notify_one`: notifier bumps the
     /// generation, then wakes exactly one waiter (if any) so the
     /// other parked waiters stay parked.
@@ -639,7 +649,7 @@ impl CrossProcessWaker {
         0
     }
 
-    /// Wake every PARKED slot regardless of `target_seq`. Used
+    /// Wake every `STATE_PARKED` slot regardless of `target_seq`. Used
     /// during shutdown / drain so blocked consumers see the
     /// terminate signal.
     pub fn wake_all(&self) -> usize {
@@ -698,13 +708,13 @@ impl Iterator for WakeCandidates {
 }
 
 // ============================================================================
-// Platform wait / wake. We do NOT use the atomic-wait crate
+// Platform wait / wake, which does not go through the atomic-wait crate
 // because that crate hard-codes FUTEX_PRIVATE_FLAG on Linux,
 // which restricts the futex to a single process and breaks the
 // cross-process wake claim. The waker calls the platform's
-// SHARED futex / WaitOnAddress / wake APIs directly.
+// process-shared futex / WaitOnAddress / wake APIs directly.
 //
-// Every wait first runs the bounded MONITOR-class tier (see
+// Every wait first runs the bounded `MONITOR`-class tier (see
 // crate::monitor_wait): MONITORX/MWAITX or UMONITOR/UMWAIT light
 // sleep on the slot's cache line for ~tens of microseconds, woken
 // for free by the producer's state store - cross-process included,
@@ -713,17 +723,17 @@ impl Iterator for WakeCandidates {
 // kernel park below.
 //
 // Cross-process status per platform:
-// - Linux / Android: SHARED futex (no PRIVATE flag) works
-//   across processes when the atomic sits in a SHARED mmap.
-// - FreeBSD: _umtx_op with the non-PRIVATE UMTX_OP_WAIT_UINT /
+// - Linux / Android: the process-shared futex (no `FUTEX_PRIVATE_FLAG`) works
+//   across processes when the atomic sits in a shared mmap.
+// - FreeBSD: _umtx_op with the shared (not _PRIVATE) UMTX_OP_WAIT_UINT /
 //   UMTX_OP_WAKE ops; the kernel keys those sleep queues by
 //   physical address ("same variable mapped multiple times will
 //   give one key value" - _umtx_op(2)), so waiters across
 //   processes sharing an MMF page join one queue.
-// - Windows: WaitOnAddress is INTRA-PROCESS only per the docs,
+// - Windows: WaitOnAddress is intra-process only per the docs,
 //   so it serves anon-backed wakers; file / shm-backed wakers
 //   stay on the monitor tier for their whole wait (the
-//   cross_process flag below selects this), which IS
+//   cross_process flag below selects this), which is
 //   cross-process because hardware monitors key on physical
 //   addresses. Hosts without MONITORX/WAITPKG fall back to the
 //   wait-timeout + re-check recovery in the blocking wrappers.
@@ -735,8 +745,8 @@ mod platform_wait {
     use std::sync::atomic::AtomicU32;
     use std::time::Duration;
 
-    /// macOS 14.4+ `os_sync_*` public-futex symbols resolved at RUNTIME via
-    /// `dlsym`, so the binary LINKS against an older SDK (e.g. 10.15, whose
+    /// macOS 14.4+ `os_sync_*` public-futex symbols resolved at runtime via
+    /// `dlsym`, so the binary links against an older SDK (e.g. 10.15, whose
     /// libsystem has no `os_sync_*`) and degrades to the polling fallback there,
     /// while taking the fast path on 14.4+. The flag constants are plain
     /// integers (no link dependency), so only the three functions are resolved.
@@ -785,7 +795,7 @@ mod platform_wait {
 
     /// The monitor tier: MONITORX/MWAITX (AMD) or UMONITOR/UMWAIT
     /// (WAITPKG) light-sleep waiting for a bounded cycle budget
-    /// BEFORE the kernel park. Two wins when the wait resolves
+    /// ahead of the kernel park. Two wins when the wait resolves
     /// inside the budget: the producer's wake is its existing
     /// state-CAS (no syscall on either side), and - because
     /// hardware monitors are physical-address based - the wake
@@ -810,7 +820,7 @@ mod platform_wait {
             return;
         }
         // Windows + cross-process backing: WaitOnAddress never
-        // receives a wake from another process, so the monitor IS
+        // receives a wake from another process, so the monitor is
         // the wait - re-arm in budget-sized chunks until the value
         // changes. The core holds C0.1 light sleep rather than
         // releasing to the OS; that is the only non-polling
@@ -839,8 +849,8 @@ mod platform_wait {
         }
         #[cfg(target_os = "freebsd")]
         {
-            // UMTX_OP_WAIT_UINT (the non-PRIVATE op): the kernel
-            // keys the sleep queue by the variable's PHYSICAL
+            // UMTX_OP_WAIT_UINT (not the _PRIVATE op): the kernel
+            // keys the sleep queue by the variable's physical
             // address, so waiters in any process that mapped the
             // same MMF page share one queue - FreeBSD's native
             // equivalent of the no-FUTEX_PRIVATE_FLAG Linux call.
@@ -1076,7 +1086,7 @@ mod platform_wait {
         }
         #[cfg(target_os = "freebsd")]
         {
-            // val = max threads to wake; same shared (non-PRIVATE)
+            // val = max threads to wake; same shared (not _PRIVATE)
             // physical-address-keyed queue the waiters parked on.
             unsafe {
                 libc::_umtx_op(
@@ -1097,7 +1107,7 @@ mod platform_wait {
         }
         #[cfg(target_os = "macos")]
         {
-            // Mirror of the wait flag: SHARED wakes waiters in any process that
+            // Mirror of the wait flag: the process-shared form wakes waiters in any process that
             // mapped the same region. On older macOS the symbol is absent and
             // the waiter polls, so no explicit wake is needed.
             if let Some(wake_fn) = os_sync_dyn::wake() {

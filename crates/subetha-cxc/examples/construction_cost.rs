@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmpdir = std::env::temp_dir();
     let base = tmpdir.join("subetha_construction_cost");
 
-    // Warm: page-cache canonicalisation + first-time-init.
+    // Warm: page-cache canonicalization + first-time-init.
     {
         let path = base.with_extension("warm.bin");
         let _ring = SharedRing::create(&path, 64)

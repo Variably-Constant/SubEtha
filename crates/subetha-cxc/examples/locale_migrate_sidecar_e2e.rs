@@ -2,15 +2,15 @@
 //!
 //! Runs a producer/consumer workload while the application
 //! periodically calls `sidecar.request_locale(target)` to flip
-//! the desired locale. The sidecar honours the request only when
+//! the desired locale. The sidecar honors the request only when
 //! the hysteresis cooldown has elapsed - so rapid back-and-forth
 //! requests collapse into a single migration per cooldown
 //! window. The migration itself transfers in-flight items
 //! between backings as part of the wrapper's `migrate_to` flow.
 //!
 //! The demo intentionally requests anon -> file -> shmfs -> file
-//! -> anon with varying delays so a human can SEE both the
-//! "request honoured" and "request suppressed by hysteresis"
+//! -> anon with varying delays so a human can see both the
+//! "request honored" and "request suppressed by hysteresis"
 //! cases in the trace.
 //!
 //! Run:
@@ -49,7 +49,7 @@ fn main() {
 
     // Locale-change observer: print every transition the sidecar
     // applies. The application's requests go through
-    // `sidecar.request_locale`; the OBSERVED `current_locale`
+    // `sidecar.request_locale`; the observed `current_locale`
     // changes only when the policy actually migrates.
     let stop_obs = Arc::new(AtomicBool::new(false));
     let stop_obs_c = Arc::clone(&stop_obs);
@@ -103,15 +103,15 @@ fn main() {
     });
 
     // Driver: request locale changes with timing that exercises
-    // both "honoured" and "suppressed by hysteresis" paths.
+    // both "honored" and "suppressed by hysteresis" paths.
     let driver_t0 = t0;
     println!("[{:6.3}s] request: File", driver_t0.elapsed().as_secs_f64());
     sidecar.request_locale(Locale::File);
-    thread::sleep(Duration::from_millis(300)); // > 250 ms hysteresis - honoured
+    thread::sleep(Duration::from_millis(300)); // > 250 ms hysteresis - honored
 
     println!("[{:6.3}s] request: ShmFs", driver_t0.elapsed().as_secs_f64());
     sidecar.request_locale(Locale::ShmFs);
-    thread::sleep(Duration::from_millis(100)); // < 250 ms hysteresis - SUPPRESSED at first
+    thread::sleep(Duration::from_millis(100)); // < 250 ms hysteresis - suppressed at first
 
     println!(
         "[{:6.3}s] request: File (within hysteresis - rapid flip)",

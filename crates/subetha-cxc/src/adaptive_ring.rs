@@ -3,7 +3,7 @@
 //! Single typed ring primitive that morphs its protocol shape at
 //! runtime based on observed peer counts, plus a pinned-handle
 //! layer that drops to near-native primitive speed once the
-//! shape stabilises.
+//! shape stabilizes.
 //!
 //! # Two execution paths
 //!
@@ -23,12 +23,12 @@
 //!
 //! # Morph trigger
 //!
-//! AUTOMATIC by default: every [`AdaptiveRing::register_producer`] /
+//! Automatic by default: every [`AdaptiveRing::register_producer`] /
 //! [`AdaptiveRing::register_consumer`] / unregister re-morphs the
 //! shape to the live peer counts (read from the shared peer
-//! directory, so registrations in OTHER processes propagate through
+//! directory, so registrations in other processes propagate through
 //! the topology epoch the hot paths poll), and registration past
-//! the construction sizing GROWS the per-producer backings on
+//! the construction sizing grows the per-producer backings on
 //! demand. An explicit [`AdaptiveRing::morph_to`] (or
 //! [`AdaptiveRing::pin_shape`]) is the user override that pins the
 //! shape; a declared [`AdaptiveRing::with_contract`] ceiling is the
@@ -95,18 +95,22 @@ impl RingShape {
 /// allocated so morphs do not allocate on the hot path.
 ///
 /// **Caller contract on construction**: `max_producers` and
-/// `max_consumers` are SIZING HINTS - the per-producer backings
-/// pre-allocated up front. Registration past them GROWS the ring
+/// `max_consumers` are sizing hints - the per-producer backings
+/// pre-allocated up front. Registration past them grows the ring
 /// on demand (new backings, published through the shared peer
 /// directory). Registration refuses in two cases, both reported as
 /// `TooMany*`: a ceiling the caller pinned with
 /// [`with_contract`](AdaptiveRing::with_contract), and the peer
 /// directory's own slot ceiling (`PRODUCER_SLOT_CEILING` 4096 /
-/// `CONSUMER_SLOT_CEILING` 256 CONCURRENT peers, slots recycled on
+/// `CONSUMER_SLOT_CEILING` 256 concurrent peers, slots recycled on
 /// unregister). Growth happens on the registration slow path;
 /// steady-state ops pay one relaxed epoch load.
-/// Sentinel for "no stale shape pending" in `stale_shape_tag`.
-const STALE_NONE: u8 = u8::MAX;
+/// Who a single-reader shape serves while no consumer slot is claimed.
+/// A caller may pop without registering - the id is then its own claim
+/// that it is the only reader - so this stays slot 0 rather than naming
+/// nobody, which would refuse that caller its own ring.
+const SINGLE_READER_DEFAULT: u64 = 0;
+
 
 /// Whether `SUBETHA_RING_DEBUG` asks the MPMC ownership path to report
 /// what it decides. A consumer draining nothing because it owns no ring
@@ -135,21 +139,19 @@ pub struct AdaptiveRing {
     /// Current shape; one Acquire load per dispatched op.
     shape_tag: AtomicU8,
 
-    /// The previous shape whose backing may still hold a backlog
-    /// after a morph. Producers never touch it again (they follow
-    /// `shape_tag`); the consumer's pop path drains it FIRST (the
-    /// stale walk) so a morph never moves data and never needs
-    /// target capacity. Stays set until the NEXT morph (which
-    /// requires it drained), giving producer pushes that straddled
-    /// the tag flip a wide grace window to land somewhere the
-    /// consumer still looks. `STALE_NONE` = nothing pending.
-    stale_shape_tag: AtomicU8,
-
-    /// A shape asked for while a stale backlog still blocked the morph.
-    /// The pop path applies it once that backlog drains, so a peer count
-    /// the ring could not serve at registration time is served as soon
-    /// as it safely can be. `STALE_NONE` when nothing is waiting.
-    pending_shape_tag: AtomicU8,
+    /// One bit per shape this ring has ever been in, the current one
+    /// included. The pop path drains every other set shape before the
+    /// current one, so a morph moves no data and needs no target
+    /// capacity.
+    ///
+    /// The set only grows, and that is what makes it correct. A
+    /// producer resolves `shape_tag` and pushes some instructions
+    /// later, so a backing can receive a push after it stops being
+    /// current; nothing can know that push is coming, and a backing
+    /// dropped from the walk strands it. There are four shapes, so
+    /// never forgetting one costs a bounded walk and answers the
+    /// question instead of racing it.
+    used_shapes: AtomicU8,
 
     /// Bumped on every successful morph. Pinned handles capture
     /// this value at pin time and compare on `is_still_valid`.
@@ -179,8 +181,8 @@ pub struct AdaptiveRing {
     /// Vyukov MPMC backing (global-FIFO override).
     vyukov: Arc<SharedRing>,
 
-    /// Sizing HINTS captured at construction: how many per-producer
-    /// backings are pre-allocated up front. NOT ceilings - the ring
+    /// Sizing hints captured at construction: how many per-producer
+    /// backings are pre-allocated up front. They are not ceilings - the ring
     /// grows past them on demand. A ceiling exists only when the
     /// caller declares one via [`with_contract`](Self::with_contract).
     max_producers: usize,
@@ -199,7 +201,20 @@ pub struct AdaptiveRing {
     /// to. `u64::MAX` = never synced (first op syncs).
     synced_epoch: AtomicU64,
 
-    /// Serialises in-process growth (file creation + array swap).
+    /// The consumer slot a single-reader shape is served to: the lowest
+    /// claimed consumer slot, re-derived on every topology sync, and
+    /// [`SINGLE_READER_DEFAULT`] while none is claimed.
+    ///
+    /// A Lamport core has one reader by contract, and which slot that is
+    /// cannot be assumed to be zero: slots come from the directory's
+    /// lowest-free-bit claim, so a consumer that outlives the others
+    /// keeps whatever slot it claimed at the start. Naming the reader by
+    /// slot zero leaves that survivor reading empty on a ring that is
+    /// not empty. Derived per process rather than shared, so it costs
+    /// one relaxed load on the pop path and no layout.
+    single_reader: AtomicU64,
+
+    /// Serializes in-process growth (file creation + array swap).
     grow_lock: parking_lot::Mutex<()>,
 
     /// Whether the composed shape auto-morphs to the active peer counts
@@ -210,7 +225,7 @@ pub struct AdaptiveRing {
     shape_auto: AtomicBool,
 
     /// Declared ring contract - the user override. `None` (the
-    /// default) means UNBOUNDED: registration never fails, peers grow
+    /// default) means unbounded: registration never fails, peers grow
     /// the ring on demand. Set via
     /// [`with_contract`](Self::with_contract); its ceilings are the
     /// only source of `TooMany*` errors. Read at attach time
@@ -221,7 +236,7 @@ pub struct AdaptiveRing {
     /// Ordering substrate, present only on rings constructed via
     /// [`with_ordering_stamps`](Self::with_ordering_stamps). Fixed
     /// at construction: a runtime stamping toggle would change slot
-    /// interpretation under in-flight unstamped items. The MERGE
+    /// interpretation under in-flight unstamped items. The merge
     /// flag inside the region stays runtime-dynamic because stamps
     /// are always present once this is `Some`.
     ordering: Option<Arc<OrderingState>>,
@@ -244,10 +259,74 @@ pub struct AdaptiveRing {
     /// Ordering-mode flips the ring refused on the same kind of path,
     /// so the ring stayed in a mode the caller did not ask for.
     mode_refusals: AtomicU64,
+
+    /// This process's hold on the ring, present only when the caller
+    /// asked for last-holder-unlinks via
+    /// [`with_last_holder`](Self::with_last_holder). `None` is the
+    /// default and means the backings outlive every handle, which is the
+    /// normal cross-process shape: a ring is usually created so that
+    /// something else can attach to it later.
+    holders: Option<crate::ring_holders::RingHolders>,
+
+    /// Suffixes a layer above keeps beside the ring, removed by the last
+    /// holder with the ring's own backings. Empty unless that layer named
+    /// them, which only it can: this one does not know they exist.
+    also_remove_on_last: Vec<String>,
 }
 
 unsafe impl Send for AdaptiveRing {}
 unsafe impl Sync for AdaptiveRing {}
+
+impl Drop for AdaptiveRing {
+    fn drop(&mut self) {
+        // Only a ring the caller asked to be unlinked has anything to do
+        // here; every other ring's backings outlive it on purpose.
+        let Some(holders) = self.holders.as_mut() else {
+            return;
+        };
+        if !holders.release() {
+            return;
+        }
+        // This process was the last live holder. The ring's own regions
+        // go first and the holders region last, because the holders
+        // region is what a process arriving mid-teardown reads to decide
+        // whether the ring is still held: removing it first would let
+        // that process take a hold on a ring whose backings are being
+        // deleted underneath it.
+        let prefix = match &self.backing_id {
+            BackingId::File { prefix, .. } => prefix.clone(),
+            // with_last_holder refuses both, so a hold cannot exist here.
+            BackingId::Anon | BackingId::Shm { .. } => return,
+        };
+        let mut report = Self::unlink(&prefix, self.max_producers);
+        // Whatever the layer above keeps beside the ring goes in the same
+        // pass and into the same report, so a caller reading the counts
+        // sees one removal rather than the ring's half of one.
+        for suffix in &self.also_remove_on_last {
+            report.remove(with_suffix(&prefix, suffix));
+        }
+        if report.failed != 0 {
+            // A Drop has no caller to hand this to, and the files are
+            // the user's to find. Naming the first refusal is the only
+            // way the reason reaches anyone.
+            if let Some((path, kind, text)) = &report.first_failure {
+                eprintln!(
+                    "subetha: the last holder of {} could not remove {}: {kind:?} {text}",
+                    prefix.display(),
+                    path.display(),
+                );
+            }
+        }
+        if let Some(holders) = self.holders.take()
+            && let Err(e) = holders.unlink_self()
+        {
+            eprintln!(
+                "subetha: the last holder of {} could not remove its holders region: {e}",
+                prefix.display(),
+            );
+        }
+    }
+}
 
 impl subetha_sidecar::AdaptiveInstance for AdaptiveRing {
     fn header(&self) -> &subetha_core::HandshakeHeader { &self.header_sidecar }
@@ -415,10 +494,13 @@ impl AdaptiveRing {
         let directory = Arc::new(PeerDirectory::create_anon()?);
         directory.publish_rings(max_producers);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -430,6 +512,9 @@ impl AdaptiveRing {
             capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -499,10 +584,13 @@ impl AdaptiveRing {
         let directory = Arc::new(PeerDirectory::create_anon()?);
         directory.publish_rings(max_producers);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -514,6 +602,9 @@ impl AdaptiveRing {
             capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -574,10 +665,13 @@ impl AdaptiveRing {
         );
         directory.publish_rings(max_producers);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -589,6 +683,9 @@ impl AdaptiveRing {
             capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -607,7 +704,7 @@ impl AdaptiveRing {
     /// Open an existing file-backed adaptive ring created by
     /// another process via [`AdaptiveRing::create`] with the same
     /// `path_prefix` + sizing. Validates each backing's magic +
-    /// capacity; does NOT re-initialize any layout, so in-flight
+    /// capacity; does not re-initialize any layout, so in-flight
     /// items in the creator's backings survive the attach.
     ///
     /// The shape tag + pin generation are process-local: each
@@ -625,7 +722,7 @@ impl AdaptiveRing {
         let base = path_prefix.as_ref();
 
         // The peer directory is the source of truth for how many
-        // per-producer backings exist RIGHT NOW - the creator's
+        // per-producer backings exist at this moment - the creator's
         // hint may have grown since. The caller's count args stay
         // as pre-open floor hints only.
         let directory = Arc::new(
@@ -659,10 +756,13 @@ impl AdaptiveRing {
         let vyukov_path = with_suffix(base, ".vyukov.bin");
         let vyukov = Arc::new(SharedRing::open(&vyukov_path, expected_capacity)?);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc,
@@ -674,6 +774,9 @@ impl AdaptiveRing {
             capacity: expected_capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -808,10 +911,13 @@ impl AdaptiveRing {
         )?);
         directory.publish_rings(max_producers);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc, mpsc, mpmc, vyukov,
@@ -819,6 +925,9 @@ impl AdaptiveRing {
             capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -840,7 +949,7 @@ impl AdaptiveRing {
     /// [`create_shmfs`](Self::create_shmfs).
     ///
     /// The critical difference from `create_shmfs`: this validates each
-    /// backing's magic and attaches WITHOUT re-initializing the layout,
+    /// backing's magic and attaches without re-initializing the layout,
     /// so a snapshot the creator already enqueued survives the attach.
     /// (`create_shmfs` unconditionally re-lays-out every backing, which
     /// zeroes any data already in the region - correct for the creator,
@@ -875,7 +984,7 @@ impl AdaptiveRing {
     /// This must match the namespace the creator passed to
     /// [`create_shmfs_in`](Self::create_shmfs_in). A mismatch resolves a
     /// different set of regions, and because these are create-or-open
-    /// names the attach SUCCEEDS against empty regions of its own rather
+    /// names the attach succeeds against empty regions of its own rather
     /// than reporting that the creator's ring was not found.
     pub fn open_shmfs_in(
         name_prefix: &str,
@@ -908,7 +1017,7 @@ impl AdaptiveRing {
         let spsc_size = crate::spsc_ring::spsc_ring_file_size(expected_capacity);
         let vyukov_size = crate::shared_ring::ring_file_size(expected_capacity);
 
-        // Directory first: create_or_open_shm only initialises when the
+        // Directory first: create_or_open_shm only initializes when the
         // magic is absent, so attaching never wipes the creator's live
         // claims; its published count is how many per-producer rings
         // really exist (the creator's hint may have grown since).
@@ -917,7 +1026,7 @@ impl AdaptiveRing {
         )?);
         let n_rings = directory.published().max(1);
 
-        // SPSC backing - attach, validate magic, NO re-init.
+        // SPSC backing - attach, validate magic, no re-init.
         let spsc_shm = crate::shm_file::ShmFile::create_or_open_named_secured(
             &format!("{name_prefix}_spsc"), spsc_size, namespace, sddl,
         ).map_err(|_| RingError::PayloadTooLarge)?;
@@ -955,10 +1064,13 @@ impl AdaptiveRing {
         ).map_err(|_| RingError::PayloadTooLarge)?;
         let vyukov = Arc::new(SharedRing::open_from_shm(vyukov_shm, expected_capacity)?);
 
+        // A dump asks about one ring, so its span starts here rather
+        // than wherever the process last cleared the buffer.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::restart();
         Ok(Self {
             shape_tag: AtomicU8::new(RingShape::Spsc as u8),
-            stale_shape_tag: AtomicU8::new(STALE_NONE),
-            pending_shape_tag: AtomicU8::new(STALE_NONE),
+            used_shapes: AtomicU8::new(1 << RingShape::Spsc as u8),
             pin_generation: AtomicU64::new(0),
             frame_region: OnceLock::new(),
             spsc, mpsc, mpmc, vyukov,
@@ -966,6 +1078,9 @@ impl AdaptiveRing {
             capacity: expected_capacity,
             directory,
             synced_epoch: AtomicU64::new(u64::MAX),
+            single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
+            holders: None,
+            also_remove_on_last: Vec::new(),
             grow_lock: parking_lot::Mutex::new(()),
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
@@ -990,7 +1105,7 @@ impl AdaptiveRing {
     /// [`ordered_try_pop`](PinnedRing::ordered_try_pop)) strip the
     /// stamp and hand back payload bytes only.
     ///
-    /// Stamping is FIXED at construction - call this before any
+    /// Stamping is fixed at construction - call this before any
     /// traffic. The merge flag inside the ordering region stays
     /// runtime-dynamic via
     /// [`set_ordering_mode`](Self::set_ordering_mode).
@@ -1086,12 +1201,12 @@ impl AdaptiveRing {
 
     /// Peek the next slot of the internal SPSC backing without
     /// copying or releasing. Returns `None` when the active shape
-    /// is not SPSC OR when the ring is empty. Used by zero-copy
+    /// is not SPSC or when the ring is empty. Used by zero-copy
     /// egress paths (e.g. the bridge primitives' `write_all` flow)
     /// when the active shape supports peek-direct.
     ///
     /// The returned [`PeekedSpscSlot`] derefs to `&[u8]` pointing
-    /// INTO the SPSC backing's mmap region. Caller passes that
+    /// into the SPSC backing's mmap region. Caller passes that
     /// slice straight to downstream consumers, then calls
     /// [`PeekedSpscSlot::confirm`] to release the slot.
     pub fn peek_spsc_slot(&self) -> Option<PeekedSpscSlot<'_>> {
@@ -1120,8 +1235,9 @@ impl AdaptiveRing {
     /// caller because producers only target whichever Arc the
     /// wrapper's ArcSwap currently points at.
     pub fn is_empty(&self) -> bool {
-        if let Some(stale) = self.stale_shape()
-            && !self.backing_is_empty(stale)
+        if self
+            .other_used_shapes(self.current_shape())
+            .any(|used| !self.backing_is_empty(used))
         {
             return false;
         }
@@ -1133,13 +1249,12 @@ impl AdaptiveRing {
     /// SPSC / Vyukov). Used by sidecar policies to compute fill
     /// ratio and decide whether to grow / shrink capacity.
     pub fn approx_len(&self) -> usize {
-        let stale_len = match self.stale_shape() {
-            Some(stale) if stale != self.current_shape() => {
-                self.backing_approx_len(stale)
-            }
-            _ => 0,
-        };
-        stale_len + self.backing_approx_len(self.current_shape())
+        let current = self.current_shape();
+        let carried: usize = self
+            .other_used_shapes(current)
+            .map(|used| self.backing_approx_len(used))
+            .sum();
+        carried + self.backing_approx_len(current)
     }
 
     fn backing_approx_len(&self, shape: RingShape) -> usize {
@@ -1184,7 +1299,7 @@ impl AdaptiveRing {
     }
 
     /// Number of per-producer backings this ring pre-allocated at
-    /// construction. A HINT, not a ceiling: registration past it
+    /// construction. A hint, not a ceiling: registration past it
     /// grows the backings on demand.
     pub fn max_producers(&self) -> usize { self.max_producers }
 
@@ -1198,9 +1313,9 @@ impl AdaptiveRing {
         self.directory.published()
     }
 
-    /// The ring's effective contract. UNBOUNDED unless the caller
+    /// The ring's effective contract. Unbounded unless the caller
     /// declared one via [`with_contract`](Self::with_contract) - a
-    /// declared contract is the ONLY thing that makes registration
+    /// declared contract is the only thing that makes registration
     /// fallible; the default grows on demand.
     pub fn contract(&self) -> crate::ring_contract::RingContract {
         self.contract.unwrap_or_else(crate::ring_contract::RingContract::unbounded)
@@ -1214,6 +1329,67 @@ impl AdaptiveRing {
     pub fn with_contract(mut self, contract: crate::ring_contract::RingContract) -> Self {
         self.contract = Some(contract);
         self
+    }
+
+    /// Take a hold on this ring's backings, so the last live process to
+    /// let go removes them.
+    ///
+    /// Off by default: a ring normally outlives the process that made
+    /// it, which is the point of a cross-process ring. This is for the
+    /// caller whose ring is scoped to a set of processes and who would
+    /// otherwise leave files behind when they all exit.
+    ///
+    /// "Last" means the last live process, not the last handle within
+    /// one. A holder whose process died without releasing is reaped by
+    /// the same pid probe the peer slots use, so a crash cannot keep the
+    /// files for ever and a slow holder cannot have them removed under
+    /// it. `max_holders` is the caller's to choose because the substrate
+    /// has no limit on processes holding a ring.
+    ///
+    /// Every process sharing the ring calls this, or the count is wrong:
+    /// one that attaches without taking a hold is invisible to the last
+    /// holder and its files can go while it is still using them.
+    ///
+    /// The holders error is returned whole rather than folded into
+    /// [`RingError`]: a region built for a different holder count, a
+    /// table whose every slot is held, and a disk that refused the
+    /// region are three different things for the caller to do, and one
+    /// error for all three would let none of them be acted on.
+    /// `also_remove` names suffixes a layer above this one keeps beside
+    /// the ring - the C ABI's two wakers and its notifier record - which
+    /// the last holder removes along with the ring's own. Without them
+    /// the removal is partial in a way only that layer can see: the ring
+    /// takes its backings and leaves the files it never created, so a
+    /// caller who asked for the prefix to be cleaned finds three of them
+    /// still there. Suffixes rather than paths, because the prefix is
+    /// the ring's to know.
+    pub fn with_last_holder(
+        mut self,
+        max_holders: usize,
+        on_last: crate::ring_holders::LastHolder,
+        also_remove: &[&str],
+    ) -> Result<Self, LastHolderError> {
+        let prefix = match &self.backing_id {
+            BackingId::File { prefix, .. } => prefix.clone(),
+            BackingId::Anon => return Err(LastHolderError::NoBackingFiles),
+            BackingId::Shm { .. } => return Err(LastHolderError::ShmNotSupported),
+        };
+        self.also_remove_on_last =
+            also_remove.iter().map(|s| (*s).to_string()).collect();
+        let holders = crate::ring_holders::RingHolders::create_or_attach(
+            with_suffix(&prefix, ".holders.bin"),
+            max_holders,
+            on_last,
+        )
+        .map_err(LastHolderError::Region)?;
+        self.holders = Some(holders);
+        Ok(self)
+    }
+
+    /// Processes holding this ring, this one included, or `None` when
+    /// the caller did not ask for holds.
+    pub fn holders(&self) -> Option<usize> {
+        self.holders.as_ref().map(|h| h.live())
     }
 
     /// Map a policy's proposed shape to the nearest contract-legal one,
@@ -1239,27 +1415,51 @@ impl AdaptiveRing {
     }
 
     /// Re-morph the composed shape to the current active peer counts
-    /// (read from the shared directory, so registrations in OTHER
+    /// (read from the shared directory, so registrations in other
     /// processes drive this process's shape too). Called from every
     /// register / unregister and from the topology sync slow path -
     /// no background thread required. Suppressed when the caller
     /// pinned the shape ([`pin_shape`](Self::pin_shape) or an
     /// explicit [`morph_to`](Self::morph_to)), and never disturbs a
     /// `Vyukov` shape - that is an ordering decision, not a count
-    /// decision. Returns `false` only when a needed morph is blocked
-    /// on an undrained stale backlog (the caller leaves the epoch
-    /// unsynced so the next op retries).
+    /// decision. Returns `false` when a needed morph was refused, as
+    /// a stamped ring refuses the `Vyukov` shape, and the caller then
+    /// leaves the epoch unsynced so the next op retries.
     fn reshape_for_counts(&self) -> bool {
         if !self.shape_auto.load(Ordering::Relaxed)
             || self.current_shape() == RingShape::Vyukov
         {
             return true;
         }
+        // The bitmaps are read before the counts, never after. A claim
+        // raises the count and then takes the bit, so a bit seen at some
+        // instant was counted before it and a count read afterwards
+        // includes it. Reading the count first lets a claim land between
+        // the two and print a disagreement that says nothing about what
+        // the decision was taken on.
+        #[cfg(debug_assertions)]
+        let claimed = self.directory.claimed_populations();
         let p = self.directory.active_producers();
         let c = self.directory.active_consumers();
         if let Some(target) = DefaultRingShapePolicy::target_shape(p, c)
             && target != self.current_shape()
         {
+            // The counts this morph was decided on, recorded beside the
+            // morph itself, and beside them what the bitmaps held when
+            // they were read - which was before the counts, so the pair
+            // means something. A dump showing a single-producer shape
+            // taken while several producers are registered otherwise
+            // leaves no way to tell a wrong policy from a wrong count.
+            #[cfg(debug_assertions)]
+            {
+                crate::ring_trace::note(crate::ring_trace::What::Counts, usize::MAX, p, c);
+                crate::ring_trace::note(
+                    crate::ring_trace::What::Claimed,
+                    usize::MAX,
+                    claimed.0,
+                    claimed.1,
+                );
+            }
             return self.morph_shape(self.contract_filtered_shape(target)).is_ok();
         }
         true
@@ -1276,7 +1476,7 @@ impl AdaptiveRing {
     /// Resume the automatic shape (undo [`pin_shape`](Self::pin_shape)
     /// / an explicit morph) and re-track the live peer counts. Unlike
     /// the automatic reshape - which never disturbs a Vyukov shape -
-    /// this explicit resume DOES morph a Vyukov ring back to the
+    /// this explicit resume does morph a Vyukov ring back to the
     /// counts-based composed shape (that is what resuming means).
     pub fn resume_auto_shape(&self) {
         self.shape_auto.store(true, Ordering::Relaxed);
@@ -1313,11 +1513,12 @@ impl AdaptiveRing {
     #[cold]
     fn sync_topology(&self, epoch: u64) {
         self.directory.reap_dead_peers();
+        self.designate_single_reader();
         let arrays_ok = self.refresh_local_arrays().is_ok();
         let shape_ok = self.reshape_for_counts();
         if arrays_ok && shape_ok {
             // Reaping / a racing registrant may have advanced the
-            // epoch since `epoch` was read; store the STALE value so
+            // epoch since `epoch` was read; store the older value so
             // the next op re-syncs to the newer state.
             self.synced_epoch.store(epoch, Ordering::Relaxed);
         }
@@ -1384,7 +1585,7 @@ impl AdaptiveRing {
         }
     }
 
-    /// Create the backing pair for a NEW producer slot `i` (the
+    /// Create the backing pair for a new producer slot `i` (the
     /// grower path; this process claimed the slot, so it is the
     /// single creator by construction).
     fn create_ring_backing(
@@ -1455,13 +1656,13 @@ impl AdaptiveRing {
 
     /// Register a new producer. Returns its `producer_id` - a shared
     /// slot claim visible to every attached process. Registration
-    /// GROWS the ring on demand (new per-producer backings past the
+    /// grows the ring on demand (new per-producer backings past the
     /// construction hint) and auto-morphs the composed shape to the
     /// new peer counts; it fails only under a caller-declared
     /// contract ceiling ([`with_contract`](Self::with_contract)) or at
     /// the substrate slot ceiling
     /// ([`PRODUCER_SLOT_CEILING`](crate::peer_directory::PRODUCER_SLOT_CEILING)
-    /// CONCURRENT producers). The id stays valid until
+    /// concurrent producers). The id stays valid until
     /// [`unregister_producer`](Self::unregister_producer).
     pub fn register_producer(&self) -> Result<usize, AdaptiveError> {
         let slot = self.directory.claim_producer_slot()
@@ -1478,6 +1679,13 @@ impl AdaptiveRing {
             self.directory.release_producer_slot(slot);
             return Err(AdaptiveError::GrowthFailed);
         }
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(
+            crate::ring_trace::What::RegisteredProducer,
+            usize::MAX,
+            slot,
+            0,
+        );
         self.ensure_synced();
         self.reshape_for_counts();
         Ok(slot)
@@ -1488,6 +1696,15 @@ impl AdaptiveRing {
     /// recycles; its backing (and any undrained backlog) stays until
     /// the consumer drains it.
     pub fn unregister_producer(&self, producer_id: usize) {
+        // Noted before the release, so a dump reads the departure ahead
+        // of the morph it goes on to cause rather than beside it.
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(
+            crate::ring_trace::What::UnregisteredProducer,
+            usize::MAX,
+            producer_id,
+            0,
+        );
         self.directory.release_producer_slot(producer_id);
         self.reshape_for_counts();
     }
@@ -1507,6 +1724,9 @@ impl AdaptiveRing {
             self.directory.release_consumer_slot(slot);
             return Err(AdaptiveError::TooManyConsumers);
         }
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(crate::ring_trace::What::Registered, usize::MAX, slot, 0);
+        self.designate_single_reader();
         self.rebalance_ownership();
         self.ensure_synced();
         self.reshape_for_counts();
@@ -1527,13 +1747,29 @@ impl AdaptiveRing {
         for r in 0..n {
             let (owner, _) = self.directory.ring_owner(r);
             if owner == me {
-                match remaining.get(r % remaining.len().max(1)) {
-                    Some(to) => self.directory.transfer_ring(r, me, *to),
-                    None => self.directory.transfer_ring(r, me, OWNER_NONE),
-                }
+                let to = match remaining.get(r % remaining.len().max(1)) {
+                    Some(to) => *to,
+                    None => OWNER_NONE,
+                };
+                #[cfg(debug_assertions)]
+                crate::ring_trace::note(
+                    crate::ring_trace::What::Transferred,
+                    r,
+                    consumer_id,
+                    to as usize,
+                );
+                self.directory.transfer_ring(r, me, to);
             }
         }
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(
+            crate::ring_trace::What::Unregistered,
+            usize::MAX,
+            consumer_id,
+            0,
+        );
         self.directory.release_consumer_slot(consumer_id);
+        self.designate_single_reader();
         self.reshape_for_counts();
     }
 
@@ -1545,25 +1781,12 @@ impl AdaptiveRing {
         if !ring_debug() {
             return;
         }
-        let stale = self.stale_shape_tag.load(Ordering::Acquire);
+        let current = self.current_shape();
         ring_note(format_args!(
             "consumer {consumer_id} scanned {rings} ring(s) and found \
-             nothing while another owner holds items; shape {:?} stale {} pending {}; \
-             ownership {:?}",
-            self.current_shape(),
-            if stale == STALE_NONE {
-                "none".to_owned()
-            } else {
-                format!("{:?}", RingShape::from_u8(stale))
-            },
-            {
-                let p = self.pending_shape_tag.load(Ordering::Acquire);
-                if p == STALE_NONE {
-                    "none".to_owned()
-                } else {
-                    format!("{:?}", RingShape::from_u8(p))
-                }
-            },
+             nothing while another owner holds items; shape {current:?} \
+             also walking {:?}; ownership {:?}",
+            self.other_used_shapes(current).collect::<Vec<_>>(),
             self.ownership_snapshot()
         ));
     }
@@ -1586,7 +1809,7 @@ impl AdaptiveRing {
             .collect()
     }
 
-    /// Spread MPMC ring ownership round-robin over the CURRENT
+    /// Spread MPMC ring ownership round-robin over the current
     /// consumer set: unowned rings are claimed directly for their
     /// target; owned rings get a pending handoff their current
     /// owner applies on its next pop scan (single-writer transfer,
@@ -1617,8 +1840,23 @@ impl AdaptiveRing {
                 continue;
             }
             if owner == OWNER_NONE {
-                self.directory.try_claim_ring(r, desired);
+                if self.directory.try_claim_ring(r, desired) {
+                    #[cfg(debug_assertions)]
+                    crate::ring_trace::note(
+                        crate::ring_trace::What::ClaimedUnowned,
+                        r,
+                        desired as usize,
+                        desired as usize,
+                    );
+                }
             } else if pending != desired {
+                #[cfg(debug_assertions)]
+                crate::ring_trace::note(
+                    crate::ring_trace::What::RequestedHandoff,
+                    r,
+                    desired as usize,
+                    owner as usize,
+                );
                 self.directory.request_handoff(r, desired);
             }
         }
@@ -1632,6 +1870,17 @@ impl AdaptiveRing {
     /// Current active consumer count (shared across processes).
     pub fn active_consumers(&self) -> usize {
         self.directory.active_consumers()
+    }
+
+    /// How many producer and consumer slots the directory's bitmaps say
+    /// are claimed, which is the count
+    /// [`active_producers`](Self::active_producers) and
+    /// [`active_consumers`](Self::active_consumers) are maintained
+    /// alongside rather than derived from. Reading both at one instant
+    /// is what separates a counter that disagrees with the slots from
+    /// slots that were genuinely not claimed yet.
+    pub(crate) fn claimed_populations(&self) -> (usize, usize) {
+        self.directory.claimed_populations()
     }
 
     /// Whether this ring carries ordering stamps.
@@ -1760,7 +2009,7 @@ impl AdaptiveRing {
         if let Some(ord) = &self.ordering {
             return self.stamped_send_inner(ord, shape, producer_id, payload);
         }
-        match shape {
+        let pushed = match shape {
             RingShape::Spsc => self.spsc.try_push(payload),
             RingShape::Mpsc => {
                 let rings = self.mpsc.rings.load();
@@ -1775,7 +2024,30 @@ impl AdaptiveRing {
                 ring.try_push(payload)
             }
             RingShape::Vyukov => self.vyukov.try_push(payload),
+        };
+        // Noted after the push lands, so the order against a morph in
+        // the same dump is the order that decides whether the backing
+        // this chose is still walked.
+        #[cfg(debug_assertions)]
+        if pushed.is_ok() {
+            // The consumer column would otherwise repeat the producer id
+            // the ring column already carries, so it holds the payload's
+            // first two bytes instead. That is what lets a dump say which
+            // item went into which backing: without it a lost item can be
+            // placed in a morph window but never named.
+            let tag = if payload.len() >= 2 {
+                u16::from_le_bytes([payload[0], payload[1]]) as usize
+            } else {
+                0
+            };
+            crate::ring_trace::note(
+                crate::ring_trace::What::Sent,
+                producer_id,
+                tag,
+                shape as usize,
+            );
         }
+        pushed
     }
 
     /// Adaptive-path pop. `consumer_id` selects the consumer's
@@ -1794,17 +2066,20 @@ impl AdaptiveRing {
             return self.ordered_recv_inner(ord, shape, consumer_id, out)
                 .map(|(n, _stamp)| n);
         }
-        // Stale walk: the previous shape's backlog drains first so
-        // a morph never strands (or reorders ahead of) in-flight
+        // Every shape the ring has left drains before the current one,
+        // so a morph never strands (or reorders ahead of) in-flight
         // items.
-        if let Some(stale) = self.stale_shape()
-            && stale != shape
-            && Self::may_walk_stale(stale, consumer_id)
-            && let Ok(n) = self.shape_pop(stale, consumer_id, out)
-        {
-            return Ok(n);
+        for used in self.other_used_shapes(shape) {
+            if !self.may_walk_stale(used, consumer_id) {
+                continue;
+            }
+            match self.shape_pop(used, consumer_id, out) {
+                Ok(n) => return Ok(n),
+                // Nothing carried in that one; the walk moves on.
+                Err(RingError::Empty) => {}
+                Err(e) => return Err(e),
+            }
         }
-        self.land_pending_shape();
         self.shape_pop(shape, consumer_id, out)
     }
 
@@ -1839,10 +2114,10 @@ impl AdaptiveRing {
         })
     }
 
-    /// Build the payload region on the SAME locale as the ring's own
+    /// Build the payload region on the same locale as the ring's own
     /// backings, so offset frames cross a process boundary. An Anon ring
     /// gets a private in-process region; a file- or shm-backed ring gets
-    /// a SHARED region named off the backing prefix (`<prefix>.frames.bin`
+    /// a shared region named off the backing prefix (`<prefix>.frames.bin`
     /// / `<prefix>_frames`) that every process attached to the ring maps.
     ///
     /// The region's locale must match the ring's: a payload above the
@@ -2056,16 +2331,24 @@ impl AdaptiveRing {
         match mode {
             OrderingMode::Unordered => {
                 let mut buf = [0u8; SPSC_PAYLOAD_BYTES];
-                // Stale walk first (a stamped ring's backings are
-                // all Lamport shapes, so the stale pop is the same
-                // stamped slot layout).
-                let popped = self.stale_shape()
-                    .filter(|stale| *stale != shape)
-                    .filter(|stale| Self::may_walk_stale(*stale, consumer_id))
-                    .and_then(|stale| {
-                        self.shape_pop(stale, consumer_id, &mut buf).ok()
-                    });
-                if popped.is_none() {
+                // The shapes the ring has left drain first (a stamped
+                // ring's backings are all Lamport shapes, so their pop
+                // is the same stamped slot layout).
+                let mut carried = false;
+                for used in self.other_used_shapes(shape) {
+                    if !self.may_walk_stale(used, consumer_id) {
+                        continue;
+                    }
+                    match self.shape_pop(used, consumer_id, &mut buf) {
+                        Ok(_) => {
+                            carried = true;
+                            break;
+                        }
+                        Err(RingError::Empty) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                if !carried {
                     match shape {
                         RingShape::Spsc => self.spsc.try_pop(&mut buf),
                         RingShape::Mpsc => self.mpsc_pop(&mut buf),
@@ -2083,9 +2366,9 @@ impl AdaptiveRing {
             }
             OrderingMode::MergeByStamp | OrderingMode::MergeStrict => {
                 // Always hold the single-drainer lease: consumers can
-                // JOIN at runtime, so a static 1-consumer bypass would
-                // leave a leaseless drainer racing the new joiner's
-                // leased one. Per-pop verification must stay OFF the
+                // join at runtime, and a static 1-consumer bypass leaves
+                // a leaseless drainer racing a new joiner's leased one.
+                // Per-pop verification must stay off the
                 // stamp-hot header line (producers fetch_add it every
                 // push; each extra consumer load of it costs a cache
                 // transfer): one load of the quiet lease-generation
@@ -2103,15 +2386,13 @@ impl AdaptiveRing {
                     }
                     seen.lease_gen.store(lease_gen_now, Ordering::Relaxed);
                 }
-                // Stale walk: merge within the stale shape's rings
-                // until that backlog drains, then merge the active
-                // shape. Stale items predate active items (producers
-                // switched at the tag flip), so stale-first keeps
-                // global stamp order across the morph boundary.
-                if let Some(stale) = self.stale_shape()
-                    && stale != shape
-                {
-                    match self.merge_pop(ord, stale, consumer_id, mode, out) {
+                // Merge within the shapes the ring has left until they
+                // drain, then the active shape. Their items predate the
+                // active ones (producers switched at the tag flip), so
+                // taking them first keeps global stamp order across the
+                // morph boundary.
+                for used in self.other_used_shapes(shape) {
+                    match self.merge_pop(ord, used, consumer_id, mode, out) {
                         Ok(result) => return Ok(result),
                         Err(RingError::Empty) => {}
                         Err(e) => return Err(e),
@@ -2141,10 +2422,10 @@ impl AdaptiveRing {
     /// - **Freshness guard** (time-based stamps, both merge modes,
     ///   only when at least one ring is empty): a candidate younger
     ///   than the guard window may be raced by a stamp a producer
-    ///   has not even RESERVED yet (cross-core clock skew); the
+    ///   has not even reserved yet (cross-core clock skew); the
     ///   merge re-peeks until the candidate ages out (bounded by
     ///   the guard, ~2us).
-    /// - **Watermark gate** (`MergeStrict` only): every EMPTY
+    /// - **Watermark gate** (`MergeStrict` only): every empty
     ///   in-use ring's watermark must have reached the candidate,
     ///   closing the not-yet-reserved case with zero time-semantics
     ///   assumptions. This couples release latency to the slowest
@@ -2181,7 +2462,7 @@ impl AdaptiveRing {
             return Err(RingError::LayoutMismatch);
         }
         // The release gates cover every producer slot that has ever
-        // stamped: the PUBLISHED slot count, not the region's
+        // stamped: the published slot count, not the region's
         // ceiling-sized line array (whose untouched tail would cost
         // thousands of loads per pop).
         let gate_lines = self.directory.published()
@@ -2332,6 +2613,11 @@ impl AdaptiveRing {
         let mut stuck: Option<(usize, u16)> = None;
         for i in 0..n {
             let idx = (start + i) % n;
+            // An owner read happens once per ring per scan and is most of
+            // the events a run produces; tracing it moved the timing
+            // enough to stop the race reproducing, so it stays untraced.
+            // Taking a slot, releasing one, popping and transferring are
+            // what say whether two threads held one slot at once.
             let (owner, pending) = self.directory.ring_owner(idx);
             if owner == me {
                 if pending != OWNER_NONE
@@ -2339,16 +2625,69 @@ impl AdaptiveRing {
                 {
                     continue; // handed off; not ours to drain anymore
                 }
-                if let Ok(bytes) = rings[idx].try_pop(out) {
-                    cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
-                    return Ok(bytes);
+                #[cfg(debug_assertions)]
+                crate::ring_trace::note(
+                    crate::ring_trace::What::Popped,
+                    idx,
+                    consumer_id,
+                    owner as usize,
+                );
+                crate::spsc_ring::set_pop_ring(idx);
+                match rings[idx].try_pop(out) {
+                    Ok(bytes) => {
+                        cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
+                        return Ok(bytes);
+                    }
+                    // Nothing here: the scan moves to the next ring.
+                    Err(RingError::Empty) => {}
+                    Err(e) => return Err(e),
                 }
             } else if owner == OWNER_NONE {
-                if self.directory.try_claim_ring(idx, me)
-                    && let Ok(bytes) = rings[idx].try_pop(out)
-                {
-                    cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
-                    return Ok(bytes);
+                if self.directory.try_claim_ring(idx, me) {
+                    #[cfg(debug_assertions)]
+                    crate::ring_trace::note(
+                        crate::ring_trace::What::ClaimedUnowned,
+                        idx,
+                        consumer_id,
+                        me as usize,
+                    );
+                    crate::spsc_ring::set_pop_ring(idx);
+                match rings[idx].try_pop(out) {
+                        Ok(bytes) => {
+                            cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
+                            return Ok(bytes);
+                        }
+                        // Claimed and empty: kept, and the scan goes on.
+                        Err(RingError::Empty) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            } else if !self.directory.consumer_slot_claimed(owner as usize) {
+                // The owner gave its slot up, so the ring is claimable
+                // and the pid probe has nothing to decide. Asking the
+                // bitmap costs no syscall, so this does not wait behind
+                // the rate limit below, which is there for an owner
+                // whose slot is still held by a process that is gone. A
+                // consumer that drains to empty once and stops would
+                // otherwise never reach that limit, and whatever the
+                // departed owner still held stays unreachable.
+                if self.directory.try_takeover(idx, owner, me) {
+                    #[cfg(debug_assertions)]
+                    crate::ring_trace::note(
+                        crate::ring_trace::What::TookOver,
+                        idx,
+                        consumer_id,
+                        owner as usize,
+                    );
+                    crate::spsc_ring::set_pop_ring(idx);
+                    match rings[idx].try_pop(out) {
+                        Ok(bytes) => {
+                            cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
+                            return Ok(bytes);
+                        }
+                        Err(RingError::Empty) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
             } else if stuck.is_none() && rings[idx].approx_len() > 0 {
                 stuck = Some((idx, owner));
@@ -2361,12 +2700,19 @@ impl AdaptiveRing {
             if probes % 1024 == 1023 {
                 self.note_scan_empty_while_others_hold(consumer_id, n);
             }
-            if probes % 1024 == 1023
-                && self.directory.try_takeover(idx, owner, me)
-                && let Ok(bytes) = rings[idx].try_pop(out)
-            {
-                cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
-                return Ok(bytes);
+            if probes % 1024 == 1023 && self.directory.try_takeover(idx, owner, me) {
+                TAKEOVERS.fetch_add(1, Ordering::Relaxed);
+                crate::spsc_ring::set_pop_ring(idx);
+                match rings[idx].try_pop(out) {
+                    Ok(bytes) => {
+                        cursor_line.0.store((idx + 1) % n, Ordering::Relaxed);
+                        return Ok(bytes);
+                    }
+                    // Taken over and empty after all: the scan ends with
+                    // the Empty the caller is told below.
+                    Err(RingError::Empty) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         Err(RingError::Empty)
@@ -2392,30 +2738,30 @@ impl AdaptiveRing {
         }
     }
 
-    /// Trigger a shape morph. NO data moves: the old shape's
-    /// backing becomes the STALE backing, producers follow the new
-    /// `shape_tag` immediately, and the consumer's pop path drains
-    /// the stale backlog first (the stale walk) before reading from
-    /// the new shape. This is what makes morphing safe under
-    /// saturating traffic - there is no transfer to overflow the
-    /// target's capacity and no second drainer racing the live
-    /// consumer (each backing keeps exactly one reader).
+    /// Trigger a shape morph. No data moves: the shape being left
+    /// joins the walked set, producers follow the new `shape_tag`
+    /// immediately, and the consumer's pop path drains every other
+    /// walked shape before reading the current one. This is what
+    /// makes morphing safe under saturating traffic - there is no
+    /// transfer to overflow the target's capacity and no second
+    /// drainer racing the live consumer (each backing keeps exactly
+    /// one reader).
     ///
-    /// The stale marker stays set until the NEXT morph, which
-    /// requires the backlog drained ([`RingError::StaleBacklog`]
-    /// otherwise - the sidecar's scan loop simply retries). Keeping
-    /// it set gives a producer whose push straddled the tag flip a
-    /// wide grace window: its item lands in the old backing, which
-    /// the consumer still walks.
+    /// A shape stays in the walked set for the life of the ring, so
+    /// a producer whose push straddles this tag flip lands in a
+    /// backing the consumer still walks however many morphs follow.
+    /// The set cannot shrink: the push that would be stranded has
+    /// not happened yet at the moment anything could ask whether
+    /// the backing is finished with.
     ///
     /// Bumps `pin_generation` so outstanding pins see
-    /// `is_still_valid() == false` and re-acquire. Pinned NATIVE
+    /// `is_still_valid() == false` and re-acquire. Pinned native
     /// pops (`spsc_try_pop` etc.) are shape-direct and do not walk
     /// the stale backing; consumers that pop through pins across
     /// morphs use [`AdaptiveRing::try_recv`] or
     /// [`PinnedRing::ordered_try_pop`], which do.
     ///
-    /// An explicit `morph_to` is a USER shape decision, so it pins
+    /// An explicit `morph_to` is the caller's shape decision, so it pins
     /// the shape (suppresses the automatic count-driven reshape)
     /// until [`resume_auto_shape`](Self::resume_auto_shape).
     pub fn morph_to(&self, new_shape: RingShape) -> Result<(), RingError> {
@@ -2441,43 +2787,26 @@ impl AdaptiveRing {
             return Err(RingError::LayoutMismatch);
         }
 
-        // One stale backing at a time: a second morph leaves the first
-        // one's backlog unreachable. The shape asked for is recorded
-        // and the pop path applies it once that backlog drains, which
-        // is the event that makes it safe and which the consumers are
-        // already driving.
-        let prior_stale = self.stale_shape_tag.load(Ordering::Acquire);
-        if prior_stale != STALE_NONE
-            && !self.backing_is_empty(RingShape::from_u8(prior_stale))
-        {
-            self.pending_shape_tag.store(new_shape as u8, Ordering::Release);
-            if ring_debug() {
-                ring_note(format_args!(
-                    "morph {old_shape:?} -> {new_shape:?} deferred behind the \
-                     {:?} backlog",
-                    RingShape::from_u8(prior_stale)
-                ));
-            }
-            return Err(RingError::StaleBacklog);
-        }
-        self.pending_shape_tag.store(STALE_NONE, Ordering::Release);
-
         // Bump the pin generation so existing pins see
-        // is_still_valid() == false on their next check; then
-        // publish old-as-stale before the new tag so a pop that
-        // observes the new shape also sees the stale marker.
+        // is_still_valid() == false on their next check; then record the
+        // shape being left as still-walked before publishing the new
+        // tag, so a pop that observes the new shape also sees it.
         self.pin_generation.fetch_add(1, Ordering::AcqRel);
-        self.stale_shape_tag.store(old_shape as u8, Ordering::Release);
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(
+            crate::ring_trace::What::Morphed,
+            usize::MAX,
+            old_shape as usize,
+            new_shape as usize,
+        );
+        self.mark_shape_used(old_shape);
+        self.mark_shape_used(new_shape);
         self.shape_tag.store(new_shape as u8, Ordering::Release);
         if ring_debug() {
             ring_note(format_args!(
-                "morph {old_shape:?} -> {new_shape:?}; stale now \
-                 {old_shape:?} (was {}), spsc {} mpsc {:?} mpmc {:?} vyukov {}",
-                if prior_stale == STALE_NONE {
-                    "none".to_owned()
-                } else {
-                    format!("{:?}", RingShape::from_u8(prior_stale))
-                },
+                "morph {old_shape:?} -> {new_shape:?}; walked shapes now \
+                 {:#06b}, spsc {} mpsc {:?} mpmc {:?} vyukov {}",
+                self.used_shapes.load(Ordering::Acquire),
                 self.spsc.approx_len(),
                 self.mpsc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
                 self.mpmc.rings.load().iter().map(|r| r.approx_len()).collect::<Vec<_>>(),
@@ -2485,39 +2814,6 @@ impl AdaptiveRing {
             ));
         }
         Ok(())
-    }
-
-    /// Apply a shape whose morph was deferred behind a stale backlog,
-    /// once that backlog is drained. Called from the pop path because
-    /// draining is what makes it safe, so the consumers that clear the
-    /// backlog are the ones that release the shape waiting on it.
-    fn land_pending_shape(&self) {
-        let want = self.pending_shape_tag.load(Ordering::Acquire);
-        if want == STALE_NONE {
-            return;
-        }
-        let stale = self.stale_shape_tag.load(Ordering::Acquire);
-        if stale != STALE_NONE && !self.backing_is_empty(RingShape::from_u8(stale)) {
-            return; // the backlog it waits on still holds items
-        }
-        if self
-            .pending_shape_tag
-            .compare_exchange(want, STALE_NONE, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            if ring_debug() {
-                ring_note(format_args!(
-                    "deferred morph to {:?} landing, backlog drained",
-                    RingShape::from_u8(want)
-                ));
-            }
-            if self.morph_shape(RingShape::from_u8(want)).is_err() {
-                // The pop path has no result to return; the morph that
-                // was waiting and still could not land is counted in
-                // morph_refusals().
-                self.note_morph_refusal();
-            }
-        }
     }
 
     /// Whether one shape's backing holds no items right now.
@@ -2530,25 +2826,65 @@ impl AdaptiveRing {
         }
     }
 
-    /// The stale shape still draining after the last morph, if any.
-    fn stale_shape(&self) -> Option<RingShape> {
-        let tag = self.stale_shape_tag.load(Ordering::Acquire);
-        if tag == STALE_NONE {
-            None
-        } else {
-            Some(RingShape::from_u8(tag))
+    /// Every shape this ring has been in apart from `current`, each of
+    /// which may still hold items a producer pushed after it stopped
+    /// being current.
+    fn other_used_shapes(&self, current: RingShape) -> impl Iterator<Item = RingShape> {
+        let set = self.used_shapes.load(Ordering::Acquire);
+        [RingShape::Spsc, RingShape::Mpsc, RingShape::Mpmc, RingShape::Vyukov]
+            .into_iter()
+            .filter(move |s| *s != current && set & (1 << *s as u8) != 0)
+    }
+
+    /// Note that `shape` has been in use, so the pop path keeps
+    /// draining it for the life of the ring.
+    fn mark_shape_used(&self, shape: RingShape) {
+        self.used_shapes.fetch_or(1 << shape as u8, Ordering::AcqRel);
+    }
+
+    /// Whether `consumer_id` may drain a backing of `shape`.
+    /// Single-reader backings (SPSC, MPSC) are walked by the designated
+    /// reader alone; the MPMC grid partitions per consumer and Vyukov
+    /// pops are CAS-safe for any consumer.
+    fn may_walk_stale(&self, shape: RingShape, consumer_id: usize) -> bool {
+        match shape {
+            RingShape::Spsc | RingShape::Mpsc => {
+                self.single_reader.load(Ordering::Acquire) == consumer_id as u64
+            }
+            RingShape::Mpmc | RingShape::Vyukov => true,
         }
     }
 
-    /// Whether `consumer_id` may drain a stale backing of `shape`.
-    /// Single-reader backings (SPSC, MPSC) are walked by consumer 0
-    /// only; the MPMC grid partitions per consumer and Vyukov pops
-    /// are CAS-safe for any consumer.
-    fn may_walk_stale(shape: RingShape, consumer_id: usize) -> bool {
-        match shape {
-            RingShape::Spsc | RingShape::Mpsc => consumer_id == 0,
-            RingShape::Mpmc | RingShape::Vyukov => true,
+    /// Re-derive which consumer a single-reader shape is served to.
+    ///
+    /// An incumbent that still holds its slot keeps the role, and only a
+    /// designation naming a slot nobody holds moves, to the lowest
+    /// claimed one. The role exists to make exactly one consumer walk a
+    /// Lamport backing; which one it is carries no meaning, so there is
+    /// nothing to gain by preferring a lower slot and something to lose.
+    ///
+    /// Moving it under an arriving peer is what there is to lose.
+    /// [`may_walk_stale`](Self::may_walk_stale) is checked before a pop
+    /// and the pop is not atomic with it, so a consumer that entered
+    /// `try_pop` as the reader is still copying when a lower slot is
+    /// claimed and takes the role. Both then read one core and both take
+    /// the same item. Leaving the incumbent alone removes that window:
+    /// an arrival never displaces a walk in flight, and a departure
+    /// cannot, because the consumer that leaves is the one that would
+    /// have been walking.
+    ///
+    /// Runs on every topology sync, because a designation that outlives
+    /// the consumer it names blinds its successor.
+    fn designate_single_reader(&self) {
+        let claimed = self.directory.claimed_consumer_slots();
+        let current = self.single_reader.load(Ordering::Acquire);
+        if claimed.iter().any(|slot| u64::from(*slot) == current) {
+            return;
         }
+        let who = claimed
+            .first()
+            .map_or(SINGLE_READER_DEFAULT, |slot| u64::from(*slot));
+        self.single_reader.store(who, Ordering::Release);
     }
 
     /// Unstamped pop from one shape's backing.
@@ -2558,22 +2894,74 @@ impl AdaptiveRing {
         consumer_id: usize,
         out: &mut [u8],
     ) -> Result<usize, RingError> {
-        // A single-reader shape is served to consumer 0 alone, the same
-        // rule `may_walk_stale` applies to a single-reader STALE
-        // backing. A consumer the current shape cannot serve reads
-        // empty and waits: the shape it needs arrives when the morph
-        // lands, and until then two of them draining one Lamport core
-        // would take the same items twice.
-        if !Self::may_walk_stale(shape, consumer_id) {
+        // A single-reader shape is served to the designated reader
+        // alone, whether it is the current backing or a stale one -
+        // `may_walk_stale` is the one rule for both. A consumer the
+        // shape cannot serve reads empty and waits: the shape it needs
+        // arrives when the morph lands, and until then two of them
+        // draining one Lamport core would take the same items twice.
+        if !self.may_walk_stale(shape, consumer_id) {
             return Err(RingError::Empty);
         }
-        match shape {
+        crate::spsc_ring::set_pop_context(consumer_id, shape as u8);
+        let took = match shape {
             RingShape::Spsc => self.spsc.try_pop(out),
             RingShape::Mpsc => self.mpsc_pop(out),
             RingShape::Mpmc => self.mpmc_pop(consumer_id, out),
             RingShape::Vyukov => self.vyukov.try_pop(out),
+        };
+        // The MPMC grid notes its pop against the ring it drained. The
+        // single-reader backings have no ring index, so they are noted
+        // against every dump, which is where a pop from one of them has
+        // to appear for a lost item to be accounted for.
+        #[cfg(debug_assertions)]
+        if took.is_ok() && shape != RingShape::Mpmc {
+            crate::ring_trace::note(
+                crate::ring_trace::What::Popped,
+                usize::MAX,
+                consumer_id,
+                shape as usize,
+            );
         }
+        if took.is_ok() {
+            LAST_POP_SHAPE.with(|c| c.set(shape as u8));
+        }
+        took
     }
+}
+
+thread_local! {
+    /// The backing the last successful pop on this thread came from.
+    /// A plain cell rather than an atomic: naming the backing with a
+    /// shared load costs enough to hide the window a two-reader race
+    /// opens, and this write costs nothing another thread can see.
+    static LAST_POP_SHAPE: std::cell::Cell<u8> = const { std::cell::Cell::new(u8::MAX) };
+}
+
+/// The backing this thread's last successful pop came from, or `None`
+/// before it has taken anything. See `LAST_POP_SHAPE`.
+pub fn last_pop_shape() -> Option<RingShape> {
+    LAST_POP_SHAPE.with(|c| {
+        let v = c.get();
+        if v == u8::MAX {
+            None
+        } else {
+            Some(RingShape::from_u8(v))
+        }
+    })
+}
+
+/// Rings taken from an owner whose consumer slot read released, counted
+/// for the whole process rather than per ring. A diagnostic: it answers
+/// whether the takeover path ran at all during a run, which is what a
+/// test chasing a two-reader window needs, and it is not a per-ring
+/// statistic anything should route on.
+static TAKEOVERS: AtomicU64 = AtomicU64::new(0);
+
+/// How many rings this process has taken over since it started. See
+/// `TAKEOVERS`.
+pub fn takeovers_observed() -> u64 {
+    TAKEOVERS.load(Ordering::Relaxed)
 }
 
 fn with_suffix(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
@@ -2581,6 +2969,120 @@ fn with_suffix(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     s.push(suffix);
     std::path::PathBuf::from(s)
 }
+
+/// What [`AdaptiveRing::unlink`] found under a path prefix.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnlinkReport {
+    /// Files removed.
+    pub removed: usize,
+    /// Files the prefix names that were not present.
+    pub missing: usize,
+    /// Files whose removal the OS refused.
+    pub failed: usize,
+    /// The first refusal: its path, the error's kind, and its text.
+    pub first_failure: Option<(std::path::PathBuf, std::io::ErrorKind, String)>,
+}
+
+impl UnlinkReport {
+    /// Remove one file into this report's counts: removed, missing, or
+    /// failed with the first refusal named.
+    pub fn remove(&mut self, path: std::path::PathBuf) {
+        match crate::region_file::remove(&path) {
+            Ok(()) => self.removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.missing += 1,
+            Err(e) => {
+                self.failed += 1;
+                if self.first_failure.is_none() {
+                    self.first_failure = Some((path, e.kind(), e.to_string()));
+                }
+            }
+        }
+    }
+}
+
+impl AdaptiveRing {
+    /// Remove every file a file-backed ring at `path_prefix` names, so no
+    /// later process attaches to it. Handles that are still open keep their
+    /// mappings until they drop; on Windows a mapped file cannot be removed,
+    /// and that refusal is counted.
+    ///
+    /// The peer directory is read first for the number of per-producer
+    /// backings, which registration may have grown past the creation hint;
+    /// `max_producers` is the floor for that scan, and the bound when the
+    /// directory is absent. A missing file is counted, not an error; a
+    /// refusal is counted and the first one is named.
+    pub fn unlink(path_prefix: impl AsRef<Path>, max_producers: usize) -> UnlinkReport {
+        let base = path_prefix.as_ref();
+        let mut report = UnlinkReport::default();
+        let peers = with_suffix(base, ".peers.bin");
+        let published = match PeerDirectory::open(&peers) {
+            Ok(directory) => directory.published().max(max_producers),
+            Err(RingError::IoError(std::io::ErrorKind::NotFound)) => max_producers,
+            Err(e) => {
+                report.failed += 1;
+                report.first_failure = Some((
+                    peers.clone(),
+                    std::io::ErrorKind::Other,
+                    format!("the peer directory could not be read: {e:?}"),
+                ));
+                max_producers
+            }
+        };
+        // The holders region goes with the rest. It is created only for
+        // a ring that opted into last-holder-unlinks, so on any other
+        // ring it counts as missing rather than failing - and leaving it
+        // behind would strand the one file that decides whether a later
+        // process may remove the ring at all.
+        for suffix in [
+            ".spsc.bin",
+            ".vyukov.bin",
+            ".frames.bin",
+            ".ordering.bin",
+            ".holders.bin",
+        ] {
+            report.remove(with_suffix(base, suffix));
+        }
+        for i in 0..published {
+            report.remove(with_suffix(base, &format!(".mpsc.{i}.bin")));
+            report.remove(with_suffix(base, &format!(".mpmc.{i}.bin")));
+        }
+        report.remove(peers);
+        report
+    }
+}
+
+/// Why [`AdaptiveRing::with_last_holder`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastHolderError {
+    /// An anonymous ring has no files, so there is nothing for a last
+    /// holder to remove and asking for the behavior is a mistake worth
+    /// reporting rather than a no-op worth hiding.
+    NoBackingFiles,
+    /// A shm-backed ring's holders region would have to live in the same
+    /// namespace as its other regions, and is not built yet. Refused
+    /// rather than silently placed on the filesystem, where the peers of
+    /// a shm ring would not find it.
+    ShmNotSupported,
+    /// The holders region itself refused: see
+    /// [`HoldersError`](crate::ring_holders::HoldersError).
+    Region(crate::ring_holders::HoldersError),
+}
+
+impl std::fmt::Display for LastHolderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LastHolderError::NoBackingFiles => {
+                write!(f, "an anonymous ring has no backing files to unlink")
+            }
+            LastHolderError::ShmNotSupported => {
+                write!(f, "a shm-backed ring has no holders region yet")
+            }
+            LastHolderError::Region(e) => write!(f, "the holders region refused: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LastHolderError {}
 
 /// Error type for AdaptiveRing registration / morph operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2620,7 +3122,7 @@ impl<'a> PinnedRing<'a> {
     /// Shape this pin was captured at.
     pub fn shape(&self) -> RingShape { self.shape }
 
-    /// Monitor-wait HINT for the consumer side of `shape`: an atom
+    /// Monitor-wait hint for the consumer side of `shape`: an atom
     /// whose Release-store accompanies (or is) the next publish a
     /// pop is waiting for. Arm `crate::monitor_wait::monitor_wait_u64`
     /// on it instead of burning a raw spin loop - on Windows the
@@ -2630,9 +3132,9 @@ impl<'a> PinnedRing<'a> {
     /// silicon), while a monitor-armed waiter wakes on the store
     /// itself.
     ///
-    /// Contract: this is a HINT, not a wake guarantee - on the
+    /// Contract: this is a hint, not a wake guarantee - on the
     /// multi-line shapes (MPSC/MPMC) it covers producer line 0
-    /// only, and on Vyukov it covers the slot at the CURRENT
+    /// only, and on Vyukov it covers the slot at the current
     /// consumer position (recompute after each pop). Callers must
     /// keep their waits budget-bounded and re-poll, which
     /// `monitor_wait_u64`'s budget enforces.
@@ -3037,6 +3539,16 @@ impl AdaptiveRingSidecar {
             let mut last_morph = std::time::Instant::now();
             let mut gate = crate::policy_gate::ConfidenceGate::new(gate_cfg);
             while !stop_c.load(Ordering::Acquire) {
+                // Read before the counts, and beside them rather than at
+                // the morph. Before, because a claim raises the count and
+                // then takes the bit, so a bit seen here was counted
+                // before it and the count read next includes it - the
+                // other order lets a claim land between the two and print
+                // a disagreement that means nothing. Beside, because the
+                // gate holds a decision across scans, so both halves have
+                // to name one instant.
+                #[cfg(debug_assertions)]
+                let claimed = ring.claimed_populations();
                 let obs = PolicyObservation {
                     active_producers: ring.active_producers(),
                     active_consumers: ring.active_consumers(),
@@ -3045,14 +3557,35 @@ impl AdaptiveRingSidecar {
                     stamped: ring.is_stamped(),
                 };
                 // Policy-driven morphs go through the internal morph:
-                // a sidecar IS an automatic driver, so it must not
+                // a sidecar is an automatic driver, so it must not
                 // pin the shape the way an explicit morph_to does.
                 if let Some(new_shape) = gate
                     .observe(policy.decide(&obs).map(|s| ring.contract_filtered_shape(s)))
-                    && ring.morph_shape(new_shape).is_ok()
                 {
-                    last_morph = std::time::Instant::now();
-                    morphs_c.fetch_add(1, Ordering::Relaxed);
+                    // The counts the sidecar decided on, recorded before
+                    // the morph lands. The gate can hold a decision for
+                    // several scans, so the counts that produced it are
+                    // not necessarily the counts in force now, and a
+                    // dump cannot tell the two apart without this.
+                    #[cfg(debug_assertions)]
+                    {
+                        crate::ring_trace::note(
+                            crate::ring_trace::What::Counts,
+                            usize::MAX,
+                            obs.active_producers,
+                            obs.active_consumers,
+                        );
+                        crate::ring_trace::note(
+                            crate::ring_trace::What::Claimed,
+                            usize::MAX,
+                            claimed.0,
+                            claimed.1,
+                        );
+                    }
+                    if ring.morph_shape(new_shape).is_ok() {
+                        last_morph = std::time::Instant::now();
+                        morphs_c.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 std::thread::sleep(scan_interval);
             }
@@ -3066,7 +3599,7 @@ impl AdaptiveRingSidecar {
         }
     }
 
-    /// Spawn a sidecar that consults BOTH axes every scan tick: the
+    /// Spawn a sidecar that consults both axes every scan tick: the
     /// shape policy (peer counts + the QoS ordering declaration, via
     /// [`QosRingShapePolicy`] or any custom [`RingShapePolicy`]) and
     /// the ordering policy (declaration + observed inversion rate).
@@ -3079,17 +3612,17 @@ impl AdaptiveRingSidecar {
     ///   `set_ordering_mode` (counted in
     ///   [`ordering_flips`](Self::ordering_flips)).
     ///
-    /// The shape axis is UNGATED by default: capacity-class morphs
+    /// The shape axis is ungated by default: capacity-class morphs
     /// are cheap to reverse (the warm-backing path makes them
     /// microsecond-scale), so tracking load faithfully beats
-    /// deliberating. The ordering AUTO-arm is GATED by default: the
+    /// deliberating. The ordering auto-arm is gated by default: the
     /// inversion-rate-driven `Unordered -> MergeByStamp` flip is
     /// one-way (merged pops read zero inversions, so there is no
     /// symmetric signal to walk it back), and a one-way decision
     /// taken on a single noisy scan is unrecoverable. The gate
     /// makes the auto-arm demand sustained inversions before it
     /// commits. Explicit caller declarations (`GlobalFifo` arm,
-    /// declaration withdrawal) are NOT noise and fire immediately -
+    /// declaration withdrawal) are not noise and fire immediately -
     /// only the auto-detected arm is deliberated.
     ///
     /// `spawn_with_qos_gated` overrides both axes with one explicit
@@ -3113,11 +3646,11 @@ impl AdaptiveRingSidecar {
     }
 
     /// As [`spawn_with_qos`](Self::spawn_with_qos) with confidence
-    /// gates on BOTH axes set from one explicit config - a shape
+    /// gates on both axes set from one explicit config - a shape
     /// gate and an ordering-auto-arm gate (each accumulates its own
     /// conviction; a peer-count change shocks both). `GateConfig::default()`
     /// (disabled) reproduces the fully-ungated sidecar; an enabled
-    /// config gates the shape morph AND the ordering auto-arm.
+    /// config gates the shape morph and the ordering auto-arm.
     /// Explicit ordering declarations always fire immediately
     /// regardless of config - the gate governs the auto-detected
     /// arm only.
@@ -3166,6 +3699,16 @@ impl AdaptiveRingSidecar {
             let mut last_peers = (0usize, 0usize);
             let mut first_scan = true;
             while !stop_c.load(Ordering::Acquire) {
+                // Read before the counts, and beside them rather than at
+                // the morph. Before, because a claim raises the count and
+                // then takes the bit, so a bit seen here was counted
+                // before it and the count read next includes it - the
+                // other order lets a claim land between the two and print
+                // a disagreement that means nothing. Beside, because the
+                // gate holds a decision across scans, so both halves have
+                // to name one instant.
+                #[cfg(debug_assertions)]
+                let claimed = ring.claimed_populations();
                 let obs = PolicyObservation {
                     active_producers: ring.active_producers(),
                     active_consumers: ring.active_consumers(),
@@ -3183,10 +3726,31 @@ impl AdaptiveRingSidecar {
 
                 if let Some(new_shape) = shape_gate
                     .observe(shape_policy.decide(&obs).map(|s| ring.contract_filtered_shape(s)))
-                    && ring.morph_shape(new_shape).is_ok()
                 {
-                    last_morph = std::time::Instant::now();
-                    morphs_c.fetch_add(1, Ordering::Relaxed);
+                    // The counts this decision was taken on, beside what
+                    // the bitmaps said at the same instant. A morph to a
+                    // shape narrower than the peers actually present costs
+                    // an item, and the pair says which of the two reads is
+                    // the wrong one.
+                    #[cfg(debug_assertions)]
+                    {
+                        crate::ring_trace::note(
+                            crate::ring_trace::What::Counts,
+                            usize::MAX,
+                            obs.active_producers,
+                            obs.active_consumers,
+                        );
+                        crate::ring_trace::note(
+                            crate::ring_trace::What::Claimed,
+                            usize::MAX,
+                            claimed.0,
+                            claimed.1,
+                        );
+                    }
+                    if ring.morph_shape(new_shape).is_ok() {
+                        last_morph = std::time::Instant::now();
+                        morphs_c.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
 
                 if let Some(current_mode) = ring.ordering_mode() {
@@ -3337,6 +3901,195 @@ mod tests {
         }
     }
 
+    /// The files under a prefix whose names start with `stem`, sorted.
+    fn files_named_like(dir: &Path, stem: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("the temp directory lists") {
+            let entry = entry.expect("a temp directory entry reads");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(stem) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
+    }
+
+    /// An arriving consumer never takes the single-reader role off a
+    /// consumer that still holds its slot, however low the slot it
+    /// claims.
+    ///
+    /// The role is checked before a pop and the pop is not atomic with
+    /// the check, so a reader displaced mid-copy keeps copying while its
+    /// replacement starts, and both take the same item off a Lamport
+    /// core. Nothing about the role needs the lowest slot, so the way to
+    /// close that window is to not move it.
+    #[test]
+    fn an_arriving_consumer_does_not_take_the_reader_role_from_a_live_one() {
+        let ring = AdaptiveRing::create_anon(1, 4, 64).expect("an anonymous ring");
+        let c0 = ring.register_consumer().expect("consumer 0");
+        let c1 = ring.register_consumer().expect("consumer 1");
+        let c2 = ring.register_consumer().expect("consumer 2");
+        assert_eq!((c0, c1, c2), (0, 1, 2), "slots come out lowest first");
+
+        // With 0 and 1 gone the role has nowhere to sit but 2, which is
+        // the position the hunt caught: a high slot reading a Lamport
+        // backing alone.
+        ring.unregister_consumer(c0);
+        ring.unregister_consumer(c1);
+        assert!(
+            ring.may_walk_stale(RingShape::Spsc, c2),
+            "the only claimed consumer is the reader",
+        );
+
+        // A new consumer takes slot 0, the lowest there is.
+        let fresh = ring.register_consumer().expect("a consumer arrives");
+        assert_eq!(fresh, 0, "and it claims the slot the departed ones freed");
+        assert!(
+            ring.may_walk_stale(RingShape::Spsc, c2),
+            "the incumbent still holds the role while it still holds its slot",
+        );
+        assert!(
+            !ring.may_walk_stale(RingShape::Spsc, fresh),
+            "and the arrival does not get it, which is what would have let \
+             two readers onto one core",
+        );
+
+        // Once the incumbent leaves, the role has to move or the ring
+        // goes unread.
+        ring.unregister_consumer(c2);
+        assert!(
+            ring.may_walk_stale(RingShape::Spsc, fresh),
+            "a role naming a departed consumer moves to one that is there",
+        );
+    }
+
+    /// A held ring outlives every holder but the last, and the last one
+    /// out takes the backings with it.
+    ///
+    /// The middle assertion is the one worth having: after the first
+    /// holder drops, the files are still there. A last-holder rule that
+    /// removed them on the first release would pass a test that only
+    /// checked the end state.
+    #[test]
+    fn the_last_holder_out_removes_the_backings() {
+        use crate::ring_holders::LastHolder;
+
+        let dir = std::env::temp_dir();
+        let stem = format!(
+            "subetha_lastholder_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let prefix = dir.join(&stem);
+
+        let creator = AdaptiveRing::create(&prefix, 1, 1, 64)
+            .expect("create a file-backed ring")
+            .with_last_holder(4, LastHolder::Unlink, &[])
+            .expect("the creator takes a hold");
+        let opener = AdaptiveRing::open(&prefix, 1, 1, 64)
+            .expect("open the same ring")
+            .with_last_holder(4, LastHolder::Unlink, &[])
+            .expect("the opener takes a hold");
+        assert_eq!(creator.holders(), Some(2), "both holds are counted");
+        assert_eq!(opener.holders(), Some(2));
+
+        drop(creator);
+        let mid = files_named_like(&dir, &stem);
+        assert!(
+            mid.iter().any(|name| name.ends_with(".peers.bin")),
+            "one holder of two leaving must leave the ring alone: {mid:?}",
+        );
+        assert_eq!(opener.holders(), Some(1), "the survivor sees itself alone");
+
+        drop(opener);
+        let after = files_named_like(&dir, &stem);
+        assert!(
+            after.is_empty(),
+            "the last holder out removes every backing, including its own holders \
+             region: {after:?}",
+        );
+    }
+
+    /// A ring nobody asked to be unlinked keeps its backings, which is
+    /// the default and the normal cross-process shape.
+    #[test]
+    fn a_ring_without_a_hold_keeps_its_backings() {
+        let dir = std::env::temp_dir();
+        let stem = format!(
+            "subetha_nohold_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let prefix = dir.join(&stem);
+        {
+            let ring = AdaptiveRing::create(&prefix, 1, 1, 64).expect("create a ring");
+            assert_eq!(ring.holders(), None, "no hold was asked for");
+        }
+        let after = files_named_like(&dir, &stem);
+        assert!(
+            after.iter().any(|name| name.ends_with(".peers.bin")),
+            "a ring with no hold outlives its handle: {after:?}",
+        );
+        AdaptiveRing::unlink(&prefix, 1);
+    }
+
+    /// The locales that cannot carry a hold say so by name instead of
+    /// accepting the call and doing nothing.
+    #[test]
+    fn a_locale_that_cannot_carry_a_hold_refuses_by_name() {
+        use crate::ring_holders::LastHolder;
+
+        let anon = AdaptiveRing::create_anon(1, 1, 64).expect("an anonymous ring");
+        match anon.with_last_holder(2, LastHolder::Unlink, &[]) {
+            Err(LastHolderError::NoBackingFiles) => {}
+            Err(other) => panic!("an anonymous ring refused for the wrong reason: {other}"),
+            Ok(_) => panic!("an anonymous ring has no files for a last holder to remove"),
+        }
+    }
+
+    /// `unlink` removes every file a prefix names, including a backing
+    /// grown past the creation hint, and a second unlink finds nothing.
+    #[test]
+    fn unlink_removes_every_backing_including_grown_ones() {
+        let dir = std::env::temp_dir();
+        let stem = format!(
+            "subetha_unlink_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let prefix = dir.join(&stem);
+        {
+            let ring = AdaptiveRing::create(&prefix, 1, 1, 64).expect("create a file-backed ring");
+            ring.register_producer().expect("the first producer registers");
+            ring.register_producer().expect("registration past the hint grows the ring");
+        }
+        let before = files_named_like(&dir, &stem);
+        assert!(
+            before.iter().any(|name| name.ends_with(".mpsc.1.bin")),
+            "growth past the hint made a second producer backing: {before:?}"
+        );
+
+        let report = AdaptiveRing::unlink(&prefix, 1);
+        assert_eq!(report.failed, 0, "{:?}", report.first_failure);
+        assert_eq!(report.removed, before.len(), "{before:?}");
+        assert_eq!(files_named_like(&dir, &stem), Vec::<String>::new());
+
+        let again = AdaptiveRing::unlink(&prefix, 1);
+        assert_eq!(again.removed, 0);
+        assert_eq!(again.failed, 0);
+        assert!(again.missing > 0);
+    }
+
     #[test]
     fn create_starts_in_spsc_shape() {
         let ring = AdaptiveRing::create_anon(4, 4, 64).unwrap();
@@ -3394,6 +4147,140 @@ mod tests {
                    "morph_to(same shape) must not bump pin_generation");
     }
 
+    /// A single-reader shape serves consumer 0 and refuses every other
+    /// slot, so the surviving consumer has to be consumer 0. Slot ids
+    /// come from the directory's lowest-free-bit claim, so the consumer
+    /// that outlives the others holds whatever slot it claimed at the
+    /// start - and when the shape then morphs to a single-reader one it
+    /// reads empty on a ring that is not empty, for as long as it lives.
+    #[test]
+    fn the_last_consumer_left_is_served_whatever_slot_it_holds() {
+        let ring = AdaptiveRing::create_anon(4, 4, 64).unwrap();
+        let first = ring.register_consumer().unwrap();
+        let survivor = ring.register_consumer().unwrap();
+        assert_ne!(survivor, 0, "the survivor must not be consumer 0");
+
+        // The one that held slot 0 leaves; the shape follows the counts
+        // down to a single reader.
+        ring.unregister_consumer(first);
+
+        let mut buf = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        buf[..4].copy_from_slice(&7u32.to_le_bytes());
+        ring.try_send(0, &buf).unwrap();
+
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        let took = ring.try_recv(survivor, &mut out);
+        assert!(
+            took.is_ok(),
+            "the only consumer left read empty from shape {:?} while \
+             holding slot {survivor}: it is served nothing it publishes \
+             and the ring silently stops delivering",
+            ring.current_shape(),
+        );
+        assert_eq!(&out[..4], &7u32.to_le_bytes());
+    }
+
+    /// Each worker publishes its own stream and drains whatever it can
+    /// reach, then leaves; a last consumer takes what is still in the
+    /// ring. Nothing published may go missing across the morphs that the
+    /// falling peer counts drive. Mirrors the C race workload.
+    ///
+    /// A frame names the worker that published it, not the producer slot
+    /// it was published from: a slot recycles the moment its holder
+    /// leaves, so a worker that finishes before the next one registers
+    /// hands its slot on, and two workers then publish from one slot in
+    /// turn. The worker index is the one tag that stays distinct for the
+    /// whole run.
+    #[test]
+    fn nothing_published_is_lost_as_the_peers_leave() {
+        use std::sync::atomic::AtomicBool;
+
+        const WORKERS: usize = 4;
+        const ROUNDS: usize = 500;
+        /// The C workload's migrant: eight bytes of round, a step count,
+        /// then eight three-byte steps carrying the publisher.
+        const MIGRANT_BYTES: usize = 34;
+
+        fn mark(seen: &[AtomicBool], buf: &[u8]) {
+            let round = u64::from_le_bytes(buf[..8].try_into().expect("eight bytes"));
+            let worker = buf[12] as usize;
+            seen[worker * ROUNDS + round as usize].store(true, Ordering::Release);
+        }
+
+        let ring = AdaptiveRing::create_anon(WORKERS, WORKERS, 512).unwrap();
+        let seen: Vec<AtomicBool> =
+            (0..WORKERS * ROUNDS).map(|_| AtomicBool::new(false)).collect();
+        // The producer slot each worker published from, so a failure can
+        // name the ring its stream went into.
+        let slots: Vec<AtomicUsize> =
+            (0..WORKERS).map(|_| AtomicUsize::new(usize::MAX)).collect();
+
+        std::thread::scope(|scope| {
+            let ring = &ring;
+            let seen = &seen[..];
+            for (worker, slot) in slots.iter().enumerate() {
+                scope.spawn(move || {
+                    let pid = ring.register_producer().expect("a producer slot");
+                    slot.store(pid, Ordering::Release);
+                    let cid = ring.register_consumer().expect("a consumer slot");
+                    let mut buf = [0u8; MIGRANT_BYTES];
+                    let mut out = Vec::new();
+                    for r in 0..ROUNDS as u64 {
+                        buf[..8].copy_from_slice(&r.to_le_bytes());
+                        buf[12] = worker as u8;
+                        loop {
+                            match ring.send_frame(pid, &buf) {
+                                Ok(_) => break,
+                                Err(RingError::Full) => std::hint::spin_loop(),
+                                Err(e) => panic!("a worker publish failed: {e:?}"),
+                            }
+                        }
+                        loop {
+                            match ring.recv_frame(cid, &mut out) {
+                                Ok(_) => mark(seen, &out),
+                                Err(RingError::Empty) => break,
+                                Err(e) => panic!("a worker adopt failed: {e:?}"),
+                            }
+                        }
+                    }
+                    ring.unregister_consumer(cid);
+                    ring.unregister_producer(pid);
+                });
+            }
+        });
+
+        let last = ring.register_consumer().expect("a last consumer slot");
+        let mut out = Vec::new();
+        loop {
+            match ring.recv_frame(last, &mut out) {
+                Ok(_) => mark(&seen, &out),
+                Err(RingError::Empty) => break,
+                Err(e) => panic!("the final drain failed: {e:?}"),
+            }
+        }
+
+        let lost: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, got)| !got.load(Ordering::Acquire))
+            .map(|(slot, _)| slot)
+            .collect();
+        if let Some(first) = lost.first() {
+            let named: Vec<String> = lost
+                .iter()
+                .map(|slot| format!("worker {} round {}", slot / ROUNDS, slot % ROUNDS))
+                .collect();
+            let worker = first / ROUNDS;
+            let ring = slots[worker].load(Ordering::Acquire);
+            let history = crate::ring_trace::recent_for(ring, usize::MAX).join("\n  ");
+            panic!(
+                "published and never delivered: {named:?}\n  \
+                 worker {worker} published from producer slot {ring}; what happened \
+                 to that ring before this, oldest first:\n  {history}"
+            );
+        }
+    }
+
     #[test]
     fn morph_preserves_in_flight_items_via_stale_walk() {
         let ring = AdaptiveRing::create_anon(4, 4, 64).unwrap();
@@ -3426,6 +4313,275 @@ mod tests {
         assert_eq!(seen, vec![0u32, 1, 2, 99],
                    "stale backlog must drain before post-morph items");
         assert!(ring.is_empty());
+    }
+
+    /// Every item survives consumers coming and going at the same time.
+    ///
+    /// `unregister_consumer` hands each ring the leaver owns straight to
+    /// another consumer, and takes no lock while doing it. Two consumers
+    /// leaving together can therefore hand a ring to one that is itself
+    /// half-way out: the receiver has already walked past that ring and
+    /// releases its slot, leaving the ring owned by a slot nobody holds.
+    /// `rebalance_ownership` reclaims a ring only from `OWNER_NONE`, so
+    /// one left in that state is never reclaimed and what it holds is
+    /// unreachable.
+    ///
+    /// The workers therefore register, drain and unregister against one
+    /// another; a sequential walk never reaches that interleaving.
+    #[test]
+    fn items_survive_consumers_leaving_at_the_same_time() {
+        consumers_leaving_at_the_same_time(false);
+    }
+
+    /// The frame path through the same race. Frames carry a descriptor
+    /// and, past the inline size, a region block, so they can strand
+    /// where a bare slot payload does not; the workloads that lose an
+    /// item all send frames.
+    #[test]
+    fn frames_survive_consumers_leaving_at_the_same_time() {
+        consumers_leaving_at_the_same_time(true);
+    }
+
+    fn consumers_leaving_at_the_same_time(frames: bool) {
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        const WORKERS: usize = 4;
+        const CYCLES: usize = 2_000;
+        // The scale the unbounded form of this test failed at. At a
+        // fraction of it the run finishes in well under a second and the
+        // consumers never overlap enough to race. It is a ceiling, not a
+        // target: the workers run a fixed number of cycles and then stop
+        // the producer, so a run that gets there is bounded either way.
+        const TOTAL: u64 = 4_000_000;
+
+        let ring = Arc::new(AdaptiveRing::create_anon(8, 8, 64).unwrap());
+        let sent = Arc::new(AtomicU64::new(0));
+
+        // The workers stop after a fixed number of cycles; without this
+        // the producer would fill the ring and spin on a yield forever
+        // with nobody left to drain it.
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Each item carries its own sequence number, so the tally can
+        // name the items that went missing and the ones that arrived
+        // twice. A bare count cannot tell a loss from a duplicate that
+        // masks one.
+        //
+        // It also carries the attempt that wrote it, counting every call
+        // including the refused ones. Two deliveries of one sequence
+        // number with different attempts were written twice, which is a
+        // push that published a slot and then reported failure; with the
+        // same attempt they were delivered twice from one write. The two
+        // are different defects and the tally has to say which.
+        let producer_id = ring.register_producer().unwrap();
+        let producer = {
+            let ring = Arc::clone(&ring);
+            let sent = Arc::clone(&sent);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut buf = [7u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+                let mut next = 0u64;
+                let mut attempt = 0u64;
+                while next < TOTAL && !stop.load(Ordering::Acquire) {
+                    attempt += 1;
+                    buf[..8].copy_from_slice(&next.to_le_bytes());
+                    buf[8..16].copy_from_slice(&attempt.to_le_bytes());
+                    let sent_one = if frames {
+                        // The size race_bus sends: inline, one slot.
+                        ring.send_frame(producer_id, &buf[..34]).map(|_| ())
+                    } else {
+                        ring.try_send(producer_id, &buf)
+                    };
+                    match sent_one {
+                        Ok(()) => {
+                            next += 1;
+                            sent.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // Full: let a consumer run rather than burn the
+                        // core on a ring nobody is draining.
+                        Err(RingError::Full) => std::thread::yield_now(),
+                        Err(e) => panic!("the producer could not send item {next}: {e:?}"),
+                    }
+                }
+            })
+        };
+
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let ring = Arc::clone(&ring);
+                std::thread::spawn(move || {
+                    let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+                    let mut frame = Vec::new();
+                    let mut mine: Vec<Delivery> = Vec::new();
+                    for _ in 0..CYCLES {
+                        // A producer slot as well, so the peer counts
+                        // move on both axes the way an explorer that
+                        // publishes and adopts moves them.
+                        let p = ring.register_producer().expect("a producer slot");
+                        let c = ring.register_consumer().expect("a consumer slot");
+                        loop {
+                            let taken = if frames {
+                                match ring.recv_frame(c, &mut frame) {
+                                    Ok(_) => Some(&frame[..16]),
+                                    Err(RingError::Empty) => None,
+                                    Err(e) => panic!("recv_frame on consumer {c}: {e:?}"),
+                                }
+                            } else {
+                                match ring.try_recv(c, &mut out) {
+                                    Ok(_) => Some(&out[..16]),
+                                    Err(RingError::Empty) => None,
+                                    Err(e) => panic!("try_recv on consumer {c}: {e:?}"),
+                                }
+                            };
+                            match taken {
+                                Some(head) => mine.push(stamped(head, c)),
+                                None => break,
+                            }
+                        }
+                        // Consumer then producer, the order an explorer
+                        // releases them in.
+                        ring.unregister_consumer(c);
+                        ring.unregister_producer(p);
+                    }
+                    mine
+                })
+            })
+            .collect();
+
+        let mut seen: Vec<Delivery> = Vec::new();
+        for worker in workers {
+            seen.extend(worker.join().expect("a worker thread finishes"));
+        }
+        stop.store(true, Ordering::Release);
+        producer.join().expect("the producer thread finishes");
+
+        // The churn is quiesced, so every slot the workers gave up must
+        // now name no process. A slot left naming one is a release that
+        // cleared the bit before writing the sentinel, and the reaper
+        // would then be free to take a slot whose holder is still live -
+        // which is what put two readers on one ring.
+        ring.directory.assert_free_slots_name_no_process();
+
+        // Whatever is still in the ring belongs to the tally too; the
+        // claim is that nothing was stranded, not that nothing is left.
+        let last = ring.register_consumer().unwrap();
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        let mut frame = Vec::new();
+        loop {
+            let taken = if frames {
+                match ring.recv_frame(last, &mut frame) {
+                    Ok(_) => Some(&frame[..16]),
+                    Err(RingError::Empty) => None,
+                    Err(e) => panic!("the final drain failed: {e:?}"),
+                }
+            } else {
+                match ring.try_recv(last, &mut out) {
+                    Ok(_) => Some(&out[..16]),
+                    Err(RingError::Empty) => None,
+                    Err(e) => panic!("the final drain failed: {e:?}"),
+                }
+            };
+            match taken {
+                Some(head) => seen.push(stamped(head, last)),
+                None => break,
+            }
+        }
+
+        let sent = sent.load(Ordering::Relaxed);
+        seen.sort_unstable();
+        // A sequence number delivered more than once, with the attempts
+        // that carried it. Different attempts mean the push wrote it
+        // twice; one attempt twice means one write was delivered twice.
+        let mut written_twice: Vec<(u64, u64, u64)> = Vec::new();
+        type Twice = (u64, u64, usize, usize, &'static str, &'static str);
+        let mut delivered_twice: Vec<Twice> = Vec::new();
+        for w in seen.windows(2) {
+            let (first, second) = (w[0], w[1]);
+            if first.seq != second.seq {
+                continue;
+            }
+            if first.attempt == second.attempt {
+                delivered_twice.push((
+                    first.seq,
+                    first.attempt,
+                    first.consumer,
+                    second.consumer,
+                    shape_name(first.shape),
+                    shape_name(second.shape),
+                ));
+            } else {
+                written_twice.push((first.seq, first.attempt, second.attempt));
+            }
+        }
+        written_twice.truncate(8);
+        delivered_twice.truncate(8);
+
+        let mut numbers: Vec<u64> = seen.iter().map(|d| d.seq).collect();
+        numbers.dedup();
+        let missing: Vec<u64> = (0..sent)
+            .filter(|n| numbers.binary_search(n).is_err())
+            .take(8)
+            .collect();
+
+        assert!(
+            written_twice.is_empty() && delivered_twice.is_empty() && missing.is_empty(),
+            "every item sent while consumers came and went arrives exactly \
+             once: {} sent, {} delivered, {} of them distinct; written twice \
+             (number, attempt, attempt) {:?}; delivered twice (number, \
+             attempt, consumer, consumer, shape, shape) {:?}; missing {:?}; rings taken \
+             over from a released owner, this process: {}",
+            sent,
+            seen.len(),
+            numbers.len(),
+            written_twice,
+            delivered_twice,
+            missing,
+            takeovers_observed(),
+        );
+    }
+
+    /// One delivery: what the item said, and who took it from where. Two
+    /// deliveries of one number under different consumers are two readers
+    /// on one queue; under one consumer they are one reader twice.
+    /// One delivery: what the item said, and who took it. Reading the
+    /// shape here too would cost an atomic load on every pop, and the
+    /// window this chases is narrow enough that the load closed it: fifty
+    /// runs carrying the shape reproduced nothing where six runs without
+    /// it had.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    struct Delivery {
+        seq: u64,
+        attempt: u64,
+        consumer: usize,
+        /// The backing it came from as its discriminant, read from this
+        /// thread's own cell. Kept raw so the record orders by number
+        /// first; `shape_name` renders it.
+        shape: u8,
+    }
+
+    /// The backing a delivery's discriminant names.
+    fn shape_name(raw: u8) -> &'static str {
+        if raw == u8::MAX {
+            return "none";
+        }
+        match RingShape::from_u8(raw) {
+            RingShape::Spsc => "spsc",
+            RingShape::Mpsc => "mpsc",
+            RingShape::Mpmc => "mpmc",
+            RingShape::Vyukov => "vyukov",
+        }
+    }
+
+    /// The sequence number and the attempt that wrote it, from the head of
+    /// a delivered payload, with the consumer that took it and the
+    /// backing it came out of.
+    fn stamped(head: &[u8], consumer: usize) -> Delivery {
+        Delivery {
+            seq: u64::from_le_bytes(head[..8].try_into().expect("eight bytes of number")),
+            attempt: u64::from_le_bytes(head[8..16].try_into().expect("eight bytes of attempt")),
+            consumer,
+            shape: last_pop_shape().map_or(u8::MAX, |s| s as u8),
+        }
     }
 
     #[test]
@@ -3518,7 +4674,7 @@ mod tests {
         let total = (PER * PRODUCERS) as usize;
 
         // Vyukov is the true-MPMC shape (one SharedRing, per-slot
-        // sequence CAS), safe for many producers AND many consumers
+        // sequence CAS), safe for many producers and many consumers
         // with no partitioning. This exercises the shared payload
         // region under concurrent alloc (producers) and free
         // (consumers) at once.
@@ -3582,21 +4738,43 @@ mod tests {
                 "every id delivered exactly once");
     }
 
+    /// A morph does not wait on a backlog, so two in a row must leave
+    /// the first backing's items reachable: that backing is walked for
+    /// the life of the ring, however many shapes come after it.
     #[test]
-    fn second_morph_blocked_until_stale_backlog_drains() {
+    fn two_morphs_in_a_row_strand_nothing() {
         let ring = AdaptiveRing::create_anon(4, 4, 64).unwrap();
         ring.try_send(0, &[7u8; 8]).unwrap();
+
+        // Both proceed with the item still sitting in the SPSC backing.
         ring.morph_to(RingShape::Mpsc).unwrap();
-
-        // The SPSC backlog has not drained; another morph must wait.
-        assert_eq!(ring.morph_to(RingShape::Mpmc).unwrap_err(),
-                   RingError::StaleBacklog);
-
-        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
-        ring.try_recv(0, &mut out).unwrap();
-        // Drained: the next morph proceeds.
         ring.morph_to(RingShape::Mpmc).unwrap();
         assert_eq!(ring.current_shape(), RingShape::Mpmc);
+
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        ring.try_recv(0, &mut out).expect(
+            "the item is still reachable two shapes after the one it was \
+             pushed into",
+        );
+        assert_eq!(&out[..8], &[7u8; 8]);
+    }
+
+    /// A push that lands in a backing after the ring has moved on twice
+    /// is the shape of the loss this walk exists for: the producer read
+    /// the tag, the morphs happened, and the push arrives late.
+    #[test]
+    fn a_push_landing_two_morphs_late_is_still_delivered() {
+        let ring = AdaptiveRing::create_anon(4, 4, 64).unwrap();
+        ring.morph_to(RingShape::Mpsc).unwrap();
+        ring.morph_to(RingShape::Mpmc).unwrap();
+
+        // Straight into the backing the ring left first.
+        ring.spsc.try_push(&[9u8; 8]).unwrap();
+
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        ring.try_recv(0, &mut out)
+            .expect("a late push into a left-behind backing is still walked");
+        assert_eq!(&out[..8], &[9u8; 8]);
     }
 
     #[test]
@@ -3607,7 +4785,7 @@ mod tests {
         let id2 = ring.register_producer().unwrap();
         assert_eq!((id0, id1, id2), (0, 1, 2));
 
-        // Past the construction hint the ring GROWS instead of
+        // Past the construction hint the ring grows instead of
         // erroring: a 4th producer gets slot 3 and a live backing.
         let id3 = ring.register_producer().unwrap();
         assert_eq!(id3, 3);
@@ -3622,12 +4800,12 @@ mod tests {
         assert!(n >= 8, "popped record too short: {n}");
         assert_eq!(u64::from_le_bytes(out[..8].try_into().unwrap()), 7);
 
-        // Unregister frees the SLOT (bitmap claim): the next register
+        // Unregister frees the slot (bitmap claim): the next register
         // reuses id 1 without colliding with the still-live 2 and 3.
         ring.unregister_producer(id1);
         assert_eq!(ring.register_producer().unwrap(), 1);
 
-        // Errors exist ONLY under a caller-declared contract pin.
+        // Errors exist only under a caller-declared contract pin.
         let pinned = AdaptiveRing::create_anon(2, 1, 64)
             .unwrap()
             .with_contract(crate::ring_contract::RingContract::from_counts(2, 1));
@@ -3697,6 +4875,178 @@ mod tests {
         assert_eq!(policy.decide(&obs), None);
     }
 
+    /// The peer counts never fall while peers are only arriving.
+    ///
+    /// The shape policy reads these counts and maps (1, 1) to the
+    /// single-producer backing, so a count that under-reports puts
+    /// several live producers on a core whose push is CAS-free and
+    /// documents a sole-producer caller. One of them then loses a write.
+    /// Registration only ever adds, so a sampler watching while threads
+    /// register must see a non-decreasing sequence; a drop is the
+    /// defect, and it belongs here, in a second, rather than in an hour
+    /// of soak.
+    #[test]
+    fn the_peer_counts_never_fall_while_peers_are_only_arriving() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as O};
+
+        const PEERS: usize = 4;
+        // Repeated because the window is a registration burst: one pass
+        // may simply not race.
+        for attempt in 0..64 {
+            let ring = Arc::new(AdaptiveRing::create_anon(PEERS, PEERS, 64).unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let registered = Arc::new(AtomicUsize::new(0));
+
+            let sampler = {
+                let ring = Arc::clone(&ring);
+                let stop = Arc::clone(&stop);
+                let registered = Arc::clone(&registered);
+                std::thread::spawn(move || {
+                    let (mut peak_p, mut peak_c) = (0usize, 0usize);
+                    let mut fell: Option<(usize, usize, usize, usize)> = None;
+                    while !stop.load(O::Acquire) {
+                        let done = registered.load(O::Acquire);
+                        let (p, c) = (ring.active_producers(), ring.active_consumers());
+                        if p < peak_p || c < peak_c {
+                            fell = Some((peak_p, peak_c, p, c));
+                            break;
+                        }
+                        peak_p = peak_p.max(p);
+                        peak_c = peak_c.max(c);
+                        if done == PEERS && p == PEERS && c == PEERS {
+                            break;
+                        }
+                    }
+                    fell
+                })
+            };
+
+            std::thread::scope(|scope| {
+                for _ in 0..PEERS {
+                    let ring = Arc::clone(&ring);
+                    let registered = Arc::clone(&registered);
+                    scope.spawn(move || {
+                        ring.register_producer().expect("a producer slot");
+                        ring.register_consumer().expect("a consumer slot");
+                        registered.fetch_add(1, O::Release);
+                    });
+                }
+            });
+            stop.store(true, O::Release);
+
+            if let Some((was_p, was_c, now_p, now_c)) = sampler.join().expect("the sampler ends") {
+                panic!(
+                    "attempt {attempt}: the peer counts fell from ({was_p}, {was_c}) to \
+                     ({now_p}, {now_c}) while every peer was still arriving and none had \
+                     unregistered"
+                );
+            }
+            assert_eq!(
+                (ring.active_producers(), ring.active_consumers()),
+                (PEERS, PEERS),
+                "attempt {attempt}: every peer registered, so the counts must say so",
+            );
+        }
+    }
+
+    /// The same invariant with a sidecar scanning, which is the shape
+    /// managed mode actually runs in.
+    ///
+    /// Without the sidecar the counts hold; the field reproduction is
+    /// managed-mode only, so the scanner is the difference worth
+    /// reproducing. It reads the counts on its own thread and morphs on
+    /// what it reads, so it is both a reader of the value under test and
+    /// a source of the concurrent work that might disturb it.
+    #[test]
+    fn the_peer_counts_never_fall_with_a_sidecar_scanning() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as O};
+
+        const PEERS: usize = 4;
+        for attempt in 0..32 {
+            let ring = Arc::new(AdaptiveRing::create_anon(PEERS, PEERS, 64).unwrap());
+            // The cadence managed mode is driven at in the workload that
+            // reproduces the loss.
+            let sidecar = AdaptiveRingSidecar::spawn(
+                Arc::clone(&ring),
+                DefaultRingShapePolicy { hysteresis: std::time::Duration::from_micros(0) },
+                std::time::Duration::from_micros(1000),
+            );
+            let stop = Arc::new(AtomicBool::new(false));
+            let registered = Arc::new(AtomicUsize::new(0));
+
+            let sampler = {
+                let ring = Arc::clone(&ring);
+                let stop = Arc::clone(&stop);
+                let registered = Arc::clone(&registered);
+                std::thread::spawn(move || {
+                    let (mut peak_p, mut peak_c) = (0usize, 0usize);
+                    let mut fell: Option<(usize, usize, usize, usize)> = None;
+                    while !stop.load(O::Acquire) {
+                        let done = registered.load(O::Acquire);
+                        let (p, c) = (ring.active_producers(), ring.active_consumers());
+                        if p < peak_p || c < peak_c {
+                            fell = Some((peak_p, peak_c, p, c));
+                            break;
+                        }
+                        peak_p = peak_p.max(p);
+                        peak_c = peak_c.max(c);
+                        if done == PEERS && p == PEERS && c == PEERS {
+                            break;
+                        }
+                    }
+                    fell
+                })
+            };
+
+            std::thread::scope(|scope| {
+                for _ in 0..PEERS {
+                    let ring = Arc::clone(&ring);
+                    let registered = Arc::clone(&registered);
+                    scope.spawn(move || {
+                        let p = ring.register_producer().expect("a producer slot");
+                        let c = ring.register_consumer().expect("a consumer slot");
+                        registered.fetch_add(1, O::Release);
+                        // Traffic while the scanner morphs, as the
+                        // workload's explorers make: the send path has to
+                        // resolve the shape tag against a moving shape.
+                        // A full ring or an empty one is expected here and
+                        // is not the thing under test, so the outcomes are
+                        // tallied rather than dropped - a peer that moved
+                        // nothing never exercised the path at all.
+                        let payload = [7u8; 32];
+                        let mut moved = 0usize;
+                        for _ in 0..64 {
+                            if ring.try_send(p, &payload).is_ok() {
+                                moved += 1;
+                            }
+                            let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+                            if ring.try_recv(c, &mut out).is_ok() {
+                                moved += 1;
+                            }
+                        }
+                        assert!(moved > 0, "this peer moved nothing, so the send path never ran");
+                    });
+                }
+            });
+            stop.store(true, O::Release);
+            let fell = sampler.join().expect("the sampler ends");
+            sidecar.shutdown();
+
+            if let Some((was_p, was_c, now_p, now_c)) = fell {
+                panic!(
+                    "attempt {attempt}: with a sidecar scanning, the peer counts fell from \
+                     ({was_p}, {was_c}) to ({now_p}, {now_c}) while every peer was still \
+                     arriving and none had unregistered"
+                );
+            }
+            assert_eq!(
+                (ring.active_producers(), ring.active_consumers()),
+                (PEERS, PEERS),
+                "attempt {attempt}: every peer registered, so the counts must say so",
+            );
+        }
+    }
+
     #[test]
     fn shape_tracks_peer_counts_and_sidecar_stays_idle() {
         let ring = Arc::new(AdaptiveRing::create_anon(4, 4, 64).unwrap());
@@ -3714,7 +5064,7 @@ mod tests {
         let _c0 = ring.register_consumer().unwrap();
         assert_eq!(ring.current_shape(), RingShape::Spsc);
 
-        // The register path itself morphs SYNCHRONOUSLY - no scan
+        // The register path itself morphs synchronously - no scan
         // interval to wait out, no sidecar required.
         let _p1 = ring.register_producer().unwrap();
         assert_eq!(ring.current_shape(), RingShape::Mpsc,
@@ -3826,7 +5176,7 @@ mod tests {
         let ring = stamped_anon(2, 1, StampKind::SharedCounter);
         ring.morph_to(RingShape::Mpsc).unwrap();
 
-        // Producer 1 pushes FIRST (older stamp lands in ring 1),
+        // Producer 1 pushes first (older stamp lands in ring 1),
         // then producer 0 (newer stamp in ring 0). The round-robin
         // drain starts at ring 0, so the consumer pops newer-then-
         // older: exactly one cross-producer inversion.
@@ -3872,7 +5222,7 @@ mod tests {
         let ring = stamped_anon(2, 1, StampKind::SharedCounter);
         ring.morph_to(RingShape::Mpsc).unwrap();
 
-        // Backlog pushed UNDER Unordered, interleaved so the
+        // Backlog pushed under Unordered, interleaved so the
         // round-robin drain would invert.
         for i in 0..16u64 {
             let producer = ((i + 1) % 2) as usize;
@@ -3929,7 +5279,7 @@ mod tests {
         // Producer 0 stamps later and publishes.
         ring.try_send(0, &42u64.to_le_bytes()).unwrap();
 
-        // In-flight gate: producer 0's visible item must NOT
+        // In-flight gate: producer 0's visible item must not
         // release while producer 1 holds a smaller in-flight stamp.
         let mut out = [0u8; STAMPED_PAYLOAD_BYTES];
         assert_eq!(ring.try_recv(0, &mut out).unwrap_err(), RingError::Empty,
@@ -4125,7 +5475,7 @@ mod tests {
         // The frame payload region must live on the ring's own locale, not
         // a private anon mmap: a large (offset-class) frame sent through a
         // creator handle must be recoverable byte-exact through an opener
-        // handle to the SAME file set. A private region would keep inline
+        // handle to the same file set. A private region would keep inline
         // frames working and silently drop offset ones, so this is the
         // case that distinguishes them.
         let mut prefix = std::env::temp_dir();
@@ -4300,7 +5650,7 @@ mod tests {
             std::time::Duration::from_millis(10),
         );
 
-        // Declare GlobalFifo: on this STAMPED ring the sidecar must
+        // Declare GlobalFifo: on this stamped ring the sidecar must
         // flip the merge flag, never morph to Vyukov.
         qos.set_ordering(crate::qos_policy::Ordering::GlobalFifo);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -4331,7 +5681,7 @@ mod tests {
     #[test]
     fn default_sidecar_gates_auto_arm_but_still_opens_on_sustained_inversions() {
         // The default `spawn_with_qos` now enables the ordering
-        // auto-arm gate. This proves the gate OPENS under genuinely
+        // auto-arm gate. This proves the gate opens under genuinely
         // sustained inversions (a one-way arm that never opened
         // would be useless): two producers race in Unordered mode,
         // the consumer observes cross-producer inversions, the

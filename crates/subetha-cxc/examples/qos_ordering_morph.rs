@@ -1,7 +1,7 @@
-//! E2E: the QoS ordering DECLARATION path on an UNSTAMPED ring.
+//! E2E: the QoS ordering declaration path on an unstamped ring.
 //!
 //! Two producer threads and one consumer thread stream items
-//! through an `AdaptiveRing` NON-STOP while a QoS-aware sidecar
+//! through an `AdaptiveRing` non-stop while a QoS-aware sidecar
 //! (`spawn_with_qos` with `QosRingShapePolicy`) watches the
 //! `QosPolicy`. Mid-traffic the driver declares
 //! `Ordering::GlobalFifo`; the sidecar responds by morphing the

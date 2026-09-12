@@ -1,4 +1,4 @@
-//! Parameterised end-to-end demonstration of `CapacityAdaptiveRing`
+//! Parameterized end-to-end demonstration of `CapacityAdaptiveRing`
 //! across the full Shape x Locale x Size matrix.
 //!
 //! Invocation:
@@ -141,7 +141,7 @@ fn main() {
     }
 
     // Morph thread: loop MORPH_TARGETS at tight cadence until the
-    // workload finishes (signalled by Arc strong_count dropping
+    // workload finishes (signaled by Arc strong_count dropping
     // below our reference + 1 active producer/consumer threads).
     let r_morph = Arc::clone(&ring);
     let morphs_c = Arc::clone(&morphs_completed);
@@ -208,15 +208,15 @@ fn main() {
 
     // Integrity check 3 (SPSC 1P/1C only): strict global FIFO
     // across the consumer's single pop log. SPSC has exactly one
-    // producer AND one consumer, so the pop log MUST equal
+    // producer and one consumer, so the pop log equals
     // (0,0), (0,1), (0,2), ... in lockstep with the producer's
     // sends. This is the strongest FIFO contract any shape
     // promises and only SPSC's 1P/1C construction can deliver it.
     //
     // MPSC (NP/1C) interleaves N producers' streams into the one
-    // consumer; the consumer sees per-producer FIFO but NOT
+    // consumer; the consumer sees per-producer FIFO but not
     // global tuple-ordered FIFO (a pop sequence like
-    // (3,0),(0,0),(1,0),(0,1),(2,0)... is valid MPSC behaviour).
+    // (3,0),(0,0),(1,0),(0,1),(2,0)... is valid MPSC behavior).
     //
     // Vyukov MPMC promises global FIFO via per-slot sequence
     // atomics, but verifying it requires the consumer to capture
@@ -224,7 +224,7 @@ fn main() {
     // slot claim - the (pid, idx) tuples we record do not encode
     // that, so multi-producer Vyukov cannot be globally-checked
     // from this harness's logs even at NC=1. Per-consumer-per-
-    // producer FIFO (check 2) IS verified for Vyukov.
+    // producer FIFO (check 2) is verified for Vyukov.
     let global_fifo_checkable =
         matches!(ring_shape, RingShape::Spsc) && n_producers == 1 && n_consumers == 1;
     let mut global_fifo_violations = 0u64;

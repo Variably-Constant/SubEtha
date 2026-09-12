@@ -9,13 +9,13 @@
 //!
 //! - **`SharedSemaphore::acquire`** loops `try_acquire` → `yield_now`
 //!   → `sleep(50us)` indefinitely. The sleep tail burns CPU on
-//!   the wake-up tick AND can miss a release by up to 50us.
+//!   the wake-up tick and can miss a release by up to 50us.
 //! - **`BlockingSemaphore::acquire_park`** loops `try_acquire`,
 //!   then registers in the waker at the current generation, then
 //!   parks via the platform wait syscall. The kernel returns
 //!   within microseconds of the next `release`.
 //!
-//! Cross-process Linux uses SHARED `futex` so a `release` from
+//! Cross-process Linux uses shared `futex` so a `release` from
 //! process A wakes a parker in process B. Windows runs intra-
 //! process via `WaitOnAddress` (one process at a time, share via
 //! `Arc::clone`).
@@ -296,7 +296,7 @@ mod tests {
         let sem = Arc::new(BlockingSemaphore::create(&base, 1, 1).expect("create"));
         let p0 = sem.try_acquire().expect("permit-0");
 
-        // Assert the ORDERING property directly: the parked
+        // Assert the ordering property directly: the parked
         // acquirer cannot complete before the permit's release. (A
         // fixed sleep + minimum-elapsed assertion is schedule-
         // sensitive: under full-suite load the spawned thread can

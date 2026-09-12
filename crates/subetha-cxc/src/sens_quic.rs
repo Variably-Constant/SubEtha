@@ -2,7 +2,7 @@
 //!
 //! QUIC v1 sets the fixed bit `0x40` in every packet's first byte; Sens-O-Matic
 //! and the unified transport keep their first bytes' high bits clear (RS 1 / 4,
-//! RLC 10..=14, CODE_SWITCH 9, UNIFIED_FB 8). So one UDP socket can serve BOTH
+//! RLC 10..=14, CODE_SWITCH 9, UNIFIED_FB 8). So one UDP socket can serve both
 //! protocols, routed by the first wire byte: a vanilla QUIC peer connects and
 //! gets real QUIC (quinn); a SubEtha peer gets the unified FEC transport with
 //! its loss-driven RLC <-> RS switch. The "which is the default" question
@@ -50,7 +50,7 @@ fn next_rand(state: &AtomicU64) -> u64 {
 }
 
 /// The demux state the one-port endpoint shares between the QUIC socket (which
-/// routes Sens datagrams IN) and the Sens receiver (which reads them OUT). The
+/// routes Sens datagrams in) and the Sens receiver (which reads them out). The
 /// queues are the same `Arc`s both sides hold.
 pub struct SensDemux {
     rlc_q: DemuxQueue,
@@ -144,7 +144,7 @@ impl AsyncUdpSocket for DemuxQuicSocket {
         // channel's own would push RLC past its repair budget and deadlock its
         // sliding window). Process all-Sens batches back to back until the socket
         // empties (try_io WouldBlock -> park) or a QUIC datagram appears; yield to
-        // quinn only after a BOUNDED run of all-Sens batches, so a sustained Sens
+        // quinn only after a bounded run of all-Sens batches, so a sustained Sens
         // flood can neither drop datagrams nor monopolize the QUIC driver.
         const SENS_BATCH_BUDGET: u32 = 32;
         let mut sens_batches = 0u32;
@@ -154,7 +154,7 @@ impl AsyncUdpSocket for DemuxQuicSocket {
                 .io
                 .try_io(Interest::READABLE, || self.inner.recv((&self.io).into(), bufs, meta));
             let Ok(n) = res else { continue };
-            // Partition ONE batch: QUIC datagrams compact to the front for quinn;
+            // Partition a single batch: QUIC datagrams compact to the front for quinn;
             // Sens datagrams route to the unified receiver's queues.
             let mut keep = 0;
             for i in 0..n {
@@ -280,7 +280,7 @@ pub fn one_port_server(
 }
 
 /// Like [`one_port_server`] but the Sens half runs a TLS 1.3 server handshake and
-/// AEAD-seals every item, so the WHOLE one-port endpoint - QUIC and Sens - is
+/// AEAD-seals every item, so the whole one-port endpoint - QUIC and Sens - is
 /// confidential over an untrusted WAN. The QUIC endpoint owns the socket, so the
 /// Sens handshake cannot run its own recv loop; it rides the demux (the handshake
 /// frames route to a queue the driver thread reads) and the receiver's `poll()`
@@ -357,10 +357,10 @@ fn build_endpoint(
         inner,
         demux: Arc::clone(&demux),
     });
-    // Disable QUIC bit greasing (RFC 9287). Greasing randomly CLEARS the fixed
+    // Disable QUIC bit greasing (RFC 9287). Greasing randomly clears the fixed
     // bit (0x40) on packets; the one-port demux uses that bit to tell QUIC from
     // Sens-O-Matic by the first wire byte, so a greased packet (0x40 clear) would
-    // mis-route into the Sens path. A peer only greases toward us if WE advertise
+    // mis-route into the Sens path. A peer only greases toward us if we advertise
     // support, so not advertising it keeps every inbound QUIC packet's fixed bit
     // set and the first-byte demux unambiguous.
     let mut endpoint_config = EndpointConfig::default();

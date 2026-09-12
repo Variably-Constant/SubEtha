@@ -2,7 +2,7 @@
 //!
 //! Architectural claim: at the cost of a tunable false-positive
 //! rate, SharedBloomFilter trades exactness for huge memory
-//! reduction AND constant-time membership checks regardless of
+//! reduction and constant-time membership checks regardless of
 //! set size. The HashSet baseline grows allocation per item and
 //! pays a hash+lock+lookup per query.
 //!

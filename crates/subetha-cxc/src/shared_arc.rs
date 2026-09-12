@@ -35,7 +35,7 @@
 //! | ArcHeader (64B) | HolderSlot 0..N (64B each) | value: T |
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -201,7 +201,7 @@ impl<T: ShmValue> SharedArc<T> {
         on_last: LastHolder,
     ) -> Result<Self, ArcError> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let file = crate::region_file::open_existing(&path)?;
         let total = arc_file_size::<T>(max_holders);
         if file.metadata()?.len() < total as u64 {
             return Err(ArcError::LayoutMismatch);
@@ -341,14 +341,281 @@ impl<T: ShmValue> Drop for SharedArc<T> {
         let path = std::mem::take(&mut self.path);
         match MmapOptions::new().len(1).map_anon() {
             Ok(m) => drop(std::mem::replace(&mut self.mmap, m)),
-            // The mapping stays live, so on Windows the removal below is
-            // refused and the backing file is left behind; both are said.
+            // The removal below still takes the name away, since a
+            // region is opened so that it can be removed while mapped.
+            // What is lost is this process's own address space, which
+            // nothing else reclaims until it exits.
             Err(e) => eprintln!(
                 "subetha: the last holder of {} could not release its mapping: {e}",
                 path.display()
             ),
         }
-        match std::fs::remove_file(&path) {
+        match crate::region_file::remove(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "subetha: the last holder of {} left its backing file behind: {e}",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Bytes the backing needs for `capacity` holders of a value of
+/// `value_bytes`.
+pub const fn arc_file_size_dyn(capacity: usize, value_bytes: usize) -> usize {
+    size_of::<ArcHeader>() + holder_table_size(capacity) + value_bytes
+}
+
+/// `SharedArc` with the value's size given at run time instead of by a
+/// type: the same header, the same holder table and the same last-holder
+/// policy, over a region of `value_bytes` the caller reads and writes by
+/// offset.
+///
+/// This exists for callers that cannot name a Rust type. Prefer
+/// [`SharedArc`] wherever the type is known at compile time; it hands
+/// back a `&T` rather than bytes, and the type carries what the bytes
+/// mean.
+///
+/// # Attaching across the two shapes
+///
+/// The header is identical and records the value's size, so a
+/// `SharedArcDyn` of `size_of::<T>()` bytes and a `SharedArc<T>` attach
+/// to each other's backing, and a size that disagrees is refused. That is
+/// what lets a holder that names the type and one that does not share a
+/// value.
+///
+/// It also means the byte side can write anything into a region the other
+/// side reads as a `T`, which a size check cannot catch. Both sides
+/// agreeing on the layout is the caller's obligation, as it already is
+/// for every `ShmValue` implementation.
+///
+/// # The bytes are not synchronized
+///
+/// [`SharedArc`]'s value is written once at create and read-only after,
+/// so a reference into it needs no lock. A byte region a caller may write
+/// carries no such promise: a write is a copy, and a concurrent read can
+/// see it half done. Callers that mutate share it under something that
+/// orders their access - an atomic laid out inside the region, a
+/// [`SharedCell`](crate::shared_cell), or a lock - exactly as the
+/// `ShmValue` contract already requires of a mutable value.
+pub struct SharedArcDyn {
+    _file: File,
+    mmap: MmapMut,
+    holders: HolderTable,
+    slot: usize,
+    capacity: usize,
+    value_bytes: usize,
+    path: PathBuf,
+    on_last: LastHolder,
+}
+
+unsafe impl Send for SharedArcDyn {}
+unsafe impl Sync for SharedArcDyn {}
+
+impl SharedArcDyn {
+    /// Obtain the value at `path`, writing `value` if the path does not
+    /// yet exist and attaching to what is there if it does, and take a
+    /// holder slot either way.
+    ///
+    /// `value` sets the region's length and its initial contents, and is
+    /// written only by the call that creates the backing; an attach
+    /// leaves what is there alone.
+    pub fn create(
+        path: impl AsRef<Path>,
+        value: &[u8],
+        max_holders: usize,
+        on_last: LastHolder,
+    ) -> Result<Self, ArcError> {
+        assert!(max_holders >= 1);
+        let path = path.as_ref().to_path_buf();
+        let value_bytes = value.len();
+        let (file, mmap) = crate::mmf_attach::create_or_attach(
+            &path,
+            arc_file_size_dyn(max_holders, value_bytes),
+            |ptr| unsafe { Self::init_region(ptr, value, max_holders) },
+            |ptr| unsafe { (*(ptr as *const ArcHeader)).magic == ARC_MAGIC },
+        )
+        .map_err(|e| crate::mmf_attach::attach_error(e, ArcError::LayoutMismatch))?;
+        Self::attach(file, mmap, path, max_holders, value_bytes, on_last)
+    }
+
+    /// Attach to an existing value of `value_bytes` and take a holder
+    /// slot. A backing built for another size is a `LayoutMismatch`.
+    pub fn open(
+        path: impl AsRef<Path>,
+        value_bytes: usize,
+        max_holders: usize,
+        on_last: LastHolder,
+    ) -> Result<Self, ArcError> {
+        let path = path.as_ref().to_path_buf();
+        let file = crate::region_file::open_existing(&path)?;
+        let total = arc_file_size_dyn(max_holders, value_bytes);
+        if file.metadata()?.len() < total as u64 {
+            return Err(ArcError::LayoutMismatch);
+        }
+        let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
+        Self::attach(file, mmap, path, max_holders, value_bytes, on_last)
+    }
+
+    fn attach(
+        file: File,
+        mmap: MmapMut,
+        path: PathBuf,
+        capacity: usize,
+        value_bytes: usize,
+        on_last: LastHolder,
+    ) -> Result<Self, ArcError> {
+        let header = unsafe { &*(mmap.as_ptr() as *const ArcHeader) };
+        if header.magic != ARC_MAGIC
+            || header.capacity != capacity as u64
+            || header.value_size != value_bytes as u64
+        {
+            return Err(ArcError::LayoutMismatch);
+        }
+        let holders =
+            unsafe { HolderTable::from_ptr(mmap.as_ptr().add(size_of::<ArcHeader>()), capacity) };
+        let slot = match holders.claim(HOLDER_PRESENT) {
+            Some(s) => s,
+            None => {
+                holders.reap_dead();
+                holders.claim(HOLDER_PRESENT).ok_or(ArcError::HoldersExhausted)?
+            }
+        };
+        Ok(Self { _file: file, mmap, holders, slot, capacity, value_bytes, path, on_last })
+    }
+
+    /// Lay out the backing: value and sizes first, magic last, because
+    /// attachers spin on it and must not see a value that is not there
+    /// yet.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `arc_file_size_dyn(capacity, value.len())`
+    /// writable zeroed bytes.
+    unsafe fn init_region(ptr: *mut u8, value: &[u8], capacity: usize) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                value.as_ptr(),
+                ptr.add(value_offset(capacity)),
+                value.len(),
+            );
+            let hdr = ptr as *mut ArcHeader;
+            (*hdr).capacity = capacity as u64;
+            (*hdr).value_size = value.len() as u64;
+            std::ptr::write_volatile(&raw mut (*hdr).magic, ARC_MAGIC);
+        }
+    }
+
+    /// The shared region.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.mmap.as_ptr().add(value_offset(self.capacity)),
+                self.value_bytes,
+            )
+        }
+    }
+
+    /// Copy `out.len()` bytes from `offset` into `out`. Refuses a range
+    /// that runs past the region rather than reading whatever follows it.
+    pub fn read_at(&self, offset: usize, out: &mut [u8]) -> Result<(), ArcError> {
+        let end = offset.checked_add(out.len()).ok_or(ArcError::LayoutMismatch)?;
+        if end > self.value_bytes {
+            return Err(ArcError::LayoutMismatch);
+        }
+        out.copy_from_slice(&self.as_slice()[offset..end]);
+        Ok(())
+    }
+
+    /// Copy `src` into the region at `offset`. Refuses a range that runs
+    /// past the region rather than writing past it.
+    ///
+    /// Not atomic and not ordered against another holder's read; see this
+    /// type's note on synchronizing writes.
+    pub fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), ArcError> {
+        let end = offset.checked_add(src.len()).ok_or(ArcError::LayoutMismatch)?;
+        if end > self.value_bytes {
+            return Err(ArcError::LayoutMismatch);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.as_ptr(),
+                self.mmap.as_ptr().add(value_offset(self.capacity) + offset) as *mut u8,
+                src.len(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Bytes the shared region holds.
+    #[inline]
+    pub fn value_len(&self) -> usize {
+        self.value_bytes
+    }
+
+    /// Processes holding this value, this one included.
+    #[inline]
+    pub fn strong_count(&self) -> usize {
+        self.holders.live()
+    }
+
+    /// Holder slots the backing carries.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Free every slot whose holding process is gone, and report how many
+    /// went.
+    pub fn reap_dead_holders(&self) -> usize {
+        self.holders.reap_dead()
+    }
+
+    /// The holder table, for a caller that wants it directly.
+    #[inline]
+    pub fn holders(&self) -> &HolderTable {
+        &self.holders
+    }
+
+    pub fn flush(&self) -> Result<(), ArcError> {
+        self.mmap.flush()?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SharedArcDyn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedArcDyn")
+            .field("value_len", &self.value_bytes)
+            .field("strong_count", &self.strong_count())
+            .finish()
+    }
+}
+
+impl Drop for SharedArcDyn {
+    fn drop(&mut self) {
+        self.holders.release(self.slot);
+        if self.on_last == LastHolder::Keep {
+            return;
+        }
+        // Reap first, so a table full of corpses does not keep the
+        // backing alive after the last live holder has gone.
+        self.holders.reap_dead();
+        if self.holders.live() != 0 {
+            return;
+        }
+        // Windows refuses to remove a file while a mapping is live, so
+        // the mapping and the handle go first.
+        let path = std::mem::take(&mut self.path);
+        match MmapOptions::new().len(1).map_anon() {
+            Ok(m) => drop(std::mem::replace(&mut self.mmap, m)),
+            Err(e) => eprintln!(
+                "subetha: the last holder of {} could not release its mapping: {e}",
+                path.display()
+            ),
+        }
+        match crate::region_file::remove(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => eprintln!(
@@ -413,6 +680,106 @@ mod tests {
     // The caller asserts what the compiler cannot infer: repr(C), no
     // pointers, no Drop.
     unsafe impl ShmValue for Config {}
+
+    #[test]
+    fn a_dyn_arc_shares_its_region_and_counts_its_holders() {
+        let (_f, path) = fixture("dyn-share");
+        let a = SharedArcDyn::create(&path, &[1, 2, 3, 4], 8, LastHolder::Keep).unwrap();
+        assert_eq!(a.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(a.value_len(), 4);
+        assert_eq!(a.strong_count(), 1);
+
+        let b = SharedArcDyn::open(&path, 4, 8, LastHolder::Keep).unwrap();
+        assert_eq!(b.as_slice(), &[1, 2, 3, 4], "the same region, not a fresh one");
+        assert_eq!(a.strong_count(), 2);
+
+        // A write by one holder is what the other reads: one region, not
+        // a copy each.
+        b.write_at(1, &[9, 9]).unwrap();
+        assert_eq!(a.as_slice(), &[1, 9, 9, 4]);
+        let mut out = [0u8; 2];
+        a.read_at(2, &mut out).unwrap();
+        assert_eq!(out, [9, 4]);
+
+        drop(b);
+        assert_eq!(a.strong_count(), 1, "the holder that let go is not counted");
+    }
+
+    /// Creating over a live region attaches to it, exactly as the typed
+    /// arc does: the second value is not written over the first.
+    #[test]
+    fn creating_a_dyn_arc_over_a_live_one_attaches() {
+        let (_f, path) = fixture("dyn-attach");
+        let a = SharedArcDyn::create(&path, &[7, 7, 7, 7], 4, LastHolder::Keep).unwrap();
+        let b = SharedArcDyn::create(&path, &[9, 9, 9, 9], 4, LastHolder::Keep).unwrap();
+        assert_eq!(b.as_slice(), &[7, 7, 7, 7], "the first value stands");
+        assert_eq!(a.strong_count(), 2);
+    }
+
+    /// The header records the value's size, so a size that disagrees is
+    /// refused rather than reinterpreting the bytes.
+    #[test]
+    fn opening_a_dyn_arc_at_the_wrong_size_is_refused() {
+        let (_f, path) = fixture("dyn-size");
+        let _a = SharedArcDyn::create(&path, &[0; 8], 4, LastHolder::Keep).unwrap();
+        assert_eq!(
+            SharedArcDyn::open(&path, 16, 4, LastHolder::Keep).unwrap_err(),
+            ArcError::LayoutMismatch,
+        );
+        assert_eq!(
+            SharedArcDyn::open(&path, 8, 9, LastHolder::Keep).unwrap_err(),
+            ArcError::LayoutMismatch,
+            "a capacity that disagrees is refused too",
+        );
+    }
+
+    /// The two shapes are one layout, which is what lets a holder that
+    /// names the type and one that does not share a value.
+    #[test]
+    fn a_dyn_arc_and_a_typed_arc_attach_to_each_other() {
+        let (_f, path) = fixture("dyn-typed");
+        let typed = SharedArc::create(&path, 0x1122_3344_5566_7788u64, 4, LastHolder::Keep).unwrap();
+        let raw = SharedArcDyn::open(&path, 8, 4, LastHolder::Keep).unwrap();
+        assert_eq!(raw.as_slice(), &0x1122_3344_5566_7788u64.to_ne_bytes());
+        assert_eq!(typed.strong_count(), 2, "both shapes hold the same table");
+
+        // And a size that is not the type's is refused from the byte side.
+        assert_eq!(
+            SharedArcDyn::open(&path, 4, 4, LastHolder::Keep).unwrap_err(),
+            ArcError::LayoutMismatch,
+        );
+    }
+
+    /// A range that runs past the region is refused rather than reading
+    /// or writing whatever follows it.
+    #[test]
+    fn a_range_past_the_region_is_refused() {
+        let (_f, path) = fixture("dyn-bounds");
+        let a = SharedArcDyn::create(&path, &[0; 4], 4, LastHolder::Keep).unwrap();
+        let mut out = [0u8; 2];
+        assert_eq!(a.read_at(3, &mut out).unwrap_err(), ArcError::LayoutMismatch);
+        assert_eq!(a.write_at(3, &[1, 2]).unwrap_err(), ArcError::LayoutMismatch);
+        assert_eq!(a.read_at(usize::MAX, &mut out).unwrap_err(), ArcError::LayoutMismatch);
+        // The last byte is still reachable.
+        a.write_at(3, &[5]).unwrap();
+        assert_eq!(a.as_slice()[3], 5);
+    }
+
+    /// Under `Unlink` the backing goes when the last holder releases, so
+    /// a later open finds nothing.
+    #[test]
+    fn the_last_dyn_holder_takes_the_backing_with_it() {
+        let (_f, path) = fixture("dyn-unlink");
+        {
+            let a = SharedArcDyn::create(&path, &[1; 4], 4, LastHolder::Unlink).unwrap();
+            let b = SharedArcDyn::open(&path, 4, 4, LastHolder::Unlink).unwrap();
+            assert_eq!(a.strong_count(), 2);
+            drop(a);
+            assert!(path.exists(), "a holder remains, so the backing stands");
+            drop(b);
+        }
+        assert!(!path.exists(), "the last holder removed the backing");
+    }
 
     #[test]
     fn a_second_handle_shares_the_value_and_raises_the_count() {

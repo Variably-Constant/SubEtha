@@ -235,7 +235,7 @@ fn blast(a: &Args) {
                 let until = Instant::now() + Duration::from_secs(secs);
                 let mut sent = 0u64;
                 while Instant::now() < until {
-                    // Ignore WouldBlock: the buffer being full IS the
+                    // Ignore WouldBlock: the buffer being full is the
                     // congestion we want to create.
                     if sock.send(&buf).is_ok() {
                         sent += 1;

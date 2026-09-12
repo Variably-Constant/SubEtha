@@ -73,7 +73,7 @@ nothing else.
 2. **Sweeping a full chain is nearly free.** 189.35 ns against 180.68
    ns with room is 5% for dropping every unreachable version, so the
    depth bound costs far less than the slot copy it rides on.
-3. **Chain position is NOT what a pinned read costs.** The oldest
+3. **Chain position is not what a pinned read costs.** The oldest
    version of a full chain reads no slower than the head - 90.86 ns
    against 106.49 ns, the deeper walk on the faster side. `D` sets the
    read cost through the width of the slot; how deep the version sits
@@ -99,7 +99,7 @@ nothing else.
   and head, because measuring one end alone would read as a walk cost
   that the pair shows it is not.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **The plain slab has no answer to a scan that must not see a
   concurrent overwrite.** It is not a faster way of doing the same

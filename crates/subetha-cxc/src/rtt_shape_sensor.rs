@@ -1,4 +1,4 @@
-//! Link-type fingerprint from the SHAPE of the RTT distribution - no new
+//! Link-type fingerprint from the shape of the RTT distribution - no new
 //! packets, no OS wireless read.
 //!
 //! 802.11 MAC retransmission splits the round-trip time into two clusters: a
@@ -10,7 +10,7 @@
 //! bimodality (a uniform distribution sits at `5/9`, a normal near `1/3`, and a
 //! two-peaked distribution above `5/9`).
 //!
-//! Because the coefficient reads the END-TO-END RTT, a Wi-Fi hop ANYWHERE on
+//! Because the coefficient reads the end-to-end RTT, a Wi-Fi hop anywhere on
 //! the path shows up - so a wired host can detect that its peer is on Wi-Fi,
 //! filling the `Link` class when the local OS wireless read is unavailable.
 //!

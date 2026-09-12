@@ -1,4 +1,4 @@
-//! `net_bridge`: a TCP bridge with NO async runtime. One connection
+//! `net_bridge`: a TCP bridge with no async runtime. One connection
 //! ferries a producer ring on one host to a consumer ring on another,
 //! using blocking `std::net` sockets on dedicated threads.
 //!
@@ -6,7 +6,7 @@
 //! path needs no executor at all. The bridge watches exactly one
 //! socket, so a blocking `read()` on its own thread is the right shape:
 //! it parks in the kernel until a packet arrives - the kernel's socket
-//! wait IS the network reactor - costs zero CPU while idle, and pulls
+//! wait is the network reactor - costs zero CPU while idle, and pulls
 //! in no runtime. Async socket I/O earns its keep multiplexing many
 //! sockets on few threads; a single-connection ferry has nothing to
 //! multiplex.
@@ -17,7 +17,7 @@
 //! consumer ring, and fires the consumer's [`CrossProcessWaker`] once
 //! per socket read that produced slots. That wake is what lets a
 //! parked `recv().await` (driven by [`crate::reactor`]) resolve when a
-//! NETWORK packet arrives - the same reactor that bridges a sibling
+//! network packet arrives - the same reactor that bridges a sibling
 //! process's push bridges a remote host's packet, because both reduce
 //! to "the consumer ring advanced, fire the local Waker."
 //!
@@ -185,7 +185,7 @@ static FULL_WAKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 
 fn push_spin(ring: &SpscRingCore, xwaker: &CrossProcessWaker, slot: &[u8]) {
     while ring.try_push(slot).is_err() {
-        // Ring full and a parked consumer has not yet been signalled for
+        // Ring full and a parked consumer has not yet been signaled for
         // this read (the end-of-read wake fires later). Wake it now so it
         // drains, else this push and the parked recv() would deadlock.
         FULL_WAKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

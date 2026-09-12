@@ -7,7 +7,7 @@
 //! - bits 0..=52:  the address (53-bit virtual; ample on x86_64 / Apple Silicon)
 //!
 //! The architectural win: a heterogeneous container of
-//! `SelfDescPointer`s can dispatch on type WITHOUT a vtable lookup.
+//! `SelfDescPointer`s can dispatch on type without a vtable lookup.
 //! When the type universe is small enough to fit in 8 bits (256
 //! distinct types), the dispatch is a switch on the high byte; the
 //! compiler can compile this to a jump table inline at the call site.
@@ -105,7 +105,7 @@ impl<T> SelfDescPointer<T> {
     /// # Safety
     ///
     /// `target` must fit in 53 bits (canonical 48-bit address is
-    /// always fine; the top 11 bits MUST be zero). Caller must keep
+    /// always fine; the top 11 bits are zero). Caller must keep
     /// the target alive for the lifetime of this pointer.
     pub unsafe fn from_raw(target: *const T, type_id: u8, shape: LayoutShape) -> Self {
         let addr = target as u64;
@@ -195,7 +195,7 @@ mod tests {
     fn address_round_trips_under_53_bit_mask() {
         let addr: *const u64 = 0x0001_2345_6789_ABCD as *const u64;
         // 0x0001_2345_6789_ABCD = 0b1_0010_0011_0100_0101_0110_0111_1000_1001_1010_1011_1100_1101
-        // That is 49 bits set; bit 48 is set; bit 53 is NOT set.
+        // That is 49 bits set; bit 48 is set; bit 53 is not set.
         // Let's verify it fits in 53 bits.
         let addr_u64 = addr as u64;
         assert_eq!(addr_u64 & !ADDR_MASK, 0, "test address fits in 53 bits");

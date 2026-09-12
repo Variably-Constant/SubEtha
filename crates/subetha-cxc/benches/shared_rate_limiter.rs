@@ -2,7 +2,7 @@
 //! in-process baseline).
 //!
 //! Architectural claim: lock-free CAS-based token bucket beats the
-//! Mutex baseline AND provides cross-process visibility no in-
+//! Mutex baseline and provides cross-process visibility no in-
 //! process baseline can match.
 //!
 //! Workloads:

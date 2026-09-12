@@ -2,7 +2,7 @@
 //!
 //! A blocking consumer normally parks on a doorbell and pays a
 //! park/wake syscall round-trip per item. When the producer arrives
-//! on a regular cadence, the consumer can instead PREDICT the next
+//! on a regular cadence, the consumer can instead predict the next
 //! arrival and spin through a small guard band at exactly that
 //! moment, catching the item by polling and skipping the syscall.
 //! [`PhaseEstimator`] is the prediction: it tracks the inter-arrival
@@ -26,7 +26,7 @@ pub struct PhaseConfig {
     /// EWMA weight for the period and CV updates (higher = faster
     /// adaptation, noisier estimate).
     pub alpha: f64,
-    /// Engage prediction once the CV drops below this AND the
+    /// Engage prediction once the CV drops below this and the
     /// minimum sample count is met.
     pub cv_engage: f64,
     /// Disengage once the CV rises above this (hysteresis: strictly

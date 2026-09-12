@@ -1,4 +1,4 @@
-//! Bench: SharedHashMap compact() amortised over a churning
+//! Bench: SharedHashMap compact() amortized over a churning
 //! insert+remove workload, vs Mutex<HashMap<u32, u32>> (which has
 //! no tombstone problem because std::HashMap re-uses buckets after
 //! delete).
@@ -6,7 +6,7 @@
 //! Architectural claim: SharedHashMap with periodic compact at 30%
 //! tombstone threshold matches std HashMap throughput on the same
 //! workload, despite paying for in-place rebuild - because the
-//! amortised compaction cost is small compared to lookup speedup
+//! amortized compaction cost is small compared to lookup speedup
 //! from a fresh probe chain.
 
 use std::collections::HashMap;

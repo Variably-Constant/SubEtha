@@ -150,7 +150,7 @@ let cons: Vec<_> = consumers.into_iter().map(|c| {
         let mut out = [0u8; SPSC_PAYLOAD_BYTES];
         // Each consumer drains until its partition is empty for
         // a long enough quiet period; production code uses
-        // explicit shutdown signalling, not a fixed iteration
+        // explicit shutdown signaling, not a fixed iteration
         // count.
         while got < 20_000 {
             if c.try_pop(&mut out).is_ok() {

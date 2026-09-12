@@ -238,7 +238,7 @@ fn main() {
         );
     }
 
-    // Adaptive PARITY SIZE: the parity count must rise with the drop rate,
+    // Adaptive parity size: the parity count must rise with the drop rate,
     // not just toggle on/off - recover proportional to loss without
     // over-provisioning. Sweep loss and show the parity the controller
     // settles on for each. Expect r to climb monotonically (0 clean -> ~2 ->

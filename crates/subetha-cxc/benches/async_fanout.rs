@@ -14,8 +14,8 @@
 //!   one consumer's `recv()` future. Thread count grows with N.
 //!
 //! Bench audit: both contenders deliver the same item count to N
-//! consumers over the SAME `WakerRing` primitive and the SAME `recv()`
-//! future, with the SAME producer threads pushing the SAME payloads.
+//! consumers over the same `WakerRing` primitive and the same `recv()`
+//! future, with the same producer threads pushing the same payloads.
 //! The only difference is the driver - a fixed pool of tasks vs one
 //! thread per consumer. Integrity is checked on both: a global checksum
 //! must equal the sum of every `(sub << 32 | seq)` sent.

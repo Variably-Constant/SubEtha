@@ -11,7 +11,7 @@
 //!     PinnedRing -> SpscRingCore).
 //!  4. Migrate to ShmFs. Pin invalidates. Items in flight at Anon
 //!     transfer into the ShmFs backing.
-//!  5. Round-trip items at the ShmFs locale through the SAME pin
+//!  5. Round-trip items at the ShmFs locale through the same pin
 //!     chain - this time the bytes live in named RAM-resident
 //!     shared memory instead of process-local anon mappings.
 //!  6. Migrate to File. Pin invalidates again. Items transfer

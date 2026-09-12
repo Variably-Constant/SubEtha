@@ -43,7 +43,7 @@ fn main() {
     println!("  gate admits Wire: {admits}");
 
     // Optionally exercise the real selection path: wrap a fresh socket in
-    // AUTO mode and report the backend the gate resolved to. Requires the
+    // Auto mode and report the backend the gate resolved to. Requires the
     // SUBETHA_WIRE_* config + root for the actual Wire bind.
     if std::env::var("WIRE_GATE_BIND").as_deref() == Ok("1") {
         use std::net::UdpSocket;

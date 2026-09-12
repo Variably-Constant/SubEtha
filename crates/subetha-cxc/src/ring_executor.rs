@@ -1,5 +1,5 @@
-//! `RingExecutor`: an async executor whose READY QUEUE is built from
-//! SubEtha rings. The future's handle rides through a ring; the ring IS
+//! `RingExecutor`: an async executor whose ready queue is built from
+//! SubEtha rings. The future's handle rides through a ring; the ring is
 //! the scheduler, not a data channel beside one.
 //!
 //! This is the deeper async shape than [`crate::waker_ring`]. There the
@@ -11,13 +11,13 @@
 //!
 //! # Shape-adaptive ready queue
 //!
-//! The ready queue is NOT one ring. A single Vyukov ring funnels every
+//! The ready queue is several rings, not one. A single Vyukov ring funnels every
 //! core's CAS through one counter and walls throughput as cores climb
 //! (Vyukov contention rises sharply past a handful of producers). So
-//! the executor shards the ready queue to the hardware: ONE ready-ring
+//! the executor shards the ready queue to the hardware: one ready-ring
 //! shard per worker, worker count taken from
 //! [`std::thread::available_parallelism`] (or supplied explicitly).
-//! Each worker owns a home shard, drains it first, and STEALS from the
+//! Each worker owns a home shard, drains it first, and steals from the
 //! other shards round-robin when its own is empty. A task is homed to
 //! one shard round-robin at spawn and always reschedules there, so a
 //! self-waking task's handle stays on one ring (locality) and the home
@@ -32,7 +32,7 @@
 //! # Why this answers "uncapped consumers"
 //!
 //! WORKERS are the hardware parallelism - a small, fixed cap matched to
-//! the machine. TASKS are unbounded: they are `Arc<Task>` handles
+//! the machine. Tasks are unbounded: they are `Arc<Task>` handles
 //! multiplexed onto the worker pool through the rings, not threads. A
 //! 44-thread host drives an arbitrary task population on 44 workers.
 //!

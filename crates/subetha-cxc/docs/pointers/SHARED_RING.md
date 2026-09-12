@@ -157,7 +157,7 @@ is putting it in an MMF for cross-process visibility.
 |---|---|
 | Cross-thread | Single process; multiple threads share `Arc<SharedRing<P>>` |
 | Cross-process | Multiple processes call `SharedRing::open(path)` on the same file |
-| Disk-persistent | The MMF backing IS a real file; kernel writes dirty pages on its own schedule; `flush` forces sync |
+| Disk-persistent | The MMF backing is a real file; kernel writes dirty pages on its own schedule; `flush` forces sync |
 
 The same byte layout serves all three. The deployment choice is
 purely how the MMF handle is shared, not a different protocol.
@@ -184,7 +184,7 @@ Two harnesses on the same Zen+ R7 2700 / Windows 11 box:
 
 SharedRing wins **1.55x** vs crossbeam on round-trip latency
 (Vyukov MPMC has lower per-op overhead than crossbeam's
-SPMC-optimised channel).
+SPMC-optimized channel).
 
 **SPSC sustained throughput (1M items, best-of-5):**
 
@@ -219,7 +219,7 @@ denser layout.
 
 The architectural shape (cache-line-per-slot, Vyukov protocol)
 wins on every shape measured: round-trip latency, SPSC sustained
-throughput, and MPMC contention behaviour. Anonymous-mapping +
+throughput, and MPMC contention behavior. Anonymous-mapping +
 SPSC fast path delivers the headline 3.59x crossbeam-beat on SPSC
 sustained; SharedRing's cross-process capability is the strict
 extra win over crossbeam (which is in-process only).
@@ -386,7 +386,7 @@ loop {
 ### Pattern: cross-process work queue
 
 Producer process generates jobs; worker process(es) pop and
-execute. No coordinator daemon; the MMF IS the queue.
+execute. No coordinator daemon; the MMF is the queue.
 
 ### Pattern: telemetry / log shipping
 

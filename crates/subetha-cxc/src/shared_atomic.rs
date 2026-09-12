@@ -16,7 +16,7 @@
 //! Type-erased layout: header + payload region the size of the
 //! native atomic, aligned naturally.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -125,7 +125,7 @@ macro_rules! shared_atomic_impl {
             }
 
             pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError> {
-                let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+                let file = crate::region_file::open_existing(path.as_ref())?;
                 if file.metadata()?.len() < ATOMIC_FILE_SIZE as u64 {
                     return Err(SharedAtomicError::LayoutMismatch);
                 }
@@ -312,7 +312,7 @@ impl SharedAtomicBool {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SharedAtomicError> {
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < ATOMIC_FILE_SIZE as u64 {
             return Err(SharedAtomicError::LayoutMismatch);
         }

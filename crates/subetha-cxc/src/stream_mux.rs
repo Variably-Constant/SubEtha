@@ -1,4 +1,4 @@
-//! Slice 5: stream multiplexing over one connection.
+//! Stream multiplexing over one connection.
 //!
 //! A [`StreamMuxSender`] / [`StreamMuxReceiver`] pair carries many independent
 //! byte streams over a single UDP socket and a single connection id. Each stream
@@ -687,7 +687,7 @@ impl StreamMuxReceiver {
 
     /// Deliver the contiguous prefix of a stream that has become available. The
     /// final symbol is trimmed to the length the STREAM_FIN announced. The
-    /// highest buffered symbol is HELD while it is unknown whether it is the
+    /// highest buffered symbol is held while it is unknown whether it is the
     /// final one (a symbol is known non-final only once a higher one is seen or
     /// the reliable STREAM_FIN places the end past it) - otherwise the final
     /// symbol could be delivered full-length and without its fin.

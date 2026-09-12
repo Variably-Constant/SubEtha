@@ -2,7 +2,7 @@
 //! baseline most code reaches for).
 //!
 //! Architectural claim: EpochBarrier handles N participants across
-//! processes AND tolerates dead peers via heartbeat exclusion, at
+//! processes and tolerates dead peers via heartbeat exclusion, at
 //! a per-wait cost comparable to or better than std::sync::Barrier's
 //! Mutex+Condvar pattern. The in-process baseline cannot do either
 //! capability at any cost.

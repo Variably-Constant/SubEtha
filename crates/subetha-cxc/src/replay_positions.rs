@@ -35,13 +35,12 @@
 //! 4. Resumes consumption from the recorded position (caller's
 //!    responsibility to map absolute position to ring slot index).
 //!
-//! Wraparound caveat: a regular ring's slot array is bounded; if
-//! the producer outraces the subscriber's checkpoint by more than
-//! ring capacity, the lost items are gone. Callers needing
-//! guaranteed-no-loss replay back the source ring with a large
-//! enough capacity OR snapshot positions frequently enough that
-//! checkpoint-position never lags producer-position by more than
-//! one ring sweep.
+//! Wraparound: a regular ring's slot array is bounded, so if the
+//! producer outruns the subscriber's checkpoint by more than the ring's
+//! capacity, the overwritten items are lost. A replay that loses nothing
+//! needs a source ring large enough, or positions snapshotted often
+//! enough, that the checkpoint never lags the producer by more than one
+//! ring sweep.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -55,7 +54,7 @@ pub struct SubscriberPosition {
 }
 
 impl SubscriberPosition {
-    /// Create a new position counter at `path` initialised to
+    /// Create a new position counter at `path` initialized to
     /// `initial`.
     pub fn create(
         path: impl AsRef<Path>,
@@ -77,7 +76,7 @@ impl SubscriberPosition {
     /// Current position (Acquire load).
     pub fn get(&self) -> u64 { self.counter.load(Ordering::Acquire) }
 
-    /// Advance the position by `by`. Returns the NEW position.
+    /// Advance the position by `by`. Returns the new position.
     /// Atomic; safe for one subscriber to call concurrently with
     /// another holder reading via `get`.
     pub fn advance(&self, by: u64) -> u64 {

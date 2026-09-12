@@ -1,8 +1,22 @@
 //! `SharedVec<T>` - cross-process bounded indexable sequence.
 //!
 //! Distinct from [`SharedRing`](crate::SharedRing) (FIFO; drain
-//! semantics): SharedVec is RANDOM-ACCESS, accumulates monotonically
+//! semantics): SharedVec is random-access, accumulates monotonically
 //! up to capacity, and supports `get(i)` for any prior index.
+//!
+//! # If your elements are written once
+//!
+//! Each slot is one cache line, so an element costs 64 bytes of file
+//! however small it is: a 12-byte row of a lookup table costs 64, and a
+//! table of 290,000 such rows occupies 18.5 MB to hold 3.5 MB of data.
+//! That line buys the per-slot version word, which is what lets a reader
+//! take an element while a pusher commits another.
+//!
+//! A table baked at build time and never written again pays that and
+//! uses none of it. [`SharedArray`](crate::shared_array::SharedArray) is
+//! the flat alternative: stride exactly the element size, no per-element
+//! word, read-only for every process once sealed. It cannot be written
+//! while it is read, which is the whole of what it gives up.
 //!
 //! # Layout
 //!
@@ -47,7 +61,7 @@
 //! no resize-on-grow protocol. The unbounded variant (with
 //! coordinator-mediated MMF resize) is a separate primitive.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
@@ -60,14 +74,14 @@ pub const VEC_PAYLOAD_BYTES: usize = 52;
 
 /// How this process mapped the file. `MmapMut` demands a read+write
 /// file handle, which a consumer holding read access alone cannot get.
-enum Mapping {
+pub(crate) enum Mapping {
     Writable(MmapMut),
     ReadOnly(Mmap),
 }
 
 impl Mapping {
     #[inline]
-    fn as_ptr(&self) -> *const u8 {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
         match self {
             Mapping::Writable(m) => m.as_ptr(),
             Mapping::ReadOnly(m) => m.as_ptr(),
@@ -75,13 +89,13 @@ impl Mapping {
     }
 
     #[inline]
-    fn is_writable(&self) -> bool {
+    pub(crate) fn is_writable(&self) -> bool {
         matches!(self, Mapping::Writable(_))
     }
 
     /// A no-op on a read-only mapping, so a caller flushing on a timer
     /// need not know which kind it holds.
-    fn flush(&self) -> Result<(), std::io::Error> {
+    pub(crate) fn flush(&self) -> Result<(), std::io::Error> {
         match self {
             Mapping::Writable(m) => m.flush(),
             Mapping::ReadOnly(_) => Ok(()),
@@ -108,7 +122,18 @@ pub struct VecHeader {
     /// Slots handed out to pushers, committed or still being written.
     /// Ahead of `len` exactly while a push is in flight.
     pub reserved: AtomicU64,
-    _pad: [u8; 32],
+    /// Full stride of one slot, version word included.
+    pub slot_stride: u32,
+    /// Where the element lies within its slot.
+    pub payload_offset: u32,
+    /// Bytes one element takes.
+    pub element_size: u32,
+    /// The element's alignment, as the creator stated it.
+    pub alignment: u32,
+    /// A tag the creator chose for the element type; an open that states
+    /// another is refused.
+    pub layout_tag: u64,
+    _pad: [u8; 8],
 }
 
 #[repr(C, align(64))]
@@ -223,6 +248,11 @@ impl<T: Copy + 'static> SharedVec<T> {
         unsafe {
             (*hdr).slot_payload_size = VEC_PAYLOAD_BYTES as u32;
             (*hdr).capacity = capacity as u64;
+            (*hdr).slot_stride = size_of::<VecSlot>() as u32;
+            (*hdr).payload_offset = std::mem::offset_of!(VecSlot, payload) as u32;
+            (*hdr).element_size = size_of::<T>() as u32;
+            (*hdr).alignment = std::mem::align_of::<T>() as u32;
+            (*hdr).layout_tag = 0;
             std::ptr::write_volatile(&raw mut (*hdr).magic, VEC_MAGIC);
         }
     }
@@ -233,7 +263,7 @@ impl<T: Copy + 'static> SharedVec<T> {
         if size_of::<T>() > VEC_PAYLOAD_BYTES {
             return Err(VecError::PayloadTooLarge);
         }
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         let total = vec_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(VecError::LayoutMismatch);
@@ -262,7 +292,7 @@ impl<T: Copy + 'static> SharedVec<T> {
         if size_of::<T>() > VEC_PAYLOAD_BYTES {
             return Err(VecError::PayloadTooLarge);
         }
-        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        let file = crate::region_file::open_read_only(path.as_ref())?;
         let total = vec_file_size(expected_capacity);
         if file.metadata()?.len() < total as u64 {
             return Err(VecError::LayoutMismatch);
@@ -278,10 +308,19 @@ impl<T: Copy + 'static> SharedVec<T> {
         Ok(this)
     }
 
-    /// Whether the header on disk is the one this mapping expects.
+    /// Whether the header on disk is the one this mapping expects. A
+    /// geometry, element size or tag field at zero records nothing and
+    /// constrains nothing; one that is set must be this type's.
     fn validate(&self, expected_capacity: usize) -> Result<(), VecError> {
         let hdr = self.header();
         if hdr.magic != VEC_MAGIC || hdr.capacity != expected_capacity as u64 {
+            return Err(VecError::LayoutMismatch);
+        }
+        if (hdr.slot_stride != 0 && hdr.slot_stride as usize != size_of::<VecSlot>())
+            || (hdr.payload_offset != 0 && hdr.payload_offset as usize != std::mem::offset_of!(VecSlot, payload))
+            || (hdr.element_size != 0 && hdr.element_size as usize != size_of::<T>())
+            || hdr.layout_tag != 0
+        {
             return Err(VecError::LayoutMismatch);
         }
         // A region written before `reserved` existed carries zero there
@@ -397,7 +436,7 @@ impl<T: Copy + 'static> SharedVec<T> {
             return Err(VecError::Full);
         }
         self.write_slot(idx, v);
-        // Publish only once this slot is written AND every earlier
+        // Publish only once this slot is written and every earlier
         // reservation has published, so `len` never covers a slot a
         // reader would find half-written. Concurrent pushers spin here
         // for as long as a predecessor's write takes.

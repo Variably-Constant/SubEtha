@@ -21,7 +21,7 @@ snapshot.
 > kernel sync). `emit` and full cycle are within 7% of
 > `Mutex<VecDeque>` baselines, so the architectural lever isn't
 > raw speed - it's cross-process visibility plus disk persistence
-> (the ring file IS the durable event log).
+> (the ring file is the durable event log).
 
 **Constraints (read first):**
 
@@ -165,7 +165,7 @@ The story the numbers tell:
 - **MMF lifecycle managed**: events + state files created,
   ops run, dropped, both files removed per bench.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process emit + drain**: producer in one process emits;
   consumer in another process drains. The naive baseline cannot

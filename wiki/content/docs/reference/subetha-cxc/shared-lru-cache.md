@@ -19,7 +19,7 @@ in-memory ecosystem, with two adaptations for the MMF substrate:
    by per-slot counters. A linked-list update on every access
    requires pointer mutation on the hot path; the counter
    approach is one atomic increment per access plus periodic
-   eviction sweeps that amortise the linear scan.
+   eviction sweeps that amortize the linear scan.
 2. All storage is inline (no allocator). Each slot is a single
    `u64` recency counter plus a fixed-size payload area.
 

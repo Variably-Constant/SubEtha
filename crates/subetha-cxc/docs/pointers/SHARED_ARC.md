@@ -27,7 +27,7 @@ returns it, and `strong_count` is how many are held.
   for a `#[repr(C)]` struct of its own.
 - **The value is immutable.** Written once by the call that creates the
   backing and read-only afterwards, so a reference into the mapping is
-  sound without a lock. Mutable shared state goes INSIDE the value: an
+  sound without a lock. Mutable shared state goes inside the value: an
   atomic, a [SHARED_CELL.md](SHARED_CELL.md), or a lock.
 - **`create` attaches to a live backing rather than overwriting**, so
   racing creators reach one value and the second one's `value` argument
@@ -82,7 +82,7 @@ any price.
 - **Reading is measured through an already-held handle**, which is what
   a caller does after opening once.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process access.** `Arc` cannot address a value in another
   process at all.

@@ -12,7 +12,7 @@
 //!   any coherent view.
 //! - The flat layout is contention-free across distinct edges
 //!   because each AtomicU64 sits on its own slot (no Mutex
-//!   serialisation).
+//!   serialization).
 //!
 //! Plus the MMF version is cross-process; the in-process baseline
 //! is not.

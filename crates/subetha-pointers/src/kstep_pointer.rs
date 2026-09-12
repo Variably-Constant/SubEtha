@@ -20,7 +20,7 @@
 //!
 //! # Architectural rationale
 //!
-//! BLAS GEMM iterates over matrix rows AND columns with potentially
+//! BLAS GEMM iterates over matrix rows and columns with potentially
 //! different strides. NumPy's strided arrays do the same in higher
 //! dimensions. Today these are all encoded as runtime `stride: usize`
 //! fields - the compiler has to emit IMUL for each step. With KStep

@@ -1,32 +1,19 @@
-//! `AdaptiveIpc<T>`: runtime profile-and-migrate IPC, kernel-bypass
-//! preserved end-to-end, hot path optimised to ~zero overhead vs
-//! direct dispatch.
+//! `AdaptiveIpc<T>`: runtime profile-and-migrate IPC over memory-mapped
+//! backings, with no system call on the per-op path.
 //!
-//! The optimisation pattern (named by an external scheduler-agent
-//! finding and verified locally):
+//! Both possible backings are pre-allocated as concrete types in the
+//! struct, and an `AtomicU32` tag selects the active one; dispatch is a
+//! static `match` on the tag. On x86 TSO the Acquire-load lowers to a
+//! plain `MOV`, the match is a `cmp` and `jmp` that predicts the common
+//! case of no migration, and `#[inline]` collapses the wrapper into a
+//! direct call.
 //!
-//! - **Wrong**: `arc_swap::ArcSwapOption<Arc<dyn MessageTransport>>`
-//!   per slot, hot path = ArcSwap::load_full + Arc clone + vtable
-//!   indirect call. Measured: **+18-30 ns/op vs direct**, +163%.
-//! - **Right**: pre-allocate both possible backings as concrete
-//!   types in the struct, use an `AtomicU32` tag to select which
-//!   is active, dispatch through a static enum-style `match`.
-//!   On x86 TSO the Acquire-load lowers to a plain MOV; the match
-//!   is a `cmp+jmp` that branch-predicts on the rare-migration
-//!   common case; `#[inline]` collapses the wrapper into a direct
-//!   call. Measured: **~0 ns/op vs direct**, statistically
-//!   identical noise.
+//! Both backings are mapped at construction, and a migration's flip is
+//! a single `Release` store on the control atom in the mapping.
 //!
-//! The architectural property (kernel-bypass through live family
-//! migration via two MMF backings + MMF-resident control flag)
-//! is preserved. The migration handoff is one `mmap()` for the
-//! new backing at construction (both backings pre-mmap'd) plus a
-//! single `Release`-store on the MMF-resident control atom when
-//! the dispatcher decides to flip. No syscalls on the per-op path.
-//!
-//! Per-op cost on Zen+ R7 2700 (measured by `concurrent_methods`
-//! bench): within noise of `SharedRing::try_push` direct, despite
-//! providing runtime family migration + profile counters.
+//! Per-op cost on a Zen+ R7 2700, measured by the `concurrent_methods`
+//! bench: within noise of a direct `SharedRing::try_push`, with family
+//! migration and profile counters in place.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -157,7 +144,7 @@ pub struct AdaptiveIpc<T: Marshal + Copy + 'static> {
     /// pin generation at `{base_path}.pingen.bin`.
     base_path: PathBuf,
     /// Profile counters as separate atomics so the hot path pays
-    /// exactly ONE `fetch_add` per send.
+    /// exactly one `fetch_add` per send.
     total_sends_atom: AtomicU64,
     batch_sends_atom: AtomicU64,
     batch_size_sum_atom: AtomicU64,
@@ -226,7 +213,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             SharedAtomicU64::create(&pingen_path, 0)
                 .map_err(|e| ApiError::Io(std::io::Error::other(format!("pingen: {e:?}"))))?,
         );
-        // Sizing HINT only (the ring grows past it on demand):
+        // Sizing hint only (the ring grows past it on demand):
         // pre-allocate one backing per expected consumer so
         // AdaptiveIpc's single-producer flow plus any callers that
         // register additional producers through
@@ -315,7 +302,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     }
 
     /// As [`create`](Self::create) with the ordering axis wired in:
-    /// the inner `AdaptiveRing` is constructed STAMPED (push stamps
+    /// the inner `AdaptiveRing` is constructed stamped (push stamps
     /// plus the cross-process ordering header), the `ordering`
     /// declaration is applied immediately, and `auto_order` - when
     /// set - pre-authorizes the sidecar's `maybe_promote` poll to
@@ -440,7 +427,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     ///   [`create_with_ordering`](Self::create_with_ordering)):
     ///   `GlobalFifo` flips the merge flag ON
     ///   (`OrderingMode::MergeByStamp` - the cheap ordered switch,
-    ///   retroactive over the backlog), `PerProducer` flips it OFF.
+    ///   retroactive over the backlog), `PerProducer` flips it off.
     /// - **Unstamped ring** (plain [`create`](Self::create)):
     ///   `GlobalFifo` morphs the ring to the Vyukov shape (the
     ///   proven global-FIFO structure); `PerProducer` morphs back
@@ -507,7 +494,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     /// paths within noise on the current toolchain (~1.05x on Zen+
     /// R7 2700: generic 2.01 ms vs specialized 1.92 ms) - LLVM
     /// already inlines the generic `u64` Marshal path to equivalent
-    /// code, so the branch's value is the small-buffer GUARANTEE
+    /// code, so the branch's value is the small-buffer guarantee
     /// across toolchains, not a separate measured win.
     /// For other `T`, the branch monomorphizes away to the generic
     /// path.
@@ -553,7 +540,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     /// 8-byte payload prefix in the slot. Use this when sending
     /// homogeneous u64 streams (tokens, sequence numbers, message
     /// IDs) where the generic `Marshal` path is overhead. `send`
-    /// itself auto-routes here via a `TypeId`-monomorphised branch
+    /// itself auto-routes here via a `TypeId`-monomorphized branch
     /// when `T = u64`, so callers rarely need to name `send_u64`
     /// directly.
     #[inline]
@@ -657,7 +644,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         Ok(())
     }
 
-    /// Publish a batch through the KHL side-backing, marshalling each
+    /// Publish a batch through the KHL side-backing, marshaling each
     /// item into a 16-byte `LineItem` and publishing one slot
     /// (`KHL_ITEMS_PER_SLOT` items) per `publish_batch` call from a
     /// stack array (no allocation). Spins on backpressure (a partial
@@ -762,7 +749,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     }
 
     /// Receive one item. Drains the KHL side-backing first (batched
-    /// sends land there), then BOTH ring/deque backings: the inactive
+    /// sends land there), then both ring/deque backings: the inactive
     /// (stale) backing first, then the active one.
     #[inline]
     pub fn recv(&self) -> Result<T, ApiError> {
@@ -815,7 +802,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         }
     }
 
-    /// Wake whoever waits to RECEIVE: the awaiting task's `Waker` and
+    /// Wake whoever waits to receive: the awaiting task's `Waker` and
     /// any thread parked in `recv_blocking`. The `published` counter is
     /// the park key, advanced on every send regardless of backing.
     fn signal_consumer(&self) {
@@ -829,7 +816,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         self.consumer_waker.wake_up_to(n);
     }
 
-    /// Wake whoever waits to SEND.
+    /// Wake whoever waits to send.
     fn signal_producer(&self) {
         if !self.has_send_waiter.load(Ordering::Relaxed) {
             return;
@@ -937,9 +924,9 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
 
     /// Explicitly migrate to `target_family`. Both backings are
     /// pre-allocated; migration is a single Release-store on the
-    /// MMF-resident control atom. ZERO kernel touch.
+    /// MMF-resident control atom. No kernel touch.
     ///
-    /// The pin_generation is bumped BEFORE the family-tag store so
+    /// The pin_generation is bumped before the family-tag store so
     /// pinned-handle holders see invalidation on their next
     /// `is_still_valid()` check at or after the migration boundary.
     pub fn migrate_to(&self, target_family: MmfFamily) -> Result<(), ApiError> {
@@ -1010,7 +997,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
     /// Inspect the current profile and migrate to the dispatcher's
     /// preferred family if it differs from the active family.
     ///
-    /// The decision uses TWO signals in production:
+    /// The decision uses two signals in production:
     /// 1. Profile counters (`total_sends`, `batch_sends`,
     ///    `batch_size_sum`, `max_batch_size`) for quantitative
     ///    history.
@@ -1039,7 +1026,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             bloom.might_contain(&(1u32, b))
         });
         if !any_batched && self.active_family() == MmfFamily::SharedRing {
-            // No batched shapes observed AND we are already on the
+            // No batched shapes observed and we are already on the
             // streaming family - nothing to migrate to.
             return Ok(None);
         }
@@ -1083,7 +1070,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
 /// removed reads as absent and is fine; any other refusal is a file left
 /// behind, reported because a Drop has no caller to hand it to.
 fn remove_laid_out(path: &Path) {
-    match std::fs::remove_file(path) {
+    match crate::region_file::remove(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => eprintln!("subetha: adaptive ipc file {} not removed: {e}", path.display()),
@@ -1194,7 +1181,7 @@ fn control_path_for(base: &Path) -> PathBuf {
 }
 
 fn ring_path_prefix_for(base: &Path) -> PathBuf {
-    // Returns the path PREFIX (no `.bin` suffix) that AdaptiveRing's
+    // Returns the path prefix (no `.bin` suffix) that AdaptiveRing's
     // file-backed constructor appends its per-shape suffixes to.
     // The resulting files are
     // `{stem}.ring.spsc.bin` / `{stem}.ring.mpsc.{i}.bin` / etc.

@@ -1,4 +1,4 @@
-//! Monitor-based wait tier: hardware MONITOR/MWAIT-class waiting
+//! Monitor-based wait tier: hardware `MONITOR`/`MWAIT`-class waiting
 //! between the spin tier and the kernel-park tier.
 //!
 //! The wait ladder this slots into:
@@ -12,16 +12,16 @@
 //! The monitor tier's two properties the other tiers lack:
 //!
 //! - **The producer's wake is free.** The waiter arms a hardware
-//!   monitor on the slot's cache line; ANY store to that line trips
-//!   it. The producer's existing state-CAS IS the wake - no syscall
+//!   monitor on the slot's cache line; any store to that line trips
+//!   it. The producer's existing state-CAS is the wake - no syscall
 //!   on the wake side, unlike every kernel-park mechanism.
 //! - **Monitors are physical-address based** (AMD APM / Intel SDM
-//!   MONITOR semantics), so a store from ANOTHER PROCESS that
+//!   `MONITOR` semantics), so a store from another process that
 //!   mapped the same MMF page wakes the waiter. On Windows - where
 //!   `WaitOnAddress` is intra-process only - this is the first
 //!   non-polling cross-process wake the substrate has.
 //!
-//! What it is NOT: a park. `MWAITX` / `UMWAIT` hold the core in a
+//! What it is not: a park. `MWAITX` / `UMWAIT` hold the core in a
 //! shallow sleep state with a hardware deadline; the OS cannot
 //! schedule other work there. The tier therefore takes a bounded
 //! cycle budget and reports `false` on expiry so the caller
@@ -31,7 +31,7 @@
 //! `arch/x86/include/asm/mwait.h` and the Intel SDM UMWAIT page)
 //!
 //! - `MONITORX`: address in `rAX`, `ECX` = extensions (0),
-//!   `EDX` = hints (0). Both extension registers MUST be zero -
+//!   `EDX` = hints (0). Both extension registers must be zero -
 //!   nonzero raises #GP, and the Windows x64 ABI happily leaves
 //!   argument garbage in `RCX` if the wrapper does not pin it.
 //! - `MWAITX`: `EAX` = hints (0), `EBX` = max wait "expressed in SW
@@ -40,7 +40,7 @@
 //! - `UMONITOR r64`: address operand.
 //! - `UMWAIT r32`: register operand = control (bit 0: 1 = C0.1
 //!   shallow/fast wake, 0 = C0.2 deeper; other bits #GP); implicit
-//!   `EDX:EAX` = ABSOLUTE TSC deadline; wakes on monitored store,
+//!   `EDX:EAX` = absolute TSC deadline; wakes on monitored store,
 //!   deadline, or the OS's `IA32_UMWAIT_CONTROL` cap (CF set).
 //! - Detection: MWAITX = CPUID `0x8000_0001` ECX bit 29 (AMD);
 //!   WAITPKG = CPUID `7.0` ECX bit 5 (Intel Tiger Lake+ / Sapphire
@@ -81,7 +81,7 @@ pub enum MonitorWaitKind {
     Mwaitx,
     /// AArch64 `LDAXR` + `WFE`: load-exclusive arms the exclusive
     /// monitor on the line; the global monitor's Exclusive->Open
-    /// transition - ANY store to the line, including from another
+    /// transition - any store at all to the line, including from another
     /// core or process - generates the wake event with no explicit
     /// `SEV` (ARM barrier-litmus appendix). Base-ISA instructions,
     /// so every aarch64 host takes this arm; wait granularity is
@@ -193,7 +193,7 @@ fn default_budget_cycles() -> u64 {
 /// costs one tier transition, never a lost wake.
 ///
 /// Lost-wake freedom within the tier comes from the hardware
-/// monitor protocol: arm the monitor FIRST, re-check the value,
+/// monitor protocol: arm the monitor first, re-check the value,
 /// then wait. A store that lands between the re-check and the wait
 /// instruction trips the already-armed monitor and the wait
 /// returns immediately.
@@ -218,7 +218,7 @@ pub fn monitor_wait_u32_with(
     let deadline = read_tsc().wrapping_add(budget_cycles);
     let addr = atomic.as_ptr() as *const u8;
     loop {
-        // Arm, THEN check, THEN wait - the order the hardware
+        // Arm, then check, then wait - the order the hardware
         // protocol requires for lost-wake freedom.
         unsafe {
             match kind {
@@ -263,7 +263,7 @@ pub fn monitor_wait_u32_with(
 
 /// AArch64 body: `LDAXR` arms the exclusive monitor with acquire
 /// semantics, the value re-check happens on the loaded result, and
-/// `WFE` light-sleeps until an event - which includes ANY store to
+/// `WFE` light-sleeps until an event - which includes any store to
 /// the armed line (the global monitor's Exclusive->Open transition
 /// generates the event; no `SEV` needed from the storer), an
 /// interrupt, or the kernel's timer event stream tick. Spurious
@@ -283,7 +283,7 @@ pub fn monitor_wait_u32_with(
     loop {
         let cur: u32;
         unsafe {
-            // Load-exclusive-acquire: arms the monitor AND is the
+            // Load-exclusive-acquire: arms the monitor and is the
             // value check, collapsing the x86 arm-then-check pair
             // into one instruction.
             core::arch::asm!(
@@ -331,7 +331,7 @@ pub fn monitor_wait_u32_with(
 
 /// As [`monitor_wait_u32`] for a 64-bit atom (ring head counters
 /// and slot sequences are `AtomicU64`). Same protocol, same
-/// guarantees: the monitor watches the LINE, the width only
+/// guarantees: the monitor watches the whole line, the width only
 /// affects the value re-check.
 #[inline]
 pub fn monitor_wait_u64(

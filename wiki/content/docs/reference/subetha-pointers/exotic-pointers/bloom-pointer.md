@@ -44,15 +44,15 @@ queries; only the rare false-positive pays the full deref cost.
   the target's membership keys after construction without
   rebuilding the filter produces silent false negatives.
 - **Hash is `FxBloomHasher`** (FxHash-style rotate-xor-multiply).
-  Fast (~2-3 ns/u64) but **NOT cryptographically strong** and
-  **NOT stable across crate versions**. Workloads needing
+  Fast (~2-3 ns/u64) but **not cryptographically strong** and
+  **not stable across crate versions**. Workloads needing
   reproducible filter bits across processes / persistence must
   hash keys with a deterministic algorithm externally and
   construct the filter from the resulting u64 via the public
   tuple field (`Bloom64(bits)`; there is no `new` constructor).
 - **Wins only when the deref is non-trivial.** For tiny in-cache
   `Vec<u64>::contains` over <8 elements, native scan is faster
-  than even the optimised Bloom path. Bloom pays off when the
+  than even the optimized Bloom path. Bloom pays off when the
   shortcircuited operation costs more than ~5 ns of hash work:
   string equality on uniform-length strings, HashSet/HashMap
   lookups, remote/disk reads, large Vec/HashMap scans.
@@ -392,7 +392,7 @@ per query. At 128 subsets: ~2.34 us native vs ~2.13 us cascade
 plus rare derefs.
 
 The 1.10x margin is modest because `Vec<u64>::contains` is one
-of the workloads LLVM optimises hardest. For non-vectorizable
+of the workloads LLVM optimizes hardest. For non-vectorizable
 deref operations (HashMap, BTreeMap, struct equality), the win
 widens substantially - see expensive_deref below.
 
@@ -409,9 +409,9 @@ of randoms.
 
 Three-way breakdown:
 - Native Vec scan: 10.83 us
-- Single Bloom64: **11.85 us** - LOSES to native because the
+- Single Bloom64: **11.85 us** - loses to native because the
   saturated filter fails to shortcircuit, so it pays Bloom check
-  cost AND deref cost on 80% of queries.
+  cost and deref cost on 80% of queries.
 - BloomCascade: **4.36 us** - the cascade routes through fine,
   which actually rejects, and the deref is avoided 95% of the
   time.
@@ -481,7 +481,7 @@ the stored Vec<u8> at all.
 <summary><b>Pattern 4: graph adjacency edge-existence checks</b></summary>
 
 A graph stores per-node `BloomPointer<Vec<NodeId>>` where the
-Bloom summarises outgoing edge labels. `has_edge_label(label)`
+Bloom summarizes outgoing edge labels. `has_edge_label(label)`
 runs at hash-cost without walking the adjacency list. The
 cascade variant kicks in for nodes with high out-degree.
 
@@ -515,7 +515,7 @@ cascade variant kicks in for nodes with high out-degree.
 
 6. **Wins require the deref to cost more than the hash (~5 ns).**
    For tiny in-cache `Vec<u64>::contains` over 1-4 elements,
-   native scan is comparable or faster than even the optimised
+   native scan is comparable or faster than even the optimized
    Bloom path. The bench file ships explicit cases (`miss_query`,
    `expensive_deref`) showing where Bloom wins and loses.
 
@@ -542,7 +542,7 @@ for k in 0..100u64 { b.insert(&k); }  // 100 keys >> SUGGESTED_CAPACITY (8)
 ```
 
 Check `popcount()` or `estimated_fpr(n)` before relying on
-shortcircuit behaviour. For n keys near or above
+shortcircuit behavior. For n keys near or above
 `SUGGESTED_CAPACITY`, switch to `BloomCascade`.
 
 </details>
@@ -611,7 +611,7 @@ let bp = BloomPointer::from_keys(target.clone(), keys_50);
 
 The bench `cascade.miss_query` (32 keys per pointer)
 empirically shows single-level Bloom64 at 11.85 us vs native
-10.83 us - **single Bloom LOSES** in the saturated regime.
+10.83 us - **single Bloom loses** in the saturated regime.
 The cascade variant at the same workload runs at 4.36 us
 because the fine layer actually rejects.
 

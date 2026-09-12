@@ -35,7 +35,7 @@ O(1) move-to-front and O(1) eviction.
 - **Lock-free reads**: `get`, `contains_key`, `len`, snapshot
   ops. Multi-reader safe.
 - **Single-writer writes**: `touch`, `get_and_touch`, `put`,
-  `remove`, `evict_oldest` require external serialisation
+  `remove`, `evict_oldest` require external serialization
   (e.g., a SharedSemaphore(1)).
 - **Map sized to 8x cache capacity**: absorbs tombstone
   accumulation from eviction. After ~7x capacity insert-then-
@@ -122,7 +122,7 @@ Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
   expected 8x cap).
 - **MMF lifecycle managed**: 3-file create + ops + drop + cleanup.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process LRU**: any process can open the cache and do
   lock-free gets. The mutex baseline is in-process only.
@@ -186,7 +186,7 @@ its components.
 
 ## Known limitations
 
-- **Single-writer**: writes must be serialised externally.
+- **Single-writer**: writes must be serialized externally.
 - **Tombstone budget**: ~7x capacity insert-then-evict cycles
   before the map fills.
 - **`put` is expensive**: composite write path.
@@ -202,14 +202,14 @@ its components.
   a SharedSemaphore(1) or app-level mutex.
 
 - **Treating `get` as cheap for hit-rate analysis.** It's
-  lock-free but DOES NOT promote MRU; for strict LRU use
+  lock-free but does not promote MRU; for strict LRU use
   `get_and_touch`.
 
 - **Sizing the cache too small.** Tombstone budget exhausts
   after ~7x insertions; size for the workload churn.
 
 - **Wrapping in a Mutex.** Reads stay lock-free; only writes
-  need serialisation.
+  need serialization.
 
 ---
 

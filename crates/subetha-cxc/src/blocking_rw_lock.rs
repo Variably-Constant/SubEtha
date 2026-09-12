@@ -9,17 +9,16 @@
 //!
 //! - **`SharedRWLock::read_lock` / `write_lock`** spin → yield →
 //!   `sleep(50us)` indefinitely until the lock becomes available.
-//!   The sleep tail burns CPU on each wake-up tick AND can miss
+//!   The sleep tail burns CPU on each wake-up tick and can miss
 //!   an unlock by up to 50us.
 //! - **`BlockingRWLock::read_park` / `write_park`** register in
 //!   the waker at the current generation, then park in the kernel.
 //!   The kernel returns within microseconds of the next unlock.
 //!
-//! Both readers and writers park on the SAME waker; an unlock
+//! Both readers and writers park on the same waker; an unlock
 //! fires `wake_all` so the contending side picks up the lock
 //! according to the underlying writer-priority policy.
 
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -99,7 +98,7 @@ impl WakeupAtom {
     }
 
     fn open_file(path: &Path) -> Result<Self, BlockingRWLockError> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let file = crate::region_file::open_existing(path)?;
         if (file.metadata()?.len() as usize) < WAKEUP_REGION_SIZE {
             return Err(BlockingRWLockError::LayoutMismatch);
         }
@@ -425,7 +424,7 @@ mod tests {
         let lock = Arc::new(BlockingRWLock::create(&base).expect("create"));
         let r = lock.try_read_lock().expect("read");
 
-        // Assert the ORDERING property directly: the parked writer
+        // Assert the ordering property directly: the parked writer
         // cannot complete before the reader's release. (A fixed
         // sleep + minimum-elapsed assertion is schedule-sensitive:
         // under full-suite load the spawned thread can start late

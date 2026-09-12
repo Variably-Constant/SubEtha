@@ -32,7 +32,7 @@
 //! double-hashing technique that gives k effectively-independent
 //! hash positions from only two underlying hash computations.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use memmap2::{MmapMut, MmapOptions};
@@ -231,7 +231,7 @@ impl SharedBloomFilter {
     ) -> Result<Self, BloomError> {
         let base = base_path.as_ref();
         let hpath = header_path(base);
-        let file = OpenOptions::new().read(true).write(true).open(&hpath)?;
+        let file = crate::region_file::open_existing(&hpath)?;
         if file.metadata()?.len() < std::mem::size_of::<BloomHeader>() as u64 {
             return Err(BloomError::LayoutMismatch);
         }
@@ -273,8 +273,8 @@ impl SharedBloomFilter {
         Ok(())
     }
 
-    /// True if `item` MIGHT be in the set; false if definitely not.
-    /// False positives are possible; false negatives are NOT.
+    /// True if `item` might be in the set; false if definitely not.
+    /// False positives are possible; false negatives are not.
     pub fn contains(&self, item: &[u8]) -> Result<bool, BloomError> {
         let h1 = fmix64(fnv1a_seeded(item, FNV_OFFSET_BASIS_1));
         let h2 = fmix64(fnv1a_seeded(item, FNV_OFFSET_BASIS_2));

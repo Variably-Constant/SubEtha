@@ -36,7 +36,7 @@ walk positions independently via its own
 | `PubSubRing::reset(path, capacity)` | File-backed | Truncate and reinitialize, for a caller that owns the path. On Windows it succeeds only once every mapping handle is gone. |
 | `PubSubRing::open(path, expected_capacity)` | File-backed | Open an existing file-backed ring. Validates magic + capacity + slot_size. |
 | `PubSubRing::create_from_shm(shm, capacity)` | Named shared memory | Cross-process RAM-resident (`/dev/shm` on Linux, named section on Windows). |
-| `PubSubRing::open_from_shm(shm, expected_capacity)` | Named shared memory | Open an existing named-shm region without re-initialising. |
+| `PubSubRing::open_from_shm(shm, expected_capacity)` | Named shared memory | Open an existing named-shm region without re-initializing. |
 
 `capacity` must be a power of two >= 2 for every constructor.
 
@@ -108,7 +108,7 @@ runs 1 producer + 3 subscribers: subs A and B drain every item
 - Workloads where some subscribers want every item and others
   want sampling (use `skip()`).
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Point-to-point single-producer / single-consumer
   (use [SPSC](../shared-ring-spsc/) or

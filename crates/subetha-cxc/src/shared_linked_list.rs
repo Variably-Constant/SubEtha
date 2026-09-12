@@ -24,8 +24,8 @@
 //!
 //! # Concurrency model
 //!
-//! SINGLE-WRITER, MULTI-READER. push / pop / remove / set require
-//! external serialisation (wrap in a [`SharedSemaphore`](
+//! Single-writer, multi-reader. push / pop / remove / set require
+//! external serialization (wrap in a [`SharedSemaphore`](
 //! crate::SharedSemaphore) with 1 permit, or use the application's
 //! own coordination). Iteration is lock-free.
 
@@ -122,7 +122,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
         assert!(capacity >= 2, "capacity must include sentinel head + at least one node");
         let region = SharedRegion::<Node<T>>::create(path, capacity)?;
         // Allocate the sentinel head at slot 0. next and prev both
-        // point at HEAD (self) so an empty list is a 1-element ring.
+        // point at the head (self) so an empty list is a 1-element ring.
         let head = Node {
             value: T::default(),
             next: HEAD_INDEX,
@@ -168,7 +168,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
     /// Field-direct reads/writes of a node's `value`/`next`/`prev`. The
     /// link-update paths only touch one field, so this avoids copying the
     /// whole Node through region.get/region.set. Non-atomic, matching the
-    /// existing model (writers serialise externally; a concurrent reader
+    /// existing model (writers serialize externally; a concurrent reader
     /// sees old-or-new for a word-sized field, never a torn whole node).
     #[inline]
     fn read_value(&self, idx: u32) -> T {
@@ -212,7 +212,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     /// Access the underlying region (advanced use; e.g., to wrap
-    /// writes in a SharedSemaphore for cross-process serialisation).
+    /// writes in a SharedSemaphore for cross-process serialization).
     pub fn region(&self) -> &SharedRegion<Node<T>> { &self.region }
 
     fn read_node(&self, idx: u32) -> Node<T> {
@@ -315,7 +315,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
 
     /// Remove the node referenced by `handle` in O(1) (splice +
     /// free the slot). Returns the removed value or None when the
-    /// handle is the sentinel head OR was already freed.
+    /// handle is the sentinel head or was already freed.
     pub fn remove(&self, handle: NodeHandle<T>) -> Option<T> {
         if handle.is_nil() || handle.index == HEAD_INDEX {
             self.ring_sidecar
@@ -332,7 +332,7 @@ impl<T: Copy + Default + 'static> SharedLinkedList<T> {
 
     fn remove_by_index(&self, idx: u32) -> Option<T> {
         // Read only the three fields of the node being spliced out, not
-        // the whole node, and repoint neighbours field-direct.
+        // the whole node, and repoint neighbors field-direct.
         let node_prev = self.read_prev(idx);
         let node_next = self.read_next(idx);
         let node_value = self.read_value(idx);

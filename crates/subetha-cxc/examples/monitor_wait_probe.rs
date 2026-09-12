@@ -1,8 +1,8 @@
 //! Probe + wake-latency A/B for the monitor-wait tier.
 //!
 //! Prints which instruction family the host runs
-//! (WAITPKG / MWAITX / none), then measures cross-thread WAKE
-//! LATENCY - storer's `Release`-store to waiter's return - over
+//! (WAITPKG / MWAITX / none), then measures cross-thread wake
+//! latency - storer's `Release`-store to waiter's return - over
 //! `--rounds` (default 2,000) round trips for three contenders:
 //!
 //! | contender | what the waiter runs |
@@ -18,7 +18,7 @@
 //! exported by the harness re-running itself, so what's measured
 //! is the futex / `_umtx_op` / `WaitOnAddress` round trip the tier
 //! is being compared against. Without the env override the same
-//! waker path measures the INTEGRATED ladder (monitor first, park
+//! waker path measures the integrated ladder (monitor first, park
 //! after budget), reported as `waker-integrated`.
 //!
 //! Timing uses the TSC on both threads (the host's invariant-TSC
@@ -156,7 +156,7 @@ fn bench_wake_latency(rounds: u64, kind: WaiterKind) -> Stats {
         ready.store(0, Ordering::Release);
         // Let the waiter actually reach its wait instruction (the
         // arm-to-wait window): a short fixed delay so the measured
-        // path is the WAIT-side wake, not the still-spinning check.
+        // path is the wait-side wake, not the still-spinning check.
         let spin_until = read_tsc().wrapping_add(20_000);
         while read_tsc().wrapping_sub(spin_until) > i64::MAX as u64 {
             std::hint::spin_loop();

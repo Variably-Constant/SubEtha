@@ -1,13 +1,13 @@
-//! Cross-process E2E proof of the AUTOMATIC AdaptiveRing: a ring
+//! Cross-process E2E proof of the automatic AdaptiveRing: a ring
 //! created with a 1-producer / 1-consumer hint grows to 3 producer
-//! PROCESSES and 2 consumer PROCESSES with zero registration errors,
+//! processes and 2 consumer processes with zero registration errors,
 //! morphing SPSC -> MPSC -> MPMC on its own as peers join, and every
 //! item is delivered exactly once with per-producer FIFO intact.
 //!
 //! What it exercises, in order:
 //! 1. Producer A registers (slot 0) and streams - the ring holds SPSC.
 //! 2. Producers B and C register while A is mid-stream. Slot 1 and 2
-//!    exceed the construction hint, so registration GROWS the ring
+//!    exceed the construction hint, so registration grows the ring
 //!    (new per-producer MMF backings, published via the shared peer
 //!    directory) and the driver's consumer morphs to MPSC on its next
 //!    pop with no sidecar and no explicit morph call.
@@ -20,7 +20,7 @@
 //!    (producer, consumer) stream is seq-monotone (per-producer FIFO).
 //!
 //! Run: `cargo run --release -p subetha-cxc --example adaptive_growth_xproc`
-//! Exit code 0 with a PASS line per assertion; any violation exits 1.
+//! Exit code 0 with a `PASS` line per assertion; any violation exits 1.
 
 use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
@@ -169,7 +169,7 @@ fn main() {
     let prefix = prefix.to_str().unwrap().to_owned();
     let stop_flag = format!("{prefix}.stop");
 
-    // The whole point: the hint is ONE producer / ONE consumer. No
+    // The hint is one producer and one consumer. No
     // grammar declared, so nothing below is allowed to fail.
     let ring = AdaptiveRing::create(&prefix, 1, 1, CAPACITY).expect("create");
     let my_slot = ring.register_consumer().expect("register_consumer");
@@ -181,7 +181,7 @@ fn main() {
 
     // Stage 1: one producer -> the ring settles on SPSC.
     //
-    // Wait for the REGISTRATION, not for the shape. The ring is
+    // Wait for the registration, not for the shape. The ring is
     // constructed Spsc, so a shape wait here passes before the child has
     // claimed a slot, and the next producer then races it for slot 0.
     let child_a = spawn_role(exe, "producer", &prefix, ITEMS_A);
@@ -193,8 +193,8 @@ fn main() {
     }
     wait_for_shape(&ring, &mut tally, RingShape::Spsc, "1P/1C", deadline);
 
-    // Stage 2: two more producer PROCESSES join mid-stream. Slots 1
-    // and 2 are PAST the construction hint - registration grows the
+    // Stage 2: two more producer processes join mid-stream. Slots 1
+    // and 2 are past the construction hint - registration grows the
     // ring instead of erroring, and the shape follows on its own.
     let child_b = spawn_role(exe, "producer", &prefix, ITEMS_B);
     wait_for_shape(&ring, &mut tally, RingShape::Mpsc, "2P/1C growth", deadline);
@@ -213,14 +213,14 @@ fn main() {
         ring.published_producers()
     );
 
-    // Stage 3: a second consumer PROCESS joins -> MPMC, ownership
+    // Stage 3: a second consumer process joins -> MPMC, ownership
     // rebalances between the two consumers.
     let child_d = spawn_role(exe, "consumer2", &prefix, 0);
     wait_for_shape(&ring, &mut tally, RingShape::Mpmc, "2C join", deadline);
 
     // Drain while the producers finish, then signal stop and drain
     // the tail.
-    // What each producer SENT, indexed by the slot it actually claimed.
+    // What each producer sent, indexed by the slot it actually claimed.
     // Registration order is the ring's to decide, so the tally is
     // checked against what each child reports rather than against the
     // order they were spawned in.

@@ -43,13 +43,13 @@ observed fan statistics.
   edges in one row / column (O(N) scans); `max_fan_out()` /
   `max_fan_in()` return `(max, index)` over the whole grid
   (O(N²)).
-- **`recommend()`** takes NO arguments; it reads the thresholds
+- **`recommend()`** takes no arguments; it reads the thresholds
   from the header and returns a `TopologyKind`. The policy:
-  `max_fan_out >= fan_out_threshold` AND `max_fan_in >=
+  `max_fan_out >= fan_out_threshold` and `max_fan_in >=
   fan_in_threshold` -> `AllToAllMesh`; else `max_fan_out >=
   fan_out_threshold` -> `BroadcastTree`; else `PointToPoint`.
   `set_thresholds(fan_out, fan_in)` retunes without re-creating.
-- **`publish_recommendation()`** computes AND caches the result
+- **`publish_recommendation()`** computes and caches the result
   in the header (bumping `recommendation_epoch`), so other
   processes get it at O(1) via `read_recommendation()`. When it
   publishes `BroadcastTree` it also stores the highest-fan-out
@@ -106,7 +106,7 @@ observed fan statistics.
   observation).
 - **MMF lifecycle managed**: create + ops + drop + remove_file.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process flow observation**: any process records
   sends; coordinator reads recommendations.

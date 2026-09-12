@@ -60,7 +60,7 @@ Local IPC normally means picking the least-bad option from a menu that all goes 
 </picture>
 
 <p align="center">
-  <strong>Measured 126-498x faster than the fastest canonical kernel IPC mechanism on every platform tested</strong> (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback) and 5.0-11.4x faster than iceoryx2's zero-copy shared memory on the platforms where it builds (that contender is behind the `iceoryx-bench` feature, since its platform layer binds via bindgen and needs libclang on the build host). All four pinned channel shapes (SPSC / MPSC / composed MPMC / Vyukov MPMC) land between 37 and 115 ns one-way across the six platforms.<br><br>
+  <strong>Measured 126-498x faster than the fastest canonical kernel IPC mechanism on every platform tested</strong> (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback) and 5.0-11.4x faster than iceoryx2's zero-copy shared memory on the platforms where it builds (that contender is behind the `iceoryx-bench` feature, since its platform layer binds via bindgen and needs libclang on the build host). All four pinned channel shapes (SPSC / MPSC / composed MPMC / Vyukov MPMC) land between 36.8 and 114.9 ns one-way across the six platforms.<br><br>
   
 </p>
 
@@ -91,11 +91,11 @@ That is the trade. SubEtha gives up a little single-shape peak, and in return yo
 
 ## Quick start
 
-> *The Vogons regard no inter-clan transaction as legitimate without the appropriate forms filed in triplicate, in red ink, with notarised copies despatched in advance to a separate office for filing in advance of any action being taken. The kernel has long shared this view of local IPC, though without the saving grace of an actual filing cabinet. SubEtha's setup ritual is what you see below.*
+> *The Vogons regard no inter-clan transaction as legitimate without the appropriate forms filed in triplicate, in red ink, with notarized copies dispatched in advance to a separate office for filing in advance of any action being taken. The kernel has long shared this view of local IPC, though without the saving grace of an actual filing cabinet. SubEtha's setup ritual is what you see below.*
 
 ```toml
 [dependencies]
-subetha-cxc = "0.1"
+subetha-cxc = "0.3"
 ```
 
 ```rust
@@ -168,10 +168,12 @@ Inside the workspace, the crate dependency graph stays small:
 
 ```mermaid
 graph LR
+    FFI[subetha-ffi<br/>the C ABI]
     CXC[subetha-cxc<br/>the CXC implementation]
     POINTERS[subetha-pointers<br/>9 exotic pointer types]
     SIDECAR[subetha-sidecar<br/>observability control plane]
     CORE[subetha-core<br/>substrate: handshake, marshal, axis catalog]
+    FFI --> CXC
     CXC --> CORE
     CXC --> SIDECAR
     CXC --> POINTERS
@@ -179,6 +181,13 @@ graph LR
     POINTERS --> CORE
     style CXC fill:#1e3a8a,color:#fff
 ```
+
+From C, C++, Go, Node or any other language that binds through C, the same
+primitives are reached through [`subetha-ffi`](crates/subetha-ffi/): one
+header, `subetha.h`, over generation-checked handles, with every panic
+caught at the boundary. [`C_ABI_TIERS.md`](C_ABI_TIERS.md) states the order
+in which the C surface ships; the adaptive ring is the first primitive
+through it.
 
 The hot path on `Channel::send`:
 
@@ -194,7 +203,7 @@ flowchart LR
     style DONE fill:#1e3a8a,color:#fff
 ```
 
-`AdaptiveIpc<T>::send` adds one branch on `TypeId::of::<T>() == TypeId::of::<u64>()`, which monomorphises to a known constant and lets LLVM eliminate the dead arm. For `T = u64`, the call collapses to a direct invocation of `send_u64`: 8-byte stack buffer, `to_le_bytes`, ring push. **Because `send::<u64>` routes through this very branch, the explicit `send_u64` runs the identical code, so the two measure at parity (~147 ns/item on a Ryzen 7 2700).** LLVM already inlines the `u64` path to equivalent machine code, so the branch's payoff is the guaranteed 8-byte buffer across toolchains rather than a separate measured win.
+`AdaptiveIpc<T>::send` adds one branch on `TypeId::of::<T>() == TypeId::of::<u64>()`, which monomorphizes to a known constant and lets LLVM eliminate the dead arm. For `T = u64`, the call collapses to a direct invocation of `send_u64`: 8-byte stack buffer, `to_le_bytes`, ring push. **Because `send::<u64>` routes through this very branch, the explicit `send_u64` runs the identical code, so the two measure at parity (~147 ns/item on a Ryzen 7 2700).** LLVM already inlines the `u64` path to equivalent machine code, so the branch's payoff is the guaranteed 8-byte buffer across toolchains rather than a separate measured win.
 
 ---
 
@@ -265,7 +274,7 @@ was already doing. The backlog orders itself because the stamps were
 already paid for. The substrate never changes ordering semantics on its
 own. The threshold you set is the authorization.
 
-One caveat, stated plainly. The by-stamp merge is best-effort: global
+The by-stamp merge is best-effort: global
 FIFO within the stamp skew, no tighter. With an invariant TSC that skew
 is tight enough that you will not notice it. Without one, the stamps fall
 back to a shared counter, and under producer lag that counter can hand
@@ -309,7 +318,7 @@ directly only when you mean to override the substrate's defaults.
 | [`RingContract`](crates/subetha-cxc/src/ring_contract.rs) | Legality (count bounds + ordering contract + capacity ceiling; attach-check authority + policy feasible-region filter) | `subetha_cxc::ring_contract` |
 | [`SubscriberPosition`](crates/subetha-cxc/src/replay_positions.rs) | Position tracking | `subetha_cxc::replay_positions` |
 | [`ShmFile`](crates/subetha-cxc/src/shm_file.rs) | Storage helper | `subetha_cxc::shm_file` |
-| [`UnifiedSensSender`](crates/subetha-cxc/src/sens_unified.rs) / `UnifiedSensReceiver` | **Sens-O-Matic unified transport**: carries BOTH erasure codes on one port and auto-switches RLC <-> RS mid-stream on the loss the receiver feeds back; TLS 1.3 seals every item across the switch (`connect_tls`), and a listener serves N TLS senders with per-peer keys (`listen_tls`) | `subetha_cxc::sens_unified` |
+| [`UnifiedSensSender`](crates/subetha-cxc/src/sens_unified.rs) / `UnifiedSensReceiver` | **Sens-O-Matic unified transport**: carries both erasure codes on one port and auto-switches RLC <-> RS mid-stream on the loss the receiver feeds back; TLS 1.3 seals every item across the switch (`connect_tls`), and a listener serves N TLS senders with per-peer keys (`listen_tls`) | `subetha_cxc::sens_unified` |
 | [`SensOMaticRlcSender`](crates/subetha-cxc/src/sens_rlc.rs) / `SensOMaticRlcReceiver` | Sens-O-Matic sliding-window RLC code alone (low-to-moderate loss, low latency tail; FEC + ARQ, optional TLS 1.3) | `subetha_cxc::sens_rlc` |
 | [`ReliableUdpSender`](crates/subetha-cxc/src/udp_bridge.rs) / `ReliableUdpReceiver` (`SensOMaticRs*`) | Sens-O-Matic block Reed-Solomon code alone (high sustained loss, parity-efficient; FEC + ARQ). Standalone it is `std`-only; the unified endpoint above adds TLS to the RS stream | `subetha_cxc::udp_bridge` |
 
@@ -366,8 +375,8 @@ The cross-process comparison sits in [Why SubEtha?](#why-subetha) above. The two
 |---|---:|---|
 | `SharedRing::try_push` direct | 24.1 ns/op | bare MMF ring push |
 | `Arc<dyn MessageTransport>::try_push` | 26.2 ns/op | ~2 ns of dyn-dispatch overhead on top of the direct push |
-| `AdaptiveIpc<u64>::send` (`T = u64`, auto-routes to `send_u64`) | 146.9 ns/op | what most consumers reach for; the `TypeId` branch sends it down the specialised path |
-| `AdaptiveIpc<u64>::send_u64` (specialised, called directly) | 148.5 ns/op | same code path as `send::<u64>`, so parity by construction (LLVM inlines both equivalently) |
+| `AdaptiveIpc<u64>::send` (`T = u64`, auto-routes to `send_u64`) | 146.9 ns/op | what most consumers reach for; the `TypeId` branch sends it down the specialized path |
+| `AdaptiveIpc<u64>::send_u64` (specialized, called directly) | 148.5 ns/op | same code path as `send::<u64>`, so parity by construction (LLVM inlines both equivalently) |
 
 </details>
 
@@ -428,10 +437,10 @@ The `AdaptiveRing` keeps **all four backings (SPSC / MPSC / MPMC / Vyukov) pre-a
 | Step | Operation (ordering) | Guarantee |
 |---|---|---|
 | 1 | `pin_generation.fetch_add(1)` (`AcqRel`) | any holder of a pinned pointer sees `is_still_valid() == false` and re-pins |
-| 2 | publish the old shape as **stale** (`Release`) | ordered *before* the new tag, so any consumer that sees the new shape also sees the stale marker |
+| 2 | add the shape being left to the **walked set** (`AcqRel`) | ordered *before* the new tag, so any consumer that sees the new shape also sees that the old one is still walked |
 | 3 | publish the new shape tag (`Release`) | fresh `try_send`s route to the new backing |
 
-On the read side, `try_recv` drains the **stale backing first**: an item pushed microseconds before the flip is consumed before the new backing is read, so nothing is lost and FIFO holds across the seam. A second morph is refused (`RingError::StaleBacklog`) until the prior stale backing empties, so at most one backing is ever draining and no item is ever copied between backings.
+On the read side, `try_recv` drains **every other walked shape before the current one**: an item pushed microseconds before the flip is consumed before the new backing is read, so nothing is lost and FIFO holds across the seam. The set only grows. A producer resolves the shape tag and pushes some instructions later, so a backing can receive a push after it stops being current, and nothing can know that push is coming; there are four shapes, so never forgetting one costs a bounded walk and no item is ever copied between backings.
 
 </details>
 
@@ -444,11 +453,11 @@ You choose no lock and no shape. On the fixed-shape rings you declare **how many
 |---|---|---|
 | Typed SPSC pair | exactly 1 x 1 | **the compiler** - both handles are `Send + !Sync + !Clone` |
 | `SharedRing` (Vyukov) / composed MPMC | N x N | the CAS protocol, at runtime |
-| `AdaptiveRing` | grows with the live peer set | the shared peer directory: slot claims + on-demand backing growth. `TooMany*` comes from a declared `with_contract` ceiling, or from the substrate's own limit on CONCURRENT peers - 4096 producers, 256 consumers - which is the fixed size of the peer-directory region and applies whether or not you declare a contract |
+| `AdaptiveRing` | grows with the live peer set | the shared peer directory: slot claims + on-demand backing growth. `TooMany*` comes from a declared `with_contract` ceiling, or from the substrate's own limit on concurrent peers - 4096 producers, 256 consumers - which is the fixed size of the peer-directory region and applies whether or not you declare a contract |
 
 </details>
 
-None of this is asserted on faith. `morph_preserves_in_flight_items_via_stale_walk`, `second_morph_blocked_until_stale_backlog_drains`, and `stamped_items_survive_shape_morphs` exercise shape changes under live traffic, and the MPMC path runs to 8 producers / 8 consumers and 800k items with zero lost and zero duplicated (verified by a per-item ID set). The full treatment, including what you must *not* do, is in [Concurrency and safety](wiki/content/docs/explanation/concurrency-and-safety.md).
+None of this is asserted on faith. `morph_preserves_in_flight_items_via_stale_walk`, `two_morphs_in_a_row_strand_nothing`, `a_push_landing_two_morphs_late_is_still_delivered`, `nothing_published_is_lost_as_the_peers_leave` and `stamped_items_survive_shape_morphs` exercise shape changes under live traffic, and the MPMC path runs to 8 producers / 8 consumers and 800k items with zero lost and zero duplicated (verified by a per-item ID set). The full treatment, including what you must *not* do, is in [Concurrency and safety](wiki/content/docs/explanation/concurrency-and-safety.md).
 
 ---
 
@@ -488,11 +497,13 @@ The Guide is occasionally honest, mostly in sections nobody is selling anything.
 
 | Crate | Role |
 |---|---|
-| [`subetha-cxc`](crates/subetha-cxc) | The CXC implementation. `Channel<T>`, `AdaptiveIpc<T>`, `AutoIpc`, MMF dispatcher, ~40 MMF-backed primitives. `cargo add subetha-cxc` is what users reach for. |
+| [`subetha-cxc`](crates/subetha-cxc) | The CXC implementation. `Channel<T>`, `AdaptiveIpc<T>`, `AutoIpc`, MMF dispatcher, more than sixty MMF-backed primitives. `cargo add subetha-cxc` is what users reach for. |
 | [`subetha-core`](crates/subetha-core) | Substrate: handshake header, observation ring, marshal trait, axis-signature catalog, CPUID helpers. |
 | [`subetha-sidecar`](crates/subetha-sidecar) | Control plane: per-NUMA scan thread, policy, `SidecarBox`, `AdaptiveInstance` trait. |
 | [`subetha-pointers`](crates/subetha-pointers) | Nine exotic pointer types: Umbra (content-prefix), Bloom (set summary), KStep (log2 stride), KTower (multi-segment), SelfDesc (type tag), Versioned + HLC (MVCC), Cardinality (size class), CHERI capability (ARM Morello bounds), RaspBatch + RaspBatchIndex (x86 AVX2/AVX-512F SIMD-batched bounds). |
 | [`subetha`](crates/subetha) | Umbrella crate: pulls in the whole stack and re-exports each member as a module (`subetha::cxc` / `::core` / `::sidecar` / `::pointers`). `cargo add subetha` for the lot; most users reach for `subetha-cxc` directly. |
+| [`subetha-ffi`](crates/subetha-ffi) | The C ABI. One header, `subetha.h`, over generation-checked handles, every panic caught at the boundary. The order in which the C surface ships is in [`C_ABI_TIERS.md`](C_ABI_TIERS.md). |
+| [`subetha-ffi-tests`](crates/subetha-ffi-tests) | C ABI acceptance gate, not published. Fifteen workloads, ten of them across processes, whose every role is written in C against `subetha.h`. See [The C ABI acceptance gate](#the-c-abi-acceptance-gate). |
 | [`subetha-e2e`](crates/subetha-e2e) | End-to-end gate, not published. One binary whose scenarios each spawn a real child process, so the boundary under test is a genuine one. `cargo run -p subetha-e2e -- list`. |
 
 The cross-host test harness for the reliable-UDP FEC transport is the
@@ -508,24 +519,109 @@ sides compile from one source and ship as one artifact.
 
 ```console
 $ cargo run -p subetha-e2e
-== failover PASS (23 ms)          a KILLED process's in-flight work is reclaimed
-== ring-boundary PASS (51 ms)     payloads cross a boundary and survive process death
-== flush-visibility PASS (275 ms) 25 primitives' flush_async state read from a 2nd process
-== session-restart PASS (1882 ms) a killed peer's replacement session is delivered
-== receiver-restart PASS (355 ms) a replacement RECEIVER joins a stream in progress
-== scheduler PASS (28 ms)         a Pass runs in a worker process, collected here
-6 scenario(s): 6 passed, 0 failed
+== failover PASS (16 ms)
+== ring-boundary PASS (28 ms)
+== flush-visibility PASS (131 ms)
+== session-restart PASS (3383 ms)
+== session-restart-rs PASS (2599 ms)
+== receiver-restart PASS (301 ms)
+== scheduler PASS (22 ms)
+7 scenario(s): 7 passed, 0 failed
 ```
+
+Each scenario also prints what its halves did as it runs - the pid that
+was killed, the items each session delivered, the forged datagrams a
+receiver refused - so a failure names the step it reached.
 
 `subetha-e2e run <name>...` runs a subset and `subetha-e2e list`
 enumerates them. Exit status is zero only when every scenario asked for
 passed.
 
+### The C ABI acceptance gate
+
+`subetha-e2e` above gates the Rust surface. The C surface has its own
+gate, and it is the larger of the two:
+[`subetha-ffi-tests`](crates/subetha-ffi-tests/) drives fifteen
+workloads through `subetha.h` itself, so what is under test is the ABI a
+C caller sees rather than the Rust behind it. Every role is written in C
+([`c/workloads.c`](crates/subetha-ffi-tests/c/workloads.c)). In ten of
+the workloads the Rust half spawns each role as a real child process and
+collects the problem count it exits with. The other five, `race_bus`,
+`line_log`, `pod_rings`, `two_ring_mind` and `dispatch_deques`, are
+shaped as threads inside one program, and run their roles on threads of
+the test process.
+
+| Workload | Shape |
+|---|---|
+| `request_response_service` | A server process, a client process each, request and reply rings |
+| `snapshot_fleet` | A host and its workers, two rings each |
+| `race_bus` | T threads on one ring, every one both producer and consumer |
+| `line_log` | Chunked lines, producers serialized by a lock, a writer draining to empty and ending on a marker |
+| `command_bus` | A command ring and a reply ring per client, file-backed |
+| `context_menu` | One direction, single-producer, a begin/chunk/show protocol, the broker opening with retries |
+| `pod_rings` | Three single-producer rings, a consumer in each of the three waiting styles |
+| `two_ring_mind` | Two rings between a foreground and a background thread |
+| `dispatch_deques` | One deque per producer, every consumer stealing from all |
+| `blob_store` | A hash map from a content hash to an arena reference, writer processes storing overlapping sets, reader processes on the arena read-only |
+| `content_index` | A vec of records over an arena rebuilt generation by generation under an owner lease, published through a counter, read read-only |
+| `mvcc_index` | A versioned map changed by writer processes one at a time under a lock while reader processes scan it under pins and no lock |
+| `graph_store` | Chains of edge pages on a frame region with a version word per page, writers appending and pruning, readers walking |
+| `memory_store` | Ids in the strategy-switching set and records in a hash map, both under one reader-writer lock, the set migrated under the write hold |
+| `cluster_stream` | Sealed Sens-O-Matic streams from sender processes into one receiver, more than one per process, every stream finished |
+| `workload_peer` | The child half of the above, selected by `SUBETHA_FFI_WORKLOAD` |
+
+Each ring-shaped workload sweeps the locales it can use - anonymous,
+file-backed, and the machine namespace where the OS grants it - against
+both handle modes, strict and managed, 25 cells. The six store-shaped
+workloads run on file backings in both modes, twelve cells more. That
+comes to **37 soaked cells**, and `SUBETHA_FFI_SOAK_SECS` sets the
+seconds spent in each one, so a leg costs 37 times that number. A leg
+at 240 seconds a cell:
+
+```console
+$ SUBETHA_FFI_SOAK_SECS=240 cargo test -p subetha-ffi-tests --test workloads --features subetha-ffi/tls -- --nocapture --test-threads=1
+test result: ok. 16 passed; 0 failed; finished in 8904.71s
+```
+
+A create the OS refuses for want of a privilege is reported as a skip.
+Nothing else is: a cell that cannot run is a failure.
+
+The gate runs on three hosts from one commit. Linux and Windows build a
+checkout hard-reset to that commit, with the head asserted equal and no
+tracked file differing before the build starts. FreeBSD has no git, so
+the commit's whole tracked tree is extracted from a `git archive` into a
+directory that did not exist a moment earlier, which is what makes a
+leftover impossible rather than something to search for: a copy into an
+existing tree never deletes, and a file the commit has dropped outlives
+it there. The extract is then hashed file by file against the archive
+that placed it: 834 files, none missing, none differing, and nothing on
+disk the commit does not carry.
+
+The three hosts are not three machines. Linux and FreeBSD are KVM
+guests on one Ryzen 7 5700G, each given 16 vCPUs on a part that has 16
+threads; Windows is a separate Ryzen 7 2700. Three operating systems is
+what the three legs buy - three kernels, three libc implementations,
+three schedulers - and the two guests share a socket, so their wall
+times are not independent of one another. The most recent full
+pass, at commit f871790 with every tier shipped and 240 s per cell:
+
+| Host | Result | Wall |
+|---|---|---|
+| Linux, x86_64 | 16 passed, 0 failed | 8904.71 s |
+| FreeBSD, x86_64 | 16 passed, 0 failed | 8906.17 s |
+| Windows, x86_64 | 16 passed, 0 failed | 8900.39 s |
+
+Every one of the 37 cells ran on every host: no create was refused for
+want of a privilege, so nothing was skipped anywhere. Zero panics and
+zero handle errors on any host. **macOS is untested**:
+the C surface has no macOS leg, and nothing here should be read as
+covering it.
+
 ---
 
 ## The architectural premise
 
-> *It is an important and popular fact that a channel is not a thing but a decision: somebody, somewhere, froze an opinion about where your bytes live into an API, and everyone since has mistaken the freeze for physics. The Guide's editors note that most of the galaxy's infrastructure works this way, that almost none of it is anyone's fault, and that the wise traveller learns to distinguish between the laws of nature and the defaults of whoever got there first.*
+> *It is an important and popular fact that a channel is not a thing but a decision: somebody, somewhere, froze an opinion about where your bytes live into an API, and everyone since has mistaken the freeze for physics. The Guide's editors note that most of the galaxy's infrastructure works this way, that almost none of it is anyone's fault, and that the wise traveler learns to distinguish between the laws of nature and the defaults of whoever got there first.*
 
 A channel is a frozen handshake between two roles, and the freeze usually happens where you cannot see it. `std::sync::mpsc::channel` freezes "single process, in memory." `socket(AF_UNIX, SOCK_STREAM, 0)` freezes "kernel-mediated byte stream." `TcpStream` freezes the whole IP stack. Each is the right call for the median workload. Each is the wrong call the moment the topology crosses a process boundary and the application still wants in-process speed.
 
@@ -545,7 +641,7 @@ The waker itself lives at `crates/subetha-cxc/src/cross_process_waker.rs`. The b
 
 ## Going cross-host
 
-> *SubEtha takes its name from the Sub-Etha, the galaxy-wide signalling network on which the Guide's field researchers depend for news, gossip, and passing rides. Ours spans one LAN rather than one galaxy, observes the speed of light as a matter of politeness, and round-trips in about a millisecond, which for any network that has ever met a sysadmin is practically instantaneous.*
+> *SubEtha takes its name from the Sub-Etha, the galaxy-wide signaling network on which the Guide's field researchers depend for news, gossip, and passing rides. Ours spans one LAN rather than one galaxy, observes the speed of light as a matter of politeness, and round-trips in about a millisecond, which for any network that has ever met a sysadmin is practically instantaneous.*
 
 Same-host CXC is the core scope. Cross-host extends the same shape through a bridge - a regular MMF participant on each host that ferries ring bytes across the wire, with the same byte layout on each end. Five cross-host transports are available; pick by network trust, link quality, and idle profile.
 
@@ -647,9 +743,9 @@ already on the wire, no retransmit round-trip.
 
 **Latency under loss is the sharper result.** A lost TCP segment
 head-of-line-blocks the whole stream until its retransmit lands, so the TCP
-bridges' p99 round-trip blows out to **204-254 ms** at 3-8% loss.
+bridges' p99 round-trip blows out to **204-255 ms** at 3-8% loss.
 Sens-O-Matic recovers in-band, so the stream never stalls: **block-RS holds a
-1.6-2.0 ms p99 - a ~130x lower tail than TCP at the same 3% loss** (the RLC
+1.5-2.1 ms p99 - a ~130x lower tail than TCP at the same 3% loss** (the RLC
 code ~30 ms, QUIC ~30-38 ms).
 
 </details>
@@ -746,7 +842,7 @@ let initial = MmfWorkloadShape::StreamingMpmc {
 let ipc: AdaptiveIpc<u64> =
     AdaptiveIpc::create("/tmp/adapt", initial, 256, 1)?;
 
-// send::<u64> monomorphises to send_u64 via TypeId constant-fold.
+// send::<u64> monomorphizes to send_u64 via TypeId constant-fold.
 // ~147 ns/item; no Marshal trait dispatch on the hot path.
 for i in 0..5 { ipc.send(&i)?; }
 
@@ -896,7 +992,7 @@ cross-process waker, the kernel async ring (POSIX `aio` + `aio_suspend`),
 superpages (`VM_FLAGS_SUPERPAGE_SIZE_2MB`), and the BPF `Locale::Wire`
 backend all run.
 
-The 1.62x `AdaptiveIpc::send::<u64>` speedup is delivered by an in-source `TypeId::of::<T>() == TypeId::of::<u64>()` branch in [`AdaptiveIpc::send`](crates/subetha-cxc/src/adaptive_ipc.rs). LLVM monomorphises the comparison to a constant at codegen time, so the right specialisation is picked with **zero opt-in on stable Rust**.
+The 1.62x `AdaptiveIpc::send::<u64>` speedup is delivered by an in-source `TypeId::of::<T>() == TypeId::of::<u64>()` branch in [`AdaptiveIpc::send`](crates/subetha-cxc/src/adaptive_ipc.rs). LLVM monomorphizes the comparison to a constant at codegen time, so the right specialization is picked with **zero opt-in on stable Rust**.
 
 ---
 
@@ -911,6 +1007,16 @@ The canonical reference is the SubEtha Guide:
 - [`crates/subetha-cxc/src/mmf_dispatcher.rs`](crates/subetha-cxc/src/mmf_dispatcher.rs): the `MmfDispatcher` that maps workload shapes to primitives.
 - [`wiki/`](wiki/): Hugo-rendered SubEtha Guide (the *Don't Panic* edition).
 
+[`SENS_O_MATIC_WIRE.md`](SENS_O_MATIC_WIRE.md) at the repository root is
+the **normative** wire specification for the Sens-O-Matic transport: both
+erasure codes, the complete packet-type assignment, every frame layout,
+the compatibility rules and the frozen interop vectors. It is versioned
+with the code, and the code is held to it -
+[`spec_doc.rs`](crates/subetha-cxc/src/spec_doc.rs) parses the document's
+tables and has each owning module assert its own constants against them,
+so the build fails if the two disagree. Where this README describes the
+transport and the specification describes it, the specification governs.
+
 Inside each crate, rustdoc covers every public type with reference-quality detail. `cargo doc --open` for the local build.
 
 ---
@@ -920,7 +1026,7 @@ Inside each crate, rustdoc covers every public type with reference-quality detai
 This project's name, its wiki's subtitle, and the voice at its section
 boundaries are an homage to Douglas Adams (1952-2001) and *The
 Hitchhiker's Guide to the Galaxy*. The Sub-Etha is the galaxy-wide
-signalling network his hitchhikers use to flag down passing ships; a
+signaling network his hitchhikers use to flag down passing ships; a
 library whose job is to carry messages between processes that cannot
 otherwise hear each other could not reasonably be named anything else.
 
@@ -977,7 +1083,7 @@ CXC composes algorithms from the published lock-free, probabilistic-data-structu
 
 ## Use of AI Tools
 
-> *Field researchers for the Guide are notoriously prolific, occasionally insightful, and reliably unreliable in roughly equal measure, which is why the published edition differs from the field drafts by one important step: someone in the editorial office reads it first. The Guide's editors hold that compilation and conviction are different jobs, and that any traveller relying on an entry nobody has checked deserves whatever the universe sends next. SubEtha's documentation observes the same separation of duties.*
+> *Field researchers for the Guide are notoriously prolific, occasionally insightful, and reliably unreliable in roughly equal measure, which is why the published edition differs from the field drafts by one important step: someone in the editorial office reads it first. The Guide's editors hold that compilation and conviction are different jobs, and that any traveler relying on an entry nobody has checked deserves whatever the universe sends next. SubEtha's documentation observes the same separation of duties.*
 
 The author used Claude (Anthropic) via the Claude Code CLI for code development assistance, documentation drafting, and benchmark scripting during the preparation of this repository. All technical decisions, channel architecture, mmap-backed transport design, and final content were determined by the author. The Rust implementation, unit tests, and benchmark results were independently verified by the author through zero-warning `cargo build` / `cargo clippy` / `cargo doc` passes, the full unit-test suite, and end-to-end executions of the demo binaries and the cross-process IPC benchmark on native Windows, WSL2, Ubuntu Linux, and FreeBSD.
 

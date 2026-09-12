@@ -21,7 +21,7 @@ slices polling an empty / full ring.
 > [`TcpBridge`]({{< ref "tcp-bridge" >}}) calls
 > `tokio::task::yield_now` when the local ring is empty (client
 > side) or full (server side), this primitive's worker thread
-> parks on a SHARED `futex` (Linux) or `WaitOnAddress` (Windows
+> parks on a shared `futex` (Linux) or `WaitOnAddress` (Windows
 > intra-process) and returns within microseconds of the next ring
 > event. End-to-end latency floor drops from "polling interval +
 > RTT" to "wake syscall + RTT".
@@ -40,7 +40,7 @@ slices polling an empty / full ring.
   the same `spawn_blocking` pattern.
 - **Wire-side slot width matches `SPSC_PAYLOAD_BYTES`** (64
   bytes). The wire carries whole slots back-to-back.
-- **Burst-batched data path.** The client parks for the FIRST item
+- **Burst-batched data path.** The client parks for the first item
   (the zero-CPU-idle property), then drains every slot already in
   the ring via `try_pop` (up to `EGRESS_BATCH_SLOTS = 256`) and
   ships the batch in one socket write. The server's chunked reads
@@ -143,7 +143,7 @@ the consumer end; build + run with
 `cargo run --release --example blocking_tcp_bridge_e2e --features tcp-bridge`.
 
 [`examples/bridge_lan.rs`](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/examples/bridge_lan.rs)
-runs the same chain between two PHYSICAL hosts: 1,000,000 items
+runs the same chain between two physical hosts: 1,000,000 items
 each direction with strict sequence assertions, plus a ping/pong
 round-trip mode. Measured numbers live in
 [`docs/LAN_BRIDGE_PERFORMANCE.md`](https://github.com/Variably-Constant/SubEtha/blob/main/docs/LAN_BRIDGE_PERFORMANCE.md).

@@ -34,7 +34,7 @@
 //! past it. Helpers for that pattern can layer on top.
 
 use std::cell::UnsafeCell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -179,7 +179,7 @@ impl PubSubRing {
     /// + capacity.
     pub fn open(path: impl AsRef<Path>, expected_capacity: usize) -> std::io::Result<Self> {
         let total = pubsub_ring_file_size(expected_capacity);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if (file.metadata()?.len() as usize) < total {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -278,7 +278,7 @@ impl PubSubRing {
     pub fn capacity(&self) -> usize { self.capacity }
 
     /// Publish one payload. Returns the absolute position assigned
-    /// to this item. Caller MUST be the single producer.
+    /// to this item. Caller must be the single producer.
     pub fn publish(&self, payload: &[u8]) -> u64 {
         assert!(payload.len() <= PUBSUB_PAYLOAD_BYTES);
         let header = self.header();
@@ -296,7 +296,7 @@ impl PubSubRing {
             }
         }
         // Release-store the slot sequence so subscribers see the
-        // payload BEFORE the sequence advances.
+        // payload before the sequence advances.
         slot.sequence.store(head + 1, Ordering::Release);
         // Advance the header head; subscribers walking the head
         // pointer see the new item.

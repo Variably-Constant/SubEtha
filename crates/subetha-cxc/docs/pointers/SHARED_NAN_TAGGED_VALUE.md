@@ -8,10 +8,10 @@
 
 Two-level discrimination in 8 bytes: SharedNaNTaggedValue extends
 `SharedNaNValue` by taking the reserved tag-5 slot and using it
-to hold a `TaggedOffsetPtr<T, TAG_BITS>`. The OUTER tag is the
+to hold a `TaggedOffsetPtr<T, TAG_BITS>`. The outer tag is the
 broad type (f64 / nil / i32 / u32 / bool / OffsetPtr /
 **TaggedOffsetPtr**); when the outer tag is `TaggedOffsetPtr`, an
-INNER tag (top N bits of the payload index) discriminates the
+inner tag (top N bits of the payload index) discriminates the
 fine type within that pointer family (Leaf / Internal /
 Tombstone, etc.). Position-independent across processes, zero
 heap allocation.
@@ -19,7 +19,7 @@ heap allocation.
 > **The "8-byte heterogeneous value with typed-pointer kinds"
 > primitive.** Heap-allocated `Box<dyn Trait>` is the textbook
 > in-process alternative; it costs 16 bytes (fat pointer = data
-> + vtable) PLUS one heap allocation per value PLUS vtable
+> + vtable) plus one heap allocation per value plus vtable
 > dispatch on every method call. The bench measures this as 32
 > bytes total per slot and a 27-40x slowdown on construct /
 > batch workloads.
@@ -43,7 +43,7 @@ heap allocation.
 - **48-bit payload, of which the low 32 bits hold
   `TaggedOffsetPtr::raw()`.** The packer masks to 48 bits
   via `0x0000_FFFF_FFFF_FFFF` then the extractor masks again to
-  32 bits via `0xFFFF_FFFF`. TaggedOffsetPtr's `raw()` IS a
+  32 bits via `0xFFFF_FFFF`. TaggedOffsetPtr's `raw()` is a
   u32; the higher 16 bits of the 48-bit payload area are zero.
 - **Discriminator type is `NaNTaggedType`**,
   a strict superset of `NaNValueType` adding `TaggedOffsetPtr`
@@ -62,7 +62,7 @@ heap allocation.
   scale.
 - **Hash/Eq are over the raw u64.** Two values are equal exactly
   when their bits match. Two `TaggedOffsetPtr<T, TAG_BITS>` with
-  the same index and tag but DIFFERENT (T, TAG_BITS) constants
+  the same index and tag but different (T, TAG_BITS) constants
   hash and compare equal at the SharedNaNTaggedValue level.
 
 ---
@@ -102,7 +102,7 @@ bit  63        bit 51   bits 50-48      bits 47-0
   +-------+-----------+--------------+--------------+
 ```
 
-When the OUTER tag is `5` (TaggedOffsetPtr), the low 32 bits of
+When the outer tag is `5` (TaggedOffsetPtr), the low 32 bits of
 the payload area hold a `TaggedOffsetPtr<T, TAG_BITS>`:
 
 ```text
@@ -114,7 +114,7 @@ TaggedOffsetPtr<T, TAG_BITS=N> packed u32:
 
 The two-level shape: outer tag picks the variant family
 (f64 / nil / scalars / pointers), inner tag picks the specific
-kind WITHIN the pointer family. Total 8 bytes, no heap allocation.
+kind within the pointer family. Total 8 bytes, no heap allocation.
 
 ---
 
@@ -338,7 +338,7 @@ is 1 024 shift-and-OR operations into a Vec. The count step is
 also faster (vtable dispatch vs inline switch), but the heap-
 allocation cost dominates the gap.
 
-**The bench audit (rule 3b) confirms the bench is fair:** both
+**The bench audit confirms the bench is fair:** both
 contenders build the same logical 1 024 heterogeneous values
 (3 kinds in equal proportion), filter for kind=1, and count. The
 only difference is the representation. The 40x ratio is the
@@ -374,16 +374,16 @@ All confirmed against the source or the bench:
   The bits round-trip but the type is
   reported as `Reserved(5)` by the simpler `SharedNaNValue`.
 - **`Hash` is over the raw u64.** Two `TaggedOffsetPtr<u64, 2>`
-  values with the same index AND same tag hash to the same
-  bucket. Two values with DIFFERENT (T, TAG_BITS) const generics
-  but the same raw bits ALSO hash equal. Caller's responsibility
+  values with the same index and same tag hash to the same
+  bucket. Two values with different (T, TAG_BITS) const generics
+  but the same raw bits also hash equal. Caller's responsibility
   to discipline.
 - **Construction does not validate `TaggedOffsetPtr` invariants.**
   The packer writes the raw u32 directly. If the
   `TaggedOffsetPtr` constructor accepts an over-large tag
   (debug_assert! is the only check there), the value silently
   truncates. Validate at the trust boundary.
-- **`reserve_for_TaggedOffsetPtr` IS this struct's claim on
+- **`reserve_for_TaggedOffsetPtr` is this struct's claim on
   tag 5.** A separate codebase using `SharedNaNValue::from_raw`
   to construct a value with tag-5 will be readable by
   `SharedNaNTaggedValue` as a TaggedOffsetPtr, regardless of

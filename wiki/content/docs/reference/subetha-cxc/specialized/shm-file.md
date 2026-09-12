@@ -27,7 +27,7 @@ caller's name become underscores. On Apple targets, where POSIX
 shm names are capped at 31 chars (`PSHMNAMLEN`), a prefixed name
 that would overrun the cap collapses to a deterministic short
 `/se_{hash}` form so a create here and an open in a peer process
-still resolve to the same region. macOS also only honours
+still resolve to the same region. macOS also only honors
 `ftruncate` once at creation, so the constructor sizes the region
 only when it is not already at least `size` (later openers map it
 as-is); the mapping is prefaulted on construction.
@@ -71,7 +71,7 @@ is the descriptor that names who may map it, in SDDL form.
 
 ## Cross-process visibility
 
-Two handles opened with the same logical name map onto the SAME
+Two handles opened with the same logical name map onto the same
 underlying memory region. This is the property that distinguishes
 ShmFile from `MmapOptions::map_anon` (which is in-process only).
 
@@ -105,7 +105,7 @@ assert_eq!(&b.as_mut_slice()[0..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
   `SpscRingCore::create_from_shm` / `SharedRing::create_from_shm`).
 - Interop with non-SubEtha processes that speak POSIX shm.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - You want a ring or a hash map: use the substrate's typed
   primitives ([`AdaptiveRing`](../../rings/shared-ring-adaptive/),

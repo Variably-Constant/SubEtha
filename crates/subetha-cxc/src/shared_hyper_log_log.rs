@@ -29,7 +29,7 @@
 //! (leading_zeros of (h << p) | (1 << (63-p))) + 1, clamped to
 //! 64. (The OR ensures rank is bounded even when low bits are 0.)
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -81,7 +81,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// MurmurHash3 fmix64 finalizer. Bit-mixes a u64 to give excellent
 /// distribution properties (avalanche: 1-bit input flip => ~50%
 /// of output bits flip). Critical for HLL because the register
-/// index is extracted from the TOP bits of the hash, and raw FNV-1a
+/// index is extracted from the top bits of the hash, and raw FNV-1a
 /// on short inputs has poor top-bit distribution.
 #[inline]
 fn fmix64(mut h: u64) -> u64 {
@@ -179,7 +179,7 @@ impl SharedHyperLogLog {
         path: impl AsRef<Path>, expected_precision: u8,
     ) -> Result<Self, HLLError> {
         let total = hll_file_size(expected_precision);
-        let file = OpenOptions::new().read(true).write(true).open(path.as_ref())?;
+        let file = crate::region_file::open_existing(path.as_ref())?;
         if file.metadata()?.len() < total as u64 {
             return Err(HLLError::LayoutMismatch);
         }

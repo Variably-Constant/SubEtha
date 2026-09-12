@@ -57,11 +57,11 @@ ring-registration step - and `Drop` tears the socket and rings down.
 - Linux 4.18+ for AF_XDP support.
 - An interface name + queue id. `bind` uses SKB (generic) mode
   with `XDP_COPY` (`XDP_FLAGS_SKB_MODE` + `BindFlags::XDP_COPY`),
-  so it runs on any NIC without native-XDP support AND on a
+  so it runs on any NIC without native-XDP support and on a
   `veth` pair - no dedicated/native-XDP NIC and no boot-time
   AF_XDP binding are required. libxdp attaches its default
   redirect program at `bind` time.
-- Root, OR `CAP_NET_RAW` + `CAP_BPF`, for the binding step (the
+- Root, or `CAP_NET_RAW` + `CAP_BPF`, for the binding step (the
   `bind` rustdoc notes `CAP_BPF`; the module docs note
   `CAP_NET_RAW + CAP_BPF`).
 
@@ -72,7 +72,7 @@ ring-registration step - and `Drop` tears the socket and rings down.
 - Workloads that pin a NIC queue to a substrate process for
   exclusive access.
 
-## When NOT to reach for this
+## When not to reach for this
 
 - Standard cross-host RPC (use
   [`QuicBridge`](../../bridges/quic-bridge/) or

@@ -2,7 +2,7 @@
 //!
 //!     cargo run --release --example blocked_bloom_compare -- <n_items> <n_queries>
 //!
-//! Both filters are built at the SAME (n_bits, k) from the standard
+//! Both filters are built at the same (n_bits, k) from the standard
 //! formula, sized large enough to exceed L3 so the cache behavior is what
 //! is measured (a standard filter touches k scattered cache lines per op;
 //! the blocked filter touches one). Reports insert + query throughput and
@@ -25,7 +25,7 @@ fn main() {
     let n: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
     let q: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5_000_000);
 
-    // Each filter sized for the SAME target FPR (1%) by its own formula:
+    // Each filter sized for the same target FPR (1%) by its own formula:
     // the blocked filter spends ~2x the bits to offset per-block variance.
     // So this measures the speed win at equal FPR, and the memory it costs.
     let (std_bits, std_k) = SharedBloomFilter::suggest_config(n, 0.01);

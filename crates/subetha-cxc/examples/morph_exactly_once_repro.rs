@@ -1,4 +1,4 @@
-//! Minimal exactly-once stress for capacity morphs under MULTIPLE
+//! Minimal exactly-once stress for capacity morphs under multiple
 //! concurrent producers. The library's existing concurrent morph
 //! test uses a single producer; this drives 2 producers + 1 consumer
 //! while a morpher thread hammers the capacity between two sizes, and
@@ -27,7 +27,7 @@ fn main() {
     ring.register_producer().unwrap();
     ring.register_producer().unwrap();
     let cid = ring.register_consumer().unwrap();
-    // The ring defaults to SPSC; 2 producers REQUIRE MPSC. Morph
+    // The ring defaults to SPSC; 2 producers require MPSC. Morph
     // before any producer pushes - pushing 2 producers at an SPSC
     // ring violates its single-producer contract. Capacity morphs
     // mirror the shape, so MPSC is preserved across the hammering.

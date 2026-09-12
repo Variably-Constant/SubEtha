@@ -1,8 +1,8 @@
 //! Experiment: can a consumer-side reorder buffer make the best-effort
-//! `MergeByStamp` (merge_tsc) path EXACT while keeping its throughput
+//! `MergeByStamp` (merge_tsc) path exact while keeping its throughput
 //! advantage over `MergeStrict`?
 //!
-//! Setup mirrors `ordering_modes_compare`: P real producer PROCESSES
+//! Setup mirrors `ordering_modes_compare`: P real producer processes
 //! stream stamped items into a file-backed `AdaptiveRing` in
 //! `MergeByStamp` mode; this process drains via
 //! `ordered_try_pop_with_stamp`. On a host without invariant TSC the
@@ -39,7 +39,7 @@ const WINDOWS: [usize; 6] = [0, 2, 4, 8, 16, 64];
 // `subetha_cxc::reorder::ReorderBuffer`; its correctness (exact
 // delivery for window >= displacement, adaptive growth, hole handling)
 // is covered by that module's unit tests. This example measures its
-// THROUGHPUT on the real ring against the MergeStrict baseline.
+// throughput on the real ring against the MergeStrict baseline.
 
 fn tmp_prefix(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -128,7 +128,7 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
 
         // Consumer: pop best-effort MergeByStamp, feed the min-by-stamp
         // reorder buffer of window w, emit in stamp order, count
-        // residual inversions on the EMITTED stream.
+        // residual inversions on the emitted stream.
         let mut deliver = [0u8; 64];
         // Drive delivery through the ergonomic ReorderingReceiver. Fixed
         // window per row (cap == floor) so this measures the residual-
@@ -178,7 +178,7 @@ fn run_parent() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // Apples-to-apples baseline: MergeStrict (exact via the watermark
-    // gate) in the SAME harness, straight pop, no reorder buffer - the
+    // gate) in the same harness, straight pop, no reorder buffer - the
     // cost of exactness-by-waiting to compare against the reorder rows.
     {
         let prefix = tmp_prefix("strict");

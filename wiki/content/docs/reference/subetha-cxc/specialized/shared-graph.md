@@ -25,7 +25,7 @@ edges region, both backed by
 > 1.87x slower; linked-list walk vs Vec clone). The
 > architectural lever is cross-process visibility + disk
 > persistence + structured edge metadata (an `E` value per edge,
-> not just a destination), NOT raw per-op speed. (`NodeIndex` /
+> not just a destination), not raw per-op speed. (`NodeIndex` /
 > `EdgeIndex` are bare slot indices, not staleness-checked
 > handles - see the constraints.)
 
@@ -37,17 +37,17 @@ edges region, both backed by
   fixed-size payloads (`Default` seeds zeroed slots).
 - **Bounded capacity at create**: separate caps for nodes and
   edges.
-- **SINGLE-WRITER, MULTI-READER**: reads (`neighbors`,
+- **Single-writer, multi-reader**: reads (`neighbors`,
   `node_value`, `edge_endpoints`, `out_degree`) are lock-free.
   Writes (`add_node`, `add_edge`, `remove_edge`) require external
-  serialisation.
+  serialization.
 - **NIL sentinel** = `u32::MAX` at every level.
 - **Per-node linked list of edges**: walks are O(out-degree)
   cache-line-bounded jumps through the edges region via each
   edge's `next_in_src_list`.
-- **Indices are NOT staleness-checked**: `NodeIndex` / `EdgeIndex`
+- **Indices are not staleness-checked**: `NodeIndex` / `EdgeIndex`
   are bare `u32` slot indices with no generation tag. There is no
-  `remove_node`, so node slots are never reused; edge slots ARE
+  `remove_node`, so node slots are never reused; edge slots are
   reused by `remove_edge` + `add_edge`, and a retained
   `EdgeIndex` for a removed edge silently reads whatever now
   occupies that slot. Treat indices as a logic-error contract:
@@ -129,7 +129,7 @@ is the only way to bound state for criterion's iter count.
 ### Reading the trade-offs
 
 1. **add_node / add_edge benches are setup-dominated.** The
-   architectural lever is NOT raw insert speed; it is
+   architectural lever is not raw insert speed; it is
    cross-process visibility + disk persistence. A graph
    sized for the workload at startup amortizes the create
    cost across its lifetime; per-op insert cost (without
@@ -152,14 +152,14 @@ is the only way to bound state for criterion's iter count.
   neither accumulates state. Asymmetric inherent cost: mmf
   creates files (~65 µs); hashmap allocates a HashMap
   (~115 ns). The setup-cost asymmetry is documented.
-- **No `thread::spawn` inside `b.iter`**: SINGLE-WRITER design;
+- **No `thread::spawn` inside `b.iter`**: single-writer design;
   reads are lock-free for any number of readers.
 - **Sizing**: 4096 node + 4096 edge capacities for inserts;
   50-edge fan-out for neighbors walk.
 - **MMF lifecycle managed**: per-bench create + ops + drop +
   cleanup both files.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Cross-process graph walks**: any process can open the
   graph and walk neighbors. The mutex baseline cannot.
@@ -227,7 +227,7 @@ neighbors to dispatch the next state.
 
 ### Pattern: persistent graph DB on disk
 
-The two MMF files ARE the database. No external storage layer;
+The two MMF files are the database. No external storage layer;
 re-opening the files at process start restores the graph.
 
 ---
@@ -235,7 +235,7 @@ re-opening the files at process start restores the graph.
 ## Known limitations
 
 - **Single writer**: concurrent writes require external
-  serialisation. Multiple readers are fine.
+  serialization. Multiple readers are fine.
 - **No `clear()` and no `remove_node`**: edges can be removed via
   `remove_edge`, but there is no node removal and no bulk reset;
   shrinking the node set requires re-creating the files.
@@ -252,14 +252,14 @@ re-opening the files at process start restores the graph.
 
 ## Common pitfalls
 
-- **Concurrent writes without external synchronisation.**
+- **Concurrent writes without external synchronization.**
   add_node, add_edge, remove_edge mutate per-node linked-list
   heads; concurrent mutators corrupt structure. Wrap in a
   per-process mutex if multiple writers exist.
 
 - **Retaining a stale `EdgeIndex` after `remove_edge`.** The edge
   slot returns to the free list and a later `add_edge` reuses it;
-  the index is NOT staleness-checked (it is a bare `u32`), so a
+  the index is not staleness-checked (it is a bare `u32`), so a
   stale `EdgeIndex` silently reads the reused edge. Drop indices
   when their edge is removed. (Nodes have no removal, so
   `NodeIndex` values stay valid for the graph's lifetime.)
@@ -275,7 +275,7 @@ re-opening the files at process start restores the graph.
   * node-count.
 
 - **Wrapping in a Mutex.** Pointless for reads; per-op reads
-  are already lock-free. Single writes need a mutex AT MOST.
+  are already lock-free. Single writes need a mutex at most.
 
 ---
 

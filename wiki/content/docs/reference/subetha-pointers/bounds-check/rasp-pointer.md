@@ -38,7 +38,7 @@ GPR-to-SIMD domain crossings. The packed-quadword compare
 - **`push_from_slice` requires a lifetime anchor.** The returned
   slice borrow is what proves the batch entry's target stays
   alive. Drop the anchor and any subsequent `read_at` is
-  undefined behaviour.
+  undefined behavior.
 - **Cooperative sealing, not hardware enforcement.** Setting the
   sealed bit (bit 31 of `perms`) causes `check_*` methods to
   return `Err(Sealed)`, but a caller who calls `raw_ptr(idx)` and
@@ -59,7 +59,7 @@ GPR-to-SIMD domain crossings. The packed-quadword compare
   Genoa VM (see the "On AVX-512 silicon" table), where it runs at
   ~0.22 ns/pointer.
 - **`read_at` is `unsafe`.** The bounds + permission check
-  enforces the perms recorded at push time; it does NOT prove the
+  enforces the perms recorded at push time; it does not prove the
   underlying allocation is still live. Caller is responsible for
   the target's continued validity per the original push-time
   borrow contract.
@@ -124,11 +124,9 @@ fields from each one into SIMD lanes via `_mm256_set_epi64x`,
 which compiles to GPR-to-SIMD moves (vmovq + vpinsrq), and each
 move pays a domain-crossing penalty.
 
-This crate ships ONLY the SoA layout. An earlier design
-exploration had AoS `RaspPointer` / `RaspWidePointer` types
-alongside it; their AVX2 batch paths measured *slower* than their
-own scalar loops (the GPR-to-SIMD packing dominated), so the AoS
-types were removed and are not part of the current API. The SoA
+This crate ships only the SoA layout. An AoS layout's AVX2 batch
+path measured *slower* than its own scalar loop, because packing
+the fields into SIMD lanes (GPR-to-SIMD moves) dominated. The SoA
 layout loads 4 ptrs / bases / lengths / perms via single
 `vmovdqu` instructions per chunk: zero GPR-to-SIMD crossings, and
 the `vpcmpgtq` packed-quadword compares run at design speed. The
@@ -240,7 +238,7 @@ the lower bits.
 | `len()` | `usize` | Number of entries |
 | `is_empty()` | `bool` | `len() == 0` |
 | `capacity()` | `usize` | Allocated slots |
-| `raw_ptr(idx)` | `Option<*const T>` | Raw pointer, NOT validated |
+| `raw_ptr(idx)` | `Option<*const T>` | Raw pointer, not validated |
 
 </details>
 
@@ -371,7 +369,7 @@ Genoa as expected.)
 The SoA path validates 10 000 pointers via 2 500 SIMD chunks.
 Each chunk loads 4 ptrs (32 B), 4 bases (32 B), 4 lengths
 (16 B), 4 perms (16 B) - **96 contiguous bytes**, which is 1.5
-cache lines. The prefetcher recognises the sequential pattern
+cache lines. The prefetcher recognizes the sequential pattern
 and pre-fetches the next chunk while the current one validates,
 so most loads hit L1 already-resident memory. About 2 500 chunks
 of ~12 SIMD instructions each is around 30 000 instructions =
@@ -406,10 +404,10 @@ path to the 0.65 ns AVX2 path comes from:
   while the hand-rolled path elides them.
 - The scalar loop computes per-element results as `Result<(),
   RaspError>` enum values; the SIMD path stays in mask-bit form
-  and only materialises the count.
+  and only materializes the count.
 
 For workloads that already need per-index results,
-`check_read_all_avx2` (which DOES materialise the Vec) costs
+`check_read_all_avx2` (which does materialize the Vec) costs
 more than `count_valid_avx2`; the architectural lesson is that
 the cheapest answer is "the smallest answer the caller needs".
 
@@ -425,7 +423,7 @@ validation has to pack 4 pointers' fields into SIMD lanes via
 `_mm256_set_epi64x`, which compiles to 12+ GPR-to-SIMD `vmovq`
 instructions per chunk - each paying domain-crossing latency.
 During the design exploration the AVX2 "fast path" of that layout
-measured SLOWER than its own scalar loop (the packing dominated),
+measured slower than its own scalar loop (the packing dominated),
 so the AoS `RaspPointer` / `RaspWidePointer` types were removed.
 They are not in the crate and have no bench, so their figures are
 not reproducible here; only the SoA `RaspBatch<T>` /
@@ -503,7 +501,7 @@ byte ranges. The consumer:
 2. **`push_from_slice`'s borrow anchor is the returned slice.**
    The batch's pointer is valid only as long as the slice borrow
    is held. Dropping the slice while retaining the batch yields
-   undefined behaviour on subsequent `read_at` calls.
+   undefined behavior on subsequent `read_at` calls.
 
 3. **`push_raw` skips borrow checking entirely.** Caller manages
    target lifetime.

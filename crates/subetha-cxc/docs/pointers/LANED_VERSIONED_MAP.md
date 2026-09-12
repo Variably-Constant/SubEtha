@@ -19,7 +19,7 @@ reads a merge of every lane in key order.
 > writing statement queues behind. A lane is a whole tree with its own
 > arena and its own single writer, so the queue goes away.
 
-**Composed, not folded in.** `n` `VersionedBTreeMap`s over ONE
+**Composed, not folded in.** `n` `VersionedBTreeMap`s over one
 [SHARED_EPOCHS.md](SHARED_EPOCHS.md), plus a
 [HOLDER_TABLE.md](HOLDER_TABLE.md) of lane claims, so the plain
 versioned map is untouched and no existing user pays for lanes.
@@ -35,14 +35,14 @@ versioned map is untouched and no existing user pays for lanes.
   record id.
 - **Claim by purpose.** A statement inserting keys that do not yet
   exist takes any free lane with `claim_lane`. A statement that must
-  remove or rewrite existing keys takes THEIR lane with
+  remove or rewrite existing keys takes their lane with
   `claim_lane_for`, which reports `LaneBusy` rather than handing over a
   different tree.
 - **A misrouted removal is refused, not silently empty.** Removing a
   key absent from the claimed lane but present in another returns
   `LanedError::KeyInAnotherLane` naming that lane. The probe costs a
   lookup per lane and runs only on the path that was already failing.
-- **`nodes_per_lane` is a NODE count per lane**, not a total. `n` lanes
+- **`nodes_per_lane` is a node count per lane**, not a total. `n` lanes
   at `nodes_per_lane` each hold `n` arenas of that size.
 - **One epoch table across every lane**, so a pin is one view of the
   whole index and one horizon reclaims all of it. That is also the
@@ -124,7 +124,7 @@ writers come out 5.18x ahead rather than the 4x perfect scaling would
 give; the surplus is the lock traffic the mutex arm pays on top of
 serializing.
 
-### What the numbers do NOT show
+### What the numbers do not show
 
 - **Scans and writes measured apart.** A store doing both at once pays
   the interaction, which neither table prices: a live pin holds the
@@ -142,7 +142,7 @@ serializing.
 
 A lane asked for a chunk reports the last key its walk examined. It may
 hold keys past that, so the merged output can only be trusted up to the
-SMALLEST cursor any lane reported: emitting beyond it would publish a
+smallest cursor any lane reported: emitting beyond it would publish a
 key ahead of a smaller one that some lane has not been asked for yet. A
 lane whose cursor is `None` reached the end of the range and bounds
 nothing.

@@ -18,8 +18,8 @@
 //! | Per-item dispatch, single thief | `ChaseLev` | Lowest constant per push; no batch to amortize. |
 //! | Producer batches K = 2..128 items per call | `Khpd` | 3 items per Release-store on the publication line; empirically the best per-item cost on Zen+/Zen 4 at this scale. |
 //! | Producer batches K >= 128 items per call | `Loh` | 1 `tail.fetch_add(K)` amortizes across the whole batch. |
-//! | Multiple thieves AND batched producer | `Urd` | Per-thief mailbox = zero CAS contention. |
-//! | Multiple thieves AND `wait_idle=true` | `Urd` | Hardware-mediated wake via WAITPKG / PAUSE-spin. |
+//! | Multiple thieves with a batched producer | `Urd` | Per-thief mailbox = zero CAS contention. |
+//! | Multiple thieves with `wait_idle=true` | `Urd` | Hardware-mediated wake via WAITPKG / PAUSE-spin. |
 //!
 //! The routing table is a starting point. Per-host calibration may
 //! flip individual cells. Callers that already know which variant
@@ -148,7 +148,7 @@ impl WorkloadShape {
     /// Per-item dispatch (no batch) requires nothing beyond the
     /// empty signature (Chase-Lev's signature is a superset of any
     /// empty requirement). Batched dispatch requires K_inner +
-    /// K_outer engaged (per-slot packing AND per-batch counter
+    /// K_outer engaged (per-slot packing plus per-batch counter
     /// amortization). Multi-thief or wait-idle requires K_consumer +
     /// K_radius engaged (per-thief mailboxes and CPUID-dispatched
     /// publish mechanism).
@@ -228,7 +228,7 @@ impl std::error::Error for DispatchError {}
 /// Construct via [`DequeDispatcher::builder`] and pass the backing
 /// paths for each variant the caller wants available. The
 /// [`pick`](DequeDispatcher::pick) helper returns the routing
-/// decision for a shape WITHOUT performing the push, useful for
+/// decision for a shape without performing the push, useful for
 /// observers and per-host calibration.
 pub struct DequeDispatcher {
     chase_lev: Option<Arc<SharedDeque<LineItem>>>,

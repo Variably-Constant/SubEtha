@@ -78,7 +78,7 @@ windows-sys = { version = "0.59", features = [
 # a toolchain a correctness run has no other use for, and one not present
 # on every build host, so an ungated dev-dependency would make
 # `cargo test` fail to compile where libclang is absent. Optional and
-# NORMAL rather than dev, because Cargo has no optional dev-dependencies
+# normal rather than dev, because Cargo has no optional dev-dependencies
 # (same reason as `zmq` above). Also excluded on FreeBSD and on macOS,
 # where iceoryx2's POSIX layer uses MSG_NOSIGNAL - absent there, which
 # uses the SO_NOSIGPIPE socket option instead - so it does not compile.
@@ -88,6 +88,14 @@ iceoryx2 = { workspace = true, optional = true }
 
 [features]
 default = []
+# Residue erasure coding (CRT over published moduli). Off by default and
+# not published as API: it is correct but ~180x slower to encode than the
+# RLC, costs slightly more on the wire, and is a block code where the
+# shipped code is a sliding window. It is kept as the construction that
+# depends on none of the reasoning the published taps depend on, and its
+# open optimizations would change its moduli and chunk mapping - which a
+# published module would be a promise not to do.
+residue-fec = []
 # Pulls in quinn + rcgen + rustls + tokio for the QuicBridge primitive and the
 # one-port QUIC + Sens demux endpoint (sens_quic, which needs tokio/net for the
 # async UdpSocket the AsyncUdpSocket impl wraps).
@@ -188,6 +196,14 @@ harness = false
 
 [[bench]]
 name = "adaptive_ipc_overhead"
+harness = false
+
+[[bench]]
+name = "generator_recovery"
+harness = false
+
+[[bench]]
+name = "tap_search"
 harness = false
 
 [[bench]]
@@ -645,3 +661,8 @@ harness = false
 [[bench]]
 name = "rs_ingest_overhead"
 harness = false
+
+[[bench]]
+name = "residue_vs_rlc"
+harness = false
+required-features = ["residue-fec"]

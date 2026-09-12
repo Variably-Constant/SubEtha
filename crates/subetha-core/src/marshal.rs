@@ -4,7 +4,7 @@
 //! `Marshal` is strictly stronger than `Send`. A `Send` value can
 //! travel between threads inside one process, where pointers and
 //! references mean the same thing in both threads. A `Marshal` value
-//! can travel between *processes* (or be serialised to disk and read
+//! can travel between *processes* (or be serialized to disk and read
 //! back), where pointers into the originating process's heap, file
 //! descriptors, and any other resource handle that means different
 //! things in different address spaces are forbidden.
@@ -12,7 +12,7 @@
 //! # The contract
 //!
 //! - [`Marshal::PAYLOAD_BYTES`] is the exact byte width of the
-//!   marshalled form.
+//!   marshaled form.
 //! - [`Marshal::marshal`] writes exactly `PAYLOAD_BYTES` into a
 //!   caller-supplied buffer.
 //! - [`Marshal::unmarshal`] reads exactly `PAYLOAD_BYTES` and
@@ -45,7 +45,7 @@
 //! by registering closure handlers by integer ID. `Marshal` is the
 //! *compile-time* counterpart: a closure whose captured environment
 //! reduces to a `Marshal` payload can be shipped across processes by
-//! marshalling the payload and looking up the handler by ID. Both
+//! marshaling the payload and looking up the handler by ID. Both
 //! layers cooperate to make cross-process execution byte-safe.
 
 use core::fmt;
@@ -89,21 +89,21 @@ impl std::error::Error for MarshalError {}
 ///   from the source buffer.
 /// - Round-tripping is byte-identical and value-identical for every
 ///   valid value of the type.
-/// - The marshalled bytes contain NO pointers, references, file
+/// - The marshaled bytes contain no pointers, references, file
 ///   descriptors, or other handles that mean different things in
 ///   different address spaces.
 pub unsafe trait Marshal: Sized {
-    /// Exact byte width of the marshalled form.
+    /// Exact byte width of the marshaled form.
     const PAYLOAD_BYTES: usize;
 
-    /// Write the marshalled form of `self` into `dst`.
+    /// Write the marshaled form of `self` into `dst`.
     ///
     /// `dst.len()` must be at least `PAYLOAD_BYTES`; implementations
     /// write to `dst[..PAYLOAD_BYTES]` and leave any remaining bytes
     /// unmodified. Panics on a short buffer.
     fn marshal(&self, dst: &mut [u8]);
 
-    /// Read the marshalled form from `src` and reconstruct the value.
+    /// Read the marshaled form from `src` and reconstruct the value.
     ///
     /// `src.len()` must be at least `PAYLOAD_BYTES`; implementations
     /// read from `src[..PAYLOAD_BYTES]`. Returns

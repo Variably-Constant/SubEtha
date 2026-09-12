@@ -111,7 +111,7 @@ fn with_lease_cycle(c: &mut Criterion) {
 // read_as_owner post-acquire (lease-held fast path)
 // =========================================================
 //
-// Pre-audit: the lease is pre-acquired ONCE outside b.iter.
+// Pre-audit: the lease is pre-acquired once outside b.iter.
 // Per-iter cost is one am_i_owner check + one unaligned-read of
 // payload. No mutex equivalent exists (mutexes don't model
 // "hold lock across many reads"), so we compare against
