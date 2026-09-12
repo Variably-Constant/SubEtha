@@ -289,22 +289,26 @@ descriptor admitting authenticated users; the harness reports a create the
 OS refuses for want of the privilege as a skip and nothing else.
 
 The same pass on the two gate virtual machines, Linux with gcc and FreeBSD
-with clang, debug profile, strict mode, every workload passing on both:
+with clang, debug profile, every workload passing on both. Both are KVM
+guests on one Ryzen 7 5700G, so the two columns are one processor read
+twice rather than two machines; the pass was taken with nothing else
+running on either guest, and each figure is one run of a quantity that
+moves between runs:
 
 | Workload | Linux | FreeBSD |
 |---|---|---|
-| request/response, mean round trip per client | 696 to 822 us; the server drains 600 requests in 146 ms file-backed, 170 ms in shared memory | 826 to 879 us; 173 ms file-backed, 172 ms in shared memory |
-| snapshot fleet, mean exchange | 58 us file-backed, 61 to 62 us in shared memory | 56 us file-backed, 52 to 57 us in shared memory |
-| command bus, mean query | 0.78 ms strict, 2.8 ms managed | 0.42 ms strict, 2.4 ms managed |
-| line log, 10000 lines | every line written whole in strict mode; one managed run dropped 1184 at the start slot | one run in each mode dropped about 1740 at the start slot, the rest written whole |
-| dispatch deques, 200000 values | 97 ms to steal everything | 248 ms to steal everything |
-| two-ring mind, 2000 turns | 13 ms | 13 ms |
-| blob store, 300 blobs per writer | 16 to 17 ms per writer, mean 43 us per blob; a reader sees the whole set on its fourth walk, 12 to 14 ms, 5.6 to 8.5 us per blob hashed | 12 to 18 ms per writer, 7 to 11 us per blob; the whole set on the fifteenth to twentieth walk, 53 to 56 ms, 16 to 17 us per blob |
-| content index, six generations per indexer | 115 ms and 208 ms per indexer, the second waiting ten times for the lease; each reader verifies all twelve generations, 6000 records, in 222 ms | 78 ms and 149 ms, eight waits and one build abandoned when the lease moved; all twelve generations in 155 ms |
-| multi-version index, six rounds per writer | 31 to 35 ms per writer, 13 to 15 us per insert under the lock, 1 to 3 inserts refused for a tombstone a pin still reached and swept; a reader's 200 scans see about 135000 entries in 140 to 146 ms, under 1 us per entry | 24 to 32 ms per writer, 10 to 13 us per insert, 1 to 4 refused and swept; 160 to 226 ms per reader, 1.2 to 1.6 us per entry |
-| graph store, 19200 edges per writer | 127 ms and 190 ms per writer; a reader's 20 walks 45 to 54 ms with 549 to 991 pages read again; the quiet walk finds 30720 edges in 4.7 ms | 89 to 111 ms per writer; 18 to 29 ms per reader with 131 to 1154 pages read again; 30720 edges in 3.7 ms |
-| record store, 2000 records per writer | 911 ms per writer, 455 us per record under the contended lock; 4000 lookups in 959 to 994 ms per reader, mean 240 to 248 us, the longest hold 913 to 916 ms | 514 to 527 ms per writer, 256 to 263 us per record; 561 to 592 ms per reader, 140 to 148 us, the longest hold 514 to 519 ms |
-| cluster stream, four sealed streams of 300 items | a sender sends and finishes in 200 to 205 ms, the longest finish 11 ms; 1200 delivered in 694 ms, no gap, the kernel's drop count an exact zero; 427 ms managed | 146 to 151 ms, the longest finish 2.2 ms; 1200 in 427 ms, an exact zero; 405 ms managed |
+| request/response, mean round trip per client | 693 to 728 us; the server drains 600 requests in 155 ms file-backed and 157 to 161 ms in shared memory | 808 to 841 us; 167 ms file-backed, 165 to 170 ms in shared memory |
+| snapshot fleet, mean exchange | 75 to 86 us file-backed, 89 to 114 us in shared memory | 53 to 56 us file-backed, 52 to 53 us in shared memory |
+| command bus, mean query | 1.06 ms strict, 2.81 to 2.87 ms managed | 0.60 ms strict, 2.44 ms managed |
+| line log, 10000 lines | every line written whole in strict mode; the managed run dropped 1749 at the start slot | 1745 dropped in strict and 1747 in managed, at the start slot, the rest written whole |
+| dispatch deques, 200000 values | 97 ms to steal everything | 86 ms to steal everything |
+| two-ring mind, 2000 turns | 17 ms strict, 18 ms managed | 16 ms strict, 18 ms managed |
+| blob store, 300 blobs per writer | 9.7 to 14 ms per writer strict at 26 to 39 us per blob, 18 ms managed at 52 us; a reader sees the whole set on its fifth walk, 10.6 ms, 3.6 us per blob hashed | 7.6 to 8.8 ms per writer, 3.3 to 4.4 us per blob; the whole set on the fifth walk, 19 to 22 ms, 10 to 11 us per blob |
+| content index, six generations per indexer | 75 ms and 147 ms strict, 93 ms and 164 ms managed, the second indexer waiting on the lease each time; each reader verifies all twelve generations, 6000 records, in 157 to 165 ms | 45 ms and 88 ms strict, 43 ms and 91 ms managed; all twelve generations in 90 to 93 ms |
+| multi-version index, six rounds per writer | 22 to 32 ms per writer, 9 to 14 us per insert under the lock, 174 inserts refused for a tombstone a pin still reached and swept; a reader's 200 scans see 133000 to 137000 entries in 117 to 123 ms, 0.7 to 0.8 us per entry | 17 to 18 ms per writer, 7 us per insert, the same 174 refused and swept; 135000 to 136000 entries in 108 to 109 ms, 0.8 us per entry |
+| graph store, 19200 edges per writer | 69 to 77 ms per writer; a reader's 20 walks 21 to 27 ms with 300 to 477 pages read again; the quiet walk finds 30720 edges in 1.4 ms | 62 to 65 ms per writer; 13 to 14 ms per reader with 195 to 696 pages read again; 30720 edges in 1.4 ms |
+| record store, 2000 records per writer | 353 ms per writer strict at 176 us per record under the contended lock, 127 to 139 ms managed; 4000 lookups in 378 ms per reader strict, mean 95 us, and 160 to 161 ms managed | 433 to 436 ms per writer strict at 216 to 218 us, 538 to 545 ms managed; 460 ms per reader strict at 115 us, 566 ms managed |
+| cluster stream, four sealed streams of 300 items | a sender sends and finishes in 147 to 154 ms strict and 155 to 166 ms managed; the receiver delivers all 1200 in 423 ms strict and 403 ms managed, with no gap | 146 to 150 ms strict and 144 ms managed; 1200 in 416 ms strict and 396 ms managed, no gap |
 
 ## Cost of the boundary
 
