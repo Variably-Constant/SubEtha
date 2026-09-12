@@ -28,7 +28,7 @@ let v = chan.recv()?;       // -> 42
 
 ```mermaid
 flowchart LR
-  B["AutoIpc::new&lpar;path&rpar;<br/>+ declarative hints"]
+  B["AutoIpc::new(path)<br/>+ declarative hints"]
   B --> C["build_channel"]
   B --> A["build_adaptive"]
   B --> W["build_work_steal_queue"]

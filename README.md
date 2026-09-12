@@ -193,7 +193,7 @@ The hot path on `Channel::send`:
 
 ```mermaid
 flowchart LR
-    SEND([send&lpar;item&rpar;]) --> TAG[Acquire-load<br/>active-backing tag<br/>~3 ns]
+    SEND(["send(item)"]) --> TAG[Acquire-load<br/>active-backing tag<br/>~3 ns]
     TAG --> MATCH{tag}
     MATCH -- ring --> RING[SharedRing::try_push<br/>~26 ns]
     MATCH -- deque --> KHL[SharedDeque::push<br/>~10 ns/item batched]

@@ -61,7 +61,7 @@ flowchart LR
   subgraph PB["Process B - consumer"]
     RT["reactor thread<br/>blocked on the waker"]
     WK["local Waker"]
-    RX["recv_async&lpar;&rpar;.await<br/>suspended task"]
+    RX["recv_async().await<br/>suspended task"]
     RT --> WK --> RX
   end
   TS -- push bytes --> RING
