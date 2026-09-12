@@ -212,9 +212,9 @@ still rejects.
 ```mermaid
 flowchart TD
     Start([cascade_check key]) --> C{coarse.might_contain?<br/>~3 ns}
-    C -->|no| RC[RejectedAtCoarse<br/>SKIP deref<br/>(saved: deref + fine)]
+    C -->|no| RC["RejectedAtCoarse<br/>SKIP deref<br/>(saved: deref + fine)"]
     C -->|yes| F{fine.might_contain?<br/>~6 ns}
-    F -->|no| RF[RejectedAtFine<br/>SKIP deref<br/>(saved: deref)]
+    F -->|no| RF["RejectedAtFine<br/>SKIP deref<br/>(saved: deref)"]
     F -->|yes| M[MightContain<br/>Caller must deref<br/>to confirm]
 
     classDef startend fill:#0e7490,stroke:#0e7490,color:#ffffff

@@ -183,9 +183,9 @@ optimistic mid-bucket value.
 ```mermaid
 flowchart TD
     Start([read top byte]) --> K{k = log2_cardinality}
-    K -->|0..=3 (k≤3, n≤8)| Tiny[SizeTier::Tiny<br/>linear scan]
-    K -->|4..=10 (16..=1024)| Medium[SizeTier::Medium<br/>sort-merge]
-    K -->|11..=255 (>1024)| Large[SizeTier::Large<br/>hash join]
+    K -->|"0..=3 (k≤3, n≤8)"| Tiny[SizeTier::Tiny<br/>linear scan]
+    K -->|"4..=10 (16..=1024)"| Medium[SizeTier::Medium<br/>sort-merge]
+    K -->|"11..=255 (>1024)"| Large[SizeTier::Large<br/>hash join]
 
     classDef startend fill:#0e7490,stroke:#0e7490,color:#ffffff
     classDef decision fill:#fbbf24,stroke:#92400e,color:#1f2937

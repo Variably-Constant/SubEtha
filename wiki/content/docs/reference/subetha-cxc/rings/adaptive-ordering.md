@@ -229,13 +229,13 @@ sequenceDiagram
     participant C as Consumer pop path
     participant S as QoS sidecar scan
     P->>R: push (8-byte stamp prepended, ~20-cycle rdtsc)
-    C->>R: pop strips stamp; undercut vs previous pop?
+    C->>R: pop strips stamp, undercut vs previous pop?
     C->>R: inversion counter += 1 (shared header)
     S->>R: scan tick: delta(inversions) / interval
     S->>S: DefaultOrderingPolicy.decide(observation)
     Note over S: fires only if auto_order_threshold is set,<br/>rate exceeds it, and hysteresis elapsed
     S->>R: set_ordering_mode(MergeByStamp) - ONE Release store
-    Note over R: every attached process sees the flag;<br/>backlog already carries stamps,<br/>so it merges in global order retroactively
+    Note over R: every attached process sees the flag,<br/>backlog already carries stamps,<br/>so it merges in global order retroactively
 ```
 
 What makes the loop cheap is where each cost lands. Producers pay

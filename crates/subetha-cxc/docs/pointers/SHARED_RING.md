@@ -102,7 +102,7 @@ slot array follows.
 graph LR
     P[Producer]
     H[RingHeader<br/>producer_seq<br/>consumer_seq]
-    S[Slot[i]<br/>sequence + payload]
+    S["Slot[i]<br/>sequence + payload"]
     C[Consumer]
 
     P -- "1: CAS producer_seq" --> H
