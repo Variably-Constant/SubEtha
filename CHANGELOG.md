@@ -1,10 +1,11 @@
 # Changelog
 
-All notable changes to SubEtha are recorded here. The five published
-crates (`subetha`, `subetha-core`, `subetha-cxc`, `subetha-pointers`,
-`subetha-sidecar`) share one version number and release together. The
-format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Each version heading links to the commit that cut it.
+All notable changes to SubEtha are recorded here. The six published
+crates (`subetha`, `subetha-core`, `subetha-cxc`, `subetha-ffi`,
+`subetha-pointers`, `subetha-sidecar`) share one version number and
+release together. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each version
+heading links to the commit that cut it.
 
 ## [0.3.0] - 2026-09-11
 
