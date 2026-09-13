@@ -75,6 +75,23 @@ reader's own machine.
   `tests/test_surface.py` holds the stub against the module in both
   directions, so a class in one and not the other fails the suite.
 
+## The front door
+
+Three classes that pick the shape underneath from what is described,
+rather than asking the caller to choose one. Reach for these first; the
+families below give more control when it is wanted.
+
+| Class | What it is |
+|---|---|
+| `Channel` | A queue between processes that can be waited on. `recv` answers None at once when there is nothing there; `recv_for` waits up to a timeout, sleeping rather than spinning, with the interpreter free so other threads run. `send_for` is the same on the other side. |
+| `WorkQueue` | Work one process owns and others take from when idle. The owner pushes and pops at the cheap end it has to itself; thieves steal from the other end. |
+| `KvMap` | A lookup table between processes, from one unsigned integer to another. |
+
+`KvMap.insert` answers whether the key was new rather than what it
+held, because that is what the map underneath reports, and there is no
+way to take a key out because it has no removal. `HashMap` is the one
+to reach for when entries have to go away.
+
 ## Rings and channels
 
 | Class | What it is |
@@ -149,12 +166,18 @@ has stopped seeing.
 
 | Class | What it is |
 |---|---|
-| `RWLock`, `Hold` | Read and write holds, as context managers rather than tokens. |
-| `Semaphore`, `PermitHold` | A counting semaphore across processes. |
+| `RWLock`, `Hold` | Read and write holds, as context managers rather than tokens. `read_for` and `write_for` give up after a timeout and answer None. |
+| `Semaphore`, `PermitHold` | A counting semaphore across processes. `acquire_for` gives up after a timeout. |
 | `Condvar` | Whose predicate really is called from inside the wait. |
 | `LazyValue` | Computed once across every process. |
 | `OwnerLease`, `LeaseHold` | One process owns a small value and another takes it over when that one dies. |
 | `Heartbeat`, `EpochBarrier`, `LeaderElection`, `HolderTable`, `FenceClock`, `SharedArc`, `Notifier`, `NotifierSet` | The rest of the coordination surface. |
+
+The waiting forms that take a timeout sleep rather than spin, so a long
+wait costs no processor, and they never wait past the deadline even if
+whoever holds the lock never gives it back. Only the bounded forms are
+here: an unbounded park sleeps until something signals it, which against
+a peer that releases without signalling would never wake.
 
 A lease changes hands two ways and a caller has to know them apart. A
 process whose id is lower than the owner's takes it on the spot,

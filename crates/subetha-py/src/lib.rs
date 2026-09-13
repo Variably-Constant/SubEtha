@@ -51,7 +51,10 @@ use subetha_cxc::shared_handle_table::{
     Handle as SubethaHandle, HandleTableError, SharedHandleTable,
 };
 use subetha_cxc::shared_epochs::PinGuard as SubethaPinGuard;
-use subetha_cxc::api::{ApiError, AutoIpc, Channel as SubethaChannel, KvMap as SubethaKvMap};
+use subetha_cxc::api::{
+    ApiError, AutoIpc, Channel as SubethaChannel, KvMap as SubethaKvMap,
+    WorkStealQueue as SubethaWorkStealQueue,
+};
 use subetha_cxc::blocking_rw_lock::{BlockingRWLock, BlockingRWLockError};
 use subetha_cxc::blocking_semaphore::{BlockingSemaphore, BlockingSemaphoreError};
 use subetha_cxc::message_transport::TransportError;
@@ -8260,6 +8263,122 @@ impl Channel {
     }
 }
 
+/// Work one process owns and others take from when they are idle.
+///
+/// The owner pushes and pops at one end, which is the cheap end and the
+/// one it gets to itself. Everybody else steals from the other end. The
+/// two ends are what make it worth using over a ring: the owner's own
+/// work costs nothing to hand out, and a thief only pays when it
+/// actually takes something.
+///
+/// The owner makes the queue. A thief attaches with `steal_from`.
+///
+/// An item may be anything up to `max_item_size` bytes.
+#[pyclass(module = "subetha")]
+struct WorkQueue {
+    inner: Box<SubethaWorkStealQueue<SlotValue>>,
+}
+
+#[pymethods]
+impl WorkQueue {
+    /// `capacity` is the number of items in flight, rounded up to a
+    /// power of two. `thieves` is how many are expected to take from
+    /// it, which is what the shape underneath is picked from.
+    #[new]
+    #[pyo3(signature = (path, capacity = 1024, thieves = 1))]
+    fn new(path: &str, capacity: usize, thieves: usize) -> PyResult<Self> {
+        if thieves < 1 {
+            return Err(PyValueError::new_err("a queue needs at least one thief"));
+        }
+        AutoIpc::new(path)
+            .consumers(thieves)
+            // A batch hint is what turns the inference toward
+            // work-stealing rather than streaming; without it the
+            // dispatcher picks a ring and the build is refused.
+            .batch_size(2)
+            .capacity(capacity)
+            .build_work_steal_queue::<SlotValue>()
+            .map(|inner| Self { inner: Box::new(inner) })
+            .map_err(|e| api_err("opening the queue", e))
+    }
+
+    /// Attach to a queue somebody else owns, to take from it.
+    #[staticmethod]
+    fn steal_from(path: &str) -> PyResult<Self> {
+        SubethaWorkStealQueue::open_as_thief(path)
+            .map(|inner| Self { inner: Box::new(inner) })
+            .map_err(|e| api_err("attaching to the queue", e))
+    }
+
+    /// Add work, at the owner's end.
+    fn push(&self, item: &[u8]) -> PyResult<bool> {
+        let held = SlotValue::from_bytes(item)?;
+        match self.inner.push(&held) {
+            Ok(()) => Ok(true),
+            Err(e) if is_full(&e) => Ok(false),
+            Err(e) => Err(api_err("pushing", e)),
+        }
+    }
+
+    /// Add a run of work in one crossing, answering how many went in.
+    fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
+        let mut pushed = 0;
+        for item in &items {
+            let held = SlotValue::from_bytes(item)?;
+            match self.inner.push(&held) {
+                Ok(()) => pushed += 1,
+                Err(e) if is_full(&e) => break,
+                Err(e) => return Err(api_err("pushing", e)),
+            }
+        }
+        Ok(pushed)
+    }
+
+    /// Take the owner's own next piece of work, the most recent one it
+    /// added, or None when there is none.
+    fn pop(&self) -> Option<Vec<u8>> {
+        self.inner.pop().map(|held| held.as_bytes())
+    }
+
+    /// Take a piece of work from the far end, which is what a thief
+    /// does, or None when there is none to take.
+    fn steal(&self) -> Option<Vec<u8>> {
+        self.inner.steal().map(|held| held.as_bytes())
+    }
+
+    /// Take up to `max_items` by stealing, in one crossing.
+    #[pyo3(signature = (max_items = 64))]
+    fn steal_many(&self, max_items: usize) -> Vec<Vec<u8>> {
+        let mut taken = Vec::new();
+        for _ in 0..max_items {
+            match self.inner.steal() {
+                Some(held) => taken.push(held.as_bytes()),
+                None => break,
+            }
+        }
+        taken
+    }
+
+    /// The most an item may be, in bytes.
+    #[classattr]
+    fn max_item_size() -> usize {
+        SLOT_VALUE_BYTES
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        "<subetha.WorkQueue>".to_string()
+    }
+}
+
 /// A map between processes, reached without naming a shape.
 ///
 /// The companion to `Channel` in the front door: keys and values are
@@ -9664,6 +9783,7 @@ classes_fit_python_allocation!(
     QosPolicy,
     Channel,
     KvMap,
+    WorkQueue,
     ReorderWindow,
 );
 
@@ -9760,6 +9880,7 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QosSnapshot>()?;
     m.add_class::<Channel>()?;
     m.add_class::<KvMap>()?;
+    m.add_class::<WorkQueue>()?;
     m.add_class::<SensSender>()?;
     m.add_class::<SensReceiver>()?;
     #[cfg(feature = "tcp-bridge")]

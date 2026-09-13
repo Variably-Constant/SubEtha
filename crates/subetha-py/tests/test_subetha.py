@@ -1021,6 +1021,47 @@ def test_a_channel_is_shared_between_handles(scratch):
     assert second.recv() == b"across"
 
 
+def test_a_work_queue_gives_the_owner_its_own_work_back(scratch):
+    queue = subetha.WorkQueue(scratch("work"), capacity=64)
+    assert queue.push(b"one") is True
+    assert queue.push(b"two") is True
+    # The owner takes the most recent first, which is the cheap end.
+    assert queue.pop() == b"two"
+    assert queue.pop() == b"one"
+    assert queue.pop() is None
+
+
+def test_a_work_queue_is_stolen_from_the_other_end(scratch):
+    queue = subetha.WorkQueue(scratch("work"), capacity=64)
+    queue.push_many([b"first", b"second", b"third"])
+    # A thief takes the oldest, so it does not fight the owner.
+    assert queue.steal() == b"first"
+
+
+def test_a_thief_reaches_a_queue_somebody_else_owns(scratch):
+    path = scratch("work")
+    owner = subetha.WorkQueue(path, capacity=64)
+    owner.push_many([b"one", b"two"])
+
+    thief = subetha.WorkQueue.steal_from(path)
+    taken = thief.steal_many()
+    assert taken, "a thief must reach the owner's work"
+    assert all(item in (b"one", b"two") for item in taken)
+
+
+def test_a_work_queue_with_nothing_in_it_answers_nothing(scratch):
+    queue = subetha.WorkQueue(scratch("work"), capacity=64)
+    assert queue.pop() is None
+    assert queue.steal() is None
+    assert queue.steal_many() == []
+
+
+def test_a_work_queue_refuses_an_item_that_does_not_fit(scratch):
+    queue = subetha.WorkQueue(scratch("work"), capacity=64)
+    with pytest.raises(ValueError):
+        queue.push(b"x" * (subetha.WorkQueue.max_item_size + 1))
+
+
 def test_a_kv_map_says_whether_a_key_was_new(scratch):
     index = subetha.KvMap(scratch("kv"), capacity=256)
     assert index.insert(1, 10) is True, "the key was not there before"
