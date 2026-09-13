@@ -862,6 +862,114 @@ def test_a_capacity_ring_can_be_opened_by_another_holder(scratch):
 LOWER_PID = max(1, os.getpid() - 1)
 
 
+def test_a_tiny_bloom_never_forgets_what_was_added(scratch):
+    seen = subetha.TinyBloom()
+    added = [f"k{n}".encode() for n in range(subetha.TinyBloom.suggested_capacity)]
+    seen.insert_many(added)
+    assert all(key in seen for key in added), "a bloom filter never says no wrongly"
+
+
+def test_a_tiny_bloom_fits_in_one_number(scratch):
+    seen = subetha.TinyBloom([b"one", b"two"])
+    carried = seen.bits
+    assert isinstance(carried, int)
+
+    # That number is the whole filter: rebuilt from it, it answers the same.
+    rebuilt = subetha.TinyBloom.from_bits(carried)
+    assert b"one" in rebuilt
+    assert rebuilt.bits == carried
+    assert rebuilt.set_bits == seen.set_bits
+
+
+def test_an_empty_tiny_bloom_says_no_to_everything(scratch):
+    seen = subetha.TinyBloom()
+    assert seen.bits == 0
+    assert seen.set_bits == 0
+    assert b"anything" not in seen
+
+
+def test_a_tiny_bloom_says_what_it_will_cost(scratch):
+    few = subetha.TinyBloom.false_positive_rate(4)
+    many = subetha.TinyBloom.false_positive_rate(32)
+    assert 0.0 <= few < many <= 1.0, "more keys in the same bits means more wrong yeses"
+
+
+def test_a_fine_bloom_holds_more_than_a_tiny_one(scratch):
+    assert subetha.FineBloom.suggested_capacity > subetha.TinyBloom.suggested_capacity
+    seen = subetha.FineBloom()
+    added = [f"k{n}".encode() for n in range(subetha.FineBloom.suggested_capacity)]
+    seen.insert_many(added)
+    assert all(key in seen for key in added)
+
+
+def test_a_clock_orders_two_events_at_the_same_reading(scratch):
+    first = subetha.Clock(physical=100, logical=0)
+    # The physical time did not move, so the count steps instead.
+    second = first.advance(100)
+    assert second.physical == 100
+    assert second.logical > first.logical
+    assert first < second
+
+
+def test_a_clock_follows_the_physical_time_when_it_moves(scratch):
+    first = subetha.Clock(physical=100, logical=5)
+    later = first.advance(200)
+    assert later.physical == 200
+    assert later.logical == 0, "a new physical reading starts the count again"
+
+
+def test_a_clock_taken_now_is_a_real_reading(scratch):
+    taken = subetha.Clock.now()
+    assert taken.physical > 0
+    assert taken.logical == 0
+
+
+def test_merging_a_clock_orders_the_received_event_after_its_cause(scratch):
+    sender = subetha.Clock(physical=500, logical=3)
+    receiver = subetha.Clock(physical=100, logical=0)
+    # The receiver's own clock is behind, so the merge takes the
+    # sender's reading and steps past it.
+    merged = receiver.merge(sender, 100)
+    assert merged > sender, "what was received must order after what caused it"
+
+
+def test_a_causal_clock_tells_before_from_concurrent(scratch):
+    start = subetha.CausalClock()
+    mine = start.tick(0)
+    theirs = start.tick(1)
+
+    assert start.happened_before(mine)
+    assert mine.compare(start) == "after"
+    assert mine.concurrent_with(theirs), "neither caused the other"
+    assert mine.compare(theirs) == "concurrent"
+
+
+def test_a_causal_clock_merge_takes_the_higher_of_each(scratch):
+    mine = subetha.CausalClock().tick(0).tick(0)
+    theirs = subetha.CausalClock().tick(1)
+    merged = mine.merge(theirs)
+
+    assert merged.count(0) == 2
+    assert merged.count(1) == 1
+    assert mine.happened_before(merged)
+    assert theirs.happened_before(merged)
+
+
+def test_a_causal_clock_is_equal_to_itself(scratch):
+    one = subetha.CausalClock().tick(3)
+    assert one.compare(one) == "equal"
+    assert one.counts[3] == 1
+    assert len(one.counts) == subetha.CausalClock.nodes
+
+
+def test_a_causal_clock_refuses_a_participant_it_does_not_count(scratch):
+    clock = subetha.CausalClock()
+    with pytest.raises(ValueError):
+        clock.tick(subetha.CausalClock.nodes)
+    with pytest.raises(ValueError):
+        clock.count(subetha.CausalClock.nodes)
+
+
 def test_a_lock_wait_gives_up_at_its_deadline(scratch):
     lock = subetha.RWLock(scratch("lock"))
     held = lock.write()

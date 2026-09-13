@@ -55,6 +55,8 @@ use subetha_cxc::api::{
     ApiError, AutoIpc, Channel as SubethaChannel, KvMap as SubethaKvMap,
     WorkStealQueue as SubethaWorkStealQueue,
 };
+use subetha_pointers::bloom_pointer::{Bloom64, BloomFine};
+use subetha_pointers::versioned_pointer::{HybridLogicalClock, VectorClock};
 use subetha_cxc::blocking_rw_lock::{BlockingRWLock, BlockingRWLockError};
 use subetha_cxc::blocking_semaphore::{BlockingSemaphore, BlockingSemaphoreError};
 use subetha_cxc::message_transport::TransportError;
@@ -8507,6 +8509,350 @@ fn api_err(doing: &str, e: ApiError) -> PyErr {
     }
 }
 
+/// A whole bloom filter in a single sixty-four bit word.
+///
+/// Four bits per key in one machine word, which is small enough to sit
+/// beside a pointer and be read in the same cache line. That is what it
+/// is for: reject a lookup before following the pointer at all. False
+/// means the key was definitely never added; true means it probably was.
+///
+/// About eight keys before the rate of wrong yeses climbs past a few
+/// percent. `TinyBloom.suggested_capacity` says so, and `false_positive_rate`
+/// works out the rate for any number of keys.
+#[pyclass(module = "subetha")]
+#[derive(Clone)]
+struct TinyBloom {
+    inner: Bloom64,
+}
+
+#[pymethods]
+impl TinyBloom {
+    /// An empty filter, or one already holding `keys`.
+    #[new]
+    #[pyo3(signature = (keys = None))]
+    fn new(keys: Option<Vec<Vec<u8>>>) -> Self {
+        let mut inner = Bloom64::ZERO;
+        if let Some(keys) = keys {
+            for key in &keys {
+                inner.insert(key.as_slice());
+            }
+        }
+        Self { inner }
+    }
+
+    fn insert(&mut self, key: &[u8]) {
+        self.inner.insert(key);
+    }
+
+    /// Add a run of keys in one crossing.
+    fn insert_many(&mut self, keys: Vec<Vec<u8>>) -> usize {
+        for key in &keys {
+            self.inner.insert(key.as_slice());
+        }
+        keys.len()
+    }
+
+    fn __contains__(&self, key: &[u8]) -> bool {
+        self.inner.might_contain(key)
+    }
+
+    /// As `in`, spelled out.
+    fn contains(&self, key: &[u8]) -> bool {
+        self.inner.might_contain(key)
+    }
+
+    /// Ask about a run of keys in one crossing.
+    fn contains_many(&self, keys: Vec<Vec<u8>>) -> Vec<bool> {
+        keys.iter()
+            .map(|key| self.inner.might_contain(key.as_slice()))
+            .collect()
+    }
+
+    /// The whole filter as one number, which is how it travels beside a
+    /// value or through anything that carries an integer.
+    #[getter]
+    fn bits(&self) -> u64 {
+        self.inner.0
+    }
+
+    /// Rebuild a filter from the number `bits` gave.
+    #[staticmethod]
+    fn from_bits(bits: u64) -> Self {
+        Self { inner: Bloom64(bits) }
+    }
+
+    /// How many bits are set, which is how full it is.
+    #[getter]
+    fn set_bits(&self) -> u32 {
+        self.inner.popcount()
+    }
+
+    /// The share of wrong yeses to expect once `keys` keys are in,
+    /// between zero and one.
+    #[staticmethod]
+    fn false_positive_rate(keys: usize) -> f64 {
+        Bloom64::estimated_fpr(keys)
+    }
+
+    /// How many keys this size holds before the rate of wrong yeses
+    /// climbs past a few percent.
+    #[classattr]
+    fn suggested_capacity() -> usize {
+        Bloom64::SUGGESTED_CAPACITY
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<subetha.TinyBloom {} of 64 bits set>", self.inner.popcount())
+    }
+}
+
+/// The same idea in four words rather than one, for about sixty-four
+/// keys instead of eight.
+#[pyclass(module = "subetha")]
+#[derive(Clone)]
+struct FineBloom {
+    inner: BloomFine,
+}
+
+#[pymethods]
+impl FineBloom {
+    #[new]
+    #[pyo3(signature = (keys = None))]
+    fn new(keys: Option<Vec<Vec<u8>>>) -> Self {
+        let mut inner = BloomFine::ZERO;
+        if let Some(keys) = keys {
+            for key in &keys {
+                inner.insert(key.as_slice());
+            }
+        }
+        Self { inner }
+    }
+
+    fn insert(&mut self, key: &[u8]) {
+        self.inner.insert(key);
+    }
+
+    fn insert_many(&mut self, keys: Vec<Vec<u8>>) -> usize {
+        for key in &keys {
+            self.inner.insert(key.as_slice());
+        }
+        keys.len()
+    }
+
+    fn __contains__(&self, key: &[u8]) -> bool {
+        self.inner.might_contain(key)
+    }
+
+    /// As `in`, spelled out.
+    fn contains(&self, key: &[u8]) -> bool {
+        self.inner.might_contain(key)
+    }
+
+    fn contains_many(&self, keys: Vec<Vec<u8>>) -> Vec<bool> {
+        keys.iter()
+            .map(|key| self.inner.might_contain(key.as_slice()))
+            .collect()
+    }
+
+    /// How many keys this size holds before the rate of wrong yeses
+    /// climbs past a few percent.
+    #[classattr]
+    fn suggested_capacity() -> usize {
+        BloomFine::SUGGESTED_CAPACITY
+    }
+
+    fn __repr__(&self) -> String {
+        "<subetha.FineBloom>".to_string()
+    }
+}
+
+/// A clock that keeps wall-clock time and still orders two events that
+/// share a reading.
+///
+/// Two parts: the physical time, and a count that steps when two events
+/// land on the same physical reading. Comparing two of these orders
+/// them even when the machines' clocks disagree slightly, which a bare
+/// timestamp cannot do.
+///
+/// `merge` is what a receiver does with a sender's clock: it takes the
+/// later of the two and steps past it, so the received event orders
+/// after the one that caused it.
+#[pyclass(module = "subetha", frozen)]
+#[derive(Clone)]
+struct Clock {
+    inner: HybridLogicalClock,
+}
+
+#[pymethods]
+impl Clock {
+    #[new]
+    #[pyo3(signature = (physical = 0, logical = 0))]
+    fn new(physical: u64, logical: u64) -> Self {
+        Self { inner: HybridLogicalClock::new(physical, logical) }
+    }
+
+    /// A reading taken now, in microseconds since the epoch, with the
+    /// count at zero.
+    #[staticmethod]
+    fn now() -> Self {
+        Self { inner: HybridLogicalClock::now() }
+    }
+
+    #[getter]
+    fn physical(&self) -> u64 {
+        self.inner.physical
+    }
+
+    #[getter]
+    fn logical(&self) -> u64 {
+        self.inner.logical
+    }
+
+    /// The next reading given a new physical time. The count steps
+    /// rather than resetting when the physical time has not moved.
+    fn advance(&self, physical: u64) -> Self {
+        Self { inner: self.inner.advance(physical) }
+    }
+
+    /// The reading a receiver should take, given what arrived and what
+    /// its own clock says. Orders the received event after whatever
+    /// caused it.
+    fn merge(&self, received: &Clock, physical: u64) -> Self {
+        Self { inner: self.inner.merge(&received.inner, physical) }
+    }
+
+    fn __lt__(&self, other: &Clock) -> bool {
+        (self.inner.physical, self.inner.logical)
+            < (other.inner.physical, other.inner.logical)
+    }
+
+    fn __le__(&self, other: &Clock) -> bool {
+        (self.inner.physical, self.inner.logical)
+            <= (other.inner.physical, other.inner.logical)
+    }
+
+    fn __gt__(&self, other: &Clock) -> bool {
+        (self.inner.physical, self.inner.logical)
+            > (other.inner.physical, other.inner.logical)
+    }
+
+    fn __ge__(&self, other: &Clock) -> bool {
+        (self.inner.physical, self.inner.logical)
+            >= (other.inner.physical, other.inner.logical)
+    }
+
+    fn __eq__(&self, other: &Clock) -> bool {
+        (self.inner.physical, self.inner.logical)
+            == (other.inner.physical, other.inner.logical)
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.inner.physical ^ self.inner.logical.rotate_left(32)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.Clock {}.{}>",
+            self.inner.physical, self.inner.logical
+        )
+    }
+}
+
+/// How many participants a `CausalClock` counts for. Fixed, because the
+/// clock is an array rather than a map, which is what makes comparing
+/// two of them a handful of instructions.
+const CAUSAL_CLOCK_NODES: usize = 16;
+
+/// One count per participant, which answers whether one event caused
+/// another or whether the two happened independently.
+///
+/// A bare timestamp cannot tell "before" from "at the same time on
+/// another machine". This can: comparing two of these answers before,
+/// after, equal, or neither, and neither means the two events are
+/// genuinely concurrent.
+#[pyclass(module = "subetha", frozen)]
+#[derive(Clone)]
+struct CausalClock {
+    inner: VectorClock<CAUSAL_CLOCK_NODES>,
+}
+
+#[pymethods]
+impl CausalClock {
+    /// All counts at zero.
+    #[new]
+    fn new() -> Self {
+        Self { inner: VectorClock::zero() }
+    }
+
+    /// Step this participant's own count, which is what it does when
+    /// something happens to it.
+    fn tick(&self, node: usize) -> PyResult<Self> {
+        check_causal_node(node)?;
+        let mut stepped = self.inner;
+        stepped.increment(node);
+        Ok(Self { inner: stepped })
+    }
+
+    /// One participant's count.
+    fn count(&self, node: usize) -> PyResult<u64> {
+        check_causal_node(node)?;
+        Ok(self.inner.clock[node])
+    }
+
+    /// Every count, in participant order.
+    #[getter]
+    fn counts(&self) -> Vec<u64> {
+        self.inner.clock.to_vec()
+    }
+
+    /// The clock a receiver should hold after taking `other` in: the
+    /// higher of each count.
+    fn merge(&self, other: &CausalClock) -> Self {
+        Self { inner: self.inner.merge(&other.inner) }
+    }
+
+    /// How this stands to another: `before`, `after`, `equal`, or
+    /// `concurrent` when neither caused the other.
+    fn compare(&self, other: &CausalClock) -> &'static str {
+        match self.inner.causal_cmp(&other.inner) {
+            Some(std::cmp::Ordering::Less) => "before",
+            Some(std::cmp::Ordering::Greater) => "after",
+            Some(std::cmp::Ordering::Equal) => "equal",
+            None => "concurrent",
+        }
+    }
+
+    /// Whether this happened before the other, which is the same as
+    /// `compare` answering `before`.
+    fn happened_before(&self, other: &CausalClock) -> bool {
+        matches!(self.inner.causal_cmp(&other.inner), Some(std::cmp::Ordering::Less))
+    }
+
+    /// Whether neither caused the other.
+    fn concurrent_with(&self, other: &CausalClock) -> bool {
+        self.inner.causal_cmp(&other.inner).is_none()
+    }
+
+    /// How many participants a clock counts for.
+    #[classattr]
+    fn nodes() -> usize {
+        CAUSAL_CLOCK_NODES
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<subetha.CausalClock {:?}>", self.inner.clock)
+    }
+}
+
+fn check_causal_node(node: usize) -> PyResult<()> {
+    if node >= CAUSAL_CLOCK_NODES {
+        return Err(PyValueError::new_err(format!(
+            "a causal clock counts for {CAUSAL_CLOCK_NODES} participants, numbered from zero"
+        )));
+    }
+    Ok(())
+}
+
 /// A counting semaphore in a mapped file, limiting how many processes
 /// work at once.
 /// Frozen for the same reason `RWLock` is: a permit reaches it through
@@ -9881,6 +10227,10 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Channel>()?;
     m.add_class::<KvMap>()?;
     m.add_class::<WorkQueue>()?;
+    m.add_class::<TinyBloom>()?;
+    m.add_class::<FineBloom>()?;
+    m.add_class::<Clock>()?;
+    m.add_class::<CausalClock>()?;
     m.add_class::<SensSender>()?;
     m.add_class::<SensReceiver>()?;
     #[cfg(feature = "tcp-bridge")]

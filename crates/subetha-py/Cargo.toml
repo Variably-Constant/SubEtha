@@ -23,6 +23,9 @@ subetha-cxc = { workspace = true }
 # The Marshal contract, which the typed front door takes its payloads
 # through.
 subetha-core = { workspace = true }
+# The value types that ride beside a pointer: the word-sized blooms and
+# the two clocks.
+subetha-pointers = { workspace = true }
 
 # The stable ABI is a feature here rather than fixed, because a
 # free-threaded interpreter has none to build against: that ABI arrives
