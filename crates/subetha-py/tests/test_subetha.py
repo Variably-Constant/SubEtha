@@ -862,6 +862,182 @@ def test_a_capacity_ring_can_be_opened_by_another_holder(scratch):
 LOWER_PID = max(1, os.getpid() - 1)
 
 
+def test_a_lock_wait_gives_up_at_its_deadline(scratch):
+    lock = subetha.RWLock(scratch("lock"))
+    held = lock.write()
+    started = time.monotonic()
+    assert lock.write_for(timeout=0.1) is None, "a timeout answers None"
+    assert time.monotonic() - started >= 0.05, "and it really waited"
+    held.release()
+
+
+def test_a_lock_wait_takes_the_hold_when_it_is_free(scratch):
+    lock = subetha.RWLock(scratch("lock"))
+    with lock.write_for(timeout=1.0) as held:
+        assert held.held is True
+    assert lock.readers == 0
+
+
+def test_a_read_wait_is_refused_only_by_a_writer(scratch):
+    lock = subetha.RWLock(scratch("lock"))
+    # Another reader does not stand in the way.
+    first = lock.read()
+    assert lock.read_for(timeout=1.0) is not None
+    first.release()
+
+
+def test_a_read_wait_gives_up_against_a_writer(scratch):
+    lock = subetha.RWLock(scratch("lock"))
+    writing = lock.write()
+    assert lock.read_for(timeout=0.1) is None
+    writing.release()
+
+
+def test_a_permit_wait_gives_up_at_its_deadline(scratch):
+    gate = subetha.Semaphore(scratch("sem"), initial=1, max_permits=1)
+    held = gate.acquire()
+    started = time.monotonic()
+    assert gate.acquire_for(timeout=0.1) is None
+    assert time.monotonic() - started >= 0.05
+    held.release()
+
+
+def test_a_permit_wait_takes_one_when_it_is_free(scratch):
+    gate = subetha.Semaphore(scratch("sem"), initial=2, max_permits=2)
+    with gate.acquire_for(timeout=1.0) as held:
+        assert held.held is True
+        assert gate.available == 1
+    assert gate.available == 2
+
+
+def test_a_hold_belongs_to_the_thread_that_took_it(scratch):
+    # A hold carries a claim the lock records against one thread, so
+    # giving it back from another is refused rather than silently
+    # releasing somebody else's hold.
+    lock = subetha.RWLock(scratch("lock"))
+    held = lock.write()
+    failures = []
+
+    def release_from_elsewhere():
+        try:
+            held.release()
+        except BaseException as e:  # noqa: BLE001
+            failures.append(e)
+
+    other = threading.Thread(target=release_from_elsewhere)
+    other.start()
+    other.join(timeout=10)
+    assert failures, "releasing from another thread must be refused"
+    held.release()
+
+
+def test_a_wait_returns_as_soon_as_the_hold_is_given_back(scratch):
+    lock = subetha.RWLock(scratch("lock"))
+    opened = threading.Event()
+
+    def hold_briefly():
+        # The hold is taken and given back on this thread, which is the
+        # only thread allowed to give it back.
+        with lock.write():
+            opened.set()
+            time.sleep(0.1)
+
+    holder = threading.Thread(target=hold_briefly)
+    holder.start()
+    assert opened.wait(timeout=10), "the other thread must get the lock first"
+
+    # The interpreter is free while this waits, which is what lets the
+    # holder above run at all.
+    taken = lock.write_for(timeout=10.0)
+    assert taken is not None, "the wait must succeed once the hold goes"
+    taken.release()
+    holder.join(timeout=10)
+    assert not holder.is_alive()
+
+
+def test_a_channel_carries_items(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+    assert chan.send(b"first") is True
+    assert chan.recv() == b"first"
+    assert chan.recv() is None, "empty is an answer, not a failure"
+
+
+def test_a_channel_carries_a_run_in_one_crossing(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+    assert chan.send_many([b"one", b"two", b"three"]) == 3
+    assert chan.recv_many() == [b"one", b"two", b"three"]
+
+
+def test_a_channel_keeps_the_length_of_a_short_item(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+    chan.send(b"ab\x00\x00")
+    assert chan.recv() == b"ab\x00\x00"
+
+
+def test_a_channel_fills_up_and_says_so(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=2)
+    sent = 0
+    while chan.send(b"x"):
+        sent += 1
+        if sent > 100:
+            break
+    assert sent <= 100, "a full channel must eventually answer False"
+    assert chan.send(b"x") is False
+
+
+def test_a_channel_refuses_an_item_that_does_not_fit(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+    with pytest.raises(ValueError):
+        chan.send(b"x" * (subetha.Channel.max_item_size + 1))
+
+
+def test_a_channel_waits_for_an_item_and_gives_up(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+    started = time.monotonic()
+    assert chan.recv_for(timeout=0.1) is None, "a timeout answers None"
+    assert time.monotonic() - started >= 0.05, "and it really waited"
+
+
+def test_a_channel_wait_returns_as_soon_as_something_arrives(scratch):
+    chan = subetha.Channel(scratch("chan"), capacity=64)
+
+    def send_shortly():
+        time.sleep(0.05)
+        chan.send(b"late")
+
+    sender = threading.Thread(target=send_shortly)
+    sender.start()
+    # The interpreter is free while this waits, which is what lets the
+    # thread above run at all.
+    assert chan.recv_for(timeout=10.0) == b"late"
+    sender.join(timeout=10)
+
+
+def test_a_channel_is_shared_between_handles(scratch):
+    path = scratch("chan")
+    first = subetha.Channel(path, capacity=64)
+    first.send(b"across")
+    second = subetha.Channel.open(path, capacity=64)
+    assert second.recv() == b"across"
+
+
+def test_a_kv_map_says_whether_a_key_was_new(scratch):
+    index = subetha.KvMap(scratch("kv"), capacity=256)
+    assert index.insert(1, 10) is True, "the key was not there before"
+    assert index.get(1) == 10
+    assert index.insert(1, 20) is False, "this replaced what it held"
+    assert index.get(1) == 20
+
+
+def test_a_kv_map_reads_several_keys_at_once(scratch):
+    index = subetha.KvMap(scratch("kv"), capacity=256)
+    index.insert_many([(1, 10), (3, 30)])
+    assert index.get_many([1, 2, 3]) == [10, None, 30]
+    assert 1 in index
+    assert 2 not in index
+    assert len(index) == 2
+
+
 def test_an_atomic_subtracts(scratch):
     counter = subetha.Atomic(scratch("counter"), init=10)
     assert counter.fetch_sub(3) == 10, "the answer is what it was before"

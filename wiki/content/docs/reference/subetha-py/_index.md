@@ -7,11 +7,15 @@ weight: 57
 
 `subetha-py` gives Python the memory-mapped primitives directly, with
 no C shim between the interpreter and the Rust. It ships as a wheel
-rather than to crates.io, and the package it installs is `subetha`.
+rather than to crates.io.
 
-The wheel is not on PyPI yet: the name `subetha` there belongs to an
-unrelated project, so the distribution name is still to be settled.
-Build from a checkout in the meantime.
+```bash
+pip install subetha-ipc
+```
+
+The distribution is `subetha-ipc` because `subetha` on PyPI belongs to
+an unrelated project. The package it installs is `subetha`, so code
+says `import subetha`.
 
 This page is the reference. To install it and send a first message,
 start at [SubEtha from Python](../../tutorial/python/).

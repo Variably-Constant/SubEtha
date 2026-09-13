@@ -51,6 +51,11 @@ use subetha_cxc::shared_handle_table::{
     Handle as SubethaHandle, HandleTableError, SharedHandleTable,
 };
 use subetha_cxc::shared_epochs::PinGuard as SubethaPinGuard;
+use subetha_cxc::api::{ApiError, AutoIpc, Channel as SubethaChannel, KvMap as SubethaKvMap};
+use subetha_cxc::blocking_rw_lock::{BlockingRWLock, BlockingRWLockError};
+use subetha_cxc::blocking_semaphore::{BlockingSemaphore, BlockingSemaphoreError};
+use subetha_cxc::message_transport::TransportError;
+use subetha_cxc::mmf_dispatcher::MmfWorkloadShape;
 use subetha_cxc::qos_policy::{
     Durability, History, Ordering as OrderingNeed, QosPolicy as SubethaQosPolicy,
     QosSnapshot as SubethaQosSnapshot, Reliability,
@@ -4302,31 +4307,42 @@ impl FrameRegion {
 /// Frozen because every method takes `&self`, which is what lets a hold
 /// reach the lock through `get` without borrowing it from the
 /// interpreter, including from `Drop`.
+/// The lock is held through the parking wrapper, which is the same lock
+/// file with two small ones beside it carrying the wakeups. `inner`
+/// reaches the lock itself, so the waiting forms that spin and the ones
+/// that sleep are two ways at one lock rather than two locks.
 #[pyclass(module = "subetha", frozen)]
 struct RWLock {
-    inner: Box<SharedRWLock>,
+    parked: Box<BlockingRWLock>,
+}
+
+impl RWLock {
+    /// The lock underneath the parking wrapper.
+    fn inner(&self) -> &SharedRWLock {
+        self.parked.inner()
+    }
 }
 
 #[pymethods]
 impl RWLock {
     #[new]
     fn new(path: &str) -> PyResult<Self> {
-        SharedRWLock::create_or_open(path)
-            .map(|inner| Self { inner: Box::new(inner) })
-            .map_err(|e| os_err("opening the lock", e))
+        BlockingRWLock::create(path)
+            .map(|parked| Self { parked: Box::new(parked) })
+            .map_err(|e| PyOSError::new_err(format!("opening the lock: {e:?}")))
     }
 
     #[staticmethod]
     fn open(path: &str) -> PyResult<Self> {
-        SharedRWLock::open(path)
-            .map(|inner| Self { inner: Box::new(inner) })
-            .map_err(|e| os_err("attaching to the lock", e))
+        BlockingRWLock::open(path)
+            .map(|parked| Self { parked: Box::new(parked) })
+            .map_err(|e| PyOSError::new_err(format!("attaching to the lock: {e:?}")))
     }
 
     /// How many readers hold it right now.
     #[getter]
     fn readers(&self) -> u32 {
-        self.inner.reader_count()
+        self.inner().reader_count()
     }
 
     /// Take the read hold, waiting for it. Other readers may hold it at
@@ -4342,7 +4358,7 @@ impl RWLock {
         // borrows the lock and the hold outlives this call, so it is
         // forgotten on purpose and `Hold` releases instead, which is what
         // the C ABI does with the same guards.
-        let lock: &SharedRWLock = &slf.get().inner;
+        let lock: &SharedRWLock = slf.get().inner();
         py.detach(|| {
             let guard = lock.read_lock();
             std::mem::forget(guard);
@@ -4350,12 +4366,49 @@ impl RWLock {
         Hold { owner, write: false, released: false }
     }
 
+    /// Take the read hold, giving up after `timeout` seconds and
+    /// answering None.
+    ///
+    /// This one sleeps rather than spinning, so a long wait costs no
+    /// processor. It never waits past the deadline even if whoever holds
+    /// the lock never says it has finished, which is why the waiting
+    /// forms here are the bounded ones only.
+    fn read_for(slf: Bound<'_, Self>, py: Python<'_>, timeout: f64) -> PyResult<Option<Hold>> {
+        let owner = slf.clone().unbind();
+        let wait = duration_from(timeout)?;
+        let parked: &BlockingRWLock = &slf.get().parked;
+        match py.detach(|| parked.read_park_timeout(wait)) {
+            Ok(guard) => {
+                std::mem::forget(guard);
+                Ok(Some(Hold { owner, write: false, released: false }))
+            }
+            Err(BlockingRWLockError::Timeout) => Ok(None),
+            Err(e) => Err(PyOSError::new_err(format!("taking the read hold: {e:?}"))),
+        }
+    }
+
+    /// Take the write hold, giving up after `timeout` seconds and
+    /// answering None.
+    fn write_for(slf: Bound<'_, Self>, py: Python<'_>, timeout: f64) -> PyResult<Option<Hold>> {
+        let owner = slf.clone().unbind();
+        let wait = duration_from(timeout)?;
+        let parked: &BlockingRWLock = &slf.get().parked;
+        match py.detach(|| parked.write_park_timeout(wait)) {
+            Ok(guard) => {
+                std::mem::forget(guard);
+                Ok(Some(Hold { owner, write: true, released: false }))
+            }
+            Err(BlockingRWLockError::Timeout) => Ok(None),
+            Err(e) => Err(PyOSError::new_err(format!("taking the write hold: {e:?}"))),
+        }
+    }
+
     /// Take the read hold if it is free, or answer `None`. Only a
     /// contended lock answers `None`; anything else raises, so a broken
     /// lock never reads as a busy one.
     fn try_read(slf: Bound<'_, Self>) -> PyResult<Option<Hold>> {
         let owner = slf.clone().unbind();
-        match slf.get().inner.try_read_lock() {
+        match slf.get().inner().try_read_lock() {
             Ok(guard) => {
                 std::mem::forget(guard);
                 Ok(Some(Hold { owner, write: false, released: false }))
@@ -4369,7 +4422,7 @@ impl RWLock {
     /// this does.
     fn write(slf: Bound<'_, Self>, py: Python<'_>) -> Hold {
         let owner = slf.clone().unbind();
-        let lock: &SharedRWLock = &slf.get().inner;
+        let lock: &SharedRWLock = slf.get().inner();
         py.detach(|| {
             let guard = lock.write_lock();
             std::mem::forget(guard);
@@ -4380,7 +4433,7 @@ impl RWLock {
     /// Take the write hold if it is free, or answer `None`.
     fn try_write(slf: Bound<'_, Self>) -> PyResult<Option<Hold>> {
         let owner = slf.clone().unbind();
-        match slf.get().inner.try_write_lock() {
+        match slf.get().inner().try_write_lock() {
             Ok(guard) => {
                 std::mem::forget(guard);
                 Ok(Some(Hold { owner, write: true, released: false }))
@@ -4391,7 +4444,7 @@ impl RWLock {
     }
 
     fn __repr__(&self) -> String {
-        format!("<subetha.RWLock readers={}>", self.inner.reader_count())
+        format!("<subetha.RWLock readers={}>", self.inner().reader_count())
     }
 }
 
@@ -4452,10 +4505,15 @@ impl Hold {
         Python::attach(|py| {
             let lock = self.owner.bind(py).get();
             if self.write {
-                lock.inner.release_write_for_blocking();
+                lock.inner().release_write_for_blocking();
             } else {
-                lock.inner.release_read_for_blocking();
+                lock.inner().release_read_for_blocking();
             }
+            // The hold was taken without keeping the guard that would
+            // do this on the way out, so it is done here. Without it a
+            // thread waiting in `read_for` or `write_for` sleeps to its
+            // deadline with the lock already free.
+            lock.parked.signal_unlock();
         });
         self.released = true;
     }
@@ -4524,6 +4582,42 @@ impl<const N: usize> Payload<N> {
     fn as_bytes(&self) -> Vec<u8> {
         let len = (self.len as usize).min(N);
         self.bytes[..len].to_vec()
+    }
+}
+
+/// A payload travels between processes as its length and then its
+/// bytes, little-endian, which is the same in every address space.
+///
+/// # Safety
+///
+/// `marshal` writes exactly `4 + N` bytes and `unmarshal` reads
+/// exactly that many. There are no pointers, handles or descriptors in
+/// it: a length and a run of bytes mean the same thing wherever they
+/// are read. A length larger than `N` cannot name real bytes, so it is
+/// refused as an invalid encoding rather than trusted.
+unsafe impl<const N: usize> subetha_core::Marshal for Payload<N> {
+    const PAYLOAD_BYTES: usize = 4 + N;
+
+    fn marshal(&self, dst: &mut [u8]) {
+        dst[..4].copy_from_slice(&self.len.to_le_bytes());
+        dst[4..4 + N].copy_from_slice(&self.bytes);
+    }
+
+    fn unmarshal(src: &[u8]) -> Result<Self, subetha_core::MarshalError> {
+        if src.len() < 4 + N {
+            return Err(subetha_core::MarshalError::ShortBuffer {
+                expected: 4 + N,
+                got: src.len(),
+            });
+        }
+        let len = u32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+        if len as usize > N {
+            return Err(subetha_core::MarshalError::InvalidEncoding);
+        }
+        let mut held = Self::empty();
+        held.len = len;
+        held.bytes.copy_from_slice(&src[4..4 + N]);
+        Ok(held)
     }
 }
 
@@ -8016,13 +8110,302 @@ fn transports_built() -> Vec<&'static str> {
     built
 }
 
+/// The front door: a queue between processes that can be waited on.
+///
+/// This is the shape to reach for when what is wanted is simply to send
+/// things to another process and read them back. `Ring` and its
+/// relations underneath give more control over the shape; this one
+/// picks the shape from the number of senders and readers named here,
+/// and adds the one thing they do not have, which is waiting.
+///
+/// `recv` answers None the moment there is nothing there. `recv_for`
+/// waits, and while it waits the interpreter is free, so other Python
+/// threads run. That is what makes it usable as the only thing a
+/// reader does.
+///
+/// An item may be anything up to `max_item_size` bytes.
+#[pyclass(module = "subetha")]
+struct Channel {
+    inner: Box<SubethaChannel<SlotValue>>,
+}
+
+#[pymethods]
+impl Channel {
+    /// `capacity` is the number of items in flight, rounded up to a
+    /// power of two. `senders` and `readers` are how many are expected
+    /// at once, which is what the shape underneath is picked from.
+    #[new]
+    #[pyo3(signature = (path, capacity = 1024, senders = 1, readers = 1))]
+    fn new(path: &str, capacity: usize, senders: usize, readers: usize) -> PyResult<Self> {
+        if senders < 1 || readers < 1 {
+            return Err(PyValueError::new_err(
+                "a channel needs at least one sender and one reader",
+            ));
+        }
+        let shape = MmfWorkloadShape::StreamingMpmc {
+            n_producers: senders,
+            n_consumers: readers,
+        };
+        SubethaChannel::create(path, shape, capacity)
+            .map(|inner| Self { inner: Box::new(inner) })
+            .map_err(|e| api_err("opening the channel", e))
+    }
+
+    /// Attach to a channel another holder made, with the capacity it
+    /// was made with.
+    #[staticmethod]
+    #[pyo3(signature = (path, capacity = 1024))]
+    fn open(path: &str, capacity: usize) -> PyResult<Self> {
+        SubethaChannel::open(path, capacity)
+            .map(|inner| Self { inner: Box::new(inner) })
+            .map_err(|e| api_err("attaching to the channel", e))
+    }
+
+    /// Send one item, answering False when the channel is full.
+    fn send(&self, item: &[u8]) -> PyResult<bool> {
+        let held = SlotValue::from_bytes(item)?;
+        match self.inner.send(&held) {
+            Ok(()) => Ok(true),
+            Err(e) if is_full(&e) => Ok(false),
+            Err(e) => Err(api_err("sending", e)),
+        }
+    }
+
+    /// Send a run of items in one crossing, answering how many went.
+    /// A short answer means the channel filled.
+    fn send_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
+        let mut sent = 0;
+        for item in &items {
+            let held = SlotValue::from_bytes(item)?;
+            match self.inner.send(&held) {
+                Ok(()) => sent += 1,
+                Err(e) if is_full(&e) => break,
+                Err(e) => return Err(api_err("sending", e)),
+            }
+        }
+        Ok(sent)
+    }
+
+    /// Wait until the item can be sent, or until `timeout` seconds have
+    /// passed. None waits as long as it takes. Answers False on a
+    /// timeout.
+    ///
+    /// Other Python threads run while this waits.
+    #[pyo3(signature = (item, timeout = None))]
+    fn send_for(&self, py: Python<'_>, item: &[u8], timeout: Option<f64>) -> PyResult<bool> {
+        let held = SlotValue::from_bytes(item)?;
+        let wait = optional_duration(timeout)?;
+        match py.detach(|| self.inner.send_blocking(&held, wait)) {
+            Ok(()) => Ok(true),
+            Err(e) if is_timeout(&e) => Ok(false),
+            Err(e) => Err(api_err("sending", e)),
+        }
+    }
+
+    /// The next item, or None when there is nothing there.
+    fn recv(&self) -> PyResult<Option<Vec<u8>>> {
+        match self.inner.recv() {
+            Ok(held) => Ok(Some(held.as_bytes())),
+            Err(e) if is_empty(&e) => Ok(None),
+            Err(e) => Err(api_err("receiving", e)),
+        }
+    }
+
+    /// Everything waiting, up to `max_items`, in one crossing.
+    #[pyo3(signature = (max_items = 256))]
+    fn recv_many(&self, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
+        let mut taken = Vec::new();
+        for _ in 0..max_items {
+            match self.inner.recv() {
+                Ok(held) => taken.push(held.as_bytes()),
+                Err(e) if is_empty(&e) => break,
+                Err(e) => return Err(api_err("receiving", e)),
+            }
+        }
+        Ok(taken)
+    }
+
+    /// Wait for the next item, or until `timeout` seconds have passed.
+    /// None waits as long as it takes. Answers None on a timeout.
+    ///
+    /// Other Python threads run while this waits, which is what lets a
+    /// reader do nothing else.
+    #[pyo3(signature = (timeout = None))]
+    fn recv_for(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Vec<u8>>> {
+        let wait = optional_duration(timeout)?;
+        match py.detach(|| self.inner.recv_blocking(wait)) {
+            Ok(held) => Ok(Some(held.as_bytes())),
+            Err(e) if is_timeout(&e) || is_empty(&e) => Ok(None),
+            Err(e) => Err(api_err("receiving", e)),
+        }
+    }
+
+    /// The most an item may be, in bytes.
+    #[classattr]
+    fn max_item_size() -> usize {
+        SLOT_VALUE_BYTES
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        "<subetha.Channel>".to_string()
+    }
+}
+
+/// A map between processes, reached without naming a shape.
+///
+/// The companion to `Channel` in the front door: keys and values are
+/// both unsigned integers, and the shape underneath is picked from how
+/// many readers and writers are expected.
+#[pyclass(module = "subetha")]
+struct KvMap {
+    inner: Box<SubethaKvMap<u64, u64>>,
+}
+
+#[pymethods]
+impl KvMap {
+    #[new]
+    #[pyo3(signature = (path, capacity = 1024, readers = 1, writers = 1))]
+    fn new(path: &str, capacity: usize, readers: usize, writers: usize) -> PyResult<Self> {
+        if readers < 1 || writers < 1 {
+            return Err(PyValueError::new_err(
+                "a map needs at least one reader and one writer",
+            ));
+        }
+        AutoIpc::new(path)
+            .consumers(readers)
+            .producers(writers)
+            .capacity(capacity)
+            .build_kv_map::<u64, u64>()
+            .map(|inner| Self { inner: Box::new(inner) })
+            .map_err(|e| api_err("opening the map", e))
+    }
+
+    /// Put an entry in, answering True when the key was not there
+    /// before and False when this replaced what it held.
+    ///
+    /// It does not answer the old value. The map underneath reports
+    /// only which of the two happened, and inventing a read to go with
+    /// it would be a second look the caller did not ask for.
+    fn insert(&self, key: u64, value: u64) -> PyResult<bool> {
+        self.inner
+            .insert(key, value)
+            .map(|outcome| matches!(outcome, InsertOutcome::Inserted))
+            .map_err(|e| api_err("inserting", e))
+    }
+
+    /// Put a run of entries in, in one crossing, answering True for
+    /// each key that was not there before.
+    fn insert_many(&self, entries: Vec<(u64, u64)>) -> PyResult<Vec<bool>> {
+        let mut fresh = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            fresh.push(
+                self.inner
+                    .insert(key, value)
+                    .map(|outcome| matches!(outcome, InsertOutcome::Inserted))
+                    .map_err(|e| api_err("inserting", e))?,
+            );
+        }
+        Ok(fresh)
+    }
+
+    /// What a key holds, or None when it holds nothing.
+    fn get(&self, key: u64) -> Option<u64> {
+        self.inner.get(&key)
+    }
+
+    /// Several keys in one crossing.
+    fn get_many(&self, keys: Vec<u64>) -> Vec<Option<u64>> {
+        keys.into_iter().map(|key| self.inner.get(&key)).collect()
+    }
+
+    fn __contains__(&self, key: u64) -> bool {
+        self.inner.get(&key).is_some()
+    }
+
+    /// How many keys the map holds.
+    ///
+    /// There is no way to take a key out. The map underneath has no
+    /// removal, and a key can only be written over. `HashMap` is the
+    /// one to reach for when entries have to go away.
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<subetha.KvMap holding {}>", self.inner.len())
+    }
+}
+
+/// Seconds as a duration, or None to wait as long as it takes.
+fn optional_duration(seconds: Option<f64>) -> PyResult<Option<Duration>> {
+    match seconds {
+        None => Ok(None),
+        Some(s) => Ok(Some(duration_from(s)?)),
+    }
+}
+
+/// Whether this failure is the channel being full, which is an answer
+/// rather than a fault.
+fn is_full(e: &ApiError) -> bool {
+    matches!(e, ApiError::Transport(TransportError::Full))
+}
+
+/// Whether this failure is the channel being empty.
+fn is_empty(e: &ApiError) -> bool {
+    matches!(e, ApiError::Transport(TransportError::Empty))
+}
+
+/// Whether this failure is the wait running out rather than anything
+/// going wrong.
+fn is_timeout(e: &ApiError) -> bool {
+    matches!(e, ApiError::Timeout)
+}
+
+fn api_err(doing: &str, e: ApiError) -> PyErr {
+    match e {
+        ApiError::PayloadTooLarge => {
+            PyValueError::new_err(format!("{doing}: the item does not fit a slot"))
+        }
+        other => PyOSError::new_err(format!("{doing}: {other}")),
+    }
+}
+
 /// A counting semaphore in a mapped file, limiting how many processes
 /// work at once.
 /// Frozen for the same reason `RWLock` is: a permit reaches it through
 /// `get`, including from `Drop`.
 #[pyclass(module = "subetha", frozen)]
+/// Held through the parking wrapper, which is the same semaphore file
+/// with a small one beside it carrying the wakeups. `inner` reaches the
+/// semaphore itself, so the waiting form that spins and the one that
+/// sleeps are two ways at one semaphore rather than two.
 struct Semaphore {
-    inner: Box<SharedSemaphore>,
+    parked: Box<BlockingSemaphore>,
+}
+
+impl Semaphore {
+    /// The semaphore underneath the parking wrapper.
+    fn inner(&self) -> &SharedSemaphore {
+        self.parked.inner()
+    }
 }
 
 #[pymethods]
@@ -8039,38 +8422,38 @@ impl Semaphore {
                 "the initial count cannot exceed max_permits",
             ));
         }
-        SharedSemaphore::create(path, initial, max)
-            .map(|inner| Self { inner: Box::new(inner) })
-            .map_err(|e| os_err("opening the semaphore", e))
+        BlockingSemaphore::create(path, max, initial)
+            .map(|parked| Self { parked: Box::new(parked) })
+            .map_err(|e| PyOSError::new_err(format!("opening the semaphore: {e:?}")))
     }
 
     #[staticmethod]
     fn open(path: &str, max_permits: u32) -> PyResult<Self> {
-        SharedSemaphore::open(path, max_permits)
-            .map(|inner| Self { inner: Box::new(inner) })
-            .map_err(|e| os_err("attaching to the semaphore", e))
+        BlockingSemaphore::open(path, max_permits)
+            .map(|parked| Self { parked: Box::new(parked) })
+            .map_err(|e| PyOSError::new_err(format!("attaching to the semaphore: {e:?}")))
     }
 
     #[getter]
     fn available(&self) -> u32 {
-        self.inner.available()
+        self.inner().available()
     }
 
     #[getter]
     fn waiters(&self) -> u32 {
-        self.inner.waiters()
+        self.inner().waiters()
     }
 
     #[getter]
     fn max_permits(&self) -> u32 {
-        self.inner.max_permits()
+        self.inner().max_permits()
     }
 
     /// Take a permit, waiting for one. The interpreter is detached while
     /// this waits.
     fn acquire(slf: Bound<'_, Self>, py: Python<'_>) -> PermitHold {
         let owner = slf.clone().unbind();
-        let semaphore: &SharedSemaphore = &slf.get().inner;
+        let semaphore: &SharedSemaphore = slf.get().inner();
         py.detach(|| {
             let permit = semaphore.acquire();
             std::mem::forget(permit);
@@ -8078,11 +8461,35 @@ impl Semaphore {
         PermitHold { owner, released: false }
     }
 
+    /// Take a permit, giving up after `timeout` seconds and answering
+    /// None.
+    ///
+    /// This one sleeps rather than spinning, so a long wait costs no
+    /// processor, and it never waits past the deadline even if whoever
+    /// holds the permits never gives one back.
+    fn acquire_for(
+        slf: Bound<'_, Self>,
+        py: Python<'_>,
+        timeout: f64,
+    ) -> PyResult<Option<PermitHold>> {
+        let owner = slf.clone().unbind();
+        let wait = duration_from(timeout)?;
+        let parked: &BlockingSemaphore = &slf.get().parked;
+        match py.detach(|| parked.acquire_park_timeout(wait)) {
+            Ok(permit) => {
+                std::mem::forget(permit);
+                Ok(Some(PermitHold { owner, released: false }))
+            }
+            Err(BlockingSemaphoreError::Timeout) => Ok(None),
+            Err(e) => Err(PyOSError::new_err(format!("taking a permit: {e:?}"))),
+        }
+    }
+
     /// Take a permit if one is free, or answer `None`. Only an exhausted
     /// semaphore answers `None`; anything else raises.
     fn try_acquire(slf: Bound<'_, Self>) -> PyResult<Option<PermitHold>> {
         let owner = slf.clone().unbind();
-        match slf.get().inner.try_acquire() {
+        match slf.get().inner().try_acquire() {
             Ok(permit) => {
                 std::mem::forget(permit);
                 Ok(Some(PermitHold { owner, released: false }))
@@ -8095,8 +8502,8 @@ impl Semaphore {
     fn __repr__(&self) -> String {
         format!(
             "<subetha.Semaphore available={} of {}>",
-            self.inner.available(),
-            self.inner.max_permits()
+            self.inner().available(),
+            self.inner().max_permits()
         )
     }
 }
@@ -8120,13 +8527,14 @@ impl PermitHold {
     /// real fault in the caller's bookkeeping.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<bool> {
-        self.give_back().map_err(|e| os_err("releasing the permit", e))?;
+        self.give_back()
+            .map_err(|e| PyOSError::new_err(format!("releasing the permit: {e:?}")))?;
         Ok(false)
     }
 
     fn release(&mut self) -> PyResult<()> {
         self.give_back()
-            .map_err(|e| os_err("releasing the permit", e))
+            .map_err(|e| PyOSError::new_err(format!("releasing the permit: {e:?}")))
     }
 
     #[getter]
@@ -8143,11 +8551,15 @@ impl PermitHold {
 }
 
 impl PermitHold {
-    fn give_back(&mut self) -> Result<(), SemaphoreError> {
+    fn give_back(&mut self) -> Result<(), BlockingSemaphoreError> {
         if self.released {
             return Ok(());
         }
-        let outcome = Python::attach(|py| self.owner.bind(py).get().inner.release());
+        // Released through the parking wrapper rather than the
+        // semaphore itself, because that is what wakes a thread waiting
+        // in `acquire_for`. Releasing underneath it would leave that
+        // thread asleep to its deadline with a permit free.
+        let outcome = Python::attach(|py| self.owner.bind(py).get().parked.release());
         self.released = true;
         outcome
     }
@@ -9250,6 +9662,8 @@ classes_fit_python_allocation!(
     Universal,
     Tower,
     QosPolicy,
+    Channel,
+    KvMap,
     ReorderWindow,
 );
 
@@ -9344,6 +9758,8 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Tower>()?;
     m.add_class::<QosPolicy>()?;
     m.add_class::<QosSnapshot>()?;
+    m.add_class::<Channel>()?;
+    m.add_class::<KvMap>()?;
     m.add_class::<SensSender>()?;
     m.add_class::<SensReceiver>()?;
     #[cfg(feature = "tcp-bridge")]

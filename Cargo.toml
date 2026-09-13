@@ -25,11 +25,11 @@ categories = ["concurrency", "asynchronous"]
 readme = "README.md"
 
 [workspace.dependencies]
-subetha-core = { path = "crates/subetha-core", version = "0.3.1" }
-subetha-sidecar = { path = "crates/subetha-sidecar", version = "0.3.1" }
-subetha-pointers = { path = "crates/subetha-pointers", version = "0.3.1" }
-subetha-cxc = { path = "crates/subetha-cxc", version = "0.3.1" }
-subetha-ffi = { path = "crates/subetha-ffi", version = "0.3.1" }
+subetha-core = { path = "crates/subetha-core", version = "0.3.2" }
+subetha-sidecar = { path = "crates/subetha-sidecar", version = "0.3.2" }
+subetha-pointers = { path = "crates/subetha-pointers", version = "0.3.2" }
+subetha-cxc = { path = "crates/subetha-cxc", version = "0.3.2" }
+subetha-ffi = { path = "crates/subetha-ffi", version = "0.3.2" }
 
 # Production dependencies.
 parking_lot = "0.12"

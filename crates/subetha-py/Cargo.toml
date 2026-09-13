@@ -20,6 +20,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 subetha-cxc = { workspace = true }
+# The Marshal contract, which the typed front door takes its payloads
+# through.
+subetha-core = { workspace = true }
 
 # The stable ABI is a feature here rather than fixed, because a
 # free-threaded interpreter has none to build against: that ABI arrives

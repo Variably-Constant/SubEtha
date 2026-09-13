@@ -321,7 +321,15 @@ impl BlockingRWLock {
 
     /// Bump wakeup-generation + wake every parker. Called from the
     /// guard Drop paths after the inner lock is released.
-    fn signal_unlock(&self) {
+    ///
+    /// Public because a caller that does not keep the guard has to do
+    /// this itself. A binding that hands a hold out to another language
+    /// releases through [`inner`](Self::inner) at a moment of its own
+    /// choosing; without this call afterwards, a thread parked in one
+    /// of the `*_park*` forms sleeps until its deadline even though the
+    /// lock is free, because nothing told it the lock had changed
+    /// hands.
+    pub fn signal_unlock(&self) {
         let new_gen = self.wakeup.atom().fetch_add(1, Ordering::Release) + 1;
         self.waker.wake_up_to(new_gen);
     }

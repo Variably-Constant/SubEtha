@@ -15,18 +15,21 @@ The full surface is in the
 
 ## Install
 
-The wheel is not on PyPI. The name `subetha` there belongs to an
-unrelated project, so the distribution name is still to be settled;
-until it is, build from a checkout. That needs a Rust toolchain and
+```bash
+pip install subetha-ipc
+```
+
+The distribution is `subetha-ipc` because `subetha` on PyPI belongs to
+an unrelated project. The package it installs is `subetha`, so code
+says `import subetha`.
+
+Building from a checkout instead needs a Rust toolchain and
 [maturin](https://www.maturin.rs/):
 
 ```bash
 cd crates/subetha-py
 maturin develop --release
 ```
-
-Whatever the distribution ends up called, the package it installs is
-`subetha` and that is what you import.
 
 One wheel serves CPython 3.11 and every later version, because it
 targets the stable ABI. A free-threaded interpreter takes a wheel of its

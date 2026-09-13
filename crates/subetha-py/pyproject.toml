@@ -3,7 +3,10 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "subetha"
+# The distribution is `subetha-ipc` because `subetha` on PyPI belongs to
+# an unrelated project. The package it installs is still `subetha`, so
+# code says `import subetha`.
+name = "subetha-ipc"
 description = "Shared memory between processes: rings, channels and shared state, bound to Rust directly."
 requires-python = ">=3.11"
 license = { text = "MIT" }
