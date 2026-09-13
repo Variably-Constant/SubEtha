@@ -670,6 +670,32 @@ fn condvar_exchange() {
     assert_eq!(report.removed, 1, "the counter's file");
 }
 
+/// How long a side waits at a rendezvous for the other to arrive. Long
+/// enough for a process spawn on a host under load, short enough that a
+/// peer that died fails the test rather than hanging it.
+const MEET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Wait at `counter` until both sides have reached it.
+///
+/// A peer starts a process spawn away, so the side that spawned it is
+/// already running while the peer is still loading. Work that is evidence
+/// of two processes acting at the same time has to begin after both are
+/// there, or the host's scheduling decides the result.
+fn meet_at(counter: subetha_handle, who: &str) {
+    let mut arrived = 0u32;
+    assert_eq!(unsafe { subetha_atomic_u32_fetch_add(counter, 1, &mut arrived) }, SUBETHA_OK);
+    let began = std::time::Instant::now();
+    loop {
+        let mut here = 0u32;
+        assert_eq!(unsafe { subetha_atomic_u32_load(counter, &mut here) }, SUBETHA_OK);
+        if here >= 2 {
+            return;
+        }
+        assert!(began.elapsed() < MEET_TIMEOUT, "{who} did not reach the rendezvous within {MEET_TIMEOUT:?}");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// Permits the semaphore exchange runs with, and rounds each side takes.
 /// Two permits against two processes is the smallest shape where the
 /// bound and the overlap are both observable.
@@ -685,22 +711,33 @@ const SEMAPHORE_ROUNDS: u32 = 200;
 /// processes in than it has permits. A peak of exactly `SEMAPHORE_PERMITS`
 /// is also what proves the two ran at the same time, so the bound is
 /// evidence rather than an artifact of them never overlapping.
+///
+/// The two sides meet at a shared count before either takes a permit,
+/// because the overlap is what the peak is evidence of. Each side holds a
+/// permit for nearly its whole loop, so two sides that are both running
+/// overlap almost at once; a side that has not started cannot overlap at
+/// all, and a peer whose process spawn lands after this side's rounds are
+/// over leaves a peak of one against a semaphore that behaved correctly.
 fn semaphore_exchange() {
     let path = scratch_prefix("sem");
     let c_path = c_string(&path);
     let live_path = format!("{path}.live");
     let peak_path = format!("{path}.peak");
+    let ready_path = format!("{path}.ready");
     let c_live = c_string(&live_path);
     let c_peak = c_string(&peak_path);
+    let c_ready = c_string(&ready_path);
     let mut sem: subetha_handle = 0;
     let mut live: subetha_handle = 0;
     let mut peak: subetha_handle = 0;
+    let mut ready: subetha_handle = 0;
     let rc = unsafe {
         subetha_semaphore_create(c_path.as_ptr(), SEMAPHORE_PERMITS, SEMAPHORE_PERMITS, SUBETHA_MODE_STRICT, &mut sem)
     };
     assert_eq!(rc, SUBETHA_OK);
     assert_eq!(unsafe { subetha_atomic_u32_create(c_live.as_ptr(), 0, SUBETHA_MODE_STRICT, &mut live) }, SUBETHA_OK);
     assert_eq!(unsafe { subetha_atomic_u32_create(c_peak.as_ptr(), 0, SUBETHA_MODE_STRICT, &mut peak) }, SUBETHA_OK);
+    assert_eq!(unsafe { subetha_atomic_u32_create(c_ready.as_ptr(), 0, SUBETHA_MODE_STRICT, &mut ready) }, SUBETHA_OK);
 
     // Raise the peak to `value` if it stands above it. A load then a
     // store loses a raise from the other process; this retries on
@@ -719,6 +756,7 @@ fn semaphore_exchange() {
     };
 
     let child = spawn_peer("semaphore", &path);
+    meet_at(ready, "the semaphore peer");
     for round in 0..SEMAPHORE_ROUNDS {
         let mut permit = 0u64;
         let rc = unsafe { subetha_semaphore_acquire(sem, 30_000, &mut permit) };
@@ -760,6 +798,7 @@ fn semaphore_exchange() {
     assert_eq!(stats.waiters, 0);
     assert_eq!(stats.release_overflows, 0);
 
+    assert_eq!(subetha_handle_destroy(ready), SUBETHA_OK);
     assert_eq!(subetha_handle_destroy(peak), SUBETHA_OK);
     assert_eq!(subetha_handle_destroy(live), SUBETHA_OK);
     assert_eq!(subetha_handle_destroy(sem), SUBETHA_OK);
@@ -770,6 +809,8 @@ fn semaphore_exchange() {
     assert_eq!(report.removed, 1, "the holder count's file");
     assert_eq!(unsafe { subetha_atomic_unlink(c_peak.as_ptr(), &mut report) }, SUBETHA_OK);
     assert_eq!(report.removed, 1, "the peak's file");
+    assert_eq!(unsafe { subetha_atomic_unlink(c_ready.as_ptr(), &mut report) }, SUBETHA_OK);
+    assert_eq!(report.removed, 1, "the rendezvous count's file");
 }
 
 /// Rounds the two sides park and wake each other for.
@@ -1166,17 +1207,28 @@ const LOCK_ROUNDS: u32 = 400;
 /// increment is a read, a pause and a write, so any pair that overlaps
 /// loses an update: a total of exactly twice `LOCK_ROUNDS` is the
 /// evidence that the two never held it at the same moment.
+///
+/// The two sides meet before the rounds for the same reason the semaphore
+/// exchange does, in the other direction: two sides that never run at the
+/// same time keep the count whatever the lock does, so without the
+/// rendezvous a total of twice `LOCK_ROUNDS` can mean the lock excluded
+/// them or can mean they never met.
 fn rwlock_exchange() {
     let path = scratch_prefix("rwlock");
     let c_path = c_string(&path);
     let count_path = format!("{path}.count");
+    let ready_path = format!("{path}.ready");
     let c_count = c_string(&count_path);
+    let c_ready = c_string(&ready_path);
     let mut lock: subetha_handle = 0;
     let mut cell: subetha_handle = 0;
+    let mut ready: subetha_handle = 0;
     assert_eq!(unsafe { subetha_rwlock_create(c_path.as_ptr(), SUBETHA_MODE_STRICT, &mut lock) }, SUBETHA_OK);
     assert_eq!(unsafe { subetha_cell_create(c_count.as_ptr(), 8, SUBETHA_MODE_STRICT, &mut cell) }, SUBETHA_OK);
+    assert_eq!(unsafe { subetha_atomic_u32_create(c_ready.as_ptr(), 0, SUBETHA_MODE_STRICT, &mut ready) }, SUBETHA_OK);
 
     let child = spawn_peer("rwlock", &path);
+    meet_at(ready, "the rwlock peer");
     let mut out = [0u8; 8];
     let mut len = 0usize;
     for round in 0..LOCK_ROUNDS {
@@ -1208,6 +1260,7 @@ fn rwlock_exchange() {
     assert_eq!(stats.readers, 0);
     assert_eq!(stats.timeouts, 0, "no acquire waited out its thirty seconds");
 
+    assert_eq!(subetha_handle_destroy(ready), SUBETHA_OK);
     assert_eq!(subetha_handle_destroy(cell), SUBETHA_OK);
     assert_eq!(subetha_handle_destroy(lock), SUBETHA_OK);
     let mut report = subetha_unlink_report::default();
@@ -1215,6 +1268,8 @@ fn rwlock_exchange() {
     assert_eq!(report.removed, 1, "the lock's file");
     assert_eq!(unsafe { subetha_cell_unlink(c_count.as_ptr(), &mut report) }, SUBETHA_OK);
     assert_eq!(report.removed, 1, "the counter's file");
+    assert_eq!(unsafe { subetha_atomic_unlink(c_ready.as_ptr(), &mut report) }, SUBETHA_OK);
+    assert_eq!(report.removed, 1, "the rendezvous count's file");
 }
 
 /// The two properties an epoch table exists for are the ones a single

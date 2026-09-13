@@ -7378,6 +7378,39 @@ static void raise_peak(subetha_handle peak, uint32_t value, const char *who)
     }
 }
 
+/* Waits at `counter` until both sides have reached it. Returns zero when
+ * they met and nonzero when they did not.
+ *
+ * A peer starts a process spawn behind the side that launched it, so work
+ * that is evidence about two processes acting at the same time has to
+ * begin after both are there. Thirty seconds is a spawn on a host under
+ * load; past it the other side is gone, and failing beats waiting. */
+static int meet_at(subetha_handle counter, const char *who)
+{
+    uint32_t arrived = 0;
+    int32_t rc = subetha_atomic_u32_fetch_add(counter, 1, &arrived);
+    if (rc != SUBETHA_OK) {
+        fprintf(stderr, "  %s: rendezvous -> %d (%s)\n", who, (int)rc, subetha_strerror(rc));
+        return 1;
+    }
+    for (uint32_t waited = 0; ; waited++) {
+        uint32_t here = 0;
+        rc = subetha_atomic_u32_load(counter, &here);
+        if (rc != SUBETHA_OK) {
+            fprintf(stderr, "  %s: rendezvous read -> %d (%s)\n", who, (int)rc, subetha_strerror(rc));
+            return 1;
+        }
+        if (here >= 2) {
+            return 0;
+        }
+        if (waited >= 30000) {
+            fprintf(stderr, "  %s: the other side did not reach the rendezvous\n", who);
+            return 1;
+        }
+        sleep_us(1000);
+    }
+}
+
 /* Opens the semaphore at `path` (two permits) and takes one `expect`
  * times, counting itself in and out of the shared holder count at
  * `<path>.live` and raising the peak at `<path>.peak` while it holds one.
@@ -7385,14 +7418,20 @@ static void raise_peak(subetha_handle peak, uint32_t value, const char *who)
  * The other process does the same. A peak above two means the semaphore
  * let more processes in than it has permits; a peak of exactly two is
  * also what proves the two ran at the same time, so the bound is evidence
- * rather than an artifact of them never overlapping. */
+ * rather than an artifact of them never overlapping.
+ *
+ * Both sides meet at `<path>.ready` before either takes a permit. This
+ * side starts a process spawn behind the other, and a side that has not
+ * started cannot overlap with anything. */
 int subetha_ctest_peer_semaphore(const char *path, uint32_t expect)
 {
     int problems = 0;
-    char live_path[1024], peak_path[1024];
+    char live_path[1024], peak_path[1024], ready_path[1024];
     snprintf(live_path, sizeof live_path, "%s.live", path);
     snprintf(peak_path, sizeof peak_path, "%s.peak", path);
+    snprintf(ready_path, sizeof ready_path, "%s.ready", path);
     subetha_handle h = SUBETHA_HANDLE_NONE, live = SUBETHA_HANDLE_NONE, peak = SUBETHA_HANDLE_NONE;
+    subetha_handle ready = SUBETHA_HANDLE_NONE;
     int32_t rc = subetha_semaphore_open(path, 2, SUBETHA_MODE_STRICT, &h);
     if (rc != SUBETHA_OK) {
         fprintf(stderr, "  semaphore peer: open -> %d (%s)\n", (int)rc, subetha_strerror(rc));
@@ -7400,13 +7439,17 @@ int subetha_ctest_peer_semaphore(const char *path, uint32_t expect)
         return 1;
     }
     if ((rc = subetha_atomic_u32_open(live_path, SUBETHA_MODE_STRICT, &live)) != SUBETHA_OK
-        || (rc = subetha_atomic_u32_open(peak_path, SUBETHA_MODE_STRICT, &peak)) != SUBETHA_OK) {
+        || (rc = subetha_atomic_u32_open(peak_path, SUBETHA_MODE_STRICT, &peak)) != SUBETHA_OK
+        || (rc = subetha_atomic_u32_open(ready_path, SUBETHA_MODE_STRICT, &ready)) != SUBETHA_OK) {
         fprintf(stderr, "  semaphore peer: counter open -> %d (%s)\n", (int)rc, subetha_strerror(rc));
         report_detail();
         subetha_handle_destroy(h);
         return 1;
     }
-    for (uint32_t i = 0; i < expect; i++) {
+    if (meet_at(ready, "semaphore peer") != 0) {
+        problems++;
+    }
+    for (uint32_t i = 0; i < expect && problems == 0; i++) {
         uint64_t p = 0;
         rc = subetha_semaphore_acquire(h, 30000, &p);
         if (rc != SUBETHA_OK) {
@@ -7444,8 +7487,8 @@ int subetha_ctest_peer_semaphore(const char *path, uint32_t expect)
             break;
         }
     }
-    if (subetha_handle_destroy(peak) != SUBETHA_OK || subetha_handle_destroy(live) != SUBETHA_OK
-        || subetha_handle_destroy(h) != SUBETHA_OK) {
+    if (subetha_handle_destroy(ready) != SUBETHA_OK || subetha_handle_destroy(peak) != SUBETHA_OK
+        || subetha_handle_destroy(live) != SUBETHA_OK || subetha_handle_destroy(h) != SUBETHA_OK) {
         problems++;
     }
     return problems;
@@ -7458,13 +7501,19 @@ int subetha_ctest_peer_semaphore(const char *path, uint32_t expect)
  * pause and a write, which loses one of any overlapping pair.
  *
  * The counter is an eight-byte cell, and a torn or lost update shows up
- * as a total below the sum. */
+ * as a total below the sum.
+ *
+ * Both sides meet at `<path>.ready` before the rounds. Two sides that
+ * never run at the same time keep the count whatever the lock does, so
+ * without the rendezvous a correct total says nothing. */
 int subetha_ctest_peer_rwlock(const char *path, uint32_t expect)
 {
     int problems = 0;
-    char count_path[1024];
+    char count_path[1024], ready_path[1024];
     snprintf(count_path, sizeof count_path, "%s.count", path);
+    snprintf(ready_path, sizeof ready_path, "%s.ready", path);
     subetha_handle h = SUBETHA_HANDLE_NONE, cell = SUBETHA_HANDLE_NONE;
+    subetha_handle ready = SUBETHA_HANDLE_NONE;
     int32_t rc = subetha_rwlock_open(path, SUBETHA_MODE_STRICT, &h);
     if (rc != SUBETHA_OK) {
         fprintf(stderr, "  rwlock peer: open -> %d (%s)\n", (int)rc, subetha_strerror(rc));
@@ -7478,7 +7527,18 @@ int subetha_ctest_peer_rwlock(const char *path, uint32_t expect)
         subetha_handle_destroy(h);
         return 1;
     }
-    for (uint32_t i = 0; i < expect; i++) {
+    rc = subetha_atomic_u32_open(ready_path, SUBETHA_MODE_STRICT, &ready);
+    if (rc != SUBETHA_OK) {
+        fprintf(stderr, "  rwlock peer: rendezvous open -> %d (%s)\n", (int)rc, subetha_strerror(rc));
+        report_detail();
+        subetha_handle_destroy(cell);
+        subetha_handle_destroy(h);
+        return 1;
+    }
+    if (meet_at(ready, "rwlock peer") != 0) {
+        problems++;
+    }
+    for (uint32_t i = 0; i < expect && problems == 0; i++) {
         uint64_t w = 0;
         rc = subetha_rwlock_write(h, 30000, &w);
         if (rc != SUBETHA_OK) {
@@ -7524,7 +7584,8 @@ int subetha_ctest_peer_rwlock(const char *path, uint32_t expect)
             break;
         }
     }
-    if (subetha_handle_destroy(cell) != SUBETHA_OK || subetha_handle_destroy(h) != SUBETHA_OK) {
+    if (subetha_handle_destroy(ready) != SUBETHA_OK || subetha_handle_destroy(cell) != SUBETHA_OK
+        || subetha_handle_destroy(h) != SUBETHA_OK) {
         problems++;
     }
     return problems;
