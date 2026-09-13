@@ -60,6 +60,14 @@ use subetha_pointers::versioned_pointer::{HybridLogicalClock, VectorClock};
 use subetha_cxc::blocking_rw_lock::{BlockingRWLock, BlockingRWLockError};
 use subetha_cxc::blocking_semaphore::{BlockingSemaphore, BlockingSemaphoreError};
 use subetha_cxc::adaptive_ipc::AdaptiveIpc as SubethaAdaptiveIpc;
+use subetha_cxc::burst_model_sensor::BurstModel;
+use subetha_cxc::forecast_sensor::ArrivalForecast;
+use subetha_cxc::loss_class_sensor::{LossClass, LossClassSensor};
+use subetha_cxc::path_sensor::PathSensor;
+use subetha_cxc::periodicity_sensor::PeriodicitySensor;
+use subetha_cxc::rtt_shape_sensor::RttShape;
+use subetha_cxc::temporal_sensor::TemporalSensor;
+use subetha_cxc::wbest_sensor::WBestEstimator;
 use subetha_cxc::dispatch_deque::DequeVariant;
 use subetha_cxc::message_transport::TransportError;
 use subetha_cxc::mmf_dispatcher::{MmfFamily, MmfWorkloadShape};
@@ -9107,6 +9115,527 @@ fn check_causal_node(node: usize) -> PyResult<()> {
     Ok(())
 }
 
+// The sensors. Each is fed measurements and answers what it has worked
+// out from them. They hold no shared memory and touch no network: they
+// are the arithmetic a transport does on its own numbers, which is why
+// they are worth having from Python whether or not a SubEtha link is
+// what produced the numbers.
+//
+// Every one of them answers None rather than a number until it has seen
+// enough to say anything, which is a different answer from zero.
+
+/// Tells a loss that happened because the air was noisy from one that
+/// happened because a queue overflowed.
+///
+/// The two want opposite responses. A wireless drop should be recovered
+/// locally and must not be read as congestion, or the sender slows down
+/// for no reason. A congestion drop should raise redundancy and slow the
+/// sender. Telling them apart is done from the spacing between arrivals:
+/// a gap at or above a quarter more than the smallest spacing seen is
+/// queuing, and anything narrower is noise.
+#[pyclass(module = "subetha")]
+struct LossKind {
+    inner: Box<LossClassSensor>,
+}
+
+#[pymethods]
+impl LossKind {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(LossClassSensor::new()) }
+    }
+
+    /// Feed the spacing between two arrivals, in microseconds.
+    fn observe_spacing(&mut self, microseconds: f64) -> PyResult<()> {
+        check_measurement(microseconds, "a spacing")?;
+        self.inner.observe_interarrival(microseconds);
+        Ok(())
+    }
+
+    /// Feed a one-way delay, in microseconds.
+    fn observe_delay(&mut self, microseconds: f64) -> PyResult<()> {
+        check_measurement(microseconds, "a delay")?;
+        self.inner.observe_owd(microseconds);
+        Ok(())
+    }
+
+    /// What a loss of `gap` items with this spacing was: `wireless` or
+    /// `congestion`.
+    fn classify(&mut self, gap: u32, spacing_microseconds: f64) -> PyResult<&'static str> {
+        check_measurement(spacing_microseconds, "a spacing")?;
+        Ok(match self.inner.classify(gap, spacing_microseconds) {
+            LossClass::Wireless => "wireless",
+            LossClass::Congestion => "congestion",
+        })
+    }
+
+    /// The share of recent losses that were congestion, between zero
+    /// and one.
+    #[getter]
+    fn congestion_share(&self) -> f32 {
+        self.inner.congestion_fraction()
+    }
+
+    /// The spread of recent delays, in microseconds.
+    #[getter]
+    fn delay_spread(&self) -> f64 {
+        self.inner.recent_owd_spread_us()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.LossKind congestion share {:.2}>",
+            self.inner.congestion_fraction()
+        )
+    }
+}
+
+/// Whether losses arrive alone or in runs, and how long a run lasts.
+///
+/// A link that loses one item at a time and a link that loses twenty
+/// together can lose the same share overall and need entirely different
+/// redundancy. This fits a two-state model to what it is fed and reports
+/// the average length of a run.
+#[pyclass(module = "subetha")]
+struct LossBursts {
+    inner: Box<BurstModel>,
+}
+
+#[pymethods]
+impl LossBursts {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(BurstModel::new()) }
+    }
+
+    /// Feed one item: True when it was lost.
+    fn observe(&mut self, lost: bool) {
+        self.inner.observe(lost);
+    }
+
+    /// Feed a run of items in one crossing.
+    fn observe_many(&mut self, losses: Vec<bool>) -> usize {
+        for lost in &losses {
+            self.inner.observe(*lost);
+        }
+        losses.len()
+    }
+
+    /// How many items a run of losses lasts on average, or None before
+    /// there is enough to say.
+    #[getter]
+    fn mean_run_length(&self) -> Option<f64> {
+        self.inner.mean_burst_len()
+    }
+
+    /// The share lost once the runs are accounted for, or None before
+    /// there is enough to say.
+    #[getter]
+    fn steady_loss(&self) -> Option<f64> {
+        self.inner.steady_loss()
+    }
+
+    /// The two rates the model fits, entering a run and leaving it, or
+    /// None before there is enough to say.
+    #[getter]
+    fn transition_rates(&self) -> Option<(f64, f64)> {
+        self.inner.fit()
+    }
+
+    /// How many items have been fed.
+    #[getter]
+    fn samples(&self) -> u64 {
+        self.inner.samples()
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner.mean_burst_len() {
+            Some(run) => format!("<subetha.LossBursts runs of {run:.1}>"),
+            None => "<subetha.LossBursts not enough yet>".to_string(),
+        }
+    }
+}
+
+/// Jitter, spacing and whether delay is trending up.
+///
+/// Fed a send time and a receive time for each item, it reports the
+/// variation between arrivals, the average spacing, and whether the
+/// one-way delay is climbing, which is a queue filling before it
+/// overflows.
+///
+/// The two clocks need not agree. A trend is a change over time, and a
+/// constant difference between two clocks cancels out of it, which is
+/// what `trend_debiased` makes explicit.
+#[pyclass(module = "subetha")]
+struct Timing {
+    inner: Box<TemporalSensor>,
+}
+
+#[pymethods]
+impl Timing {
+    /// `window` is how many recent items the answers are taken over.
+    #[new]
+    #[pyo3(signature = (window = 64))]
+    fn new(window: usize) -> PyResult<Self> {
+        if window < 2 {
+            return Err(PyValueError::new_err(
+                "a window covers at least two items",
+            ));
+        }
+        Ok(Self { inner: Box::new(TemporalSensor::new(window)) })
+    }
+
+    /// Feed one item's send and receive times, in microseconds. The two
+    /// clocks need not agree with each other.
+    fn observe(&mut self, sent: u64, received: u64) {
+        self.inner.observe(sent, received);
+    }
+
+    /// The variation between arrivals, in microseconds.
+    #[getter]
+    fn jitter(&self) -> f64 {
+        self.inner.jitter_micros()
+    }
+
+    /// The average spacing between arrivals, in microseconds.
+    #[getter]
+    fn spacing(&self) -> f64 {
+        self.inner.interarrival_micros()
+    }
+
+    /// Whether one-way delay is climbing. Above zero is a queue
+    /// filling.
+    #[getter]
+    fn trend(&self) -> f64 {
+        self.inner.owd_trend()
+    }
+
+    /// The same trend with a steady difference between the two clocks
+    /// taken out, which is the one to read when the clocks are not
+    /// synchronized.
+    #[getter]
+    fn trend_debiased(&self) -> f64 {
+        self.inner.owd_trend_debiased()
+    }
+
+    /// How far the two clocks differ, in microseconds.
+    #[getter]
+    fn clock_skew(&self) -> f64 {
+        self.inner.skew()
+    }
+
+    #[getter]
+    fn samples(&self) -> usize {
+        self.inner.samples()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.Timing jitter {:.1}us over {} samples>",
+            self.inner.jitter_micros(),
+            self.inner.samples()
+        )
+    }
+}
+
+/// Whether round trips fall into two groups, which is what a wireless
+/// link looks like.
+///
+/// A wired link's round trips cluster around one value. A wireless one
+/// often has two: the quick ones and the ones that waited for a retry
+/// in the radio. Two groups is evidence of the second.
+#[pyclass(module = "subetha")]
+struct RoundTripShape {
+    inner: Box<RttShape>,
+}
+
+#[pymethods]
+impl RoundTripShape {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(RttShape::new()) }
+    }
+
+    /// Feed one round trip, in microseconds.
+    fn observe(&mut self, microseconds: f64) -> PyResult<()> {
+        check_measurement(microseconds, "a round trip")?;
+        self.inner.observe(microseconds);
+        Ok(())
+    }
+
+    /// Feed a run of round trips in one crossing.
+    fn observe_many(&mut self, microseconds: Vec<f64>) -> PyResult<usize> {
+        for one in &microseconds {
+            check_measurement(*one, "a round trip")?;
+        }
+        for one in &microseconds {
+            self.inner.observe(*one);
+        }
+        Ok(microseconds.len())
+    }
+
+    /// How strongly the round trips fall into two groups, or None
+    /// before there is enough to say.
+    #[getter]
+    fn two_groups(&self) -> Option<f64> {
+        self.inner.bimodality()
+    }
+
+    /// How much this looks like a wireless link, between zero and one.
+    #[getter]
+    fn wireless_confidence(&self) -> f32 {
+        self.inner.wifi_confidence()
+    }
+
+    #[getter]
+    fn samples(&self) -> u64 {
+        self.inner.samples()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.RoundTripShape wireless confidence {:.2}>",
+            self.inner.wifi_confidence()
+        )
+    }
+}
+
+/// Whether delay spikes on a regular beat, and when the next one is
+/// due.
+///
+/// Some interference is periodic: a radio that scans on a schedule, a
+/// neighbour's traffic that arrives in a rhythm. Finding the beat means
+/// a sender can raise redundancy just before the next spike rather than
+/// reacting after it.
+#[pyclass(module = "subetha")]
+struct Periodicity {
+    inner: Box<PeriodicitySensor>,
+}
+
+#[pymethods]
+impl Periodicity {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(PeriodicitySensor::new()) }
+    }
+
+    /// Feed one delay, in microseconds, and when it was taken, also in
+    /// microseconds.
+    fn observe(&mut self, delay_microseconds: f64, at_microseconds: u64) -> PyResult<()> {
+        check_measurement(delay_microseconds, "a delay")?;
+        self.inner.observe(delay_microseconds, at_microseconds);
+        Ok(())
+    }
+
+    /// The beat found, as its length in seconds and how strong it is,
+    /// or None when there is no beat to find.
+    #[getter]
+    fn period(&self) -> Option<(f64, f64)> {
+        self.inner.detected_period()
+    }
+
+    /// Seconds until the next spike is due, or None when there is no
+    /// beat to go on.
+    #[getter]
+    fn seconds_to_next(&self) -> Option<f64> {
+        self.inner.secs_to_next_spike()
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner.detected_period() {
+            Some((length, _)) => format!("<subetha.Periodicity every {length:.3}s>"),
+            None => "<subetha.Periodicity no beat found>".to_string(),
+        }
+    }
+}
+
+/// How much of the path's capacity is free, worked out from probes sent
+/// in pairs and in trains.
+///
+/// Two probes sent back to back arrive spread apart by the narrowest
+/// link on the path, which gives its capacity. A longer train arrives
+/// spread by what is left after the traffic already there, which gives
+/// what is available.
+#[pyclass(module = "subetha")]
+struct Capacity {
+    inner: Box<WBestEstimator>,
+}
+
+#[pymethods]
+impl Capacity {
+    /// `probe_bytes` is how big each probe is.
+    #[new]
+    #[pyo3(signature = (probe_bytes = 1400))]
+    fn new(probe_bytes: usize) -> PyResult<Self> {
+        if probe_bytes < 1 {
+            return Err(PyValueError::new_err("a probe is at least one byte"));
+        }
+        Ok(Self { inner: Box::new(WBestEstimator::new(probe_bytes)) })
+    }
+
+    /// Feed the arrival of one probe of a pair, numbered within the
+    /// pair, in microseconds.
+    fn observe_pair(&mut self, index: u8, arrived_microseconds: f64) -> PyResult<()> {
+        check_measurement(arrived_microseconds, "an arrival")?;
+        self.inner.on_pair_probe(index, arrived_microseconds);
+        Ok(())
+    }
+
+    /// Feed the arrival of one probe of a train, in microseconds.
+    fn observe_train(&mut self, arrived_microseconds: f64) -> PyResult<()> {
+        check_measurement(arrived_microseconds, "an arrival")?;
+        self.inner.on_train_probe(arrived_microseconds);
+        Ok(())
+    }
+
+    /// The narrowest link's capacity, in bits a second, or None before
+    /// there is enough to say.
+    #[getter]
+    fn link_capacity(&self) -> Option<f64> {
+        self.inner.effective_capacity_bps()
+    }
+
+    /// What is left after the traffic already on the path, in bits a
+    /// second, or None before there is enough to say.
+    #[getter]
+    fn available(&self) -> Option<f64> {
+        self.inner.available_bps()
+    }
+
+    /// The rate the train arrived at, in bits a second.
+    #[getter]
+    fn train_rate(&self) -> Option<f64> {
+        self.inner.train_rate_bps()
+    }
+
+    /// How many pairs and how many train probes have been fed.
+    #[getter]
+    fn samples(&self) -> (usize, u32) {
+        self.inner.samples()
+    }
+
+    /// Forget everything and start again, which is what a caller does
+    /// when the path may have changed.
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner.available_bps() {
+            Some(free) => format!("<subetha.Capacity {:.0} bits a second free>", free),
+            None => "<subetha.Capacity not enough yet>".to_string(),
+        }
+    }
+}
+
+/// What the next interval's traffic is likely to be, from what the last
+/// ones were.
+#[pyclass(module = "subetha")]
+struct Forecast {
+    inner: Box<ArrivalForecast>,
+}
+
+#[pymethods]
+impl Forecast {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(ArrivalForecast::new()) }
+    }
+
+    /// Feed one interval: how many bytes arrived and how long it was,
+    /// in seconds.
+    fn observe(&mut self, bytes: u64, seconds: f64) -> PyResult<()> {
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(PyValueError::new_err(
+                "an interval is a number of seconds above zero",
+            ));
+        }
+        self.inner.observe(bytes, seconds);
+        Ok(())
+    }
+
+    /// The average rate so far, in bits a second.
+    #[getter]
+    fn mean_rate(&self) -> f64 {
+        self.inner.mean_bps()
+    }
+
+    /// What the next interval is likely to carry, in bits a second.
+    #[getter]
+    fn next_rate(&self) -> f64 {
+        self.inner.forecast_bps()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.Forecast next {:.0} bits a second>",
+            self.inner.forecast_bps()
+        )
+    }
+}
+
+/// Whether the route changed under the traffic.
+///
+/// Every item carries how many hops it took and whether anything on the
+/// way marked it as congested. A change in the hop count means the route
+/// moved, which explains a sudden change in delay that would otherwise
+/// look like congestion.
+#[pyclass(module = "subetha")]
+struct PathChanges {
+    inner: Box<PathSensor>,
+}
+
+#[pymethods]
+impl PathChanges {
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(PathSensor::new()) }
+    }
+
+    /// Feed one item: its remaining time to live, its congestion
+    /// marking, and how many hops it took.
+    fn observe(&mut self, ttl: u8, congestion_mark: u8, hops: u8) {
+        self.inner.observe(ttl, congestion_mark, hops);
+    }
+
+    /// How much the route has been moving, between zero and one.
+    #[getter]
+    fn route_movement(&self) -> f32 {
+        self.inner.path_shift()
+    }
+
+    /// The share of items something on the way marked as congested,
+    /// between zero and one.
+    #[getter]
+    fn marked_share(&self) -> f32 {
+        self.inner.ecn_ce()
+    }
+
+    /// The last item's time to live, marking and hop count, or None
+    /// when nothing has been fed.
+    #[getter]
+    fn last(&self) -> Option<(u8, u8, u8)> {
+        self.inner.last()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.PathChanges movement {:.2}>",
+            self.inner.path_shift()
+        )
+    }
+}
+
+/// A measurement that a sensor can use: a real number, not negative.
+fn check_measurement(value: f64, what: &str) -> PyResult<()> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "{what} is a number of microseconds that is not negative"
+        )));
+    }
+    Ok(())
+}
+
 /// A counting semaphore in a mapped file, limiting how many processes
 /// work at once.
 /// Frozen for the same reason `RWLock` is: a permit reaches it through
@@ -10385,6 +10914,14 @@ classes_fit_python_allocation!(
     KvMap,
     WorkQueue,
     AdaptiveQueue,
+    LossKind,
+    LossBursts,
+    Timing,
+    RoundTripShape,
+    Periodicity,
+    Capacity,
+    Forecast,
+    PathChanges,
     ReorderWindow,
 );
 
@@ -10487,6 +11024,14 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FineBloom>()?;
     m.add_class::<Clock>()?;
     m.add_class::<CausalClock>()?;
+    m.add_class::<LossKind>()?;
+    m.add_class::<LossBursts>()?;
+    m.add_class::<Timing>()?;
+    m.add_class::<RoundTripShape>()?;
+    m.add_class::<Periodicity>()?;
+    m.add_class::<Capacity>()?;
+    m.add_class::<Forecast>()?;
+    m.add_class::<PathChanges>()?;
     m.add_class::<SensSender>()?;
     m.add_class::<SensReceiver>()?;
     #[cfg(feature = "tcp-bridge")]

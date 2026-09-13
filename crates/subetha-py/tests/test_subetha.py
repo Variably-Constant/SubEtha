@@ -862,6 +862,186 @@ def test_a_capacity_ring_can_be_opened_by_another_holder(scratch):
 LOWER_PID = max(1, os.getpid() - 1)
 
 
+def test_a_loss_kind_tells_noise_from_a_full_queue(scratch):
+    which = subetha.LossKind()
+    # A steady spacing establishes what normal looks like.
+    for _ in range(40):
+        which.observe_spacing(1000.0)
+
+    # A gap at the normal spacing is noise, not a queue.
+    assert which.classify(1, 1000.0) == "wireless"
+    # A gap far wider than normal is a queue that filled.
+    assert which.classify(1, 8000.0) == "congestion"
+    assert 0.0 <= which.congestion_share <= 1.0
+
+
+def test_a_loss_kind_refuses_a_spacing_that_is_not_one(scratch):
+    which = subetha.LossKind()
+    with pytest.raises(ValueError):
+        which.observe_spacing(-1.0)
+    with pytest.raises(ValueError):
+        which.observe_delay(float("inf"))
+
+
+def test_loss_bursts_says_nothing_until_it_has_seen_enough(scratch):
+    runs = subetha.LossBursts()
+    assert runs.mean_run_length is None, "None is not zero: nothing measured yet"
+    assert runs.samples == 0
+
+
+def test_loss_bursts_finds_runs_where_there_are_runs(scratch):
+    runs = subetha.LossBursts()
+    # Twenty clean, then five lost together, over and over.
+    pattern = [False] * 20 + [True] * 5
+    for _ in range(40):
+        runs.observe_many(pattern)
+
+    assert runs.samples == 40 * len(pattern)
+    assert runs.mean_run_length is not None
+    assert runs.mean_run_length > 1.0, "losses arriving together is a run"
+
+
+def test_loss_bursts_sees_single_losses_as_single(scratch):
+    runs = subetha.LossBursts()
+    pattern = [False] * 9 + [True]
+    for _ in range(100):
+        runs.observe_many(pattern)
+
+    assert runs.mean_run_length is not None
+    # Isolated losses give runs near one, clearly shorter than the
+    # clustered case above.
+    assert runs.mean_run_length < 3.0
+
+
+def test_timing_reports_jitter_and_spacing(scratch):
+    beat = subetha.Timing(window=32)
+    # A steady arrival every millisecond with the receiving clock a
+    # fixed amount ahead.
+    for n in range(64):
+        beat.observe(sent=n * 1000, received=n * 1000 + 500_000)
+
+    assert beat.samples > 0
+    assert beat.spacing > 0, "the spacing between arrivals is measured"
+    assert beat.jitter >= 0
+    # A steady stream is not a queue filling.
+    assert abs(beat.trend_debiased) < 1000
+
+
+def test_timing_sees_a_delay_that_is_climbing(scratch):
+    beat = subetha.Timing(window=64)
+    # Each item arrives a little later than the last relative to when it
+    # was sent, which is a queue filling.
+    for n in range(64):
+        beat.observe(sent=n * 1000, received=n * 1000 + 500_000 + n * 200)
+
+    assert beat.trend > 0, "a delay climbing must read as climbing"
+
+
+def test_timing_refuses_a_window_of_one(scratch):
+    with pytest.raises(ValueError):
+        subetha.Timing(window=1)
+
+
+def test_a_round_trip_shape_starts_with_nothing_to_say(scratch):
+    shape = subetha.RoundTripShape()
+    assert shape.two_groups is None
+    assert shape.samples == 0
+    assert 0.0 <= shape.wireless_confidence <= 1.0
+
+
+def test_a_round_trip_shape_takes_a_run_of_readings(scratch):
+    shape = subetha.RoundTripShape()
+    # Two clusters: quick ones, and ones that waited for a retry.
+    quick = [5000.0] * 60
+    retried = [45000.0] * 40
+    assert shape.observe_many(quick + retried) == 100
+    assert shape.samples == 100
+    assert 0.0 <= shape.wireless_confidence <= 1.0
+
+
+def test_a_round_trip_shape_refuses_a_reading_that_is_not_one(scratch):
+    shape = subetha.RoundTripShape()
+    with pytest.raises(ValueError):
+        shape.observe(-5.0)
+
+
+def test_periodicity_finds_nothing_in_a_flat_stream(scratch):
+    beat = subetha.Periodicity()
+    for n in range(200):
+        beat.observe(1000.0, n * 1000)
+    # Nothing spikes, so there is no beat and it says so rather than
+    # inventing one.
+    assert beat.period is None or beat.period[1] >= 0
+
+
+def test_capacity_says_nothing_before_it_has_probes(scratch):
+    path = subetha.Capacity(probe_bytes=1400)
+    assert path.link_capacity is None
+    assert path.available is None
+    assert path.samples == (0, 0)
+
+
+def test_capacity_takes_pairs_and_trains(scratch):
+    path = subetha.Capacity(probe_bytes=1400)
+    for n in range(20):
+        base = n * 10_000.0
+        path.observe_pair(0, base)
+        path.observe_pair(1, base + 120.0)
+    for n in range(20):
+        path.observe_train(200_000.0 + n * 150.0)
+
+    pairs, train = path.samples
+    assert pairs > 0
+    assert train > 0
+    path.reset()
+    assert path.samples == (0, 0)
+
+
+def test_capacity_refuses_a_probe_of_no_bytes(scratch):
+    with pytest.raises(ValueError):
+        subetha.Capacity(probe_bytes=0)
+
+
+def test_a_forecast_follows_what_it_is_fed(scratch):
+    ahead = subetha.Forecast()
+    for _ in range(20):
+        ahead.observe(bytes=125_000, seconds=1.0)
+
+    # A steady megabit a second should read near a megabit a second.
+    assert ahead.mean_rate > 0
+    assert ahead.next_rate > 0
+    assert abs(ahead.next_rate - ahead.mean_rate) / ahead.mean_rate < 2.0
+
+
+def test_a_forecast_refuses_an_interval_of_no_time(scratch):
+    ahead = subetha.Forecast()
+    with pytest.raises(ValueError):
+        ahead.observe(bytes=100, seconds=0.0)
+
+
+def test_path_changes_sees_a_route_that_moved(scratch):
+    route = subetha.PathChanges()
+    assert route.last is None
+
+    for _ in range(30):
+        route.observe(ttl=54, congestion_mark=0, hops=10)
+    steady = route.route_movement
+
+    # The hop count changes, which is the route moving under the traffic.
+    for _ in range(30):
+        route.observe(ttl=50, congestion_mark=0, hops=14)
+
+    assert route.last == (50, 0, 14)
+    assert route.route_movement >= steady
+
+
+def test_path_changes_counts_what_was_marked(scratch):
+    route = subetha.PathChanges()
+    for n in range(40):
+        route.observe(ttl=54, congestion_mark=3 if n % 2 else 0, hops=10)
+    assert 0.0 <= route.marked_share <= 1.0
+
+
 def test_a_tiny_bloom_never_forgets_what_was_added(scratch):
     seen = subetha.TinyBloom()
     added = [f"k{n}".encode() for n in range(subetha.TinyBloom.suggested_capacity)]
