@@ -9,6 +9,23 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-13
+
+### Fixed
+
+- The published Python wheel carried instructions the machine that
+  built it has and most do not. The build host's own cargo config sets
+  `target-cpu=native`, which on that machine means AVX-512, and an
+  environment variable replaces such a setting rather than adding to
+  it, so nothing on the command line was overriding it. The wheel died
+  with an illegal instruction on import on any other x86-64 machine,
+  before a single call. Published artifacts now pin
+  `-C target-cpu=x86-64`, which costs nothing because the crate
+  dispatches its wide kernels at run time, and the wheels workflow sets
+  the same so a runner can never inherit a host's choice. The 0.3.2
+  wheel on PyPI should be yanked; its source distribution is unaffected
+  because it is compiled on the machine that installs it.
+
 ## [0.3.2] - 2026-09-12
 
 ### Added
@@ -1452,7 +1469,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.2...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.3...HEAD
+[0.3.3]: https://github.com/Variably-Constant/SubEtha/commit/0.3.3
 [0.3.2]: https://github.com/Variably-Constant/SubEtha/commit/0.3.2
 [0.3.1]: https://github.com/Variably-Constant/SubEtha/commit/0.3.1
 [0.3.0]: https://github.com/Variably-Constant/SubEtha/commit/0.3.0

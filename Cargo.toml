@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -25,11 +25,11 @@ categories = ["concurrency", "asynchronous"]
 readme = "README.md"
 
 [workspace.dependencies]
-subetha-core = { path = "crates/subetha-core", version = "0.3.2" }
-subetha-sidecar = { path = "crates/subetha-sidecar", version = "0.3.2" }
-subetha-pointers = { path = "crates/subetha-pointers", version = "0.3.2" }
-subetha-cxc = { path = "crates/subetha-cxc", version = "0.3.2" }
-subetha-ffi = { path = "crates/subetha-ffi", version = "0.3.2" }
+subetha-core = { path = "crates/subetha-core", version = "0.3.3" }
+subetha-sidecar = { path = "crates/subetha-sidecar", version = "0.3.3" }
+subetha-pointers = { path = "crates/subetha-pointers", version = "0.3.3" }
+subetha-cxc = { path = "crates/subetha-cxc", version = "0.3.3" }
+subetha-ffi = { path = "crates/subetha-ffi", version = "0.3.3" }
 
 # Production dependencies.
 parking_lot = "0.12"
