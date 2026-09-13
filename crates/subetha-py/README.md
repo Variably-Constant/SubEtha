@@ -163,6 +163,35 @@ if "tcp" in subetha.transports:
     server = subetha.TcpBridgeServer(incoming_ring, ("0.0.0.0", 9100))
 ```
 
+**Sensing.** `LossKind`, `LossBursts`, `Timing`, `RoundTripShape`,
+`Periodicity`, `Capacity`, `Forecast` and `PathChanges`: fed
+measurements, they answer what they worked out. They hold no shared
+memory and touch no network, so they are useful whether or not a
+SubEtha link produced the numbers. Each answers `None` rather than a
+number until it has seen enough, which is a different answer from zero.
+
+**Values that ride beside a pointer.** `TinyBloom` is a whole bloom
+filter in one machine word whose state crosses as a single number.
+`Clock` orders two events that share a wall-clock reading. `CausalClock`
+answers before, after, equal, or concurrent, and concurrent is the
+answer a timestamp can never give.
+
+## Asyncio
+
+`subetha.aio` lets a coroutine wait without blocking its loop:
+
+```python
+from subetha import aio
+
+item = await aio.recv(channel, timeout=5)
+answer = await aio.with_write_lock(lock, lambda: do_the_work())
+```
+
+Only some of the surface can be awaited soundly, and the module says
+which. A hold belongs to the thread that took it, so `with_permit` and
+the two lock forms run the caller's work on that thread rather than
+handing the hold back.
+
 ## Threads
 
 The module declares that it does not need the interpreter lock, so on a

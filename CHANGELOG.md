@@ -9,6 +9,50 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
+### Added
+
+- The Python binding now covers the whole surface a Python caller can
+  use. The front door it was missing: `Channel`, a queue between
+  processes that can be waited on, `WorkQueue`, work one process owns
+  and others steal from, `KvMap`, and `AdaptiveQueue`, which picks its
+  shape from the traffic it actually sees rather than from what was
+  declared and moves between a ring and a work-stealing deque while
+  running.
+- Bounded waits throughout. `RWLock.read_for` and `write_for`,
+  `Semaphore.acquire_for`, and the channel's `recv_for` and `send_for`
+  sleep rather than spin and give up at their deadline. Only the
+  bounded forms are exposed: an unbounded park sleeps until something
+  signals it, which against a peer that releases without signalling
+  would never wake.
+- The sensing plane: `LossKind`, `LossBursts`, `Timing`,
+  `RoundTripShape`, `Periodicity`, `Capacity`, `Forecast` and
+  `PathChanges`. Each is fed measurements and answers what it worked
+  out, holds no shared memory and touches no network, and answers
+  `None` rather than a number until it has seen enough.
+- The value types that ride beside a pointer: `TinyBloom`, a whole
+  bloom filter in one machine word whose state crosses as a single
+  number, `FineBloom`, `Clock`, which orders two events sharing a
+  wall-clock reading, and `CausalClock`, which answers before, after,
+  equal, or concurrent.
+- `Atomic` gains subtract, the bitwise operations, swap, and compare
+  and exchange. It had only add, so a counter could only go up.
+- `subetha.aio`, a small pure-Python module letting a coroutine wait
+  without blocking its loop. The Rust async engine is not bound and
+  cannot be: every entry point takes or returns a Rust future.
+- `tests/test_threading.py` runs every call that releases the
+  interpreter under eight threads, which is what backs the module's
+  declaration that it does not need the interpreter lock.
+
+### Fixed
+
+- `blocking_rw_lock`: `signal_unlock` is public. A caller that hands a
+  hold to another language releases it at a moment of its own choosing
+  rather than by dropping a guard, and nothing was then telling parked
+  waiters the lock had changed hands, so a bounded wait slept to its
+  deadline with the lock already free.
+
 ## [0.3.3] - 2026-09-13
 
 ### Fixed
@@ -1469,7 +1513,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.3...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/Variably-Constant/SubEtha/commit/0.4.0
 [0.3.3]: https://github.com/Variably-Constant/SubEtha/commit/0.3.3
 [0.3.2]: https://github.com/Variably-Constant/SubEtha/commit/0.3.2
 [0.3.1]: https://github.com/Variably-Constant/SubEtha/commit/0.3.1

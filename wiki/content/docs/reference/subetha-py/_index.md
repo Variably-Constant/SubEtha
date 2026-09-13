@@ -86,6 +86,7 @@ families below give more control when it is wanted.
 | `Channel` | A queue between processes that can be waited on. `recv` answers None at once when there is nothing there; `recv_for` waits up to a timeout, sleeping rather than spinning, with the interpreter free so other threads run. `send_for` is the same on the other side. |
 | `WorkQueue` | Work one process owns and others take from when idle. The owner pushes and pops at the cheap end it has to itself; thieves steal from the other end. |
 | `KvMap` | A lookup table between processes, from one unsigned integer to another. |
+| `AdaptiveQueue` | The one that picks from what happens rather than what was declared. It counts the sizes it is sent and moves between a ring and a work-stealing deque while running, without either end reconnecting. Worth it when the traffic is not known in advance; when it is, saying so is cheaper, because this one pays a counter on every send. |
 
 `KvMap.insert` answers whether the key was new rather than what it
 held, because that is what the map underneath reports, and there is no
@@ -269,6 +270,62 @@ A QUIC certificate is made as two pieces of bytes by
 itself with them, the sending end holds the certificate alone and
 checks the reading end against it. Carrying it between hosts is the
 caller's to arrange.
+
+## Sensing
+
+Eight classes that are fed measurements and answer what they worked out
+from them. They hold no shared memory and touch no network: they are
+the arithmetic a transport does on its own numbers, which is why they
+are worth having whether or not a SubEtha link produced the numbers.
+
+| Class | What it answers |
+|---|---|
+| `LossKind` | Whether a loss came from noise or from a queue overflowing. The two want opposite responses, so reading one as the other is expensive. |
+| `LossBursts` | Whether losses arrive alone or in runs, and how long a run lasts. The same loss rate needs different redundancy depending on the answer. |
+| `Timing` | Jitter, spacing, and whether delay is climbing. `trend_debiased` takes a constant difference between two clocks out, so unsynchronized clocks do not read as a filling queue. |
+| `RoundTripShape` | Whether round trips fall into two groups, which is what a radio retry looks like from outside. |
+| `Periodicity` | Whether interference arrives on a beat, and when the next spike is due, so redundancy can rise before it rather than after. |
+| `Capacity` | The narrowest link on the path and what is free on it, from probes sent in pairs and in trains. |
+| `Forecast` | What the next interval is likely to carry. |
+| `PathChanges` | Whether the route moved under the traffic, which otherwise reads as congestion. |
+
+Every one answers None rather than a number until it has seen enough to
+say anything. None and zero are different answers.
+
+## Values that ride beside a pointer
+
+| Class | What it is |
+|---|---|
+| `TinyBloom` | A whole bloom filter in one machine word, small enough to sit next to a pointer and be read in the same cache line. Its state crosses as a single number, so it travels anywhere an integer does. About eight keys. |
+| `FineBloom` | The same in four words, for about sixty-four keys. |
+| `Clock` | Wall-clock time that still orders two events sharing a reading, which a bare timestamp cannot. `merge` is what a receiver does with a sender's clock so the received event orders after its cause. |
+| `CausalClock` | One count per participant, answering before, after, equal, or concurrent. Concurrent is the answer a timestamp can never give. |
+
+The pointer types themselves are not here. Each holds a raw pointer or a
+reference count into Rust memory, and Python has no such value to point
+at; binding them would mean handing the interpreter raw pointers.
+
+## Asyncio
+
+`subetha.aio` is a small pure-Python module for coroutines. The Rust
+side has a reactor, an executor and a task pool, and none of it is bound
+because none of it can be: every entry point takes or returns a Rust
+future. What asyncio needs is not Rust's executor but a way to wait
+without blocking its loop.
+
+```python
+from subetha import aio
+
+item = await aio.recv(channel, timeout=5)
+answer = await aio.with_write_lock(lock, lambda: do_the_work())
+```
+
+Only some of the surface can be awaited soundly, and the module says
+which. A queue can, because what comes back is bytes. A hold cannot be
+handed back, because it belongs to the thread that took it, so
+`with_permit`, `with_read_lock` and `with_write_lock` run the caller's
+work on that same thread instead. A `SensReceiver` cannot leave its
+thread at all, so `poll` asks on this one and yields between tries.
 
 ## Threads
 
