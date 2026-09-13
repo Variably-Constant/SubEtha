@@ -645,6 +645,16 @@ implementation conforms without reading them.
   where RFC 8681 draws its coefficients from a seeded pseudorandom
   generator.
 
+- **RFC 9407**, *Tetrys: An On-the-Fly Network Coding Protocol*. Its
+  elastic encoding window is the same object as the coding window of
+  section 4.2, managed the other way round: a Tetrys sender widens and
+  narrows its window from receiver feedback naming what has been received
+  or rebuilt, so what a coded packet covers is a negotiated quantity. Here
+  every repair names its own window outright in `first_source_id` and
+  `window_size`, so a receiver that has seen none of the feedback still
+  knows what a repair covers, and the feedback of sections 4.7 and 5.3
+  informs sender policy alone (section 3).
+
 - **RFC 9265**, *Forward Erasure Correction (FEC) Coding and Congestion
   Control in Transport*. Erasure coding repairs loss, and a repaired loss
   is invisible to anything downstream that counts gaps, which can leave a
@@ -653,3 +663,79 @@ implementation conforms without reading them.
   section 5.1 exist to keep that measurement available: the first reports
   datagrams seen before any code is applied, the second marks a datagram
   whose original was lost even though retransmission recovered it.
+
+- **RFC 3393**, *IP Packet Delay Variation Metric for IP Performance
+  Metrics (IPPM)*. Section 4.1's `send_us` is read the way that metric is
+  defined, as a differential measurement: a constant offset between two
+  unsynchronized clocks cancels in the difference, which is why the two
+  hosts need no common time base. What survives the difference is the
+  variation, which is what a sender's policy can use; the absolute one-way
+  delay does not survive it, and this format does not claim it.
+
+### 10.3 The codes
+
+These are where the two codes and their arithmetic come from. An
+implementation conforms without reading them. Each entry says what this
+format takes from the work and where it departs from it, because the
+departures are the parts an implementer is most likely to assume.
+
+- **J. S. Plank, K. M. Greenan and E. L. Miller**, *Screaming Fast Galois
+  Field Arithmetic Using Intel SIMD Instructions*, 11th USENIX Conference
+  on File and Storage Technologies (FAST '13), February 2013. Section 3.1
+  names logarithm and antilogarithm tables as the
+  conventional implementation and requires only that the products agree.
+  This is the standard alternative: the same field arithmetic through SIMD
+  shuffles over split nibble tables. It is faster and gives identical
+  products, so it conforms.
+
+- **T. Ho, M. Médard, R. Koetter, D. R. Karger, M. Effros, J. Shi and
+  B. Leong**, *A Random Linear Network Coding Approach to Multicast*, IEEE
+  Transactions on Information Theory, volume 52, number 10, October 2006,
+  pages 4413 to 4430. A repair in section 4.2 is a linear combination of a
+  window of source symbols, which is the object this paper analyzes. The
+  difference is where the coefficients come from. There they are drawn at
+  random, so a coded packet must carry the vector or a seed for it; here
+  generator 1 derives them from a symbol's place in the window and the
+  density alone (section 4.4), so a repair carries the one `dt` byte and
+  two implementations agree without exchanging any coefficient at all.
+
+- **S. Wunderlich, F. Gabriel, S. Pandi, F. H. P. Fitzek and
+  M. Reisslein**, *Caterpillar RLNC (CRLNC): A Practical Finite Sliding
+  Window RLNC Approach*, IEEE Access, volume 5, 2017, pages 20183 to
+  20197. The window of section 4.2 is finite and it slides, which is the
+  regime this measures, and for the reason section 4.2 serves: a sliding
+  window lowers in-order delay against a block code, and holding it finite
+  bounds what a decoder must keep. How wide to open it is sender policy
+  here (section 3) and reaches the wire only as the `window_size` each
+  repair names.
+
+- **S. Feizi, D. E. Lucani and M. Médard**, *Tunable Sparse Network
+  Coding*, International Zurich Seminar on Communications, 2012, pages 107
+  to 110. The low nibble of `dt` is a density in this sense: the fraction
+  of the window entering a repair with a nonzero coefficient, trading a
+  cheaper decode against less information carried per repair. Where that
+  work varies density across a session as a receiver accumulates packets,
+  here it is a per-repair field and a sender may vary it or not
+  (section 3); what section 4.4 fixes is that the density selects
+  positions spread across the whole window rather than a reach into its
+  newest end.
+
+- **I. S. Reed and G. Solomon**, *Polynomial Codes Over Certain Finite
+  Fields*, Journal of the Society for Industrial and Applied Mathematics,
+  volume 8, number 2, 1960, pages 300 to 304. The block code of section
+  5.2 is one of these: `k` data shards extended with `r` parity shards
+  over a finite field so that any `k` of the `k + r` reconstruct the
+  block. What section 5.2 fixes beyond the code is the field (section
+  3.1), the particular matrix, and the systematic form that leaves the
+  data shards unchanged on the wire.
+
+- **J. Blömer, M. Kalfane, R. Karp, M. Karpinski, M. Luby and
+  D. Zuckerman**, *An XOR-Based Erasure-Resilient Coding Scheme*,
+  International Computer Science Institute, Berkeley, Technical Report
+  TR-95-048, 1995. The parity matrix of section
+  5.2 is the Cauchy construction this introduced for erasure coding, and
+  the property section 5.2 rests on is the one it establishes: every
+  square submatrix of a Cauchy matrix is invertible, which is what makes
+  any `k` shards sufficient. The report then expands the field
+  multiplications into XORs over a bit matrix; section 5.2 does not, and
+  multiplies in GF(2^8) directly.

@@ -7,6 +7,21 @@ release together. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each version
 heading links to the commit that cut it.
 
+## [Unreleased]
+
+### Added
+
+- `SENS_O_MATIC_WIRE.md` section 10 gains the literature the two codes
+  come from, and two further RFCs, each entry naming the mechanism it
+  bears on and where this format departs from it: RFC 9407 (Tetrys)
+  against the sender-named coding window of section 4.2, RFC 3393 (IPDV)
+  against the unsynchronized clocks section 4.1 differences, and a new
+  section 10.3 carrying Reed and Solomon 1960, the Cauchy construction of
+  Blömer et al. 1995, random linear coding in Ho et al. 2006, the finite
+  sliding window of Wunderlich et al. 2017, tunable sparse coding in Feizi
+  et al. 2012, and the SIMD field arithmetic of Plank et al. 2013 that
+  section 3.1's log tables have as a conforming alternative.
+
 ## [0.3.1] - 2026-09-12
 
 ### Changed
@@ -1372,6 +1387,7 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.1...HEAD
 [0.3.1]: https://github.com/Variably-Constant/SubEtha/commit/0.3.1
 [0.3.0]: https://github.com/Variably-Constant/SubEtha/commit/0.3.0
 [0.2.9]: https://github.com/Variably-Constant/SubEtha/commit/38a10f3
