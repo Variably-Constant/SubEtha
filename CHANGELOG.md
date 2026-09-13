@@ -7,6 +7,48 @@ release together. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each version
 heading links to the commit that cut it.
 
+## [0.3.1] - 2026-09-12
+
+### Changed
+
+- `subetha-ffi`: a handle borrow is a generation check, two acquire
+  loads and the epoch guard. The handle table keeps its slots in a
+  directory of fixed chunks placed once and never moved, and the object
+  behind a slot as a pointer swapped in on insert and out on destroy; the
+  two `arc-swap` snapshots a borrow took before, four locked
+  read-modify-writes per call for the debt slot each claims and repays,
+  are gone, and the epoch guard was already what kept a destroy from
+  freeing an object under a call. Per call on the AVX-512 Windows build
+  host: 12.4 ns in 0.3.0, 7.1 ns now, the minimum of three sweeps each.
+  Every family's measured cost is in the crate README.
+- `subetha-ffi`: an entry point takes its handle borrow inside the panic
+  guard rather than before it, so a panic while borrowing is caught and
+  answered as `SUBETHA_E_PANIC` like any other, and poisoning after a
+  panic checks the handle's generation, since the borrow has been given
+  back by the time the panic is recorded.
+
+### Added
+
+- `subetha-ffi`: a `test-hooks` cargo feature gating three entry points
+  that measure the boundary a layer at a time, the panic guard alone
+  (`subetha_test_entry_only`), the borrow alone
+  (`subetha_test_borrow_only`) and the atomic family's dispatch alone
+  (`subetha_test_atomic_borrow_only`), for `benches/ffi_overhead.rs`,
+  which gains those rows and two that pass a memory ordering through.
+  No shipped build carries the feature; the header declares the hooks
+  under `SUBETHA_TEST_HOOKS`.
+- `subetha-ffi`: `benches/ffi_overhead.rs` ships in the published crate,
+  since the README describes it. It builds only under `cargo bench`.
+
+### Fixed
+
+- The crate README's "Cost of the boundary" said the difference between
+  the direct and the C ABI columns was the same in every row, about
+  11 ns; the table under it ran from 9 to 31 ns a call. The text now
+  gives the range from the table and says what the ring rows carry
+  beyond the boundary. The 0.3.0 entry below repeats the 11 ns figure
+  and is superseded by this one.
+
 ## [0.3.0] - 2026-09-11
 
 ### Added
@@ -1330,6 +1372,7 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
+[0.3.1]: https://github.com/Variably-Constant/SubEtha/commit/0.3.1
 [0.3.0]: https://github.com/Variably-Constant/SubEtha/commit/0.3.0
 [0.2.9]: https://github.com/Variably-Constant/SubEtha/commit/38a10f3
 [0.2.8]: https://github.com/Variably-Constant/SubEtha/commit/6ca3d22

@@ -83,7 +83,12 @@ use subetha_ffi::{
     subetha_rwlock_unlock,
     subetha_semaphore_create, subetha_semaphore_release, subetha_semaphore_try_acquire,
     subetha_semaphore_unlink,
+    subetha_atomic_u64_load_explicit, SUBETHA_ORDER_RELAXED, SUBETHA_ORDER_SEQ_CST,
 };
+#[cfg(feature = "test-hooks")]
+use subetha_ffi::handle::SUBETHA_KIND_ATOMIC;
+#[cfg(feature = "test-hooks")]
+use subetha_ffi::{subetha_test_atomic_borrow_only, subetha_test_borrow_only, subetha_test_entry_only};
 
 const CAPACITY: usize = 1024;
 const PAYLOAD: [u8; 16] = *b"sixteen bytes!!!";
@@ -951,19 +956,26 @@ fn atomic_direct(c: &mut Criterion) {
     std::fs::remove_file(&path).expect("the bench's counter file is removed");
 }
 
-/// What a call pays before it reaches the primitive, in three steps that
-/// each add one layer, so the difference between two rows names the layer
+/// What a call pays before it reaches the primitive, in steps that each
+/// add one layer, so the difference between two rows names the layer
 /// between them.
 ///
 /// `abi_version` returns a computed constant: no init check, no panic
 /// guard, no handle. It is the cost of crossing the boundary at all.
 ///
 /// `handle_kind` adds `entry`'s `catch_unwind`, the initialized check and
-/// the slot lookup, and writes one `uint32_t`.
+/// the borrow with its guard, and writes one `uint32_t`.
 ///
-/// `atomic_u64_load` adds `with_kind`: a second `catch_unwind`, the
-/// borrow guard's publish and retire, and the dispatch through `Object`.
-/// The same load direct on the primitive is the `atomic` row's 1.4 ns.
+/// `atomic_u64_load` is `with_kind`: the same borrow, its own
+/// `catch_unwind`, the dispatch through `Object` and the family's own
+/// closure, ending in one 64-bit load. The same load direct on the
+/// primitive is the `atomic` row's direct figure.
+///
+/// With the `test-hooks` feature two more rows sit between those:
+/// `entry` around nothing, which is the panic guard alone, and `with_kind`
+/// around nothing, which is the borrow and its guard with no family
+/// closure after them. A row that reads like `atomic_u64_load` names the
+/// layer that costs.
 fn boundary_layers(c: &mut Criterion) {
     assert_eq!(subetha_init(SUBETHA_MODE_STRICT), SUBETHA_OK);
     let path = bench_file("layers");
@@ -990,6 +1002,41 @@ fn boundary_layers(c: &mut Criterion) {
     c.bench_function("boundary: plus the borrow guard and the dispatch, through the C ABI", |b| {
         b.iter(|| {
             let rc = unsafe { subetha_atomic_u64_load(black_box(handle), &mut now) };
+            assert_eq!(rc, SUBETHA_OK);
+        })
+    });
+
+    // The order is passed through the explicit entry point rather than
+    // fixed by the wrapper, so a cost that belongs to a runtime ordering
+    // shows against the row above.
+    c.bench_function("boundary: the atomic load with a relaxed order passed through, through the C ABI", |b| {
+        b.iter(|| {
+            let rc = unsafe { subetha_atomic_u64_load_explicit(black_box(handle), SUBETHA_ORDER_RELAXED, &mut now) };
+            assert_eq!(rc, SUBETHA_OK);
+        })
+    });
+    c.bench_function("boundary: the atomic load with a seq_cst order passed through, through the C ABI", |b| {
+        b.iter(|| {
+            let rc = unsafe { subetha_atomic_u64_load_explicit(black_box(handle), SUBETHA_ORDER_SEQ_CST, &mut now) };
+            assert_eq!(rc, SUBETHA_OK);
+        })
+    });
+
+    #[cfg(feature = "test-hooks")]
+    c.bench_function("boundary: the panic guard around nothing, through the C ABI", |b| {
+        b.iter(|| black_box(subetha_test_entry_only()))
+    });
+    #[cfg(feature = "test-hooks")]
+    c.bench_function("boundary: the borrow and its guard around nothing, through the C ABI", |b| {
+        b.iter(|| {
+            let rc = subetha_test_borrow_only(black_box(handle), SUBETHA_KIND_ATOMIC);
+            assert_eq!(rc, SUBETHA_OK);
+        })
+    });
+    #[cfg(feature = "test-hooks")]
+    c.bench_function("boundary: the atomic family's dispatch around nothing, through the C ABI", |b| {
+        b.iter(|| {
+            let rc = subetha_test_atomic_borrow_only(black_box(handle));
             assert_eq!(rc, SUBETHA_OK);
         })
     });

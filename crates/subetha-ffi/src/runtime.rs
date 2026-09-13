@@ -124,19 +124,25 @@ pub(crate) fn entry(f: impl FnOnce() -> i32) -> i32 {
 
 /// Run an entry point on the object a handle names, which must be of
 /// `kind`. A panic poisons the handle and becomes `SUBETHA_E_PANIC`.
+///
+/// The borrow is taken inside the guarded closure, so nothing of the call
+/// is live across the guard's call boundary, and a panic in the borrow is
+/// caught like any other.
 pub(crate) fn with_kind(handle: subetha_handle, kind: u32, f: impl FnOnce(&Object) -> i32) -> i32 {
-    if let Err(code) = require_initialized() {
-        return code;
-    }
-    let borrowed = match table().borrow(handle, kind) {
-        Ok(b) => b,
-        Err(code) => return code,
-    };
-    match catch_unwind(AssertUnwindSafe(|| f(borrowed.object()))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if let Err(code) = require_initialized() {
+            return code;
+        }
+        let borrowed = match table().borrow(handle, kind) {
+            Ok(b) => b,
+            Err(code) => return code,
+        };
+        f(borrowed.object())
+    })) {
         Ok(code) => code,
         Err(payload) => {
             let text = record_panic(payload);
-            borrowed.poison(text);
+            table().poison(handle, text);
             SUBETHA_E_PANIC
         }
     }
@@ -411,6 +417,23 @@ pub extern "C" fn subetha_test_panic_on(handle: subetha_handle) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_test_panic_free() -> i32 {
     entry(|| panic!("subetha_test_panic_free"))
+}
+
+/// Return at once from inside the panic guard, so a bench can price the
+/// guard apart from a borrow. Present only with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+#[unsafe(no_mangle)]
+pub extern "C" fn subetha_test_entry_only() -> i32 {
+    entry(|| SUBETHA_OK)
+}
+
+/// Borrow the handle as `kind` and return at once, so a bench can price
+/// the borrow and its guard apart from any family's work. Present only
+/// with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+#[unsafe(no_mangle)]
+pub extern "C" fn subetha_test_borrow_only(handle: subetha_handle, kind: u32) -> i32 {
+    with_kind(handle, kind, |_object| SUBETHA_OK)
 }
 
 /// The recent ring-trace events touching `ring`, oldest first, as

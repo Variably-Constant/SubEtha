@@ -110,6 +110,15 @@ fn with_u64(handle: subetha_handle, f: impl FnOnce(&SharedAtomicU64) -> i32) -> 
     })
 }
 
+/// Reach the 64-bit atomic a handle names and return at once, so a bench
+/// can price this family's dispatch apart from the borrow beneath it and
+/// the load above it. Present only with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+#[unsafe(no_mangle)]
+pub extern "C" fn subetha_test_atomic_borrow_only(handle: subetha_handle) -> i32 {
+    with_u64(handle, |_atomic| SUBETHA_OK)
+}
+
 /// The boolean atomic a handle names, for the `bool` entry points.
 fn with_bool(handle: subetha_handle, f: impl FnOnce(&SharedAtomicBool) -> i32) -> i32 {
     with_atomic(handle, |object| match &object.atomic {

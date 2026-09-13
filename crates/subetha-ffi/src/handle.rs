@@ -3,9 +3,9 @@
 //! dereferenced.
 //!
 //! The table grows without bound; there is no capacity to run out of.
-//! Readers take a snapshot of the slot vector through an `ArcSwap` and
-//! never lock. A slot is one `Arc`, so a snapshot taken before a growth
-//! keeps its slots valid after it.
+//! Slots live in chunks that are placed once and never freed or moved,
+//! behind a directory of one pointer per chunk, so a reader reaches a
+//! slot through one load and never locks.
 //!
 //! A call publishes the slot it is inside, in a word of its own thread's;
 //! `crate::epoch` holds that protocol. `destroy` marks the slot closing,
@@ -14,10 +14,9 @@
 //! A panic caught inside a call poisons the slot: every later call on that
 //! handle fails until it is destroyed.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use arc_swap::{ArcSwap, ArcSwapOption};
 use parking_lot::Mutex;
 
 use crate::error::{
@@ -427,8 +426,14 @@ impl Object {
 pub(crate) struct Slot {
     generation: AtomicU32,
     state: AtomicU8,
-    object: ArcSwapOption<Object>,
+    /// The object, as the raw form of the `Box` that owns it; null while
+    /// the slot holds none. A call reads it after publishing the slot it
+    /// is inside, and a destroy frees it only after every such call has
+    /// left, so one Acquire load is the whole of a reader's protection.
+    object: AtomicPtr<Object>,
     panic_message: Mutex<Option<String>>,
+    /// The slot owns the object the pointer names.
+    _owns: PhantomData<Box<Object>>,
 }
 
 impl Slot {
@@ -436,8 +441,20 @@ impl Slot {
         Self {
             generation: AtomicU32::new(1),
             state: AtomicU8::new(STATE_FREE),
-            object: ArcSwapOption::from(None),
+            object: AtomicPtr::new(std::ptr::null_mut()),
             panic_message: Mutex::new(None),
+            _owns: PhantomData,
+        }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let object = self.object.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !object.is_null() {
+            // SAFETY: a non-null pointer here is the raw form of the Box
+            // `insert` placed, and nothing else frees it.
+            drop(unsafe { Box::from_raw(object) });
         }
     }
 }
@@ -445,23 +462,21 @@ impl Slot {
 /// A live object borrowed for the duration of one call. Dropping it lets a
 /// pending destroy proceed.
 ///
-/// Both pointers are raised out of the table rather than cloned, which is
-/// what keeps a call off the reference counts:
+/// The object's address is read out of the table rather than counted,
+/// which is what keeps a call to plain loads:
 ///
-/// - A slot, once in the table, is never dropped. Growth clones every
-///   `Arc<Slot>` into the longer vector and a destroy only recycles the
-///   index, so the address stays live for as long as the table does, which
-///   is the process.
+/// - A slot, once placed, is never freed or moved. Its chunk stays where
+///   it was put for as long as the table does, which is the process, and
+///   a destroy only recycles the index.
 /// - The object is held by the call this thread published before it read
 ///   the slot's state. A destroy marks the slot closing, waits out every
-///   call that began before that, and swaps the object out only
-///   afterwards, so a borrow that published and then read the state as
-///   live holds an object no destroy can take away underneath it.
+///   call that began before that, and frees the object only afterwards,
+///   so a borrow that published and then read the state as live holds an
+///   object no destroy can take away underneath it.
 pub(crate) struct Borrowed {
-    slot: *const Slot,
     object: *const Object,
     /// Published for as long as this borrow lives, and cleared when it
-    /// drops. Declared last so it is cleared after the pointers are done
+    /// drops. Declared last so it is cleared after the pointer is done
     /// with.
     _inside: crate::epoch::Inside,
 }
@@ -478,23 +493,33 @@ impl Borrowed {
         // for the borrow's lifetime.
         unsafe { &*self.object }
     }
+}
 
-    fn slot(&self) -> &Slot {
-        // SAFETY: a slot in the table outlives every borrow of it.
-        unsafe { &*self.slot }
-    }
+/// Chunk `k` holds `1 << k` slots, so this many chunks cover every index
+/// a handle can carry.
+const CHUNKS: usize = 32;
 
-    /// Mark the slot poisoned and keep the panic's text: every later call on
-    /// the handle fails until it is destroyed.
-    pub(crate) fn poison(&self, message: String) {
-        self.slot().state.store(STATE_POISONED, Ordering::Release);
-        *self.slot().panic_message.lock() = Some(message);
-    }
+/// The chunk an index lives in and its place there. Index `i` is slot
+/// number `i + 1` overall, and chunk `k` holds the slots numbered from
+/// `1 << k` up to but not including `1 << (k + 1)`.
+fn locate(index: u32) -> (usize, usize) {
+    let n = u64::from(index) + 1;
+    let k = (63 - n.leading_zeros()) as usize;
+    (k, (n - (1u64 << k)) as usize)
+}
+
+/// What the issue lock guards: the indices handed back by destroy, and
+/// one past the highest index ever issued.
+struct Issued {
+    free: Vec<u32>,
+    high: u64,
 }
 
 pub(crate) struct Table {
-    slots: ArcSwap<Vec<Arc<Slot>>>,
-    free: Mutex<Vec<u32>>,
+    /// One pointer per chunk, null until that chunk is placed. A placed
+    /// chunk is never freed or moved while the table exists.
+    chunks: [AtomicPtr<Slot>; CHUNKS],
+    issued: Mutex<Issued>,
     live: AtomicU64,
 }
 
@@ -509,10 +534,23 @@ fn decode(handle: subetha_handle) -> (u32, u32) {
 impl Table {
     pub(crate) fn new() -> Self {
         Self {
-            slots: ArcSwap::from_pointee(Vec::new()),
-            free: Mutex::new(Vec::new()),
+            chunks: std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())),
+            issued: Mutex::new(Issued { free: Vec::new(), high: 0 }),
             live: AtomicU64::new(0),
         }
+    }
+
+    /// The slot at `index`, if its chunk has been placed.
+    fn slot(&self, index: u32) -> Option<&Slot> {
+        let (k, offset) = locate(index);
+        let base = self.chunks.get(k)?.load(Ordering::Acquire);
+        if base.is_null() {
+            return None;
+        }
+        // SAFETY: a placed chunk `k` holds `1 << k` slots, `offset` is
+        // below that by construction, and the chunk is never freed or
+        // moved while the table exists.
+        Some(unsafe { &*base.add(offset) })
     }
 
     /// Objects currently held by a handle, poisoned ones included.
@@ -522,31 +560,34 @@ impl Table {
 
     /// Place an object and issue its handle.
     pub(crate) fn insert(&self, object: Object) -> subetha_handle {
-        let mut free = self.free.lock();
-        let index = match free.pop() {
+        let mut issued = self.issued.lock();
+        let index = match issued.free.pop() {
             Some(i) => i,
             None => {
-                // Grow by doubling under the free-list lock, publishing the
-                // longer vector before any new index is handed out.
-                let current = self.slots.load_full();
-                let old_len = current.len();
-                let new_len = old_len.max(1) * 2;
-                let mut grown = Vec::with_capacity(new_len);
-                grown.extend(current.iter().cloned());
-                for _ in old_len..new_len {
-                    grown.push(Arc::new(Slot::new()));
+                // A handle carries a 32-bit index, and the directory reaches
+                // every one of those except the last, whose chunk would be
+                // the thirty-third.
+                let index = match u32::try_from(issued.high) {
+                    Ok(i) if i != u32::MAX => i,
+                    Ok(i) => panic!("index {i} is the one a handle cannot carry: every index below it is issued"),
+                    Err(e) => panic!("the handle table has issued more indices than a handle can carry: {e}"),
+                };
+                let (k, _offset) = locate(index);
+                if self.chunks[k].load(Ordering::Acquire).is_null() {
+                    // The first index of a chunk places it, under the issue
+                    // lock, before that index is handed out.
+                    let chunk: Box<[Slot]> = (0..1usize << k).map(|_| Slot::new()).collect();
+                    self.chunks[k].store(Box::into_raw(chunk).cast::<Slot>(), Ordering::Release);
                 }
-                self.slots.store(Arc::new(grown));
-                for i in (old_len + 1..new_len).rev() {
-                    free.push(i as u32);
-                }
-                old_len as u32
+                issued.high += 1;
+                index
             }
         };
-        let slots = self.slots.load();
-        let slot = &slots[index as usize];
+        let slot = self.slot(index).expect("an issued index has a placed chunk");
         let generation = slot.generation.load(Ordering::Acquire);
-        slot.object.store(Some(Arc::new(object)));
+        let object = Box::into_raw(Box::new(object));
+        let previous = slot.object.swap(object, Ordering::AcqRel);
+        debug_assert!(previous.is_null(), "a free slot holds no object");
         *slot.panic_message.lock() = None;
         slot.state.store(STATE_LIVE, Ordering::Release);
         self.live.fetch_add(1, Ordering::AcqRel);
@@ -557,6 +598,27 @@ impl Table {
     /// was never issued, has been destroyed, is being destroyed, or is
     /// poisoned; refuses a live handle of another kind.
     pub(crate) fn borrow(&self, handle: subetha_handle, kind: u32) -> Result<Borrowed, i32> {
+        let (object, inside) = self.admit(handle, false)?;
+        // SAFETY: this call is published and the slot was read as live, so
+        // the object stays in place for this borrow.
+        let kind_of = unsafe { (*object).kind() };
+        if kind_of != kind {
+            return Err(fail(
+                SUBETHA_E_WRONG_KIND,
+                format!("handle {handle:#x} is kind {kind_of}, not {kind}"),
+            ));
+        }
+        Ok(Borrowed { object, _inside: inside })
+    }
+
+    /// The object a handle names, with this thread published as inside a
+    /// call on that handle's slot for as long as the returned guard lives.
+    /// A poisoned handle is admitted only when `poisoned_too` says so.
+    fn admit(
+        &self,
+        handle: subetha_handle,
+        poisoned_too: bool,
+    ) -> Result<(*const Object, crate::epoch::Inside), i32> {
         if crate::holds::is_token(handle) {
             return Err(fail(
                 SUBETHA_E_INVALID_HANDLE,
@@ -564,8 +626,7 @@ impl Table {
             ));
         }
         let (index, generation) = decode(handle);
-        let slots = self.slots.load();
-        let Some(slot) = slots.get(index as usize) else {
+        let Some(slot) = self.slot(index) else {
             return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: no such slot")));
         };
         if slot.generation.load(Ordering::Acquire) != generation {
@@ -577,71 +638,46 @@ impl Table {
         // Published before the state is read, so a destroy either waits for
         // this call or this call sees the slot closing.
         let inside = crate::epoch::enter(index)?;
-        let admitted = match slot.state.load(Ordering::Acquire) {
-            STATE_LIVE => Ok(()),
-            STATE_POISONED => Err(fail(
-                SUBETHA_E_HANDLE_POISONED,
-                match slot.panic_message.lock().as_deref() {
-                    Some(m) => format!("handle {handle:#x} poisoned by: {m}"),
-                    None => format!("handle {handle:#x} poisoned"),
-                },
-            )),
-            _ => Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: not live"))),
-        };
-        let object = admitted.and_then(|()| {
-            // A destroy that raced this borrow has bumped the generation;
-            // a borrow that came in after that must not run.
-            if slot.generation.load(Ordering::Acquire) != generation {
-                return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: destroyed")));
+        match slot.state.load(Ordering::Acquire) {
+            STATE_LIVE => {}
+            STATE_POISONED if poisoned_too => {}
+            STATE_POISONED => {
+                return Err(fail(
+                    SUBETHA_E_HANDLE_POISONED,
+                    match slot.panic_message.lock().as_deref() {
+                        Some(m) => format!("handle {handle:#x} poisoned by: {m}"),
+                        None => format!("handle {handle:#x} poisoned"),
+                    },
+                ));
             }
-            // The address, not a clone of the reference count: the slot
-            // published above is what holds the object for this call.
-            match slot.object.load().as_deref() {
-                Some(o) => Ok(o as *const Object),
-                None => Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: empty"))),
-            }
-        });
-        match object {
-            Ok(object) => {
-                // SAFETY: this call is published and the slot was read as
-                // live, so the object stays in place for this borrow.
-                let kind_of = unsafe { (*object).kind() };
-                if kind_of != kind {
-                    return Err(fail(
-                        SUBETHA_E_WRONG_KIND,
-                        format!("handle {handle:#x} is kind {kind_of}, not {kind}"),
-                    ));
-                }
-                Ok(Borrowed { slot: Arc::as_ptr(slot), object, _inside: inside })
-            }
-            Err(code) => Err(code),
+            _ => return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: not live"))),
         }
+        // A destroy that raced this call has bumped the generation; a call
+        // that came in after that must not run.
+        if slot.generation.load(Ordering::Acquire) != generation {
+            return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: destroyed")));
+        }
+        // The address, not a share of anything: the slot published above
+        // is what holds the object for this call.
+        let object = slot.object.load(Ordering::Acquire);
+        if object.is_null() {
+            return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: empty")));
+        }
+        Ok((object as *const Object, inside))
     }
 
     /// The kind a live or poisoned handle names.
     pub(crate) fn kind_of(&self, handle: subetha_handle) -> Result<u32, i32> {
-        let (index, generation) = decode(handle);
-        let slots = self.slots.load();
-        let Some(slot) = slots.get(index as usize) else {
-            return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: no such slot")));
-        };
-        if slot.generation.load(Ordering::Acquire) != generation {
-            return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: destroyed")));
-        }
-        match slot.state.load(Ordering::Acquire) {
-            STATE_LIVE | STATE_POISONED => match slot.object.load_full() {
-                Some(o) => Ok(o.kind()),
-                None => Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: empty"))),
-            },
-            _ => Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: not live"))),
-        }
+        let (object, _inside) = self.admit(handle, true)?;
+        // SAFETY: this call is published and the slot was read as live or
+        // poisoned, so the object stays in place until the guard drops.
+        Ok(unsafe { (*object).kind() })
     }
 
     /// Whether a live handle is poisoned.
     pub(crate) fn is_poisoned(&self, handle: subetha_handle) -> Result<bool, i32> {
         let (index, generation) = decode(handle);
-        let slots = self.slots.load();
-        let Some(slot) = slots.get(index as usize) else {
+        let Some(slot) = self.slot(index) else {
             return Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: no such slot")));
         };
         if slot.generation.load(Ordering::Acquire) != generation {
@@ -651,6 +687,29 @@ impl Table {
             STATE_LIVE => Ok(false),
             STATE_POISONED => Ok(true),
             _ => Err(fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: not live"))),
+        }
+    }
+
+    /// Mark the slot a handle names poisoned and keep the panic's text, so
+    /// every later call on the handle fails until it is destroyed. The
+    /// caller's borrow has already been released, so a destroy may have
+    /// closed or recycled the slot meanwhile; a handle that no longer names
+    /// a live object of its own generation is left as it is, since the
+    /// object it named is gone or going.
+    pub(crate) fn poison(&self, handle: subetha_handle, message: String) {
+        let (index, generation) = decode(handle);
+        let Some(slot) = self.slot(index) else {
+            return;
+        };
+        if slot.generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        if slot
+            .state
+            .compare_exchange(STATE_LIVE, STATE_POISONED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            *slot.panic_message.lock() = Some(message);
         }
     }
 
@@ -667,8 +726,7 @@ impl Table {
             );
         }
         let (index, generation) = decode(handle);
-        let slots = self.slots.load();
-        let Some(slot) = slots.get(index as usize) else {
+        let Some(slot) = self.slot(index) else {
             return fail(SUBETHA_E_INVALID_HANDLE, format!("handle {handle:#x}: no such slot"));
         };
         if slot.generation.load(Ordering::Acquire) != generation {
@@ -691,17 +749,26 @@ impl Table {
                 format!("handle {handle:#x}: not live, or being destroyed by another thread"),
             );
         }
-        if let Some(object) = slot.object.load_full() {
-            object.interrupt();
+        // The state is closing under this destroy alone, so nothing frees
+        // the object before the swap below.
+        let object = slot.object.load(Ordering::Acquire);
+        if !object.is_null() {
+            // SAFETY: the pointer names the object `insert` placed, and only
+            // this destroy will free it.
+            unsafe { (*object).interrupt() };
         }
         // The slot is closing, so a call that begins from here on is
         // refused; this waits out the ones that began before it was.
         crate::epoch::wait_for_calls_on(index);
-        // No call can start and none is inside, so this is the last
+        // No call can start and none is inside, so this is the only
         // reference: dropping it runs the object's own cleanup, including
         // joining any thread it owns.
-        let object = slot.object.swap(None);
-        drop(object);
+        let object = slot.object.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !object.is_null() {
+            // SAFETY: the raw form of the Box `insert` placed, taken by this
+            // destroy alone.
+            drop(unsafe { Box::from_raw(object) });
+        }
         *slot.panic_message.lock() = None;
         let next = match generation.wrapping_add(1) {
             0 => 1,
@@ -710,18 +777,22 @@ impl Table {
         slot.generation.store(next, Ordering::Release);
         slot.state.store(STATE_FREE, Ordering::Release);
         self.live.fetch_sub(1, Ordering::AcqRel);
-        self.free.lock().push(index);
+        self.issued.lock().free.push(index);
         SUBETHA_OK
     }
 
     /// Destroy every handle still held. Returns how many there were.
     pub(crate) fn destroy_all(&self) -> u64 {
-        let slots = self.slots.load_full();
+        let high = self.issued.lock().high;
         let mut closed = 0u64;
-        for (index, slot) in slots.iter().enumerate() {
+        for index in 0..high {
+            // `insert` issues only indices a handle can carry, and places
+            // the chunk before it issues the index.
+            let index = index as u32;
+            let slot = self.slot(index).expect("every index below high has a placed chunk");
             let state = slot.state.load(Ordering::Acquire);
             if state == STATE_LIVE || state == STATE_POISONED {
-                let handle = encode(index as u32, slot.generation.load(Ordering::Acquire));
+                let handle = encode(index, slot.generation.load(Ordering::Acquire));
                 if self.destroy(handle) == SUBETHA_OK {
                     closed += 1;
                 }
@@ -731,8 +802,24 @@ impl Table {
     }
 }
 
+impl Drop for Table {
+    fn drop(&mut self) {
+        for (k, chunk) in self.chunks.iter_mut().enumerate() {
+            let base = *chunk.get_mut();
+            if base.is_null() {
+                continue;
+            }
+            // SAFETY: chunk `k` was placed by `insert` as a boxed slice of
+            // `1 << k` slots and nothing else frees it.
+            drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(base, 1 << k)) });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn ring() -> Object {
@@ -770,7 +857,8 @@ mod tests {
     fn a_poisoned_handle_refuses_calls_until_it_is_destroyed() {
         let table = Table::new();
         let a = table.insert(ring());
-        table.borrow(a, SUBETHA_KIND_RING).unwrap().poison("boom".into());
+        assert!(table.borrow(a, SUBETHA_KIND_RING).is_ok(), "live before the poison");
+        table.poison(a, "boom".into());
         assert_eq!(table.borrow(a, SUBETHA_KIND_RING).unwrap_err(), SUBETHA_E_HANDLE_POISONED);
         assert!(table.is_poisoned(a).unwrap());
         assert_eq!(table.kind_of(a).unwrap(), SUBETHA_KIND_RING, "the kind is still readable");

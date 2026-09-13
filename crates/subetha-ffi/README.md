@@ -318,36 +318,47 @@ moves between runs:
 `benches/ffi_overhead.rs` measures one push and one pop per family, direct
 against through the ABI, on the same object in the same process. Every row
 below comes from one sweep on the AVX-512 Windows build host, MSVC,
-release profile, in nanoseconds per pair of operations:
+release profile, with nothing else running on the host, in nanoseconds
+per pair of operations:
 
 | Family | Direct Rust | Through the C ABI |
 |---|---|---|
-| adaptive ring | 9.6 | 38.1 |
-| adaptive ring, frames past the slot | 18.4 | 80.7 |
-| stamped ring, stamped pop | 21.8 | 51.6 |
-| exact-order receiver, push and next | 69.7 | 88.4 |
-| SPSC ring | 6.7 | 34.5 |
-| MPSC pool | 7.8 | 37.1 |
-| MPMC grid | 7.9 | 34.2 |
-| Vyukov ring | 10.7 | 30.1 |
-| Lamport pair | 6.4 | 28.9 |
-| broadcast ring | 11.1 | 32.7 |
-| pub/sub | 5.9 | 27.4 |
-| capacity ring | 17.4 | 41.9 |
-| shared stack | 8.1 | 29.9 |
-| deque, push and pop | 4.8 | 27.9 |
-| deque, push and steal | 5.5 | 28.3 |
-| hash map, insert and get | 24.8 | 46.0 |
-| string arena, intern and get | 4.0 | 27.0 |
-| shared vec, push and get | 7.2 | 29.2 |
-| shared slab, set and get | 4.4 | 25.9 |
-| shared region, allocate and free | 5.0 | 26.3 |
-| shared atomic, add and load | 1.5 | 22.9 |
+| adaptive ring | 11.0 | 30.5 |
+| adaptive ring, frames past the slot | 17.8 | 71.0 |
+| stamped ring, stamped pop | 22.0 | 43.8 |
+| exact-order receiver, push and next | 73.4 | 82.0 |
+| SPSC ring | 6.7 | 25.3 |
+| MPSC pool | 8.0 | 25.1 |
+| MPMC grid | 7.7 | 25.0 |
+| Vyukov ring | 10.5 | 21.6 |
+| Lamport pair | 6.3 | 19.4 |
+| broadcast ring | 10.9 | 25.2 |
+| pub/sub | 6.3 | 22.0 |
+| capacity ring | 18.4 | 35.1 |
+| shared stack | 8.2 | 21.1 |
+| deque, push and pop | 5.0 | 20.4 |
+| deque, push and steal | 4.7 | 19.7 |
+| hash map, insert and get | 25.2 | 35.6 |
+| string arena, intern and get | 4.9 | 17.6 |
+| shared vec, push and get | 7.4 | 24.3 |
+| shared slab, set and get | 4.6 | 21.4 |
+| shared region, allocate and free | 4.8 | 19.3 |
+| shared atomic, add and load | 1.6 | 15.4 |
 
-The difference is the same in every row because it is paid per call, not
-per operation: about 11 ns for the handle lookup, the panic guard and the
-argument checks. The atomic row is the clearest view of it, since the work
-either side of the boundary is two instructions.
+The boundary itself, the handle lookup, the panic guard and the argument
+checks, is 7.1 ns a call on this host. The atomic row is the clearest
+view of it, since the work either side of the boundary is two
+instructions: 15.4 ns through the ABI against 1.6 ns direct is 13.8 ns
+for the pair's two calls. The other rows differ by 9 to 22 ns a pair,
+and the frame row by 53, because a ring or channel call carries more
+than the boundary: two handles, the ring and its producer or consumer;
+the payload copied as bytes into and out of a slot; on every push a
+check of the parked consumers and of the pollable notifiers, and on
+every pop a check of the parked producers, none of which the direct
+rows do; and the frame forms copy the frame both ways. The rows whose
+direct work is itself tens of nanoseconds, the exact-order receiver and
+the hash map, differ least because the boundary is the smallest part of
+them.
 
 A caller that moves items in bursts pays that once for the whole burst
 through the `_many` forms, which take one handle lookup and one panic
@@ -367,9 +378,9 @@ many it completed, so a full ring leaves the rest for the caller's next
 call. It returns `SUBETHA_OK` when at least one completed and the
 refusal's own code when the first one was the one that failed.
 
-Measured on the AVX-512 Windows build host: sixty-four pushes and sixty-four pops through the batch
-forms take 1.00 us, and the same one hundred and twenty-eight operations
-one call at a time take 2.60 us.
+Measured on the AVX-512 Windows build host: sixty-four pushes and
+sixty-four pops through the batch forms take 1.23 us, and the same one
+hundred and twenty-eight operations one call at a time take 2.68 us.
 
 ## A hold, a permit, a pin and a ticket are tokens
 
@@ -381,17 +392,16 @@ call is inside it.
 
 A token is a `uint64_t`. Taking one is a compare-exchange and giving it
 back is another; nothing is allocated and no lock is taken. Measured on
-the AVX-512 Windows build host, a lock acquire and release costing 3.0 ns of direct work, with
-eight threads in the borrow guard's registry: 562.7 ns through the ABI
-as a handle and 42.1 ns as a token. With seven other threads merely
-running, which the barrier had to interrupt: 5.46 us as a handle and
-45.0 ns as a token. An epoch pin and release reads 52.7 ns and a
-semaphore acquire and release 57.4 ns, against 21 to 35 ns of boundary
-for every other family.
+the AVX-512 Windows build host: a write lock acquire and release costing
+3.1 ns of direct work reads 29.5 ns through the ABI as a token, 49.2 ns
+while seven other threads are inside calls of their own, and 29.0 ns
+once they have left. An epoch pin and release reads 34.4 ns against
+5.2 ns direct, and a semaphore acquire and release 32.3 ns against
+6.6 ns, in the range of every other family's pair.
 
-A cross-process waker park and release reads 4.5 ns of direct work and
-49.3 ns through the ABI, and a lazy value's `try_get` on a published
-value 1.5 ns and 12.7 ns. The waker's ABI form also claims a hold-table
+A cross-process waker park and release reads 5.3 ns of direct work and
+48.8 ns through the ABI, and a lazy value's `try_get` on a published
+value 2.4 ns and 7.8 ns. The waker's ABI form also claims a hold-table
 slot and gives it back, which is what lets a second release of the same
 token be refused, so its figure covers that alongside the boundary.
 

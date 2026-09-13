@@ -3872,6 +3872,15 @@ int32_t subetha_arena_flush(subetha_handle handle);
  */
 int32_t subetha_arena_unlink(const char *path, struct subetha_unlink_report *report);
 
+#if defined(SUBETHA_TEST_HOOKS)
+/**
+ * Reach the 64-bit atomic a handle names and return at once, so a bench
+ * can price this family's dispatch apart from the borrow beneath it and
+ * the load above it. Present only with the `test-hooks` feature.
+ */
+int32_t subetha_test_atomic_borrow_only(subetha_handle handle);
+#endif
+
 /**
  * Obtain the 32-bit atomic at `path`, initialized to `init` when the file
  * does not exist and attached with its live value when it does, so a
@@ -11787,6 +11796,23 @@ int32_t subetha_test_panic_on(subetha_handle handle);
  * `test-hooks` feature.
  */
 int32_t subetha_test_panic_free(void);
+#endif
+
+#if defined(SUBETHA_TEST_HOOKS)
+/**
+ * Return at once from inside the panic guard, so a bench can price the
+ * guard apart from a borrow. Present only with the `test-hooks` feature.
+ */
+int32_t subetha_test_entry_only(void);
+#endif
+
+#if defined(SUBETHA_TEST_HOOKS)
+/**
+ * Borrow the handle as `kind` and return at once, so a bench can price
+ * the borrow and its guard apart from any family's work. Present only
+ * with the `test-hooks` feature.
+ */
+int32_t subetha_test_borrow_only(subetha_handle handle, uint32_t kind);
 #endif
 
 #if defined(SUBETHA_TEST_HOOKS)
