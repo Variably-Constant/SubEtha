@@ -9,26 +9,72 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-12
+
 ### Added
 
 - `subetha-py`, the Python binding, bound to the Rust directly rather
-  than through the C ABI, as a skeleton: `Atomic` and `Region`, named
-  memory orderings, context managers, exceptions in place of error
-  codes, and the buffer protocol on `Region` so `memoryview(region)` is
-  a view over the mapping. Built as an abi3 wheel by maturin against
-  Python 3.11 and later; it ships as a wheel rather than to crates.io.
-  Measured on the AVX-512 Windows host, the same atomic load costs
-  7.1 ns reached from Rust through the C ABI, 30.1 ns through this
-  binding, and 584.4 ns through a C shim driven by ctypes, which is what
-  binding the Rust directly is worth; batched a thousand at a time it is
-  1.3 ns an operation, and a `Region`'s buffer read whole is 0.3 ns a
-  byte. `bench/call_shapes.py` reproduces all of it.
+  than through the C ABI, covering every family the substrate has: the
+  rings including the two that change themselves under traffic, ordered
+  delivery through a ring's own stamps, shared state and state with a
+  history read through a pin, the locks and the semaphore and the
+  condition variable and the owner lease, the probabilistic and
+  specialist structures, the quality of service policy, and the
+  Sens-O-Matic link that reaches another machine. Measured on the
+  AVX-512 Windows host, the same atomic load costs 7.1 ns reached from
+  Rust through the C ABI, 30.1 ns through this binding, and 584.4 ns
+  through a C shim driven by ctypes, which is what binding the Rust
+  directly is worth; batched a thousand at a time it is 1.3 ns an
+  operation, and a `Region`'s buffer read whole is 0.3 ns a byte.
+  `bench/call_shapes.py` reproduces all of it. It ships as a wheel
+  rather than to crates.io.
+- Bridges carrying a whole ring to another host over TCP or QUIC, each
+  behind a cargo feature and off by default because each brings a
+  network stack a process sharing memory on one host does not need. A
+  wheel exports `transports`, naming what it was built with, so a name a
+  caller cannot find can be told from a feature left out.
+- Wheels for free-threaded interpreters. The stable ABI is now a cargo
+  feature rather than fixed, since free-threading has none to target
+  until 3.15; leaving it out builds for the one interpreter. The module
+  declares it does not need the interpreter lock, which is a claim about
+  every call in it and is made because `tests/test_threading.py` passes
+  on an interpreter that has none: eight threads through the counters,
+  both kinds of lock hold, the semaphore's permits, a shared ring, a
+  pinned scan running beside writers, and a buffer view held across
+  other threads' work. Verified against CPython 3.14.7 free-threaded,
+  384 tests with the lock reported off.
+- `.github/workflows/python-wheels.yml` builds both kinds of wheel per
+  operating system and runs the suite against each one after installing
+  it. The free-threaded job additionally asserts that importing the
+  module leaves the lock off. Nothing publishes.
 - Every SubEtha value held in a `#[pyclass]` is boxed, and a
   compile-time assertion per class enforces it. Python's object
   allocator aligns to sixteen bytes, `HandshakeHeader` is cache-line
   aligned, and 44 of the primitives embed one, so a class holding any of
   them inline compiles and imports and then faults inside its
   constructor on the first aligned store.
+
+### Fixed
+
+- `laned_versioned_map` and `raw_laned_versioned_map`: `sweep` treated a
+  lane with nothing to free as a failure of the whole sweep. A lane that
+  frees none reports `Full`, and the sweep propagated it, so it
+  abandoned every remaining lane and discarded the count of what earlier
+  ones had already freed. Any laned map with an idle lane therefore
+  swept nothing while reporting it was out of room. Each lane's `Full`
+  now means only that this lane freed none; the sweep reports `Full`
+  itself only when no lane freed anything, which is the signal an insert
+  out of room needs.
+- `sens_rlc`: an item too large for a symbol reached the slice copy
+  inside `pack_symbol` and panicked, in release as well as debug,
+  because the assert guarding it is a debug one. The send path refuses
+  it with both sizes named.
+
+### Changed
+
+- `subetha-py`'s adaptive ring is held by a shared handle rather than a
+  box, so a network bridge can take one of its own and both name the
+  same ring.
 
 - `SENS_O_MATIC_WIRE.md` section 10 gains the literature the two codes
   come from, and two further RFCs, each entry naming the mechanism it
@@ -1406,7 +1452,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.1...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.3.2...HEAD
+[0.3.2]: https://github.com/Variably-Constant/SubEtha/commit/0.3.2
 [0.3.1]: https://github.com/Variably-Constant/SubEtha/commit/0.3.1
 [0.3.0]: https://github.com/Variably-Constant/SubEtha/commit/0.3.0
 [0.2.9]: https://github.com/Variably-Constant/SubEtha/commit/38a10f3

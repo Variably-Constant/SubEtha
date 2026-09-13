@@ -13,6 +13,7 @@ Per-crate type / trait / op-kind reference.
 - [`subetha-core`](subetha-core/) - the substrate (handshake, observation ring, migration, `Marshal`).
 - [`subetha-sidecar`](subetha-sidecar/) - the control plane (policy, scan thread, `SidecarBox`).
 - [`subetha-ffi`](subetha-ffi/) - the C ABI: `subetha.h` over generation-checked handles, for every language that binds through C.
+- [`subetha-py`](subetha-py/) - the Python binding, bound to the Rust directly rather than through the C ABI, covering every family above.
 
 For machine-generated API docs (every signature, every type), the
 canonical source is the per-crate `docs.rs` page:

@@ -22,3 +22,8 @@ Arriving with a C or C++ toolchain rather than a Rust one? Read
 [SubEtha from C and C++](c-and-cpp/) instead of the pages above: it
 installs the library, links a program against it, sends a message
 through a ring, and reads a failure, without asking you to write Rust.
+
+Arriving from Python? Read [SubEtha from Python](python/), which does
+the same through the Python binding: two processes sharing a counter,
+a message crossing between them, a lock held across both, and the two
+call shapes that cost far less than one call an item.
