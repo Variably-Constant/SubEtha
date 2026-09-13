@@ -27,6 +27,7 @@ What a caller should know before reaching for any of it:
 
 from . import _subetha
 from ._subetha import (
+    AdaptiveQueue,
     Arena,
     Atomic,
     BTreeMap,
@@ -120,6 +121,7 @@ from ._subetha import (
 )
 
 __all__ = [
+    "AdaptiveQueue",
     "Arena",
     "Atomic",
     "BTreeMap",

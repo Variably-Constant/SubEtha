@@ -59,8 +59,10 @@ use subetha_pointers::bloom_pointer::{Bloom64, BloomFine};
 use subetha_pointers::versioned_pointer::{HybridLogicalClock, VectorClock};
 use subetha_cxc::blocking_rw_lock::{BlockingRWLock, BlockingRWLockError};
 use subetha_cxc::blocking_semaphore::{BlockingSemaphore, BlockingSemaphoreError};
+use subetha_cxc::adaptive_ipc::AdaptiveIpc as SubethaAdaptiveIpc;
+use subetha_cxc::dispatch_deque::DequeVariant;
 use subetha_cxc::message_transport::TransportError;
-use subetha_cxc::mmf_dispatcher::MmfWorkloadShape;
+use subetha_cxc::mmf_dispatcher::{MmfFamily, MmfWorkloadShape};
 use subetha_cxc::qos_policy::{
     Durability, History, Ordering as OrderingNeed, QosPolicy as SubethaQosPolicy,
     QosSnapshot as SubethaQosSnapshot, Reliability,
@@ -8265,6 +8267,258 @@ impl Channel {
     }
 }
 
+/// A queue that changes what it is underneath as the traffic changes.
+///
+/// The other front-door classes pick a shape once, from what the caller
+/// says it expects. This one picks from what actually happens: it
+/// watches the sizes it is sent and moves between a ring and a
+/// work-stealing deque while running, without either end reconnecting.
+/// `shape` says which it is on now and `promotions` how many times it
+/// has moved.
+///
+/// Worth it when the traffic is not known in advance or changes over a
+/// run. When it is known, saying so through `Channel` or `WorkQueue` is
+/// cheaper, because this one pays a counter on every send.
+#[pyclass(module = "subetha")]
+struct AdaptiveQueue {
+    inner: Box<SubethaAdaptiveIpc<SlotValue>>,
+}
+
+#[pymethods]
+impl AdaptiveQueue {
+    /// `capacity` is the number of items in flight, rounded up to a
+    /// power of two. `senders` and `readers` are where it starts; what
+    /// it becomes is decided by the traffic.
+    ///
+    /// `ordering` is `per_producer`, each sender's own order, or
+    /// `global_fifo`, the order across all of them. It is a setting a
+    /// caller makes, never inferred from the traffic, because only the
+    /// application knows which its readers need.
+    ///
+    /// `auto_order` is the one exception, and it is a pre-authorization
+    /// rather than an inference: give it a number of cross-sender
+    /// inversions per second and the queue is allowed to turn global
+    /// ordering on by itself once it sees that many. None, the default,
+    /// means it never does.
+    #[new]
+    #[pyo3(signature = (
+        path,
+        capacity = 1024,
+        senders = 1,
+        readers = 1,
+        ordering = "per_producer",
+        auto_order = None,
+    ))]
+    fn new(
+        path: &str,
+        capacity: usize,
+        senders: usize,
+        readers: usize,
+        ordering: &str,
+        auto_order: Option<f64>,
+    ) -> PyResult<Self> {
+        if senders < 1 || readers < 1 {
+            return Err(PyValueError::new_err(
+                "a queue needs at least one sender and one reader",
+            ));
+        }
+        if let Some(rate) = auto_order
+            && (!rate.is_finite() || rate < 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "auto_order is a number of inversions a second that is not negative",
+            ));
+        }
+        let shape = MmfWorkloadShape::StreamingMpmc {
+            n_producers: senders,
+            n_consumers: readers,
+        };
+        SubethaAdaptiveIpc::create_with_ordering(
+            path,
+            shape,
+            capacity,
+            readers,
+            ordering_need_from_name(ordering)?,
+            auto_order,
+        )
+        .map(|inner| Self { inner: Box::new(inner) })
+        .map_err(|e| api_err("opening the queue", e))
+    }
+
+    /// Send one item, answering False when it is full.
+    fn send(&self, item: &[u8]) -> PyResult<bool> {
+        let held = SlotValue::from_bytes(item)?;
+        match self.inner.send(&held) {
+            Ok(()) => Ok(true),
+            Err(e) if is_full(&e) => Ok(false),
+            Err(e) => Err(api_err("sending", e)),
+        }
+    }
+
+    /// Send a run of items as one batch, which is also what tells the
+    /// queue the traffic comes in batches and may be worth a different
+    /// shape.
+    fn send_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
+        let mut held = Vec::with_capacity(items.len());
+        for item in &items {
+            held.push(SlotValue::from_bytes(item)?);
+        }
+        match self.inner.send_batch(&held) {
+            Ok(()) => Ok(held.len()),
+            Err(e) if is_full(&e) => Ok(0),
+            Err(e) => Err(api_err("sending", e)),
+        }
+    }
+
+    /// The next item, or None when there is nothing there.
+    fn recv(&self) -> PyResult<Option<Vec<u8>>> {
+        match self.inner.recv() {
+            Ok(held) => Ok(Some(held.as_bytes())),
+            Err(e) if is_empty(&e) => Ok(None),
+            Err(e) => Err(api_err("receiving", e)),
+        }
+    }
+
+    /// Everything waiting, up to `max_items`, in one crossing.
+    #[pyo3(signature = (max_items = 256))]
+    fn recv_many(&self, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
+        let mut taken = Vec::new();
+        for _ in 0..max_items {
+            match self.inner.recv() {
+                Ok(held) => taken.push(held.as_bytes()),
+                Err(e) if is_empty(&e) => break,
+                Err(e) => return Err(api_err("receiving", e)),
+            }
+        }
+        Ok(taken)
+    }
+
+    /// Wait until the item can be sent, or until `timeout` seconds have
+    /// passed. Answers False on a timeout.
+    #[pyo3(signature = (item, timeout = None))]
+    fn send_for(&self, py: Python<'_>, item: &[u8], timeout: Option<f64>) -> PyResult<bool> {
+        let held = SlotValue::from_bytes(item)?;
+        let wait = optional_duration(timeout)?;
+        match py.detach(|| self.inner.send_blocking(&held, wait)) {
+            Ok(()) => Ok(true),
+            Err(e) if is_timeout(&e) => Ok(false),
+            Err(e) => Err(api_err("sending", e)),
+        }
+    }
+
+    /// Wait for the next item, or until `timeout` seconds have passed.
+    /// Answers None on a timeout.
+    #[pyo3(signature = (timeout = None))]
+    fn recv_for(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Vec<u8>>> {
+        let wait = optional_duration(timeout)?;
+        match py.detach(|| self.inner.recv_blocking(wait)) {
+            Ok(held) => Ok(Some(held.as_bytes())),
+            Err(e) if is_timeout(&e) || is_empty(&e) => Ok(None),
+            Err(e) => Err(api_err("receiving", e)),
+        }
+    }
+
+    /// What the queue is right now, `ring` or `work_stealing`.
+    #[getter]
+    fn shape(&self) -> &'static str {
+        family_name(self.inner.active_family())
+    }
+
+    /// Look at the traffic so far and move to the shape that fits it,
+    /// answering the new shape or None when the one it has already
+    /// fits.
+    fn maybe_change_shape(&self) -> PyResult<Option<&'static str>> {
+        self.inner
+            .maybe_promote()
+            .map(|moved| moved.map(family_name))
+            .map_err(|e| api_err("changing shape", e))
+    }
+
+    /// Move to a named shape, whatever the traffic says.
+    fn change_shape_to(&self, shape: &str) -> PyResult<()> {
+        let target = family_from_name(shape)?;
+        self.inner
+            .migrate_to(target)
+            .map_err(|e| api_err("changing shape", e))
+    }
+
+    /// Steps every time the shape changes, so a holder can tell that
+    /// what it looked at has been superseded.
+    #[getter]
+    fn shape_generation(&self) -> u64 {
+        self.inner.pin_generation()
+    }
+
+    /// The average number of items a send carried, and the share of
+    /// sends that were batches. This is what the queue weighs when
+    /// deciding to change shape.
+    #[getter]
+    fn traffic(&self) -> (u64, f64) {
+        let seen = self.inner.profile_snapshot();
+        (seen.avg_batch_size(), seen.batch_ratio())
+    }
+
+    /// Whose order a reader gets, `per_producer` or `global_fifo`.
+    #[getter]
+    fn ordering(&self) -> &'static str {
+        ordering_need_name(self.inner.ordering())
+    }
+
+    #[setter]
+    fn set_ordering(&self, ordering: &str) -> PyResult<()> {
+        self.inner
+            .set_ordering(ordering_need_from_name(ordering)?)
+            .map_err(|e| api_err("setting the ordering", e))
+    }
+
+    /// Cross-sender inversions seen so far, which is what says whether
+    /// the ordering asked for is being met.
+    #[getter]
+    fn inversions(&self) -> u64 {
+        self.inner.inversions()
+    }
+
+    /// The most an item may be, in bytes.
+    #[classattr]
+    fn max_item_size() -> usize {
+        SLOT_VALUE_BYTES
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.AdaptiveQueue shaped as a {}>",
+            family_name(self.inner.active_family())
+        )
+    }
+}
+
+fn family_name(family: MmfFamily) -> &'static str {
+    match family {
+        MmfFamily::SharedRing => "ring",
+        MmfFamily::SharedDeque(_) => "work_stealing",
+        MmfFamily::SharedHashMap => "map",
+    }
+}
+
+fn family_from_name(name: &str) -> PyResult<MmfFamily> {
+    match name {
+        "ring" => Ok(MmfFamily::SharedRing),
+        "work_stealing" => Ok(MmfFamily::SharedDeque(DequeVariant::ChaseLev)),
+        other => Err(PyValueError::new_err(format!(
+            "unknown shape {other}, expected ring or work_stealing"
+        ))),
+    }
+}
+
 /// Work one process owns and others take from when they are idle.
 ///
 /// The owner pushes and pops at one end, which is the cheap end and the
@@ -10130,6 +10384,7 @@ classes_fit_python_allocation!(
     Channel,
     KvMap,
     WorkQueue,
+    AdaptiveQueue,
     ReorderWindow,
 );
 
@@ -10227,6 +10482,7 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Channel>()?;
     m.add_class::<KvMap>()?;
     m.add_class::<WorkQueue>()?;
+    m.add_class::<AdaptiveQueue>()?;
     m.add_class::<TinyBloom>()?;
     m.add_class::<FineBloom>()?;
     m.add_class::<Clock>()?;

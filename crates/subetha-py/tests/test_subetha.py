@@ -1129,6 +1129,84 @@ def test_a_channel_is_shared_between_handles(scratch):
     assert second.recv() == b"across"
 
 
+def test_an_adaptive_queue_carries_items(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=64)
+    assert queue.send(b"first") is True
+    assert queue.recv() == b"first"
+    assert queue.recv() is None
+
+
+def test_an_adaptive_queue_starts_as_a_ring(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=64)
+    assert queue.shape == "ring", "streaming traffic starts on the ring"
+    assert queue.shape_generation == 0
+
+
+def test_an_adaptive_queue_can_be_moved_by_hand(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=64)
+    before = queue.shape_generation
+
+    queue.change_shape_to("work_stealing")
+    assert queue.shape == "work_stealing"
+    assert queue.shape_generation > before, "a change must be visible to a holder"
+
+    # And it still carries items in the new shape.
+    queue.send(b"after")
+    assert queue.recv() == b"after"
+
+
+def test_an_adaptive_queue_refuses_a_shape_it_does_not_have(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=64)
+    with pytest.raises(ValueError):
+        queue.change_shape_to("hash_map")
+
+
+def test_an_adaptive_queue_watches_the_traffic(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=1024)
+    for _ in range(20):
+        queue.send_many([b"a", b"b", b"c", b"d"])
+
+    average, batched = queue.traffic
+    assert average >= 1, "the sizes it was sent are counted"
+    assert 0.0 <= batched <= 1.0
+
+
+def test_an_adaptive_queue_decides_for_itself_whether_to_move(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=1024)
+    # An answer either way is fine; what matters is that asking is safe
+    # and that what comes back names a shape it actually has.
+    moved = queue.maybe_change_shape()
+    assert moved is None or moved in ("ring", "work_stealing")
+    assert queue.shape in ("ring", "work_stealing")
+
+
+def test_an_adaptive_queue_keeps_the_ordering_it_was_given(scratch):
+    queue = subetha.AdaptiveQueue(
+        scratch("adapt"), capacity=64, ordering="global_fifo"
+    )
+    assert queue.ordering == "global_fifo"
+    assert queue.inversions == 0
+    queue.ordering = "per_producer"
+    assert queue.ordering == "per_producer"
+
+
+def test_an_adaptive_queue_refuses_an_ordering_it_does_not_have(scratch):
+    with pytest.raises(ValueError):
+        subetha.AdaptiveQueue(scratch("adapt"), capacity=64, ordering="whenever")
+
+
+def test_an_adaptive_queue_refuses_a_threshold_that_is_not_a_rate(scratch):
+    with pytest.raises(ValueError):
+        subetha.AdaptiveQueue(scratch("adapt"), capacity=64, auto_order=-1.0)
+
+
+def test_an_adaptive_queue_waits_and_gives_up(scratch):
+    queue = subetha.AdaptiveQueue(scratch("adapt"), capacity=64)
+    started = time.monotonic()
+    assert queue.recv_for(timeout=0.1) is None
+    assert time.monotonic() - started >= 0.05
+
+
 def test_a_work_queue_gives_the_owner_its_own_work_back(scratch):
     queue = subetha.WorkQueue(scratch("work"), capacity=64)
     assert queue.push(b"one") is True
