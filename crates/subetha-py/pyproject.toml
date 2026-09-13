@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "subetha"
+description = "Shared memory between processes: rings, channels and shared state, bound to Rust directly."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Markus Newton" }]
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: System :: Distributed Computing",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Variably-Constant/SubEtha"
+
+[tool.maturin]
+# The crate is a workspace member, so the manifest is named rather than
+# found by walking up from here.
+manifest-path = "Cargo.toml"
+features = ["extension-module"]
+# The stable ABI rides the crate's own default feature, so one wheel
+# serves every interpreter from 3.11 upward. A free-threaded
+# interpreter has no stable ABI to target until 3.15 and takes a wheel
+# of its own, built by passing --no-default-features; the wheels
+# workflow does both.
+python-source = "python"
+module-name = "subetha._subetha"

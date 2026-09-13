@@ -11,6 +11,25 @@ heading links to the commit that cut it.
 
 ### Added
 
+- `subetha-py`, the Python binding, bound to the Rust directly rather
+  than through the C ABI, as a skeleton: `Atomic` and `Region`, named
+  memory orderings, context managers, exceptions in place of error
+  codes, and the buffer protocol on `Region` so `memoryview(region)` is
+  a view over the mapping. Built as an abi3 wheel by maturin against
+  Python 3.11 and later; it ships as a wheel rather than to crates.io.
+  Measured on the AVX-512 Windows host, the same atomic load costs
+  7.1 ns reached from Rust through the C ABI, 30.1 ns through this
+  binding, and 584.4 ns through a C shim driven by ctypes, which is what
+  binding the Rust directly is worth; batched a thousand at a time it is
+  1.3 ns an operation, and a `Region`'s buffer read whole is 0.3 ns a
+  byte. `bench/call_shapes.py` reproduces all of it.
+- Every SubEtha value held in a `#[pyclass]` is boxed, and a
+  compile-time assertion per class enforces it. Python's object
+  allocator aligns to sixteen bytes, `HandshakeHeader` is cache-line
+  aligned, and 44 of the primitives embed one, so a class holding any of
+  them inline compiles and imports and then faults inside its
+  constructor on the first aligned store.
+
 - `SENS_O_MATIC_WIRE.md` section 10 gains the literature the two codes
   come from, and two further RFCs, each entry naming the mechanism it
   bears on and where this format departs from it: RFC 9407 (Tetrys)

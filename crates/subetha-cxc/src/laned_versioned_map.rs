@@ -381,10 +381,23 @@ where
     }
 
     /// Drop every entry superseded below the horizon, in every lane.
+    ///
+    /// A lane with nothing to drop reports [`VersionedError::Full`],
+    /// which here means only that this lane freed none; the sweep goes
+    /// on to the rest and sums what they freed. The whole sweep reports
+    /// `Full` when no lane freed anything, which is the signal an
+    /// insert out of room needs.
     pub fn sweep(&self) -> Result<usize, LanedError> {
         let mut dropped = 0usize;
         for l in &self.lanes {
-            dropped += l.sweep()?;
+            match l.sweep() {
+                Ok(freed) => dropped += freed,
+                Err(VersionedError::Full) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if dropped == 0 {
+            return Err(LanedError::Versioned(VersionedError::Full));
         }
         Ok(dropped)
     }
@@ -686,6 +699,36 @@ mod tests {
         assert_eq!(f.map.void_epoch(e).unwrap(), 2);
         assert_eq!(f.map.get(&1), None);
         assert_eq!(f.map.get(&2), None);
+    }
+
+    #[test]
+    fn a_sweep_frees_a_lane_that_has_work_beside_lanes_that_do_not() {
+        let f = fixture("sweep_mixed", 4);
+        {
+            let g = f.map.claim_lane().unwrap();
+            g.insert(1, 10).unwrap();
+            g.insert(2, 20).unwrap();
+            g.remove(&1).unwrap();
+        }
+        // Three lanes hold nothing to free. Each reports Full, which
+        // says only that it freed none, so the sweep goes on and
+        // reports what the one lane with work actually freed.
+        assert_eq!(f.map.sweep().unwrap(), 1);
+        assert_eq!(f.map.get(&1), None);
+        assert_eq!(f.map.get(&2), Some(20));
+    }
+
+    #[test]
+    fn a_sweep_with_nothing_to_free_anywhere_reports_full() {
+        let f = fixture("sweep_none", 4);
+        {
+            let g = f.map.claim_lane().unwrap();
+            g.insert(1, 10).unwrap();
+        }
+        assert!(matches!(
+            f.map.sweep(),
+            Err(LanedError::Versioned(VersionedError::Full))
+        ));
     }
 
     #[test]

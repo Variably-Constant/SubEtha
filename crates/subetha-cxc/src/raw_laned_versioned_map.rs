@@ -22,6 +22,7 @@ use memmap2::{MmapMut, MmapOptions};
 use crate::holder_table::HolderTable;
 use crate::laned_versioned_map::{lanes_file_size, LanedError, LanesHeader, LANES_MAGIC};
 use crate::raw_versioned_btree_map::{RawEntry, RawVersionedBTreeMap};
+use crate::versioned_btree_map::VersionedError;
 use crate::shared_epochs::{Epoch, PinGuard, SharedEpochs};
 
 /// A claim carries no information beyond being held; the payload only has
@@ -373,10 +374,23 @@ impl RawLanedVersionedMap {
     }
 
     /// Drop every entry superseded below the horizon, in every lane.
+    ///
+    /// A lane with nothing to drop reports [`VersionedError::Full`],
+    /// which here means only that this lane freed none; the sweep goes
+    /// on to the rest and sums what they freed. The whole sweep reports
+    /// `Full` when no lane freed anything, which is the signal an
+    /// insert out of room needs.
     pub fn sweep(&self) -> Result<usize, LanedError> {
         let mut dropped = 0usize;
         for lane in &self.lanes {
-            dropped += lane.sweep()?;
+            match lane.sweep() {
+                Ok(freed) => dropped += freed,
+                Err(VersionedError::Full) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if dropped == 0 {
+            return Err(LanedError::Versioned(VersionedError::Full));
         }
         Ok(dropped)
     }

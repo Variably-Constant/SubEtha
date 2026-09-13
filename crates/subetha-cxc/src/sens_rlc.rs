@@ -1476,6 +1476,22 @@ impl SensOMaticRlcSender {
     /// pack the item as a source symbol, enqueue it, ship it plus any due repair,
     /// and service ACKs.
     fn send_item_now(&mut self, item: &[u8]) -> io::Result<()> {
+        // A symbol is the length prefix plus the item, so an item that
+        // does not leave room for the prefix has nowhere to go. Refused
+        // here rather than left to the slice copy inside pack_symbol,
+        // which panics, and panics in release too because the assert
+        // guarding it is a debug one.
+        if item.len() + LEN_PREFIX > self.symbol_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "an item of {} bytes does not fit a symbol of {}, which holds \
+                     a {LEN_PREFIX} byte length prefix as well",
+                    item.len(),
+                    self.symbol_len
+                ),
+            ));
+        }
         let sym = pack_symbol(item, self.symbol_len);
         let (sid, repair) = self.enc.push_source(&sym);
         self.last_sid = sid;

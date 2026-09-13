@@ -9,6 +9,7 @@ members = [
     "crates/subetha-e2e",
     "crates/subetha-ffi",
     "crates/subetha-ffi-tests",
+    "crates/subetha-py",
     "xtask",
 ]
 

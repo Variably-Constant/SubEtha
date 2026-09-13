@@ -1,0 +1,56 @@
+[package]
+name = "subetha-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Python bindings for SubEtha, bound to the Rust directly rather than through the C ABI."
+# This crate ships as a wheel rather than to crates.io, so a workspace
+# publish never picks it up.
+publish = false
+
+[lib]
+# The compiled extension sits inside the `subetha` package rather than
+# being it, so the package can carry an __init__.py, type stubs and the
+# py.typed marker beside it.
+name = "_subetha"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+subetha-cxc = { workspace = true }
+
+# The stable ABI is a feature here rather than fixed, because a
+# free-threaded interpreter has none to build against: that ABI arrives
+# in 3.15. A wheel for such an interpreter is built with the `abi3`
+# feature off and serves that one version.
+pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+
+# Only the network bridges need a runtime, and only their features pull
+# it in. A wheel built without them links no async machinery at all.
+tokio = { workspace = true, optional = true }
+
+[build-dependencies]
+# Sets this crate's own cfg flags from the interpreter PyO3 found, which
+# is how the module can tell a caller whether it was built for one with
+# no lock.
+pyo3-build-config = "0.29"
+
+[features]
+# Linking against the interpreter is correct when building a wheel and
+# wrong when building the rlib for a test binary, which supplies its own
+# interpreter symbols. maturin turns it on; `cargo test` leaves it off.
+default = ["abi3"]
+extension-module = ["pyo3/extension-module"]
+# One wheel for every interpreter from 3.11 up. Leave it out to build
+# for a free-threaded interpreter, which has no stable ABI to target
+# until 3.15; that wheel serves the one version it was built against.
+abi3 = ["pyo3/abi3-py311"]
+# The bridge that carries a ring's items over a TCP connection. Off by
+# default: it pulls tokio, and a process sharing memory with another on
+# the same host needs none of it.
+tcp-bridge = ["subetha-cxc/tcp-bridge", "dep:tokio"]
+# The same over QUIC, which also brings the TLS stack and a certificate
+# generator with it.
+quic-bridge = ["subetha-cxc/quic-bridge", "dep:tokio"]
