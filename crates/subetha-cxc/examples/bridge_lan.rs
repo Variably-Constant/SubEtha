@@ -1904,7 +1904,7 @@ fn sens_sharded_client(
     let t0 = Instant::now();
     for seq in 0..items {
         buf[..8].copy_from_slice(&seq.to_le_bytes());
-        send.send_item(&buf);
+        send.send_item(&buf)?;
     }
     let acked = send.finish();
     let ns = t0.elapsed().as_nanos();

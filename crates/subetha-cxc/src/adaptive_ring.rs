@@ -1879,6 +1879,10 @@ impl AdaptiveRing {
     /// alongside rather than derived from. Reading both at one instant
     /// is what separates a counter that disagrees with the slots from
     /// slots that were genuinely not claimed yet.
+    ///
+    /// Carried only where the assertions that read it are, since both
+    /// of its callers stand behind the same gate.
+    #[cfg(debug_assertions)]
     pub(crate) fn claimed_populations(&self) -> (usize, usize) {
         self.directory.claimed_populations()
     }

@@ -953,7 +953,7 @@ impl Vec_ {
     /// `start`, and return how many landed.
     fn write_range(&self, start: usize, data: &[u8]) -> PyResult<usize> {
         let size = self.inner.layout().slot_size;
-        if size == 0 || data.len() % size != 0 {
+        if size == 0 || !data.len().is_multiple_of(size) {
             return Err(PyValueError::new_err(
                 "the data must be a whole number of elements",
             ));
@@ -1487,10 +1487,10 @@ impl EpochBarrier {
         timeout: Option<f64>,
         quorum: Option<u32>,
     ) -> PyResult<bool> {
-        if let Some(t) = timeout {
-            if !(t > 0.0) {
-                return Err(PyValueError::new_err("the timeout must be positive"));
-            }
+        if let Some(t) = timeout
+            && (t.is_nan() || t <= 0.0)
+        {
+            return Err(PyValueError::new_err("the timeout must be positive"));
         }
         let barrier: &SubethaEpochBarrier = &self.inner;
         let outcome = py.detach(|| match (timeout, quorum) {
@@ -1562,10 +1562,10 @@ impl Condvar {
     /// into a false answer.
     #[pyo3(signature = (predicate, timeout = None))]
     fn wait_for(&self, py: Python<'_>, predicate: Py<pyo3::PyAny>, timeout: Option<f64>) -> PyResult<bool> {
-        if let Some(t) = timeout {
-            if !(t > 0.0) {
-                return Err(PyValueError::new_err("the timeout must be positive"));
-            }
+        if let Some(t) = timeout
+            && (t.is_nan() || t <= 0.0)
+        {
+            return Err(PyValueError::new_err("the timeout must be positive"));
         }
         // A predicate that raises must not leave the waiter parked, so
         // its failure is recorded and the check answers true to end the
@@ -1716,7 +1716,7 @@ impl LazyValue {
     /// The interpreter is detached while waiting.
     #[pyo3(signature = (timeout = 30.0))]
     fn wait(&self, py: Python<'_>, timeout: f64) -> PyResult<Vec<u8>> {
-        if !(timeout > 0.0) {
+        if timeout.is_nan() || timeout <= 0.0 {
             return Err(PyValueError::new_err("the timeout must be positive"));
         }
         let len = self.inner.value_len();
@@ -4647,6 +4647,14 @@ const SLOT_VALUE_BYTES: usize = 52;
 /// What those families hold.
 type SlotValue = Payload<SLOT_VALUE_BYTES>;
 
+/// One slot's versions, newest first, each as its value and the epochs
+/// it was born at and died at. A died of `None` is the current version.
+type SlotHistory = Vec<(Vec<u8>, u64, Option<u64>)>;
+
+/// The entries a scan walked, as key and value, and the key to carry on
+/// from, which is `None` when the walk ran out of entries.
+type ScanPage = (Vec<(u64, u64)>, Option<u64>);
+
 /// One process at a time owns a small shared value, and if that process
 /// dies another takes it over rather than the value being stranded.
 ///
@@ -5678,7 +5686,7 @@ impl VersionedSlab {
 
     /// A slot's history, newest first, as value, born and died. A died
     /// of None means the version is the current one.
-    fn history(&self, slot: usize) -> PyResult<Vec<(Vec<u8>, u64, Option<u64>)>> {
+    fn history(&self, slot: usize) -> PyResult<SlotHistory> {
         let chain = self
             .inner
             .chain(slot)
@@ -6123,7 +6131,7 @@ impl MapPin {
         low: Option<u64>,
         high: Option<u64>,
         limit: usize,
-    ) -> PyResult<(Vec<(u64, u64)>, Option<u64>)> {
+    ) -> PyResult<ScanPage> {
         let guard = self.guard()?;
         Ok(self
             .map
@@ -6521,7 +6529,7 @@ impl LanedPin {
         low: Option<u64>,
         high: Option<u64>,
         limit: usize,
-    ) -> PyResult<(Vec<(u64, u64)>, Option<u64>)> {
+    ) -> PyResult<ScanPage> {
         let guard = self.guard()?;
         Ok(self
             .map
@@ -8782,7 +8790,7 @@ fn api_err(doing: &str, e: ApiError) -> PyErr {
 /// About eight keys before the rate of wrong yeses climbs past a few
 /// percent. `TinyBloom.suggested_capacity` says so, and `false_positive_rate`
 /// works out the rate for any number of keys.
-#[pyclass(module = "subetha")]
+#[pyclass(module = "subetha", from_py_object)]
 #[derive(Clone)]
 struct TinyBloom {
     inner: Bloom64,
@@ -8871,7 +8879,7 @@ impl TinyBloom {
 
 /// The same idea in four words rather than one, for about sixty-four
 /// keys instead of eight.
-#[pyclass(module = "subetha")]
+#[pyclass(module = "subetha", from_py_object)]
 #[derive(Clone)]
 struct FineBloom {
     inner: BloomFine,
@@ -8940,7 +8948,7 @@ impl FineBloom {
 /// `merge` is what a receiver does with a sender's clock: it takes the
 /// later of the two and steps past it, so the received event orders
 /// after the one that caused it.
-#[pyclass(module = "subetha", frozen)]
+#[pyclass(module = "subetha", frozen, from_py_object)]
 #[derive(Clone)]
 struct Clock {
     inner: HybridLogicalClock,
@@ -9033,7 +9041,7 @@ const CAUSAL_CLOCK_NODES: usize = 16;
 /// another machine". This can: comparing two of these answers before,
 /// after, equal, or neither, and neither means the two events are
 /// genuinely concurrent.
-#[pyclass(module = "subetha", frozen)]
+#[pyclass(module = "subetha", frozen, from_py_object)]
 #[derive(Clone)]
 struct CausalClock {
     inner: VectorClock<CAUSAL_CLOCK_NODES>,
@@ -10182,7 +10190,7 @@ impl Slab {
     /// Write slots packed end to end from `start`.
     fn write_range(&self, start: usize, data: &[u8]) -> PyResult<usize> {
         let size = self.inner.layout().slot_size;
-        if size == 0 || data.len() % size != 0 {
+        if size == 0 || !data.len().is_multiple_of(size) {
             return Err(PyValueError::new_err(
                 "the data must be a whole number of elements",
             ));
