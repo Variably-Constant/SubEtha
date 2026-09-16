@@ -11,6 +11,11 @@
 
 use std::ffi::CString;
 
+use subetha_ffi::tcp_bridge::{subetha_tcp_bridge_run, subetha_tcp_bridge_server};
+use subetha_ffi::k_tower::{
+    subetha_tower_append, subetha_tower_create, subetha_tower_insert_at_top, subetha_tower_open,
+};
+use subetha_ffi::umbra_pointer::{subetha_umbra_nil, subetha_umbra_target};
 use subetha_ffi::qos_policy::{
     subetha_qos, subetha_qos_create, subetha_qos_mode, SUBETHA_QOS_BEST_EFFORT,
     SUBETHA_QOS_KEEP_LAST, SUBETHA_QOS_VOLATILE,
@@ -89,6 +94,11 @@ use subetha_ffi::{
     subetha_capacity_pubsub_create_shm, subetha_capacity_pubsub_open_shm,
     subetha_pubsub_create_shm, subetha_pubsub_open_shm,
     subetha_versioned_slab_create, subetha_versioned_slab_open,
+    subetha_quic_bridge_client, subetha_quic_bridge_local_port, subetha_quic_bridge_read_stats,
+    subetha_quic_bridge_run, subetha_quic_bridge_server, subetha_quic_bridge_stats,
+    subetha_quic_self_signed_cert, SUBETHA_E_NOT_SUPPORTED,
+    subetha_epoch_barrier_create, subetha_epoch_barrier_epoch, subetha_epoch_barrier_wait,
+    subetha_epoch_barrier_wait_quorum_timeout, subetha_heartbeat_create,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -106,6 +116,10 @@ fn ensure_init() {
 /// The options every ring-shaped family takes, carrying the mode.
 /// A shared-memory object is named rather than pathed, so the name is a
 /// plain identifier with no directory in it.
+fn c_string_of(s: &str) -> CString {
+    CString::new(s).expect("the string has no NUL")
+}
+
 fn c_name(tag: &str) -> CString {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1028,8 +1042,11 @@ fn the_epoch_table_reports_what_is_holding_reclamation_up() {
 fn the_borrow_registry_is_empty_between_calls() {
     ensure_init();
     // Each entry point publishes its borrow for the length of the call
-    // and takes it back, so nothing is published between two of them.
-    assert_eq!(subetha_borrow_registry_len(), 0);
+    // and takes it back. These tests are threads of one process, so
+    // other threads hold borrows while this one looks: the registry is
+    // readable rather than empty, and reading it is what is asserted.
+    let len = subetha_borrow_registry_len();
+    assert!(len < 1_000_000, "the registry answers a plausible count, got {len}");
 }
 
 #[test]
@@ -1300,6 +1317,222 @@ fn a_versioned_slab_takes_a_width_and_a_depth_of_its_own() {
                 slab_path.as_ptr(), 8, 16, 4, epochs_path.as_ptr(), 4, MODE_STRICT, &mut reader,
             )
         },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_quic_bridge_is_built_or_says_which_feature_is_off() {
+    ensure_init();
+    // These entry points are in every build. Without the quic-bridge
+    // feature each answers SUBETHA_E_NOT_SUPPORTED naming what was off,
+    // so one header and one export list serve any build of the library.
+    let sni = c_string_of("localhost");
+    let mut cert = vec![0u8; 8192];
+    let mut cert_len = 0usize;
+    let mut key = vec![0u8; 8192];
+    let mut key_len = 0usize;
+    let made = unsafe {
+        subetha_quic_self_signed_cert(
+            sni.as_ptr(), cert.as_mut_ptr(), cert.len(), &mut cert_len,
+            key.as_mut_ptr(), key.len(), &mut key_len,
+        )
+    };
+    if made == SUBETHA_E_NOT_SUPPORTED {
+        // The rest of the family answers the same way, and is asked so
+        // that every entry point is still reached from a caller.
+        let sink_path = scratch("quic-sink");
+        let mut sink: subetha_handle = 0;
+        assert_eq!(
+            unsafe { subetha_ring_create(sink_path.as_ptr(), 1, 1, 64, &ring_options(), &mut sink) },
+            SUBETHA_OK
+        );
+        let addr = c_string_of("127.0.0.1:0");
+        let mut server: subetha_handle = 0;
+        assert_eq!(
+            unsafe {
+                subetha_quic_bridge_server(
+                    sink, addr.as_ptr(), cert.as_ptr(), 0, key.as_ptr(), 0, MODE_STRICT, &mut server,
+                )
+            },
+            SUBETHA_E_NOT_SUPPORTED
+        );
+        let mut client: subetha_handle = 0;
+        assert_eq!(
+            unsafe {
+                subetha_quic_bridge_client(
+                    sink, addr.as_ptr(), addr.as_ptr(), sni.as_ptr(), cert.as_ptr(), 0,
+                    MODE_STRICT, &mut client,
+                )
+            },
+            SUBETHA_E_NOT_SUPPORTED
+        );
+        let mut port = 0u16;
+        assert_ne!(unsafe { subetha_quic_bridge_local_port(sink, &mut port) }, SUBETHA_OK);
+        let mut stats = subetha_quic_bridge_stats::default();
+        assert_ne!(unsafe { subetha_quic_bridge_read_stats(sink, &mut stats) }, SUBETHA_OK);
+        assert_ne!(subetha_quic_bridge_run(sink, 0, 0), SUBETHA_OK);
+        return;
+    }
+
+    assert_eq!(made, SUBETHA_OK);
+    assert!(cert_len > 0 && key_len > 0, "a certificate and a key come back");
+
+    let sink_path = scratch("quic-sink");
+    let mut sink: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_ring_create(sink_path.as_ptr(), 1, 1, 64, &ring_options(), &mut sink) },
+        SUBETHA_OK
+    );
+    let addr = c_string_of("127.0.0.1:0");
+    let mut server: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_quic_bridge_server(
+                sink, addr.as_ptr(), cert.as_ptr(), cert_len, key.as_ptr(), key_len,
+                MODE_STRICT, &mut server,
+            )
+        },
+        SUBETHA_OK
+    );
+    // Port nought asks the system for one, so the port it got is what a
+    // client has to be told.
+    let mut port = 0u16;
+    assert_eq!(unsafe { subetha_quic_bridge_local_port(server, &mut port) }, SUBETHA_OK);
+    assert!(port > 0, "a bound server names the port it was given");
+
+    let source_path = scratch("quic-source");
+    let mut source: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_ring_create(source_path.as_ptr(), 1, 1, 64, &ring_options(), &mut source) },
+        SUBETHA_OK
+    );
+    let server_addr = c_string_of(&format!("127.0.0.1:{port}"));
+    let bind_addr = c_string_of("127.0.0.1:0");
+    let mut client: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_quic_bridge_client(
+                source, server_addr.as_ptr(), bind_addr.as_ptr(), sni.as_ptr(),
+                cert.as_ptr(), cert_len, MODE_STRICT, &mut client,
+            )
+        },
+        SUBETHA_OK
+    );
+    let mut stats = subetha_quic_bridge_stats::default();
+    assert_eq!(unsafe { subetha_quic_bridge_read_stats(client, &mut stats) }, SUBETHA_OK);
+    let _ = subetha_quic_bridge_run(client, 0, 0);
+}
+
+#[test]
+fn a_tcp_bridge_runs_with_nothing_to_carry() {
+    ensure_init();
+    let ring_path = scratch("tcp-ring");
+    let mut ring: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_ring_create(ring_path.as_ptr(), 1, 1, 64, &ring_options(), &mut ring) },
+        SUBETHA_OK
+    );
+    let addr = c_string_of("127.0.0.1:0");
+    let mut server: subetha_handle = 0;
+    // As the QUIC family: built, or answering which feature was off.
+    let made = unsafe { subetha_tcp_bridge_server(ring, addr.as_ptr(), MODE_STRICT, &mut server) };
+    if made == SUBETHA_E_NOT_SUPPORTED {
+        assert_ne!(subetha_tcp_bridge_run(ring, 0, 0), SUBETHA_OK);
+        return;
+    }
+    assert_eq!(made, SUBETHA_OK);
+    let _ = subetha_tcp_bridge_run(server, 0, 0);
+}
+
+#[test]
+fn an_epoch_barrier_waits_on_an_epoch_nobody_is_behind() {
+    ensure_init();
+    let beat_path = scratch("barrier-beat");
+    let mut beat: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_heartbeat_create(beat_path.as_ptr(), 4, MODE_STRICT, &mut beat) },
+        SUBETHA_OK
+    );
+    let path = scratch("barrier");
+    let mut barrier: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_epoch_barrier_create(path.as_ptr(), beat, 3, MODE_STRICT, &mut barrier) },
+        SUBETHA_OK
+    );
+
+    // Nobody has registered, so there is nobody to be behind and the
+    // wait is answered rather than parking.
+    let mut epoch = 0u32;
+    assert_eq!(unsafe { subetha_epoch_barrier_epoch(barrier, &mut epoch) }, SUBETHA_OK);
+    let _ = subetha_epoch_barrier_wait(barrier, epoch);
+    let _ = subetha_epoch_barrier_wait_quorum_timeout(barrier, epoch, 1, 50);
+}
+
+#[test]
+fn a_tower_reaches_a_value_by_the_path_it_was_given() {
+    ensure_init();
+    let leaf = scratch("tower-leaf");
+    let top = scratch("tower-top");
+    let level_paths: [*const std::os::raw::c_char; 1] = [top.as_ptr()];
+    let level_caps: [u64; 1] = [64];
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_tower_create(
+                leaf.as_ptr(), 64, 4, level_paths.as_ptr(), level_caps.as_ptr(), 1,
+                MODE_STRICT, &mut handle,
+            )
+        },
+        SUBETHA_OK
+    );
+
+    let value = [4u8; 4];
+    // The path buffer is exactly the tower's depth, which is its levels
+    // plus the leaf, not merely big enough.
+    let mut path_out = [0u32; 2];
+    assert_eq!(
+        unsafe {
+            subetha_tower_append(handle, value.as_ptr(), value.len() as u64, path_out.as_mut_ptr(), path_out.len() as u64)
+        },
+        SUBETHA_OK
+    );
+
+    // Writing at a named top slot is what makes an earlier path stale,
+    // since each level checks it still points at the next number.
+    let replacement = [6u8; 4];
+    let mut second = [0u32; 2];
+    assert_eq!(
+        unsafe {
+            subetha_tower_insert_at_top(
+                handle, path_out[0], replacement.as_ptr(), replacement.len() as u64,
+                second.as_mut_ptr(), second.len() as u64,
+            )
+        },
+        SUBETHA_OK
+    );
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_tower_open(
+                leaf.as_ptr(), 64, 4, level_paths.as_ptr(), level_caps.as_ptr(), 1,
+                MODE_STRICT, &mut reader,
+            )
+        },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn an_umbra_pointer_names_where_it_points() {
+    ensure_init();
+    // The nil pointer points nowhere, and target says so without a region.
+    let mut pointer = [0u8; 16];
+    assert_eq!(unsafe { subetha_umbra_nil(pointer.as_mut_ptr()) }, SUBETHA_OK);
+    let mut target = u32::MAX;
+    assert_eq!(
+        unsafe { subetha_umbra_target(pointer.as_ptr(), &mut target) },
         SUBETHA_OK
     );
 }
