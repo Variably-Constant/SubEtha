@@ -11,6 +11,12 @@
 
 use std::ffi::CString;
 
+use subetha_ffi::graph::{subetha_graph_create, subetha_graph_open};
+use subetha_ffi::lru_cache::{
+    subetha_lru_create, subetha_lru_get_and_touch, subetha_lru_put, subetha_lru_remove,
+};
+use subetha_ffi::time_point::{subetha_tile_create, subetha_tile_open};
+
 use subetha_ffi::{
     subetha_blocked_bloom_clear, subetha_blocked_bloom_contains, subetha_blocked_bloom_create,
     subetha_blocked_bloom_flush, subetha_blocked_bloom_insert, subetha_blocked_bloom_open,
@@ -67,6 +73,9 @@ use subetha_ffi::{
     subetha_unlink_report, subetha_versioned_map_create_default, subetha_versioned_map_flush,
     subetha_versioned_map_get, subetha_versioned_map_pin_epoch, subetha_versioned_map_read_stats,
     subetha_versioned_map_stats, subetha_versioned_map_void_epoch,
+    subetha_pubsub_create, subetha_pubsub_wake_all, subetha_ring_options, subetha_ring_create, subetha_ring_wake_all,
+    subetha_vyukov_create, subetha_vyukov_wake_all, subetha_waker_create, subetha_waker_reset,
+    subetha_waker_wake_one_up_to,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -79,6 +88,11 @@ fn ensure_init() {
     ONCE.call_once(|| {
         assert_eq!(subetha_init(MODE_STRICT), SUBETHA_OK);
     });
+}
+
+/// The options every ring-shaped family takes, carrying the mode.
+fn ring_options() -> subetha_ring_options {
+    subetha_ring_options { mode: MODE_STRICT, ..Default::default() }
 }
 
 fn scratch(tag: &str) -> CString {
@@ -993,4 +1007,130 @@ fn the_borrow_registry_is_empty_between_calls() {
     // Each entry point publishes its borrow for the length of the call
     // and takes it back, so nothing is published between two of them.
     assert_eq!(subetha_borrow_registry_len(), 0);
+}
+
+#[test]
+fn waking_everyone_is_answered_even_when_nobody_waits() {
+    ensure_init();
+    let ring_path = scratch("wake-ring");
+    let mut ring: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_ring_create(ring_path.as_ptr(), 1, 1, 8, &ring_options(), &mut ring)
+        },
+        SUBETHA_OK
+    );
+    assert_eq!(subetha_ring_wake_all(ring), SUBETHA_OK);
+
+    let topic_path = scratch("wake-pubsub");
+    let mut topic: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_pubsub_create(topic_path.as_ptr(), 8, &ring_options(), &mut topic) },
+        SUBETHA_OK
+    );
+    assert_eq!(subetha_pubsub_wake_all(topic), SUBETHA_OK);
+
+    let queue_path = scratch("wake-vyukov");
+    let mut queue: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_vyukov_create(queue_path.as_ptr(), 8, &ring_options(), &mut queue) },
+        SUBETHA_OK
+    );
+    assert_eq!(subetha_vyukov_wake_all(queue), SUBETHA_OK);
+}
+
+#[test]
+fn a_waker_wakes_nobody_when_nobody_is_parked() {
+    ensure_init();
+    let path = scratch("waker");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_waker_create(path.as_ptr(), 8, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+    let mut woken = 1u64;
+    assert_eq!(
+        unsafe { subetha_waker_wake_one_up_to(handle, 100, &mut woken) },
+        SUBETHA_OK
+    );
+    assert_eq!(woken, 0, "nobody is parked, so nobody is woken");
+
+    let reset_path = scratch("waker-reset");
+    let mut fresh: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_waker_reset(reset_path.as_ptr(), 8, MODE_STRICT, &mut fresh) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_cache_touches_what_it_reads_and_answers_what_it_removed() {
+    ensure_init();
+    let path = scratch("lru");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_lru_create(path.as_ptr(), 4, 4, 4, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    let key = *b"key1";
+    let value = *b"val1";
+    let mut replaced = true;
+    assert_eq!(
+        unsafe {
+            subetha_lru_put(handle, key.as_ptr(), key.len() as u64, value.as_ptr(), value.len() as u64, &mut replaced)
+        },
+        SUBETHA_OK
+    );
+    assert!(!replaced, "the key was not there before, so nothing was replaced");
+
+    // Reading through get_and_touch makes the key the most recent, which
+    // is what keeps it from being the next one evicted.
+    let mut out = [0u8; 4];
+    let mut found = false;
+    assert_eq!(
+        unsafe {
+            subetha_lru_get_and_touch(handle, key.as_ptr(), key.len() as u64, out.as_mut_ptr(), out.len() as u64, &mut found)
+        },
+        SUBETHA_OK
+    );
+    assert!(found);
+    assert_eq!(&out, &value);
+
+    let mut removed = false;
+    assert_eq!(
+        unsafe {
+            subetha_lru_remove(handle, key.as_ptr(), key.len() as u64, out.as_mut_ptr(), out.len() as u64, &mut removed)
+        },
+        SUBETHA_OK
+    );
+    assert!(removed, "remove answers whether it took something away");
+}
+
+#[test]
+fn a_tile_and_a_graph_attach_to_what_was_made() {
+    ensure_init();
+    let tile_path = scratch("tile");
+    let mut tile: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_tile_create(tile_path.as_ptr(), 32, MODE_STRICT, &mut tile) },
+        SUBETHA_OK
+    );
+    let mut tile_again: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_tile_open(tile_path.as_ptr(), 32, MODE_STRICT, &mut tile_again) },
+        SUBETHA_OK
+    );
+
+    let graph_path = scratch("graph");
+    let mut graph: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_graph_create(graph_path.as_ptr(), 8, 16, 8, 8, MODE_STRICT, &mut graph) },
+        SUBETHA_OK
+    );
+    let mut graph_again: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_graph_open(graph_path.as_ptr(), 8, 16, 8, 8, MODE_STRICT, &mut graph_again) },
+        SUBETHA_OK
+    );
 }
