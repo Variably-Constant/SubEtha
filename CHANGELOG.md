@@ -21,7 +21,12 @@ heading links to the commit that cut it.
   back as objects that release on `Release()`, `Dispose()` or
   collection, and the TCP and QUIC bridges are always built in. The
   module is not published anywhere; it is built with `cargo pwrs` from
-  the crate.
+  the crate. Every cmdlet, class, enum and method it exports is reached
+  by a Pester suite, and a gate suite fails the run when one is not.
+  All 176 tests pass in pwsh 7.6.6 and Windows PowerShell 5.1 on
+  Windows x64 and in pwsh 7.6.5 on Ubuntu 24.04 on Linux x64; the
+  native libraries of the two builds fold into one module folder that
+  imports on both.
 
 ## [0.4.0] - 2026-09-13
 

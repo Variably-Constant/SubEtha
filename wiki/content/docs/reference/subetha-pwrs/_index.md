@@ -390,3 +390,10 @@ not a whole sentence. Others attach a second time through every `Open-`
 and reset form, drive a second process of the same host over shared
 structures, and run several runspaces at once against one object and
 against handles of their own.
+
+Only the native library under `runtimes/<rid>/native/` differs per
+platform, so each is built on its own machine and
+`cargo pwrs merge target/pwrs/SubEtha <folder built elsewhere>` folds
+them into one module. All 176 tests pass in pwsh 7.6.6 and in Windows
+PowerShell 5.1 on Windows x64, and in pwsh 7.6.5 on Ubuntu 24.04 on
+Linux x64; a folder carrying both natives imports and runs on either.

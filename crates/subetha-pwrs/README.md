@@ -210,6 +210,23 @@ shared counter, ring, channel, lock, semaphore, lease and pubsub, and
 one runs several runspaces at once against a single object and against
 handles of their own.
 
+## Platforms
+
+Only the native library under `runtimes/<rid>/native/` differs per
+platform, so each one is built on its own machine and the folders are
+folded into a single module:
+
+```powershell
+cargo pwrs build --release                                  # the building machine's rid
+cargo pwrs merge target/pwrs/SubEtha <folder built on Linux>
+```
+
+The manifests of two builds of one checkout are identical, which is
+what `merge` requires. All 176 Pester tests pass in pwsh 7.6.6 and in
+Windows PowerShell 5.1 on Windows x64, and in pwsh 7.6.5 on Ubuntu
+24.04 on Linux x64. A merged folder carrying `win-x64` and `linux-x64`
+imports and runs on both.
+
 ## Threads and lifetimes
 
 Every method call on one object is serialized by the object, so an
