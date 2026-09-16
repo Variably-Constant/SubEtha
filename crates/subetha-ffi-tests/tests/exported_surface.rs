@@ -62,7 +62,8 @@ use subetha_ffi::{
     subetha_laned_map_claim_lane, subetha_laned_map_claim_lane_for, subetha_laned_map_create,
     subetha_laned_map_flush, subetha_laned_map_get, subetha_laned_map_insert,
     subetha_laned_map_lane_of, subetha_laned_map_open, subetha_laned_map_read_stats,
-    subetha_laned_map_reap_dead_claims, subetha_laned_map_release_lane, subetha_laned_map_remove,
+    subetha_laned_map_range, subetha_laned_map_reap_dead_claims, subetha_laned_map_release_lane,
+    subetha_laned_map_remove,
     subetha_laned_map_stats, subetha_laned_map_sweep, subetha_laned_map_void_epoch,
     subetha_versioned_slab_create_default, subetha_versioned_slab_flush, subetha_versioned_slab_get,
     subetha_versioned_slab_read_stats, subetha_versioned_slab_retire, subetha_versioned_slab_set,
@@ -99,7 +100,8 @@ use subetha_ffi::{
     subetha_quic_self_signed_cert, SUBETHA_E_NOT_SUPPORTED,
     subetha_epoch_barrier_create, subetha_epoch_barrier_epoch, subetha_epoch_barrier_wait,
     subetha_epoch_barrier_wait_quorum_timeout, subetha_heartbeat_create,
-    subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
+    subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init,
+    SUBETHA_E_BUFFER_TOO_SMALL, SUBETHA_OK,
 };
 
 const MODE_STRICT: u32 = 0;
@@ -761,6 +763,127 @@ fn a_laned_map_claims_a_lane_and_reads_back_across_lanes() {
         unsafe { subetha_laned_map_open(dir.as_ptr(), 2, 64, 8, 8, 4, MODE_STRICT, &mut reader) },
         SUBETHA_OK
     );
+}
+
+#[test]
+fn a_laned_map_walks_every_lane_in_key_order_one_page_at_a_time() {
+    ensure_init();
+    let dir = scratch("laned-range");
+    std::fs::create_dir_all(dir.to_str().expect("the path is UTF-8")).expect("the directory is made");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_create(dir.as_ptr(), 2, 64, 8, 8, 4, MODE_STRICT, &mut handle)
+        },
+        SUBETHA_OK
+    );
+
+    // Both lanes are held at once, so the three keys are placed across
+    // them deliberately and out of key order. A walk that reads one tree
+    // and stops, or that reports each lane in turn, cannot pass.
+    let mut first = u32::MAX;
+    let mut second = u32::MAX;
+    assert_eq!(unsafe { subetha_laned_map_claim_lane(handle, &mut first) }, SUBETHA_OK);
+    assert_eq!(unsafe { subetha_laned_map_claim_lane(handle, &mut second) }, SUBETHA_OK);
+    assert_ne!(first, second, "two claims take two different lanes");
+
+    let keys: [[u8; 8]; 3] = [[1u8; 8], [2u8; 8], [3u8; 8]];
+    for (key, lane) in keys.iter().zip([first, second, first]) {
+        let value = [key[0]; 8];
+        assert_eq!(
+            unsafe {
+                subetha_laned_map_insert(handle, lane, key.as_ptr(), key.len(), value.as_ptr(), value.len())
+            },
+            SUBETHA_OK
+        );
+    }
+    assert_eq!(subetha_laned_map_release_lane(handle, first), SUBETHA_OK);
+    assert_eq!(subetha_laned_map_release_lane(handle, second), SUBETHA_OK);
+
+    const STRIDE: usize = 16;
+
+    // Asked with no room, it still answers what the page holds, so a
+    // caller sizes its buffer from the map rather than guessing.
+    //
+    // That page is the first two keys rather than all three, and asking
+    // for a limit of sixteen does not change it: one lane's walk ended at
+    // the second key, and the third is withheld even though the other
+    // lane already reached it, because a lane that stops earlier may
+    // still hold a smaller key than one that ran on.
+    let mut len = 0usize;
+    let mut count = 0usize;
+    let mut has_frontier = false;
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_range(
+                handle,
+                std::ptr::null(),
+                16,
+                std::ptr::null_mut(),
+                0,
+                &mut len,
+                &mut count,
+                std::ptr::null_mut(),
+                &mut has_frontier,
+            )
+        },
+        SUBETHA_E_BUFFER_TOO_SMALL
+    );
+    assert_eq!(count, 2, "the page stops at the frontier the slowest lane set");
+    assert_eq!(len, 2 * STRIDE, "each entry is its key bytes then its value bytes");
+    assert!(has_frontier, "a page short of the end names where to resume");
+
+    // Walked a page at a time, resuming strictly past each frontier, the
+    // entries arrive in key order across both lanes and every one is
+    // reached once. The walk ends on the page where every lane found
+    // nothing left, which is the page that names no frontier.
+    let mut seen: Vec<[u8; 8]> = Vec::new();
+    let mut cursor = [0u8; 8];
+    let mut have_cursor = false;
+    let mut pages = 0;
+    loop {
+        let mut page = [0u8; 3 * STRIDE];
+        let mut frontier = [0u8; 8];
+        let after = if have_cursor { cursor.as_ptr() } else { std::ptr::null() };
+        assert_eq!(
+            unsafe {
+                subetha_laned_map_range(
+                    handle,
+                    after,
+                    16,
+                    page.as_mut_ptr(),
+                    page.len(),
+                    &mut len,
+                    &mut count,
+                    frontier.as_mut_ptr(),
+                    &mut has_frontier,
+                )
+            },
+            SUBETHA_OK
+        );
+        assert_eq!(len, count * STRIDE);
+        for i in 0..count {
+            let at = i * STRIDE;
+            let key: [u8; 8] = page[at..at + 8].try_into().expect("a key is eight bytes");
+            assert_eq!(
+                &page[at + 8..at + STRIDE],
+                &[key[0]; 8][..],
+                "each value follows its own key"
+            );
+            seen.push(key);
+        }
+        pages += 1;
+        assert!(pages <= 8, "a walk of three entries ends rather than repeating a page");
+        if !has_frontier {
+            assert_eq!(count, 0, "the page that ends the walk is the one with nothing left");
+            break;
+        }
+        cursor = frontier;
+        have_cursor = true;
+    }
+    assert_eq!(seen, keys.to_vec(), "paging reaches every entry once, in key order");
+
+    assert_eq!(subetha_laned_map_flush(handle), SUBETHA_OK);
 }
 
 #[test]
