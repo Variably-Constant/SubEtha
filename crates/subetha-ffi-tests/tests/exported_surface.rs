@@ -41,6 +41,14 @@ use subetha_ffi::{
     subetha_topology_fan_out, subetha_topology_flush, subetha_topology_flush_async,
     subetha_topology_open, subetha_topology_read_stats, subetha_topology_record_send,
     subetha_topology_reset, subetha_topology_stats,
+    subetha_laned_map_claim_lane, subetha_laned_map_claim_lane_for, subetha_laned_map_create,
+    subetha_laned_map_flush, subetha_laned_map_get, subetha_laned_map_insert,
+    subetha_laned_map_lane_of, subetha_laned_map_open, subetha_laned_map_read_stats,
+    subetha_laned_map_reap_dead_claims, subetha_laned_map_release_lane, subetha_laned_map_remove,
+    subetha_laned_map_stats, subetha_laned_map_sweep, subetha_laned_map_void_epoch,
+    subetha_versioned_slab_create_default, subetha_versioned_slab_flush, subetha_versioned_slab_get,
+    subetha_versioned_slab_read_stats, subetha_versioned_slab_retire, subetha_versioned_slab_set,
+    subetha_versioned_slab_stats, subetha_versioned_slab_sweep_slot, subetha_versioned_slab_void_epoch,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -543,6 +551,145 @@ fn a_histogram_puts_a_value_in_the_bucket_its_boundaries_name() {
         unsafe {
             subetha_histogram_open(path.as_ptr(), bounds.as_ptr(), bounds.len(), MODE_STRICT, &mut reader)
         },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_versioned_slab_keeps_a_slot_readable_and_retires_it() {
+    ensure_init();
+    let slab_path = scratch("vslab");
+    let epochs_path = scratch("vslab-epochs");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_versioned_slab_create_default(
+                slab_path.as_ptr(), 8, epochs_path.as_ptr(), 4, MODE_STRICT, &mut handle,
+            )
+        },
+        SUBETHA_OK
+    );
+
+    let mut stats = subetha_versioned_slab_stats::default();
+    assert_eq!(unsafe { subetha_versioned_slab_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    let width = stats.value_size as usize;
+    let value = vec![7u8; width];
+    assert_eq!(
+        unsafe { subetha_versioned_slab_set(handle, 0, value.as_ptr(), value.len()) },
+        SUBETHA_OK
+    );
+
+    let mut buf = vec![0u8; width];
+    let mut len = 0usize;
+    assert_eq!(
+        unsafe { subetha_versioned_slab_get(handle, 0, buf.as_mut_ptr(), buf.len(), &mut len) },
+        SUBETHA_OK
+    );
+    assert_eq!(&buf[..len], &value[..], "the slot reads back what was set");
+
+    // Retiring answers what was there and leaves nothing live behind.
+    assert_eq!(
+        unsafe { subetha_versioned_slab_retire(handle, 0, buf.as_mut_ptr(), buf.len(), &mut len) },
+        SUBETHA_OK
+    );
+    assert_eq!(&buf[..len], &value[..], "retire answers what it took away");
+
+    let mut dropped = 0u64;
+    assert_eq!(
+        unsafe { subetha_versioned_slab_sweep_slot(handle, 0, &mut dropped) },
+        SUBETHA_OK
+    );
+    let mut touched = 0u64;
+    assert_eq!(
+        unsafe { subetha_versioned_slab_void_epoch(handle, 999_999, &mut touched) },
+        SUBETHA_OK
+    );
+    assert_eq!(touched, 0, "nothing was written at an epoch nothing used");
+
+    assert_eq!(subetha_versioned_slab_flush(handle), SUBETHA_OK);
+}
+
+#[test]
+fn a_laned_map_claims_a_lane_and_reads_back_across_lanes() {
+    ensure_init();
+    let dir = scratch("laned");
+    std::fs::create_dir_all(dir.to_str().expect("the path is UTF-8")).expect("the directory is made");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_create(dir.as_ptr(), 2, 64, 8, 8, 4, MODE_STRICT, &mut handle)
+        },
+        SUBETHA_OK
+    );
+
+    let key = [1u8; 8];
+    let value = [9u8; 8];
+
+    // A writer takes a free lane and writes through it.
+    let mut lane = u32::MAX;
+    assert_eq!(unsafe { subetha_laned_map_claim_lane(handle, &mut lane) }, SUBETHA_OK);
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_insert(handle, lane, key.as_ptr(), key.len(), value.as_ptr(), value.len())
+        },
+        SUBETHA_OK
+    );
+
+    // Both of these answer for a key the map already holds, so they are
+    // asked after the insert: lane_of names the lane holding it, and
+    // claim_lane_for takes that same lane back.
+    let mut lane_of = u32::MAX;
+    assert_eq!(
+        unsafe { subetha_laned_map_lane_of(handle, key.as_ptr(), key.len(), &mut lane_of) },
+        SUBETHA_OK
+    );
+    assert_eq!(lane_of, lane, "the key sits in the lane that took it");
+
+    assert_eq!(subetha_laned_map_release_lane(handle, lane), SUBETHA_OK);
+    let mut again = u32::MAX;
+    assert_eq!(
+        unsafe { subetha_laned_map_claim_lane_for(handle, key.as_ptr(), key.len(), &mut again) },
+        SUBETHA_OK
+    );
+    assert_eq!(again, lane, "claiming for a key takes the lane that holds it");
+    let lane = again;
+
+    // Reading takes no lane: it merges every one of them.
+    let mut buf = [0u8; 64];
+    let mut len = 0usize;
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_get(handle, key.as_ptr(), key.len(), buf.as_mut_ptr(), buf.len(), &mut len)
+        },
+        SUBETHA_OK
+    );
+    assert_eq!(&buf[..len], &value[..]);
+
+    assert_eq!(
+        unsafe {
+            subetha_laned_map_remove(handle, lane, key.as_ptr(), key.len(), buf.as_mut_ptr(), buf.len(), &mut len)
+        },
+        SUBETHA_OK
+    );
+    assert_eq!(subetha_laned_map_release_lane(handle, lane), SUBETHA_OK);
+
+    let mut reaped = 0u64;
+    assert_eq!(unsafe { subetha_laned_map_reap_dead_claims(handle, &mut reaped) }, SUBETHA_OK);
+    let mut freed = 0u64;
+    assert_eq!(unsafe { subetha_laned_map_sweep(handle, &mut freed) }, SUBETHA_OK);
+    let mut touched = 0u64;
+    assert_eq!(
+        unsafe { subetha_laned_map_void_epoch(handle, 999_999, &mut touched) },
+        SUBETHA_OK
+    );
+
+    let mut stats = subetha_laned_map_stats::default();
+    assert_eq!(unsafe { subetha_laned_map_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    assert_eq!(subetha_laned_map_flush(handle), SUBETHA_OK);
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_laned_map_open(dir.as_ptr(), 2, 64, 8, 8, 4, MODE_STRICT, &mut reader) },
         SUBETHA_OK
     );
 }
