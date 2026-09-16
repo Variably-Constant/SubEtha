@@ -2625,8 +2625,9 @@ impl LruCache {
             .map_err(|e| os_err("looking up", e))
     }
 
-    /// Put a key in, evicting the least recently used if the cache is
-    /// full. `True` means something was evicted to make room.
+    /// Put a key in at the most recent end, evicting the least recently
+    /// used first if the cache is full. `True` means the key was already
+    /// present and its value was replaced.
     fn put(&self, key: &[u8], value: &[u8]) -> PyResult<bool> {
         self.inner
             .put(key, value)

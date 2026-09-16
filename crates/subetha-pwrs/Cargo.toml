@@ -1,0 +1,36 @@
+[package]
+name = "subetha-pwrs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PowerShell bindings for SubEtha: a module whose cmdlets and objects are the Rust directly rather than the C ABI."
+# This crate ships as a PowerShell module rather than to crates.io, so a
+# workspace publish never picks it up.
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# A PowerShell module ships as one artifact with no way to ask for an
+# extra, so the network bridges are always built in.
+subetha-cxc = { workspace = true, features = ["tcp-bridge", "quic-bridge"] }
+# The Marshal contract, which the typed front door takes its payloads
+# through.
+subetha-core = { workspace = true }
+# The value types that ride beside a pointer: the word-sized blooms and
+# the two clocks.
+subetha-pointers = { workspace = true }
+# The binding framework. Its attributes turn a struct into a cmdlet or
+# a class and its build tool generates the managed shell around the
+# library. A path dependency on the checkout, which sits at this same
+# path on every machine that builds the crate, until the framework is
+# published.
+pwrs = { path = "C:/Temp/pwrs/crates/pwrs" }
+
+# The bridges are written against an async runtime; the module holds one
+# for all of them and starts it the first time a bridge needs it.
+tokio = { workspace = true }

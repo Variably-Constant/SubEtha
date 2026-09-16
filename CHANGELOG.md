@@ -9,6 +9,20 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+### Added
+
+- A PowerShell binding, `crates/subetha-pwrs`, built as the module
+  `SubEtha` for PowerShell 7 and Windows PowerShell 5.1. It covers the
+  same families as the Python binding: `New-` and `Open-` cmdlets
+  obtain a structure, the object each writes carries the operations as
+  methods, and `Send-SubEthaItem` and `Receive-SubEthaItem` move items
+  through the pipeline. Every cmdlet also answers to a short name with
+  the `SE` prefix. Bytes cross as `byte[]` pinned in place, guards come
+  back as objects that release on `Release()`, `Dispose()` or
+  collection, and the TCP and QUIC bridges are always built in. The
+  module is not published anywhere; it is built with `cargo pwrs` from
+  the crate.
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

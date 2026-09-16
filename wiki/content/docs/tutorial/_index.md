@@ -27,3 +27,9 @@ Arriving from Python? Read [SubEtha from Python](python/), which does
 the same through the Python binding: two processes sharing a counter,
 a message crossing between them, a lock held across both, and the two
 call shapes that cost far less than one call an item.
+
+Arriving from PowerShell? Read [SubEtha from PowerShell](powershell/),
+which does the same through the `SubEtha` module: a counter shared by
+two sessions, a message through a ring and through the pipeline, a
+lock held as an object, and the packed shapes that cost less than a
+call an item.
