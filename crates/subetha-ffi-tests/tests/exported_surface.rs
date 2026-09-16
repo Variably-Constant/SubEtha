@@ -11,6 +11,13 @@
 
 use std::ffi::CString;
 
+use subetha_ffi::qos_policy::{
+    subetha_qos, subetha_qos_create, subetha_qos_mode, SUBETHA_QOS_BEST_EFFORT,
+    SUBETHA_QOS_KEEP_LAST, SUBETHA_QOS_VOLATILE,
+};
+use subetha_ffi::virtual_endpoint::{
+    subetha_endpoint_generation, subetha_endpoint_registry_create, subetha_endpoint_registry_mode,
+};
 use subetha_ffi::graph::{subetha_graph_create, subetha_graph_open};
 use subetha_ffi::lru_cache::{
     subetha_lru_create, subetha_lru_get_and_touch, subetha_lru_put, subetha_lru_remove,
@@ -76,6 +83,12 @@ use subetha_ffi::{
     subetha_pubsub_create, subetha_pubsub_wake_all, subetha_ring_options, subetha_ring_create, subetha_ring_wake_all,
     subetha_vyukov_create, subetha_vyukov_wake_all, subetha_waker_create, subetha_waker_reset,
     subetha_waker_wake_one_up_to,
+    subetha_broadcast_create_shm, subetha_broadcast_open_shm,
+    subetha_capacity_broadcast_create_shm, subetha_capacity_broadcast_open_shm,
+    subetha_capacity_broadcast_push_wait, subetha_capacity_create_shm, subetha_capacity_open_shm,
+    subetha_capacity_pubsub_create_shm, subetha_capacity_pubsub_open_shm,
+    subetha_pubsub_create_shm, subetha_pubsub_open_shm,
+    subetha_versioned_slab_create, subetha_versioned_slab_open,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -91,6 +104,16 @@ fn ensure_init() {
 }
 
 /// The options every ring-shaped family takes, carrying the mode.
+/// A shared-memory object is named rather than pathed, so the name is a
+/// plain identifier with no directory in it.
+fn c_name(tag: &str) -> CString {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the wall clock is after the epoch")
+        .as_nanos();
+    CString::new(format!("subetha-{tag}-{}-{nanos}", std::process::id())).expect("the name has no NUL")
+}
+
 fn ring_options() -> subetha_ring_options {
     subetha_ring_options { mode: MODE_STRICT, ..Default::default() }
 }
@@ -1131,6 +1154,152 @@ fn a_tile_and_a_graph_attach_to_what_was_made() {
     let mut graph_again: subetha_handle = 0;
     assert_eq!(
         unsafe { subetha_graph_open(graph_path.as_ptr(), 8, 16, 8, 8, MODE_STRICT, &mut graph_again) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn the_shared_memory_families_make_and_attach_by_name() {
+    ensure_init();
+    // These name a shared-memory object rather than a file, so the name
+    // is a plain identifier and both sides use the same namespace.
+    let ns = 0u32;
+    let topic = c_name("shm-pubsub");
+    let mut made: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_pubsub_create_shm(topic.as_ptr(), 8, ns, &ring_options(), &mut made) },
+        SUBETHA_OK
+    );
+    let mut attached: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_pubsub_open_shm(topic.as_ptr(), 8, ns, &ring_options(), &mut attached) },
+        SUBETHA_OK
+    );
+
+    let bcast = c_name("shm-broadcast");
+    let mut b: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_broadcast_create_shm(bcast.as_ptr(), 8, ns, &ring_options(), &mut b) },
+        SUBETHA_OK
+    );
+    let mut b2: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_broadcast_open_shm(bcast.as_ptr(), 8, ns, &ring_options(), &mut b2) },
+        SUBETHA_OK
+    );
+
+    let cap = c_name("shm-capacity");
+    let mut c: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_create_shm(cap.as_ptr(), 1, 1, 8, &ring_options(), &mut c) },
+        SUBETHA_OK
+    );
+    let mut c2: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_open_shm(cap.as_ptr(), 1, 1, 8, &ring_options(), &mut c2) },
+        SUBETHA_OK
+    );
+
+    let capb = c_name("shm-capbroadcast");
+    let mut cb: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_broadcast_create_shm(capb.as_ptr(), 8, &ring_options(), &mut cb) },
+        SUBETHA_OK
+    );
+    let mut cb2: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_broadcast_open_shm(capb.as_ptr(), 8, &ring_options(), &mut cb2) },
+        SUBETHA_OK
+    );
+    let item = [1u8; 8];
+    assert_eq!(
+        unsafe { subetha_capacity_broadcast_push_wait(cb, item.as_ptr(), item.len(), 1_000) },
+        SUBETHA_OK
+    );
+
+    let capp = c_name("shm-cappubsub");
+    let mut cp: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_pubsub_create_shm(capp.as_ptr(), 8, &ring_options(), &mut cp) },
+        SUBETHA_OK
+    );
+    let mut cp2: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_capacity_pubsub_open_shm(capp.as_ptr(), 8, &ring_options(), &mut cp2) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn an_endpoint_registry_and_a_qos_policy_report_what_they_were_made_with() {
+    ensure_init();
+    let mut registry: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_endpoint_registry_create(MODE_STRICT, &mut registry) },
+        SUBETHA_OK
+    );
+    let mut mode = u32::MAX;
+    assert_eq!(
+        unsafe { subetha_endpoint_registry_mode(registry, &mut mode) },
+        SUBETHA_OK
+    );
+    assert_eq!(mode, MODE_STRICT);
+
+    // The generation steps when the registry changes, so a reader can
+    // tell that what it looked up has been superseded.
+    let mut generation = 0u64;
+    assert_eq!(
+        unsafe { subetha_endpoint_generation(registry, &mut generation) },
+        SUBETHA_OK
+    );
+
+    // A policy is made from a stated one rather than from nothing, so
+    // every field is named rather than guessed at.
+    let wants = subetha_qos {
+        durability: SUBETHA_QOS_VOLATILE,
+        reliability: SUBETHA_QOS_BEST_EFFORT,
+        history_kind: SUBETHA_QOS_KEEP_LAST,
+        history_depth: 16,
+        ..Default::default()
+    };
+    let mut policy: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_qos_create(&wants, MODE_STRICT, &mut policy) },
+        SUBETHA_OK
+    );
+    let mut qos_mode = u32::MAX;
+    assert_eq!(unsafe { subetha_qos_mode(policy, &mut qos_mode) }, SUBETHA_OK);
+    assert_eq!(qos_mode, MODE_STRICT);
+}
+
+#[test]
+fn a_versioned_slab_takes_a_width_and_a_depth_of_its_own() {
+    ensure_init();
+    let slab_path = scratch("vslab-sized");
+    let epochs_path = scratch("vslab-sized-epochs");
+    let mut handle: subetha_handle = 0;
+    // The sized form names the width and how many versions a slot keeps,
+    // where the default form picks both.
+    assert_eq!(
+        unsafe {
+            subetha_versioned_slab_create(
+                slab_path.as_ptr(), 8, 16, 4, epochs_path.as_ptr(), 4, MODE_STRICT, &mut handle,
+            )
+        },
+        SUBETHA_OK
+    );
+    let value = [5u8; 16];
+    assert_eq!(
+        unsafe { subetha_versioned_slab_set(handle, 0, value.as_ptr(), value.len()) },
+        SUBETHA_OK
+    );
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_versioned_slab_open(
+                slab_path.as_ptr(), 8, 16, 4, epochs_path.as_ptr(), 4, MODE_STRICT, &mut reader,
+            )
+        },
         SUBETHA_OK
     );
 }
