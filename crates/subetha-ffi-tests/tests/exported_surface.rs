@@ -49,6 +49,17 @@ use subetha_ffi::{
     subetha_versioned_slab_create_default, subetha_versioned_slab_flush, subetha_versioned_slab_get,
     subetha_versioned_slab_read_stats, subetha_versioned_slab_retire, subetha_versioned_slab_set,
     subetha_versioned_slab_stats, subetha_versioned_slab_sweep_slot, subetha_versioned_slab_void_epoch,
+    SUBETHA_ORDER_SEQ_CST, subetha_atomic_bool_create, subetha_atomic_bool_reset, subetha_atomic_bool_swap_explicit,
+    subetha_atomic_u32_create, subetha_atomic_u32_fetch_add_explicit,
+    subetha_atomic_u32_fetch_and_explicit, subetha_atomic_u32_fetch_or_explicit,
+    subetha_atomic_u32_fetch_xor_explicit, subetha_atomic_u32_load, subetha_atomic_u32_swap_explicit,
+    subetha_atomic_u64_compare_exchange, subetha_atomic_u64_compare_exchange_explicit,
+    subetha_atomic_u64_create, subetha_atomic_u64_fetch_and, subetha_atomic_u64_fetch_and_explicit,
+    subetha_atomic_u64_fetch_or, subetha_atomic_u64_fetch_or_explicit, subetha_atomic_u64_fetch_sub,
+    subetha_atomic_u64_fetch_sub_explicit, subetha_atomic_u64_fetch_xor,
+    subetha_atomic_u64_fetch_xor_explicit, subetha_atomic_u64_load, subetha_atomic_u64_load_explicit,
+    subetha_atomic_u64_open, subetha_atomic_u64_reset, subetha_atomic_u64_store,
+    subetha_atomic_u64_store_explicit, subetha_atomic_u64_swap, subetha_atomic_u64_swap_explicit,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -690,6 +701,163 @@ fn a_laned_map_claims_a_lane_and_reads_back_across_lanes() {
     let mut reader: subetha_handle = 0;
     assert_eq!(
         unsafe { subetha_laned_map_open(dir.as_ptr(), 2, 64, 8, 8, 4, MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_64_bit_atomic_carries_every_operation_the_abi_offers() {
+    ensure_init();
+    let path = scratch("atomic64");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_u64_create(path.as_ptr(), 10, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    // Every one of these answers the value it REPLACED, not the value it
+    // landed on, which is the half a name does not say.
+    let mut prev = 0u64;
+    let mut now = 0u64;
+
+    assert_eq!(subetha_atomic_u64_store(handle, 20), SUBETHA_OK);
+    assert_eq!(unsafe { subetha_atomic_u64_load(handle, &mut now) }, SUBETHA_OK);
+    assert_eq!(now, 20);
+
+    assert_eq!(subetha_atomic_u64_store_explicit(handle, 30, SUBETHA_ORDER_SEQ_CST), SUBETHA_OK);
+    assert_eq!(
+        unsafe { subetha_atomic_u64_load_explicit(handle, SUBETHA_ORDER_SEQ_CST, &mut now) },
+        SUBETHA_OK
+    );
+    assert_eq!(now, 30);
+
+    assert_eq!(unsafe { subetha_atomic_u64_swap(handle, 40, &mut prev) }, SUBETHA_OK);
+    assert_eq!(prev, 30, "swap answers what it replaced");
+    assert_eq!(
+        unsafe { subetha_atomic_u64_swap_explicit(handle, 50, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(prev, 40);
+
+    assert_eq!(unsafe { subetha_atomic_u64_fetch_sub(handle, 5, &mut prev) }, SUBETHA_OK);
+    assert_eq!(prev, 50);
+    assert_eq!(
+        unsafe { subetha_atomic_u64_fetch_sub_explicit(handle, 5, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(prev, 45);
+
+    assert_eq!(subetha_atomic_u64_store(handle, 0b1100), SUBETHA_OK);
+    assert_eq!(unsafe { subetha_atomic_u64_fetch_and(handle, 0b1010, &mut prev) }, SUBETHA_OK);
+    assert_eq!(prev, 0b1100);
+    assert_eq!(unsafe { subetha_atomic_u64_load(handle, &mut now) }, SUBETHA_OK);
+    assert_eq!(now, 0b1000, "and leaves the bits both sides had");
+
+    assert_eq!(
+        unsafe { subetha_atomic_u64_fetch_and_explicit(handle, 0b1111, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(unsafe { subetha_atomic_u64_fetch_or(handle, 0b0001, &mut prev) }, SUBETHA_OK);
+    assert_eq!(
+        unsafe { subetha_atomic_u64_fetch_or_explicit(handle, 0b0010, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(unsafe { subetha_atomic_u64_fetch_xor(handle, 0b0011, &mut prev) }, SUBETHA_OK);
+    assert_eq!(
+        unsafe { subetha_atomic_u64_fetch_xor_explicit(handle, 0b0011, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+
+    // A compare and exchange that does not match leaves the value alone
+    // and reports what it found, which is how a caller retries.
+    assert_eq!(subetha_atomic_u64_store(handle, 7), SUBETHA_OK);
+    let mut current = 0u64;
+    let mut swapped = true;
+    assert_eq!(
+        unsafe { subetha_atomic_u64_compare_exchange(handle, 999, 8, &mut current, &mut swapped) },
+        SUBETHA_OK
+    );
+    assert!(!swapped, "the value was not what the caller expected");
+    assert_eq!(current, 7, "and the answer says what it actually was");
+
+    assert_eq!(
+        unsafe {
+            subetha_atomic_u64_compare_exchange_explicit(
+                handle, 7, 8, SUBETHA_ORDER_SEQ_CST, SUBETHA_ORDER_SEQ_CST, &mut current, &mut swapped,
+            )
+        },
+        SUBETHA_OK
+    );
+    assert!(swapped, "expecting what was there swaps it");
+
+    let reset_path = scratch("atomic64-reset");
+    let mut fresh: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_u64_reset(reset_path.as_ptr(), 1, MODE_STRICT, &mut fresh) },
+        SUBETHA_OK
+    );
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_u64_open(path.as_ptr(), MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_32_bit_atomic_carries_the_explicit_orderings_too() {
+    ensure_init();
+    let path = scratch("atomic32");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_u32_create(path.as_ptr(), 0b1100, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+    let mut prev = 0u32;
+    assert_eq!(
+        unsafe { subetha_atomic_u32_fetch_add_explicit(handle, 1, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(
+        unsafe { subetha_atomic_u32_fetch_and_explicit(handle, 0b1010, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(
+        unsafe { subetha_atomic_u32_fetch_or_explicit(handle, 0b0001, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(
+        unsafe { subetha_atomic_u32_fetch_xor_explicit(handle, 0b0011, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert_eq!(
+        unsafe { subetha_atomic_u32_swap_explicit(handle, 99, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    let mut now = 0u32;
+    assert_eq!(unsafe { subetha_atomic_u32_load(handle, &mut now) }, SUBETHA_OK);
+    assert_eq!(now, 99, "the swap landed on what it was given");
+}
+
+#[test]
+fn a_boolean_atomic_swaps_and_resets() {
+    ensure_init();
+    let path = scratch("atomicbool");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_bool_create(path.as_ptr(), false, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+    let mut prev = true;
+    assert_eq!(
+        unsafe { subetha_atomic_bool_swap_explicit(handle, true, SUBETHA_ORDER_SEQ_CST, &mut prev) },
+        SUBETHA_OK
+    );
+    assert!(!prev, "swap answers what it replaced");
+
+    let reset_path = scratch("atomicbool-reset");
+    let mut fresh: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_atomic_bool_reset(reset_path.as_ptr(), true, MODE_STRICT, &mut fresh) },
         SUBETHA_OK
     );
 }
