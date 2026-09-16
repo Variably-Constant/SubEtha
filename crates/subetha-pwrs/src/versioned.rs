@@ -120,6 +120,10 @@ impl Reservoir {
 
 /// Obtains the reservoir at Path holding Capacity items, creating it
 /// when the file does not exist.
+///
+/// # Examples
+///
+/// `$sample = New-SubEthaReservoir -Path C:\ipc\reservoir -Capacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaReservoir", alias = "New-SEReservoir", output = ["SubEtha.Reservoir"])]
 #[derive(Default)]
 pub struct NewSubEthaReservoir {
@@ -140,6 +144,10 @@ impl Cmdlet for NewSubEthaReservoir {
 
 /// Attaches to the reservoir at Path, which must exist with the
 /// Capacity it was made with.
+///
+/// # Examples
+///
+/// `$sample = Open-SubEthaReservoir -Path C:\ipc\reservoir -Capacity 256`
 #[cmdlet(verb = "Open", noun = "SubEthaReservoir", alias = "Open-SEReservoir", output = ["SubEtha.Reservoir"])]
 #[derive(Default)]
 pub struct OpenSubEthaReservoir {
@@ -282,6 +290,10 @@ impl HandleTable {
 /// Obtains the handle table at Path holding Capacity values, creating
 /// it when the file does not exist; with Reset, empties it and remakes
 /// it at that capacity.
+///
+/// # Examples
+///
+/// `$table = New-SubEthaHandleTable -Path C:\ipc\handletable -Capacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaHandleTable", alias = "New-SEHandleTable", output = ["SubEtha.HandleTable"])]
 #[derive(Default)]
 pub struct NewSubEthaHandleTable {
@@ -305,6 +317,10 @@ impl Cmdlet for NewSubEthaHandleTable {
 
 /// Attaches to the handle table at Path, which must exist with the
 /// Capacity it was made with.
+///
+/// # Examples
+///
+/// `$table = Open-SubEthaHandleTable -Path C:\ipc\handletable -Capacity 256`
 #[cmdlet(verb = "Open", noun = "SubEthaHandleTable", alias = "Open-SEHandleTable", output = ["SubEtha.HandleTable"])]
 #[derive(Default)]
 pub struct OpenSubEthaHandleTable {
@@ -452,6 +468,10 @@ impl TimePointTile {
 
 /// Obtains the time-point tile at Path, creating it when the file does
 /// not exist; with Reset, empties it and remakes it.
+///
+/// # Examples
+///
+/// `$tile = New-SubEthaTimePointTile -Path C:\ipc\timepointtile`
 #[cmdlet(verb = "New", noun = "SubEthaTimePointTile", alias = "New-SETimePointTile", output = ["SubEtha.TimePointTile"])]
 #[derive(Default)]
 pub struct NewSubEthaTimePointTile {
@@ -471,6 +491,10 @@ impl Cmdlet for NewSubEthaTimePointTile {
 }
 
 /// Attaches to the time-point tile at Path, which must exist.
+///
+/// # Examples
+///
+/// `$tile = Open-SubEthaTimePointTile -Path C:\ipc\timepointtile`
 #[cmdlet(verb = "Open", noun = "SubEthaTimePointTile", alias = "Open-SETimePointTile", output = ["SubEtha.TimePointTile"])]
 #[derive(Default)]
 pub struct OpenSubEthaTimePointTile {
@@ -588,6 +612,10 @@ impl VersionChain {
 /// Obtains the version chain at Path holding Capacity versions,
 /// creating it when the file does not exist; with Reset, empties it and
 /// remakes it at that capacity.
+///
+/// # Examples
+///
+/// `$chain = New-SubEthaVersionChain -Path C:\ipc\versionchain -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaVersionChain", alias = "New-SEVersionChain", output = ["SubEtha.VersionChain"])]
 #[derive(Default)]
 pub struct NewSubEthaVersionChain {
@@ -611,6 +639,10 @@ impl Cmdlet for NewSubEthaVersionChain {
 
 /// Attaches to the version chain at Path, which must exist with the
 /// Capacity it was made with.
+///
+/// # Examples
+///
+/// `$chain = Open-SubEthaVersionChain -Path C:\ipc\versionchain -Capacity 64`
 #[cmdlet(verb = "Open", noun = "SubEthaVersionChain", alias = "Open-SEVersionChain", output = ["SubEtha.VersionChain"])]
 #[derive(Default)]
 pub struct OpenSubEthaVersionChain {
@@ -775,6 +807,10 @@ impl VersionedSlab {
 
 /// Obtains the versioned slab at Path holding Capacity slots, with its
 /// epochs at EpochsPath, creating both when the files do not exist.
+///
+/// # Examples
+///
+/// `$slab = New-SubEthaVersionedSlab -Path C:\ipc\vslab -Capacity 64 -EpochsPath C:\ipc\epochs`
 #[cmdlet(verb = "New", noun = "SubEthaVersionedSlab", alias = "New-SEVersionedSlab", output = ["SubEtha.VersionedSlab"])]
 #[derive(Default)]
 pub struct NewSubEthaVersionedSlab {
@@ -802,6 +838,10 @@ impl Cmdlet for NewSubEthaVersionedSlab {
 
 /// Attaches to the versioned slab at Path, which must exist with the
 /// capacity and pin count it was made with.
+///
+/// # Examples
+///
+/// `$slab = Open-SubEthaVersionedSlab -Path C:\ipc\vslab -Capacity 64 -EpochsPath C:\ipc\epochs`
 #[cmdlet(verb = "Open", noun = "SubEthaVersionedSlab", alias = "Open-SEVersionedSlab", output = ["SubEtha.VersionedSlab"])]
 #[derive(Default)]
 pub struct OpenSubEthaVersionedSlab {
@@ -1072,6 +1112,10 @@ impl VersionedMap {
 
 /// Obtains the versioned map at Path holding Capacity entries, with its
 /// epochs at EpochsPath, creating both when the files do not exist.
+///
+/// # Examples
+///
+/// `$map = New-SubEthaVersionedMap -Path C:\ipc\vmap -Capacity 256 -EpochsPath C:\ipc\epochs`
 #[cmdlet(verb = "New", noun = "SubEthaVersionedMap", alias = "New-SEVersionedMap", output = ["SubEtha.VersionedMap"])]
 #[derive(Default)]
 pub struct NewSubEthaVersionedMap {
@@ -1100,6 +1144,10 @@ impl Cmdlet for NewSubEthaVersionedMap {
 
 /// Attaches to the versioned map at Path, which must exist with the
 /// capacity and pin count it was made with.
+///
+/// # Examples
+///
+/// `$map = Open-SubEthaVersionedMap -Path C:\ipc\vmap -Capacity 256 -EpochsPath C:\ipc\epochs`
 #[cmdlet(verb = "Open", noun = "SubEthaVersionedMap", alias = "Open-SEVersionedMap", output = ["SubEtha.VersionedMap"])]
 #[derive(Default)]
 pub struct OpenSubEthaVersionedMap {
@@ -1342,6 +1390,10 @@ impl LanedMap {
 
 /// Obtains the laned map in Directory with Lanes lanes of NodesPerLane
 /// entries, creating it when the directory does not hold one.
+///
+/// # Examples
+///
+/// `$map = New-SubEthaLanedMap -Directory C:\ipc\lanedmap -Lanes 4`
 #[cmdlet(verb = "New", noun = "SubEthaLanedMap", alias = "New-SELanedMap", output = ["SubEtha.LanedMap"])]
 #[derive(Default)]
 pub struct NewSubEthaLanedMap {
@@ -1369,6 +1421,10 @@ impl Cmdlet for NewSubEthaLanedMap {
 
 /// Attaches to the laned map in Directory, which must exist with the
 /// lane count, lane size and pin count it was made with.
+///
+/// # Examples
+///
+/// `$map = Open-SubEthaLanedMap -Directory C:\ipc\lanedmap -Lanes 4`
 #[cmdlet(verb = "Open", noun = "SubEthaLanedMap", alias = "Open-SELanedMap", output = ["SubEtha.LanedMap"])]
 #[derive(Default)]
 pub struct OpenSubEthaLanedMap {
@@ -1702,6 +1758,10 @@ impl TopologyMap {
 /// it. The thresholds are how many different places a participant has
 /// to reach, or be reached from, before the shape counts as one to
 /// many or many to one.
+///
+/// # Examples
+///
+/// `$topology = New-SubEthaTopologyMap -Path C:\ipc\topologymap -Participants 8`
 #[cmdlet(verb = "New", noun = "SubEthaTopologyMap", alias = "New-SETopologyMap", output = ["SubEtha.TopologyMap"])]
 #[derive(Default)]
 pub struct NewSubEthaTopologyMap {
@@ -1734,6 +1794,10 @@ impl Cmdlet for NewSubEthaTopologyMap {
 
 /// Attaches to the topology map at Path, which must exist with the
 /// Participants it was made with.
+///
+/// # Examples
+///
+/// `$topology = Open-SubEthaTopologyMap -Path C:\ipc\topologymap -Participants 8`
 #[cmdlet(verb = "Open", noun = "SubEthaTopologyMap", alias = "Open-SETopologyMap", output = ["SubEtha.TopologyMap"])]
 #[derive(Default)]
 pub struct OpenSubEthaTopologyMap {
@@ -1883,6 +1947,10 @@ impl Graph {
 
 /// Obtains the graph beside Path holding up to MaxNodes nodes and
 /// MaxEdges edges, creating it when the files do not exist.
+///
+/// # Examples
+///
+/// `$graph = New-SubEthaGraph -Path C:\ipc\graph -MaxNodes 256 -MaxEdges 1024`
 #[cmdlet(verb = "New", noun = "SubEthaGraph", alias = "New-SEGraph", output = ["SubEtha.Graph"])]
 #[derive(Default)]
 pub struct NewSubEthaGraph {
@@ -1906,6 +1974,10 @@ impl Cmdlet for NewSubEthaGraph {
 
 /// Attaches to the graph beside Path, which must exist with the sizes
 /// it was made with.
+///
+/// # Examples
+///
+/// `$graph = Open-SubEthaGraph -Path C:\ipc\graph -MaxNodes 256 -MaxEdges 1024`
 #[cmdlet(verb = "Open", noun = "SubEthaGraph", alias = "Open-SEGraph", output = ["SubEtha.Graph"])]
 #[derive(Default)]
 pub struct OpenSubEthaGraph {
@@ -2080,6 +2152,10 @@ impl Universal {
 /// Obtains the self-storing set beside Path holding Capacity values,
 /// creating it when the files do not exist; with Reset, empties it and
 /// remakes it at that capacity.
+///
+/// # Examples
+///
+/// `$set = New-SubEthaUniversal -Path C:\ipc\universal -Capacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaUniversal", alias = "New-SEUniversal", output = ["SubEtha.Universal"])]
 #[derive(Default)]
 pub struct NewSubEthaUniversal {
@@ -2103,6 +2179,10 @@ impl Cmdlet for NewSubEthaUniversal {
 
 /// Attaches to the self-storing set beside Path, which must exist with
 /// the Capacity it was made with.
+///
+/// # Examples
+///
+/// `$set = Open-SubEthaUniversal -Path C:\ipc\universal -Capacity 256`
 #[cmdlet(verb = "Open", noun = "SubEthaUniversal", alias = "Open-SEUniversal", output = ["SubEtha.Universal"])]
 #[derive(Default)]
 pub struct OpenSubEthaUniversal {
@@ -2256,6 +2336,10 @@ fn tower_levels(ps: &Pipeline<'_>, paths: &[String], capacities: &[u64]) -> PsRe
 /// holding LevelCapacity places each, given top first; creating them
 /// when the files do not exist. With no levels the tower is one deep,
 /// which is a plain region reached by a path of one number.
+///
+/// # Examples
+///
+/// `$tower = New-SubEthaTower -Path C:\ipc\tower -Capacity 256 -ValueSize 8 -LevelPath C:\ipc\tower-top -LevelCapacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaTower", alias = "New-SETower", output = ["SubEtha.Tower"])]
 #[derive(Default)]
 pub struct NewSubEthaTower {
@@ -2287,6 +2371,10 @@ impl Cmdlet for NewSubEthaTower {
 
 /// Attaches to the tower at Path, which must exist with the shape it
 /// was made with.
+///
+/// # Examples
+///
+/// `$tower = Open-SubEthaTower -Path C:\ipc\tower -Capacity 256 -ValueSize 8 -LevelPath C:\ipc\tower-top -LevelCapacity 256`
 #[cmdlet(verb = "Open", noun = "SubEthaTower", alias = "Open-SETower", output = ["SubEtha.Tower"])]
 #[derive(Default)]
 pub struct OpenSubEthaTower {

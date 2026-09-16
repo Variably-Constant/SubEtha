@@ -112,6 +112,10 @@ impl BloomFilter {
 
 /// Obtains the Bloom filter at Path with Bits bits and Hashes hash
 /// functions, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$filter = New-SubEthaBloomFilter -Path C:\ipc\bloomfilter -Bits 98304 -Hashes 7`
 #[cmdlet(verb = "New", noun = "SubEthaBloomFilter", alias = "New-SEBloomFilter", output = ["SubEtha.BloomFilter"])]
 #[derive(Default)]
 pub struct NewSubEthaBloomFilter {
@@ -135,6 +139,10 @@ impl Cmdlet for NewSubEthaBloomFilter {
 
 /// Attaches to the Bloom filter at Path, which must exist with the size
 /// it was created with.
+///
+/// # Examples
+///
+/// `$filter = Open-SubEthaBloomFilter -Path C:\ipc\bloomfilter -Bits 98304 -Hashes 7`
 #[cmdlet(verb = "Open", noun = "SubEthaBloomFilter", alias = "Open-SEBloomFilter", output = ["SubEtha.BloomFilter"])]
 #[derive(Default)]
 pub struct OpenSubEthaBloomFilter {
@@ -160,6 +168,10 @@ impl Cmdlet for OpenSubEthaBloomFilter {
 /// FalsePositiveRate of wrong yeses, so a caller sizes a filter from
 /// what it means rather than from arithmetic. Blocked sizes for the
 /// blocked filter.
+///
+/// # Examples
+///
+/// `$size = Measure-SubEthaBloomSize -Items 10000 -FalsePositiveRate 0.01`
 #[cmdlet(verb = "Measure", noun = "SubEthaBloomSize", alias = "Measure-SEBloomSize", output = ["SubEtha.BloomSize"])]
 #[derive(Default)]
 pub struct MeasureSubEthaBloomSize {
@@ -278,6 +290,10 @@ impl BlockedBloomFilter {
 /// Obtains the blocked Bloom filter at Path with Bits bits and Hashes
 /// hash functions, creating it when the file does not exist; with Reset,
 /// empties it and remakes it at that size.
+///
+/// # Examples
+///
+/// `$filter = New-SubEthaBlockedBloomFilter -Path C:\ipc\blocked -Bits 98304 -Hashes 7`
 #[cmdlet(verb = "New", noun = "SubEthaBlockedBloomFilter", alias = "New-SEBlockedBloomFilter", output = ["SubEtha.BlockedBloomFilter"])]
 #[derive(Default)]
 pub struct NewSubEthaBlockedBloomFilter {
@@ -305,6 +321,10 @@ impl Cmdlet for NewSubEthaBlockedBloomFilter {
 
 /// Attaches to the blocked Bloom filter at Path, which must exist with
 /// the size it was created with.
+///
+/// # Examples
+///
+/// `$filter = Open-SubEthaBlockedBloomFilter -Path C:\ipc\blocked -Bits 98304 -Hashes 7`
 #[cmdlet(verb = "Open", noun = "SubEthaBlockedBloomFilter", alias = "Open-SEBlockedBloomFilter", output = ["SubEtha.BlockedBloomFilter"])]
 #[derive(Default)]
 pub struct OpenSubEthaBlockedBloomFilter {
@@ -392,6 +412,10 @@ impl HyperLogLog {
 /// Obtains the distinct counter at Path at Precision (fourteen when
 /// absent; four is the smallest the format allows and sixteen the
 /// largest), creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$counter = New-SubEthaHyperLogLog -Path C:\ipc\hyperloglog`
 #[cmdlet(verb = "New", noun = "SubEthaHyperLogLog", alias = "New-SEHyperLogLog", output = ["SubEtha.HyperLogLog"])]
 #[derive(Default)]
 pub struct NewSubEthaHyperLogLog {
@@ -412,6 +436,10 @@ impl Cmdlet for NewSubEthaHyperLogLog {
 
 /// Attaches to the distinct counter at Path, which must exist at the
 /// Precision it was created with.
+///
+/// # Examples
+///
+/// `$counter = Open-SubEthaHyperLogLog -Path C:\ipc\hyperloglog`
 #[cmdlet(verb = "Open", noun = "SubEthaHyperLogLog", alias = "Open-SEHyperLogLog", output = ["SubEtha.HyperLogLog"])]
 #[derive(Default)]
 pub struct OpenSubEthaHyperLogLog {
@@ -513,6 +541,10 @@ impl CountMinSketch {
 
 /// Obtains the count-min sketch at Path of Depth rows by Width counters,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$sketch = New-SubEthaCountMinSketch -Path C:\ipc\countminsketch -Depth 5 -Width 272`
 #[cmdlet(verb = "New", noun = "SubEthaCountMinSketch", alias = "New-SECountMinSketch", output = ["SubEtha.CountMinSketch"])]
 #[derive(Default)]
 pub struct NewSubEthaCountMinSketch {
@@ -536,6 +568,10 @@ impl Cmdlet for NewSubEthaCountMinSketch {
 
 /// Attaches to the count-min sketch at Path, which must exist with the
 /// depth and width it was created with.
+///
+/// # Examples
+///
+/// `$sketch = Open-SubEthaCountMinSketch -Path C:\ipc\countminsketch -Depth 5 -Width 272`
 #[cmdlet(verb = "Open", noun = "SubEthaCountMinSketch", alias = "Open-SECountMinSketch", output = ["SubEtha.CountMinSketch"])]
 #[derive(Default)]
 pub struct OpenSubEthaCountMinSketch {
@@ -560,6 +596,10 @@ impl Cmdlet for OpenSubEthaCountMinSketch {
 /// The depth and width for a count-min sketch with an error of Epsilon
 /// at confidence Delta, so a caller sizes the sketch from what it
 /// needs.
+///
+/// # Examples
+///
+/// `$size = Measure-SubEthaSketchSize -Epsilon 0.01 -Delta 0.01`
 #[cmdlet(verb = "Measure", noun = "SubEthaSketchSize", alias = "Measure-SESketchSize", output = ["SubEtha.SketchSize"])]
 #[derive(Default)]
 pub struct MeasureSubEthaSketchSize {
@@ -657,6 +697,10 @@ impl Histogram {
 
 /// Obtains the histogram at Path with the rising bucket Boundaries,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$histogram = New-SubEthaHistogram -Path C:\ipc\histogram -Boundaries @(10, 100, 1000)`
 #[cmdlet(verb = "New", noun = "SubEthaHistogram", alias = "New-SEHistogram", output = ["SubEtha.Histogram"])]
 #[derive(Default)]
 pub struct NewSubEthaHistogram {
@@ -677,6 +721,10 @@ impl Cmdlet for NewSubEthaHistogram {
 
 /// Attaches to the histogram at Path, which must exist with the
 /// Boundaries it was created with.
+///
+/// # Examples
+///
+/// `$histogram = Open-SubEthaHistogram -Path C:\ipc\histogram -Boundaries @(10, 100, 1000)`
 #[cmdlet(verb = "Open", noun = "SubEthaHistogram", alias = "Open-SEHistogram", output = ["SubEtha.Histogram"])]
 #[derive(Default)]
 pub struct OpenSubEthaHistogram {
@@ -753,6 +801,10 @@ impl RateLimiter {
 
 /// Obtains the rate limiter at Path holding Capacity tokens that come
 /// back at RefillPerSecond, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$limiter = New-SubEthaRateLimiter -Path C:\ipc\ratelimiter -Capacity 100 -RefillPerSecond 10`
 #[cmdlet(verb = "New", noun = "SubEthaRateLimiter", alias = "New-SERateLimiter", output = ["SubEtha.RateLimiter"])]
 #[derive(Default)]
 pub struct NewSubEthaRateLimiter {
@@ -776,6 +828,10 @@ impl Cmdlet for NewSubEthaRateLimiter {
 
 /// Attaches to the rate limiter at Path, which must exist with the
 /// capacity and rate it was created with.
+///
+/// # Examples
+///
+/// `$limiter = Open-SubEthaRateLimiter -Path C:\ipc\ratelimiter -Capacity 100 -RefillPerSecond 10`
 #[cmdlet(verb = "Open", noun = "SubEthaRateLimiter", alias = "Open-SERateLimiter", output = ["SubEtha.RateLimiter"])]
 #[derive(Default)]
 pub struct OpenSubEthaRateLimiter {
@@ -925,6 +981,10 @@ impl LruCache {
 /// Obtains the cache at Path holding Capacity entries of KeySize-byte
 /// keys and ValueSize-byte values, creating it when the file does not
 /// exist.
+///
+/// # Examples
+///
+/// `$cache = New-SubEthaLruCache -Path C:\ipc\lrucache -Capacity 256 -KeySize 8 -ValueSize 64`
 #[cmdlet(verb = "New", noun = "SubEthaLruCache", alias = "New-SELruCache", output = ["SubEtha.LruCache"])]
 #[derive(Default)]
 pub struct NewSubEthaLruCache {
@@ -951,6 +1011,10 @@ impl Cmdlet for NewSubEthaLruCache {
 
 /// Attaches to the cache at Path, which must exist with the capacity
 /// and sizes it was created with.
+///
+/// # Examples
+///
+/// `$cache = Open-SubEthaLruCache -Path C:\ipc\lrucache -Capacity 256 -KeySize 8 -ValueSize 64`
 #[cmdlet(verb = "Open", noun = "SubEthaLruCache", alias = "Open-SELruCache", output = ["SubEtha.LruCache"])]
 #[derive(Default)]
 pub struct OpenSubEthaLruCache {

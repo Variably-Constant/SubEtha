@@ -291,6 +291,10 @@ impl SpscRing {
 
 /// Obtains the single-producer ring at Path holding Capacity slots,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$ring = New-SubEthaSpscRing -Path C:\ipc\spscring -Capacity 4096`
 #[cmdlet(verb = "New", noun = "SubEthaSpscRing", alias = "New-SESpscRing", output = ["SubEtha.SpscRing"])]
 #[derive(Default)]
 pub struct NewSubEthaSpscRing {
@@ -311,6 +315,10 @@ impl Cmdlet for NewSubEthaSpscRing {
 
 /// Attaches to the single-producer ring at Path, which must exist with
 /// the Capacity it was created with.
+///
+/// # Examples
+///
+/// `$ring = Open-SubEthaSpscRing -Path C:\ipc\spscring -Capacity 4096`
 #[cmdlet(verb = "Open", noun = "SubEthaSpscRing", alias = "Open-SESpscRing", output = ["SubEtha.SpscRing"])]
 #[derive(Default)]
 pub struct OpenSubEthaSpscRing {
@@ -431,6 +439,10 @@ impl BroadcastRing {
 
 /// Obtains the broadcast ring at Path holding Capacity slots, creating
 /// it when the file does not exist.
+///
+/// # Examples
+///
+/// `$ring = New-SubEthaBroadcastRing -Path C:\ipc\broadcastring -Capacity 4096`
 #[cmdlet(verb = "New", noun = "SubEthaBroadcastRing", alias = "New-SEBroadcastRing", output = ["SubEtha.BroadcastRing"])]
 #[derive(Default)]
 pub struct NewSubEthaBroadcastRing {
@@ -451,6 +463,10 @@ impl Cmdlet for NewSubEthaBroadcastRing {
 
 /// Attaches to the broadcast ring at Path, which must exist with the
 /// Capacity it was created with.
+///
+/// # Examples
+///
+/// `$ring = Open-SubEthaBroadcastRing -Path C:\ipc\broadcastring -Capacity 4096`
 #[cmdlet(verb = "Open", noun = "SubEthaBroadcastRing", alias = "Open-SEBroadcastRing", output = ["SubEtha.BroadcastRing"])]
 #[derive(Default)]
 pub struct OpenSubEthaBroadcastRing {
@@ -638,6 +654,10 @@ impl CapacityRing {
 
 /// Obtains the resizable ring at Path holding Capacity slots, a power of
 /// two, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$ring = New-SubEthaCapacityRing -Path C:\ipc\capacityring -Capacity 4096`
 #[cmdlet(verb = "New", noun = "SubEthaCapacityRing", alias = "New-SECapacityRing", output = ["SubEtha.CapacityRing"])]
 #[derive(Default)]
 pub struct NewSubEthaCapacityRing {
@@ -668,6 +688,10 @@ impl Cmdlet for NewSubEthaCapacityRing {
 
 /// Attaches to the resizable ring at Path, which must exist with the
 /// capacity, counts and stamping it was created with.
+///
+/// # Examples
+///
+/// `$ring = Open-SubEthaCapacityRing -Path C:\ipc\capacityring -Capacity 4096`
 #[cmdlet(verb = "Open", noun = "SubEthaCapacityRing", alias = "Open-SECapacityRing", output = ["SubEtha.CapacityRing"])]
 #[derive(Default)]
 pub struct OpenSubEthaCapacityRing {
@@ -842,6 +866,10 @@ impl LocaleRing {
 /// of two, creating it when the file does not exist. All three backings
 /// are built, so a later migration has somewhere to go without
 /// allocating.
+///
+/// # Examples
+///
+/// `$ring = New-SubEthaLocaleRing -Path C:\ipc\localering -Capacity 4096`
 #[cmdlet(verb = "New", noun = "SubEthaLocaleRing", alias = "New-SELocaleRing", output = ["SubEtha.LocaleRing"])]
 #[derive(Default)]
 pub struct NewSubEthaLocaleRing {
@@ -872,6 +900,10 @@ impl Cmdlet for NewSubEthaLocaleRing {
 
 /// Attaches to the relocatable ring at Path, which must exist with the
 /// capacity, counts and stamping it was created with.
+///
+/// # Examples
+///
+/// `$ring = Open-SubEthaLocaleRing -Path C:\ipc\localering -Capacity 4096`
 #[cmdlet(verb = "Open", noun = "SubEthaLocaleRing", alias = "Open-SELocaleRing", output = ["SubEtha.LocaleRing"])]
 #[derive(Default)]
 pub struct OpenSubEthaLocaleRing {
@@ -1101,6 +1133,10 @@ impl Ring {
 
 /// Obtains the adaptive ring at Path holding Capacity slots, creating
 /// it when the file does not exist.
+///
+/// # Examples
+///
+/// `$ring = New-SubEthaRing -Path C:\ipc\events -Capacity 4096`
 #[cmdlet(verb = "New", noun = "SubEthaRing", alias = "New-SERing", output = ["SubEtha.Ring"])]
 #[derive(Default)]
 pub struct NewSubEthaRing {
@@ -1132,6 +1168,10 @@ impl Cmdlet for NewSubEthaRing {
 
 /// Attaches to the adaptive ring at Path, which must exist with the
 /// capacity, counts and stamps it was created with.
+///
+/// # Examples
+///
+/// `$ring = Open-SubEthaRing -Path C:\ipc\events -Capacity 4096`
 #[cmdlet(verb = "Open", noun = "SubEthaRing", alias = "Open-SERing", output = ["SubEtha.Ring"])]
 #[derive(Default)]
 pub struct OpenSubEthaRing {
@@ -1348,6 +1388,10 @@ impl ReorderWindow {
 /// Builds a reorder window. Floor is the window to start at and Cap the
 /// widest it may grow to; a window at least as wide as the number of
 /// senders puts every item back in order.
+///
+/// # Examples
+///
+/// `$window = New-SubEthaReorderWindow -Floor 4 -Cap 64`
 #[cmdlet(verb = "New", noun = "SubEthaReorderWindow", alias = "New-SEReorderWindow", output = ["SubEtha.ReorderWindow"])]
 #[derive(Default)]
 pub struct NewSubEthaReorderWindow {
@@ -1467,6 +1511,10 @@ impl Stack {
 
 /// Obtains the stack at Path holding up to Capacity items of ElementSize
 /// bytes, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$stack = New-SubEthaStack -Path C:\ipc\stack -Capacity 256 -ElementSize 32`
 #[cmdlet(verb = "New", noun = "SubEthaStack", alias = "New-SEStack", output = ["SubEtha.Stack"])]
 #[derive(Default)]
 pub struct NewSubEthaStack {
@@ -1496,6 +1544,10 @@ impl Cmdlet for NewSubEthaStack {
 
 /// Attaches to the stack at Path, which must exist with the capacity and
 /// layout it was created with.
+///
+/// # Examples
+///
+/// `$stack = Open-SubEthaStack -Path C:\ipc\stack -Capacity 256 -ElementSize 32`
 #[cmdlet(verb = "Open", noun = "SubEthaStack", alias = "Open-SEStack", output = ["SubEtha.Stack"])]
 #[derive(Default)]
 pub struct OpenSubEthaStack {
@@ -1604,6 +1656,10 @@ impl Deque {
 /// Obtains the deque at Path as its owner, holding Capacity items, a
 /// power of two, of ElementSize bytes, creating it when the file does
 /// not exist.
+///
+/// # Examples
+///
+/// `$deque = New-SubEthaDeque -Path C:\ipc\deque -Capacity 256 -ElementSize 32`
 #[cmdlet(verb = "New", noun = "SubEthaDeque", alias = "New-SEDeque", output = ["SubEtha.Deque"])]
 #[derive(Default)]
 pub struct NewSubEthaDeque {
@@ -1639,6 +1695,10 @@ impl Cmdlet for NewSubEthaDeque {
 /// Attaches to the deque at Path as a thief: the handle steals from the
 /// deque another process owns, and neither pushes nor pops. No capacity
 /// is asked for, because the file states it.
+///
+/// # Examples
+///
+/// `$deque = Open-SubEthaDeque -Path C:\ipc\deque -ElementSize 32`
 #[cmdlet(verb = "Open", noun = "SubEthaDeque", alias = "Open-SEDeque", output = ["SubEtha.Deque"])]
 #[derive(Default)]
 pub struct OpenSubEthaDeque {
@@ -1765,6 +1825,10 @@ impl PubSub {
 
 /// Obtains the publish/subscribe ring at Path keeping Capacity items,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$topic = New-SubEthaPubSub -Path C:\ipc\pubsub -Capacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaPubSub", alias = "New-SEPubSub", output = ["SubEtha.PubSub"])]
 #[derive(Default)]
 pub struct NewSubEthaPubSub {
@@ -1785,6 +1849,10 @@ impl Cmdlet for NewSubEthaPubSub {
 
 /// Attaches to the publish/subscribe ring at Path, which must exist
 /// with the Capacity it was created with.
+///
+/// # Examples
+///
+/// `$topic = Open-SubEthaPubSub -Path C:\ipc\pubsub -Capacity 256`
 #[cmdlet(verb = "Open", noun = "SubEthaPubSub", alias = "Open-SEPubSub", output = ["SubEtha.PubSub"])]
 #[derive(Default)]
 pub struct OpenSubEthaPubSub {
@@ -1968,6 +2036,10 @@ impl LamportConsumer {
 /// one of each may exist per ring: within a process the types enforce
 /// that, and across processes it is the caller's undertaking, which is
 /// why the pair is handed out rather than opened twice.
+///
+/// # Examples
+///
+/// `$producer, $consumer = New-SubEthaLamportPair -Path C:\ipc\lamportpair -Capacity 256`
 #[cmdlet(verb = "New", noun = "SubEthaLamportPair", alias = "New-SELamportPair", output = ["SubEtha.LamportProducer", "SubEtha.LamportConsumer"])]
 #[derive(Default)]
 pub struct NewSubEthaLamportPair {
@@ -2094,6 +2166,10 @@ impl FrameRegion {
 
 /// Obtains the frame region at Path holding BlockCount blocks of
 /// BlockSize bytes, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$frames = New-SubEthaFrameRegion -Path C:\ipc\frameregion -BlockSize 4096 -BlockCount 64`
 #[cmdlet(verb = "New", noun = "SubEthaFrameRegion", alias = "New-SEFrameRegion", output = ["SubEtha.FrameRegion"])]
 #[derive(Default)]
 pub struct NewSubEthaFrameRegion {
@@ -2117,6 +2193,10 @@ impl Cmdlet for NewSubEthaFrameRegion {
 
 /// Attaches to the frame region at Path, which must exist with the
 /// block size and count it was created with.
+///
+/// # Examples
+///
+/// `$frames = Open-SubEthaFrameRegion -Path C:\ipc\frameregion -BlockSize 4096 -BlockCount 64`
 #[cmdlet(verb = "Open", noun = "SubEthaFrameRegion", alias = "Open-SEFrameRegion", output = ["SubEtha.FrameRegion"])]
 #[derive(Default)]
 pub struct OpenSubEthaFrameRegion {

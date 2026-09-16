@@ -95,6 +95,10 @@ impl TinyBloom {
 
 /// Builds a word-sized Bloom filter, empty, holding Key, or rebuilt from
 /// the number Bits an earlier one gave.
+///
+/// # Examples
+///
+/// `$bloom = New-SubEthaTinyBloom`
 #[cmdlet(verb = "New", noun = "SubEthaTinyBloom", alias = "New-SETinyBloom", output = ["SubEtha.TinyBloom"])]
 #[derive(Default)]
 pub struct NewSubEthaTinyBloom {
@@ -173,6 +177,10 @@ impl FineBloom {
 }
 
 /// Builds a four-word Bloom filter, empty or holding Key.
+///
+/// # Examples
+///
+/// `$bloom = New-SubEthaFineBloom -Key 'a'`
 #[cmdlet(verb = "New", noun = "SubEthaFineBloom", alias = "New-SEFineBloom", output = ["SubEtha.FineBloom"])]
 #[derive(Default)]
 pub struct NewSubEthaFineBloom {
@@ -270,6 +278,10 @@ impl Clock {
 /// Builds a hybrid logical clock reading: Physical and Logical as given,
 /// or with Now the moment this runs, in microseconds since the epoch,
 /// with the count at zero.
+///
+/// # Examples
+///
+/// `$clock = New-SubEthaClock -Physical 100 -Logical 0`
 #[cmdlet(verb = "New", noun = "SubEthaClock", alias = "New-SEClock", output = ["SubEtha.Clock"])]
 #[derive(Default)]
 pub struct NewSubEthaClock {
@@ -394,6 +406,10 @@ impl CausalClock {
 }
 
 /// Builds a causal clock with every count at zero, or at Counts.
+///
+/// # Examples
+///
+/// `$clock = New-SubEthaCausalClock`
 #[cmdlet(verb = "New", noun = "SubEthaCausalClock", alias = "New-SECausalClock", output = ["SubEtha.CausalClock"])]
 #[derive(Default)]
 pub struct NewSubEthaCausalClock {

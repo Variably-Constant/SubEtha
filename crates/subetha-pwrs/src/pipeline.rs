@@ -51,6 +51,10 @@ impl Mover {
 /// writes each item the structure refused, so a full structure hands
 /// the item back rather than dropping it. A ring that numbers its
 /// producers takes the id in Producer.
+///
+/// # Examples
+///
+/// `Get-Content .\lines.txt | Send-SubEthaItem -To $ring -Producer $producer`
 #[cmdlet(verb = "Send", noun = "SubEthaItem", alias = "Send-SEItem")]
 #[derive(Default)]
 pub struct SendSubEthaItem {
@@ -114,6 +118,10 @@ impl Cmdlet for SendSubEthaItem {
 /// pipeline: everything waiting, or up to Count of them, stopping when
 /// the structure runs empty. A ring that numbers its consumers takes
 /// the id in Consumer; a deque is stolen from unless Owner is given.
+///
+/// # Examples
+///
+/// `Receive-SubEthaItem -From $ring -Consumer $consumer -Count 10`
 #[cmdlet(verb = "Receive", noun = "SubEthaItem", alias = "Receive-SEItem", output = ["System.Byte[]"])]
 #[derive(Default)]
 pub struct ReceiveSubEthaItem {

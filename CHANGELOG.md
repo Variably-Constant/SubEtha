@@ -23,6 +23,9 @@ heading links to the commit that cut it.
   module is not published anywhere; it is built with `cargo pwrs` from
   the crate. Every cmdlet, class, enum and method it exports is reached
   by a Pester suite, and a gate suite fails the run when one is not.
+  `Get-Help` carries a synopsis, a description, help on every parameter
+  and one example for each of the 135 cmdlets, and the reference page
+  names them all.
   All 176 tests pass in pwsh 7.6.6 and Windows PowerShell 5.1 on
   Windows x64 and in pwsh 7.6.5 on Ubuntu 24.04 on Linux x64; the
   native libraries of the two builds fold into one module folder that

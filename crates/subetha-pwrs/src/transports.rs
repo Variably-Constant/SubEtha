@@ -94,6 +94,10 @@ impl TcpBridgeClient {
 
 /// Makes the sending end of a TCP bridge from the ring at RingPath to
 /// the reading end at ServerHost and ServerPort.
+///
+/// # Examples
+///
+/// `$client = New-SubEthaTcpBridgeClient -RingPath C:\ipc\ring -Capacity 64 -ServerHost 10.0.0.5 -ServerPort 9000`
 #[cmdlet(verb = "New", noun = "SubEthaTcpBridgeClient", alias = "New-SETcpBridgeClient", output = ["SubEtha.TcpBridgeClient"])]
 #[derive(Default)]
 pub struct NewSubEthaTcpBridgeClient {
@@ -157,6 +161,10 @@ impl TcpBridgeServer {
 /// Makes the reading end of a TCP bridge on LocalHost and LocalPort,
 /// putting arriving items into the ring at RingPath. A port of zero
 /// lets the system pick one, which LocalAddr then reports.
+///
+/// # Examples
+///
+/// `$server = New-SubEthaTcpBridgeServer -RingPath C:\ipc\ring -Capacity 64 -LocalPort 9000`
 #[cmdlet(verb = "New", noun = "SubEthaTcpBridgeServer", alias = "New-SETcpBridgeServer", output = ["SubEtha.TcpBridgeServer"])]
 #[derive(Default)]
 pub struct NewSubEthaTcpBridgeServer {
@@ -210,6 +218,10 @@ pub struct Certificate {
 /// reading end is reachable at works. The certificate is signed by
 /// nobody, so the reading end holds both and the sending end holds the
 /// certificate alone, which is what it checks the reading end against.
+///
+/// # Examples
+///
+/// `$cert = New-SubEthaSelfSignedCert -Name 'localhost'`
 #[cmdlet(verb = "New", noun = "SubEthaSelfSignedCert", alias = "New-SESelfSignedCert", output = ["SubEtha.Certificate"])]
 #[derive(Default)]
 pub struct NewSubEthaSelfSignedCert {
@@ -264,6 +276,10 @@ impl QuicBridgeClient {
 /// Makes the sending end of a QUIC bridge from the ring at RingPath to
 /// the reading end at ServerHost and ServerPort, trusting Cert, the
 /// certificate that end was made with, issued for ServerName.
+///
+/// # Examples
+///
+/// `$client = New-SubEthaQuicBridgeClient -RingPath C:\ipc\ring -Capacity 64 -ServerHost 10.0.0.5 -ServerPort 9000 -Cert $cert.Cert -ServerName 'host'`
 #[cmdlet(verb = "New", noun = "SubEthaQuicBridgeClient", alias = "New-SEQuicBridgeClient", output = ["SubEtha.QuicBridgeClient"])]
 #[derive(Default)]
 pub struct NewSubEthaQuicBridgeClient {
@@ -357,6 +373,10 @@ impl QuicBridgeServer {
 /// proving itself with Cert and Key, putting arriving items into the
 /// ring at RingPath. A port of zero lets the system pick one, which
 /// LocalAddr then reports.
+///
+/// # Examples
+///
+/// `$server = New-SubEthaQuicBridgeServer -RingPath C:\ipc\ring -Capacity 64 -LocalPort 9000 -Cert $cert.Cert -Key $cert.Key`
 #[cmdlet(verb = "New", noun = "SubEthaQuicBridgeServer", alias = "New-SEQuicBridgeServer", output = ["SubEtha.QuicBridgeServer"])]
 #[derive(Default)]
 pub struct NewSubEthaQuicBridgeServer {
@@ -407,6 +427,10 @@ impl Cmdlet for NewSubEthaQuicBridgeServer {
 
 /// Writes the names of the transports this module carries: sens, the
 /// link across a lossy network, and the tcp and quic bridges.
+///
+/// # Examples
+///
+/// `Get-SubEthaTransport`
 #[cmdlet(verb = "Get", noun = "SubEthaTransport", alias = "Get-SETransport", output = ["System.String"])]
 #[derive(Default)]
 pub struct GetSubEthaTransport {}

@@ -132,9 +132,16 @@ $items = $ring.RecvMany($consumer, 256)
 packed end to end in one `byte[]`, so no object is built per item:
 
 ```powershell
-$ring.SendPacked($producer, $buffer, 64)      # every 64 bytes is one item
+$ring.SendPacked($producer, $buffer, 64)      # every 64 bytes of $buffer is one item
+
+$spsc = New-SubEthaSpscRing -Path C:\ipc\packed -Capacity 4096
+$spsc.PushPacked($buffer, 64)
 $packed = $spsc.PopPacked(1000)               # $packed.Count items in $packed.Bytes
 ```
+
+The adaptive ring packs on the way in, through `SendPacked`. The
+single-writer ring packs in both directions, which is why the reading
+half above is an `SpscRing`.
 
 `Region.Snapshot()` copies every slot of a region into one `byte[]` in
 one pass, and `Vec.ReadRange` and `Slab.ReadRange` do the same for a

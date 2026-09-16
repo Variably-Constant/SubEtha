@@ -263,6 +263,10 @@ impl Channel {
 /// Obtains the channel at Path with Capacity items in flight (1024 when
 /// absent, rounded up to a power of two), creating it for Senders and
 /// Readers when the file does not exist.
+///
+/// # Examples
+///
+/// `$channel = New-SubEthaChannel -Path C:\ipc\channel -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaChannel", alias = "New-SEChannel", output = ["SubEtha.Channel"])]
 #[derive(Default)]
 pub struct NewSubEthaChannel {
@@ -296,6 +300,10 @@ impl Cmdlet for NewSubEthaChannel {
 
 /// Attaches to the channel at Path, which must exist with the Capacity
 /// it was created with.
+///
+/// # Examples
+///
+/// `$channel = Open-SubEthaChannel -Path C:\ipc\channel -Capacity 64`
 #[cmdlet(verb = "Open", noun = "SubEthaChannel", alias = "Open-SEChannel", output = ["SubEtha.Channel"])]
 #[derive(Default)]
 pub struct OpenSubEthaChannel {
@@ -467,6 +475,10 @@ impl AdaptiveQueue {
 /// Creates the adaptive queue at Path with Capacity items in flight
 /// (1024 when absent), starting as a ring for Senders and Readers and
 /// changing shape as the traffic says.
+///
+/// # Examples
+///
+/// `$queue = New-SubEthaAdaptiveQueue -Path C:\ipc\adaptivequeue -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaAdaptiveQueue", alias = "New-SEAdaptiveQueue", output = ["SubEtha.AdaptiveQueue"])]
 #[derive(Default)]
 pub struct NewSubEthaAdaptiveQueue {
@@ -600,6 +612,10 @@ impl WorkQueue {
 
 /// Creates the work queue at Path as its owner, with Capacity items in
 /// flight (1024 when absent) and Thieves expected to take from it.
+///
+/// # Examples
+///
+/// `$owner = New-SubEthaWorkQueue -Path C:\ipc\workqueue -Capacity 64 -Thieves 2`
 #[cmdlet(verb = "New", noun = "SubEthaWorkQueue", alias = "New-SEWorkQueue", output = ["SubEtha.WorkQueue"])]
 #[derive(Default)]
 pub struct NewSubEthaWorkQueue {
@@ -635,6 +651,10 @@ impl Cmdlet for NewSubEthaWorkQueue {
 }
 
 /// Attaches to the work queue at Path as a thief, to take from it.
+///
+/// # Examples
+///
+/// `$thief = Open-SubEthaWorkQueue -Path C:\ipc\workqueue`
 #[cmdlet(verb = "Open", noun = "SubEthaWorkQueue", alias = "Open-SEWorkQueue", output = ["SubEtha.WorkQueue"])]
 #[derive(Default)]
 pub struct OpenSubEthaWorkQueue {
@@ -709,6 +729,10 @@ impl KvMap {
 
 /// Creates the map at Path with Capacity entries (1024 when absent),
 /// shaped for Readers and Writers.
+///
+/// # Examples
+///
+/// `$map = New-SubEthaKvMap -Path C:\ipc\kvmap -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaKvMap", alias = "New-SEKvMap", output = ["SubEtha.KvMap"])]
 #[derive(Default)]
 pub struct NewSubEthaKvMap {
@@ -918,6 +942,10 @@ pub enum QosPreset {
 
 /// Builds a policy from its settings, or from a Preset with any of the
 /// settings overriding it.
+///
+/// # Examples
+///
+/// `$policy = New-SubEthaQosPolicy -Preset Streaming`
 #[cmdlet(verb = "New", noun = "SubEthaQosPolicy", alias = "New-SEQosPolicy", output = ["SubEtha.QosPolicy"])]
 #[derive(Default)]
 pub struct NewSubEthaQosPolicy {

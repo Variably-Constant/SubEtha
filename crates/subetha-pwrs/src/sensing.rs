@@ -209,6 +209,10 @@ impl SensSender {
 
 /// Opens the sending end of a link from LocalHost and LocalPort to
 /// PeerHost and PeerPort, carrying items of up to MaxItemSize bytes.
+///
+/// # Examples
+///
+/// `$sender = New-SubEthaSensSender -PeerHost 10.0.0.5 -PeerPort 9000 -MaxItemSize 1024`
 #[cmdlet(verb = "New", noun = "SubEthaSensSender", alias = "New-SESensSender", output = ["SubEtha.SensSender"])]
 #[derive(Default)]
 pub struct NewSubEthaSensSender {
@@ -312,6 +316,10 @@ impl SensReceiver {
 /// Opens the reading end of a link on LocalHost and LocalPort, carrying
 /// items of up to MaxItemSize bytes, which must be what the sender was
 /// made with.
+///
+/// # Examples
+///
+/// `$receiver = New-SubEthaSensReceiver -LocalPort 9000 -MaxItemSize 1024`
 #[cmdlet(verb = "New", noun = "SubEthaSensReceiver", alias = "New-SESensReceiver", output = ["SubEtha.SensReceiver"])]
 #[derive(Default)]
 pub struct NewSubEthaSensReceiver {
@@ -411,6 +419,10 @@ impl LossKind {
 }
 
 /// Builds a loss classifier.
+///
+/// # Examples
+///
+/// `$kind = New-SubEthaLossKind`
 #[cmdlet(verb = "New", noun = "SubEthaLossKind", alias = "New-SELossKind", output = ["SubEtha.LossKind"])]
 #[derive(Default)]
 pub struct NewSubEthaLossKind {}
@@ -485,6 +497,10 @@ impl LossBursts {
 }
 
 /// Builds a burst model.
+///
+/// # Examples
+///
+/// `$bursts = New-SubEthaLossBursts`
 #[cmdlet(verb = "New", noun = "SubEthaLossBursts", alias = "New-SELossBursts", output = ["SubEtha.LossBursts"])]
 #[derive(Default)]
 pub struct NewSubEthaLossBursts {}
@@ -557,6 +573,10 @@ impl Timing {
 
 /// Builds a timing sensor over a Window of recent items, sixty-four
 /// when absent.
+///
+/// # Examples
+///
+/// `$timing = New-SubEthaTiming -Window 64`
 #[cmdlet(verb = "New", noun = "SubEthaTiming", alias = "New-SETiming", output = ["SubEtha.Timing"])]
 #[derive(Default)]
 pub struct NewSubEthaTiming {
@@ -625,6 +645,10 @@ impl RoundTripShape {
 }
 
 /// Builds a round-trip shape sensor.
+///
+/// # Examples
+///
+/// `$shape = New-SubEthaRoundTripShape`
 #[cmdlet(verb = "New", noun = "SubEthaRoundTripShape", alias = "New-SERoundTripShape", output = ["SubEtha.RoundTripShape"])]
 #[derive(Default)]
 pub struct NewSubEthaRoundTripShape {}
@@ -681,6 +705,10 @@ impl Periodicity {
 }
 
 /// Builds a periodicity sensor.
+///
+/// # Examples
+///
+/// `$beat = New-SubEthaPeriodicity`
 #[cmdlet(verb = "New", noun = "SubEthaPeriodicity", alias = "New-SEPeriodicity", output = ["SubEtha.Periodicity"])]
 #[derive(Default)]
 pub struct NewSubEthaPeriodicity {}
@@ -759,6 +787,10 @@ impl Capacity {
 
 /// Builds a capacity estimator over probes of ProbeBytes, 1400 when
 /// absent.
+///
+/// # Examples
+///
+/// `$capacity = New-SubEthaCapacity -ProbeBytes 1400`
 #[cmdlet(verb = "New", noun = "SubEthaCapacity", alias = "New-SECapacity", output = ["SubEtha.Capacity"])]
 #[derive(Default)]
 pub struct NewSubEthaCapacity {
@@ -810,6 +842,10 @@ impl Forecast {
 }
 
 /// Builds an arrival forecast.
+///
+/// # Examples
+///
+/// `$forecast = New-SubEthaForecast`
 #[cmdlet(verb = "New", noun = "SubEthaForecast", alias = "New-SEForecast", output = ["SubEtha.Forecast"])]
 #[derive(Default)]
 pub struct NewSubEthaForecast {}
@@ -873,6 +909,10 @@ impl PathChanges {
 }
 
 /// Builds a path sensor.
+///
+/// # Examples
+///
+/// `$changes = New-SubEthaPathChanges`
 #[cmdlet(verb = "New", noun = "SubEthaPathChanges", alias = "New-SEPathChanges", output = ["SubEtha.PathChanges"])]
 #[derive(Default)]
 pub struct NewSubEthaPathChanges {}

@@ -200,6 +200,10 @@ Import-Module ../../target/pwrs/SubEtha/SubEtha.psd1
 and, on Windows, in Windows PowerShell as well. The module runs on
 PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
 
+`Get-Help` carries a synopsis, a description, help on every parameter
+and one example for each of the 135 cmdlets, all generated from the
+Rust doc comments.
+
 The suites cover every cmdlet, class, enum and method the module
 exports, and one of them is a gate: it fails the run when an exported
 name is exercised nowhere, when a cmdlet has no `SE` alias resolving to
@@ -217,8 +221,8 @@ platform, so each one is built on its own machine and the folders are
 folded into a single module:
 
 ```powershell
-cargo pwrs build --release                                  # the building machine's rid
-cargo pwrs merge target/pwrs/SubEtha <folder built on Linux>
+cargo pwrs build --release                       # the building machine's rid
+cargo pwrs merge target/pwrs/SubEtha ../linux/SubEtha
 ```
 
 The manifests of two builds of one checkout are identical, which is

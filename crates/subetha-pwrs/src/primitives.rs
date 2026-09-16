@@ -177,6 +177,10 @@ impl Atomic {
 
 /// Obtains the atomic at Path, creating it holding Init when the file
 /// does not exist and attaching to its live value when it does.
+///
+/// # Examples
+///
+/// `$counter = New-SubEthaAtomic -Path C:\ipc\counter -Init 0`
 #[cmdlet(verb = "New", noun = "SubEthaAtomic", alias = "New-SEAtomic", output = ["SubEtha.Atomic"])]
 #[derive(Default)]
 pub struct NewSubEthaAtomic {
@@ -199,6 +203,10 @@ impl Cmdlet for NewSubEthaAtomic {
 
 /// Attaches to the atomic at Path, which must exist, leaving its value
 /// alone.
+///
+/// # Examples
+///
+/// `$counter = Open-SubEthaAtomic -Path C:\ipc\counter`
 #[cmdlet(verb = "Open", noun = "SubEthaAtomic", alias = "Open-SEAtomic", output = ["SubEtha.Atomic"])]
 #[derive(Default)]
 pub struct OpenSubEthaAtomic {
@@ -303,6 +311,10 @@ impl Region {
 
 /// Obtains the region at Path holding Capacity slots of SlotSize bytes,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$region = New-SubEthaRegion -Path C:\ipc\region -Capacity 64 -SlotSize 64`
 #[cmdlet(verb = "New", noun = "SubEthaRegion", alias = "New-SERegion", output = ["SubEtha.Region"])]
 #[derive(Default)]
 pub struct NewSubEthaRegion {
@@ -333,6 +345,10 @@ impl Cmdlet for NewSubEthaRegion {
 
 /// Attaches to the region at Path, which must exist with the same
 /// capacity and layout it was created with.
+///
+/// # Examples
+///
+/// `$region = Open-SubEthaRegion -Path C:\ipc\region -Capacity 64 -SlotSize 64`
 #[cmdlet(verb = "Open", noun = "SubEthaRegion", alias = "Open-SERegion", output = ["SubEtha.Region"])]
 #[derive(Default)]
 pub struct OpenSubEthaRegion {
@@ -412,6 +428,10 @@ impl Cell {
 
 /// Obtains the cell at Path holding a value of ValueSize bytes, creating
 /// it when the file does not exist.
+///
+/// # Examples
+///
+/// `$cell = New-SubEthaCell -Path C:\ipc\cell -ValueSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaCell", alias = "New-SECell", output = ["SubEtha.Cell"])]
 #[derive(Default)]
 pub struct NewSubEthaCell {
@@ -432,6 +452,10 @@ impl Cmdlet for NewSubEthaCell {
 
 /// Attaches to the cell at Path, which must exist with the same value
 /// size it was created with.
+///
+/// # Examples
+///
+/// `$cell = Open-SubEthaCell -Path C:\ipc\cell -ValueSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaCell", alias = "Open-SECell", output = ["SubEtha.Cell"])]
 #[derive(Default)]
 pub struct OpenSubEthaCell {
@@ -596,6 +620,10 @@ impl SharedVec {
 
 /// Obtains the vector at Path holding up to Capacity elements of
 /// ElementSize bytes, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$vec = New-SubEthaVec -Path C:\ipc\vec -Capacity 64 -ElementSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaVec", alias = "New-SEVec", output = ["SubEtha.Vec"])]
 #[derive(Default)]
 pub struct NewSubEthaVec {
@@ -626,6 +654,10 @@ impl Cmdlet for NewSubEthaVec {
 
 /// Attaches to the vector at Path, which must exist with the same
 /// capacity and layout it was created with.
+///
+/// # Examples
+///
+/// `$vec = Open-SubEthaVec -Path C:\ipc\vec -Capacity 64 -ElementSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaVec", alias = "Open-SEVec", output = ["SubEtha.Vec"])]
 #[derive(Default)]
 pub struct OpenSubEthaVec {
@@ -705,6 +737,10 @@ impl SharedArc {
 
 /// Obtains the shared value at Path, creating it holding Value when the
 /// file does not exist.
+///
+/// # Examples
+///
+/// `$shared = New-SubEthaSharedArc -Path C:\ipc\sharedarc -Value 'held'`
 #[cmdlet(verb = "New", noun = "SubEthaSharedArc", alias = "New-SESharedArc", output = ["SubEtha.SharedArc"])]
 #[derive(Default)]
 pub struct NewSubEthaSharedArc {
@@ -740,6 +776,10 @@ impl Cmdlet for NewSubEthaSharedArc {
 
 /// Attaches to the shared value at Path, which must exist holding
 /// ValueSize bytes.
+///
+/// # Examples
+///
+/// `$shared = Open-SubEthaSharedArc -Path C:\ipc\sharedarc -ValueSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaSharedArc", alias = "Open-SESharedArc", output = ["SubEtha.SharedArc"])]
 #[derive(Default)]
 pub struct OpenSubEthaSharedArc {
@@ -845,6 +885,10 @@ impl LazyValue {
 
 /// Obtains the lazy value at Path holding ValueSize bytes, creating it
 /// unpublished when the file does not exist.
+///
+/// # Examples
+///
+/// `$lazy = New-SubEthaLazyValue -Path C:\ipc\lazyvalue -ValueSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaLazyValue", alias = "New-SELazyValue", output = ["SubEtha.LazyValue"])]
 #[derive(Default)]
 pub struct NewSubEthaLazyValue {
@@ -865,6 +909,10 @@ impl Cmdlet for NewSubEthaLazyValue {
 
 /// Attaches to the lazy value at Path, which must exist holding
 /// ValueSize bytes.
+///
+/// # Examples
+///
+/// `$lazy = Open-SubEthaLazyValue -Path C:\ipc\lazyvalue -ValueSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaLazyValue", alias = "Open-SELazyValue", output = ["SubEtha.LazyValue"])]
 #[derive(Default)]
 pub struct OpenSubEthaLazyValue {
@@ -940,6 +988,10 @@ impl BitVec {
 
 /// Obtains the bit vector at Path holding CapacityBits bits, creating
 /// it cleared when the file does not exist.
+///
+/// # Examples
+///
+/// `$bits = New-SubEthaBitVec -Path C:\ipc\bitvec -CapacityBits 1024`
 #[cmdlet(verb = "New", noun = "SubEthaBitVec", alias = "New-SEBitVec", output = ["SubEtha.BitVec"])]
 #[derive(Default)]
 pub struct NewSubEthaBitVec {
@@ -960,6 +1012,10 @@ impl Cmdlet for NewSubEthaBitVec {
 
 /// Attaches to the bit vector at Path, which must exist holding
 /// CapacityBits bits.
+///
+/// # Examples
+///
+/// `$bits = Open-SubEthaBitVec -Path C:\ipc\bitvec -CapacityBits 1024`
 #[cmdlet(verb = "Open", noun = "SubEthaBitVec", alias = "Open-SEBitVec", output = ["SubEtha.BitVec"])]
 #[derive(Default)]
 pub struct OpenSubEthaBitVec {

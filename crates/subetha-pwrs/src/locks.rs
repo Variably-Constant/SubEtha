@@ -136,6 +136,10 @@ impl RWLock {
 }
 
 /// Obtains the lock at Path, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$lock = New-SubEthaRWLock -Path C:\ipc\rwlock`
 #[cmdlet(verb = "New", noun = "SubEthaRWLock", alias = "New-SERWLock", output = ["SubEtha.RWLock"])]
 #[derive(Default)]
 pub struct NewSubEthaRWLock {
@@ -152,6 +156,10 @@ impl Cmdlet for NewSubEthaRWLock {
 }
 
 /// Attaches to the lock at Path, which must exist.
+///
+/// # Examples
+///
+/// `$lock = Open-SubEthaRWLock -Path C:\ipc\rwlock`
 #[cmdlet(verb = "Open", noun = "SubEthaRWLock", alias = "Open-SERWLock", output = ["SubEtha.RWLock"])]
 #[derive(Default)]
 pub struct OpenSubEthaRWLock {
@@ -288,6 +296,10 @@ impl Semaphore {
 /// Obtains the semaphore at Path holding Initial permits of at most
 /// MaxPermits (Initial when absent), creating it when the file does not
 /// exist.
+///
+/// # Examples
+///
+/// `$semaphore = New-SubEthaSemaphore -Path C:\ipc\semaphore -Initial 2`
 #[cmdlet(verb = "New", noun = "SubEthaSemaphore", alias = "New-SESemaphore", output = ["SubEtha.Semaphore"])]
 #[derive(Default)]
 pub struct NewSubEthaSemaphore {
@@ -316,6 +328,10 @@ impl Cmdlet for NewSubEthaSemaphore {
 
 /// Attaches to the semaphore at Path, which must exist with the
 /// MaxPermits it was created with.
+///
+/// # Examples
+///
+/// `$semaphore = Open-SubEthaSemaphore -Path C:\ipc\semaphore -MaxPermits 2`
 #[cmdlet(verb = "Open", noun = "SubEthaSemaphore", alias = "Open-SESemaphore", output = ["SubEtha.Semaphore"])]
 #[derive(Default)]
 pub struct OpenSubEthaSemaphore {
@@ -522,6 +538,10 @@ impl OwnerLease {
 /// and its value alone. With Reset, strips the lease back to no owner
 /// and Value, which throws away a claim another process may still
 /// believe it has, so it is for a lease known to be wedged.
+///
+/// # Examples
+///
+/// `$lease = New-SubEthaOwnerLease -Path C:\ipc\ownerlease -Value 'token'`
 #[cmdlet(verb = "New", noun = "SubEthaOwnerLease", alias = "New-SEOwnerLease", output = ["SubEtha.OwnerLease"])]
 #[derive(Default)]
 pub struct NewSubEthaOwnerLease {
@@ -551,6 +571,10 @@ impl Cmdlet for NewSubEthaOwnerLease {
 }
 
 /// Attaches to the lease at Path, which must exist.
+///
+/// # Examples
+///
+/// `$lease = Open-SubEthaOwnerLease -Path C:\ipc\ownerlease`
 #[cmdlet(verb = "Open", noun = "SubEthaOwnerLease", alias = "Open-SEOwnerLease", output = ["SubEtha.OwnerLease"])]
 #[derive(Default)]
 pub struct OpenSubEthaOwnerLease {

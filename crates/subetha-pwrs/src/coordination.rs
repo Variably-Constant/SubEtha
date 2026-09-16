@@ -53,6 +53,10 @@ impl NotifierSet {
 
 /// Obtains the notifier set at Path, creating it when the file does not
 /// exist.
+///
+/// # Examples
+///
+/// `$set = New-SubEthaNotifierSet -Path C:\ipc\notifierset`
 #[cmdlet(verb = "New", noun = "SubEthaNotifierSet", alias = "New-SENotifierSet", output = ["SubEtha.NotifierSet"])]
 #[derive(Default)]
 pub struct NewSubEthaNotifierSet {
@@ -183,6 +187,10 @@ impl LeaderElection {
 
 /// Obtains the election at Path, creating it with no leader when the
 /// file does not exist.
+///
+/// # Examples
+///
+/// `$election = New-SubEthaLeaderElection -Path C:\ipc\leaderelection`
 #[cmdlet(verb = "New", noun = "SubEthaLeaderElection", alias = "New-SELeaderElection", output = ["SubEtha.LeaderElection"])]
 #[derive(Default)]
 pub struct NewSubEthaLeaderElection {
@@ -199,6 +207,10 @@ impl Cmdlet for NewSubEthaLeaderElection {
 }
 
 /// Attaches to the election at Path, which must exist.
+///
+/// # Examples
+///
+/// `$election = Open-SubEthaLeaderElection -Path C:\ipc\leaderelection`
 #[cmdlet(verb = "Open", noun = "SubEthaLeaderElection", alias = "Open-SELeaderElection", output = ["SubEtha.LeaderElection"])]
 #[derive(Default)]
 pub struct OpenSubEthaLeaderElection {
@@ -277,6 +289,10 @@ impl HolderTable {
 
 /// Obtains the holder table at Path holding Capacity slots, creating it
 /// when the file does not exist.
+///
+/// # Examples
+///
+/// `$holders = New-SubEthaHolderTable -Path C:\ipc\holdertable -Capacity 8`
 #[cmdlet(verb = "New", noun = "SubEthaHolderTable", alias = "New-SEHolderTable", output = ["SubEtha.HolderTable"])]
 #[derive(Default)]
 pub struct NewSubEthaHolderTable {
@@ -297,6 +313,10 @@ impl Cmdlet for NewSubEthaHolderTable {
 
 /// Attaches to the holder table at Path, which must exist with the
 /// Capacity it was created with.
+///
+/// # Examples
+///
+/// `$holders = Open-SubEthaHolderTable -Path C:\ipc\holdertable -Capacity 8`
 #[cmdlet(verb = "Open", noun = "SubEthaHolderTable", alias = "Open-SEHolderTable", output = ["SubEtha.HolderTable"])]
 #[derive(Default)]
 pub struct OpenSubEthaHolderTable {
@@ -410,6 +430,10 @@ impl Heartbeat {
 
 /// Obtains the heartbeat table at Path holding Capacity slots, creating
 /// it when the file does not exist.
+///
+/// # Examples
+///
+/// `$heartbeat = New-SubEthaHeartbeat -Path C:\ipc\heartbeat -Capacity 8`
 #[cmdlet(verb = "New", noun = "SubEthaHeartbeat", alias = "New-SEHeartbeat", output = ["SubEtha.Heartbeat"])]
 #[derive(Default)]
 pub struct NewSubEthaHeartbeat {
@@ -430,6 +454,10 @@ impl Cmdlet for NewSubEthaHeartbeat {
 
 /// Attaches to the heartbeat table at Path, which must exist with the
 /// Capacity it was created with.
+///
+/// # Examples
+///
+/// `$heartbeat = Open-SubEthaHeartbeat -Path C:\ipc\heartbeat -Capacity 8`
 #[cmdlet(verb = "Open", noun = "SubEthaHeartbeat", alias = "Open-SEHeartbeat", output = ["SubEtha.Heartbeat"])]
 #[derive(Default)]
 pub struct OpenSubEthaHeartbeat {
@@ -520,6 +548,10 @@ impl EpochBarrier {
 
 /// Obtains the barrier at Path over the heartbeat table at
 /// HeartbeatPath, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$barrier = New-SubEthaEpochBarrier -Path C:\ipc\barrier -HeartbeatPath C:\ipc\heartbeat -Capacity 8`
 #[cmdlet(verb = "New", noun = "SubEthaEpochBarrier", alias = "New-SEEpochBarrier", output = ["SubEtha.EpochBarrier"])]
 #[derive(Default)]
 pub struct NewSubEthaEpochBarrier {
@@ -548,6 +580,10 @@ impl Cmdlet for NewSubEthaEpochBarrier {
 
 /// Attaches to the barrier at Path, which must exist, over the heartbeat
 /// table at HeartbeatPath.
+///
+/// # Examples
+///
+/// `$barrier = Open-SubEthaEpochBarrier -Path C:\ipc\barrier -HeartbeatPath C:\ipc\heartbeat -Capacity 8`
 #[cmdlet(verb = "Open", noun = "SubEthaEpochBarrier", alias = "Open-SEEpochBarrier", output = ["SubEtha.EpochBarrier"])]
 #[derive(Default)]
 pub struct OpenSubEthaEpochBarrier {
@@ -623,6 +659,10 @@ impl Condvar {
 
 /// Obtains the condition at Path, creating it when the file does not
 /// exist.
+///
+/// # Examples
+///
+/// `$condvar = New-SubEthaCondvar -Path C:\ipc\condvar`
 #[cmdlet(verb = "New", noun = "SubEthaCondvar", alias = "New-SECondvar", output = ["SubEtha.Condvar"])]
 #[derive(Default)]
 pub struct NewSubEthaCondvar {
@@ -639,6 +679,10 @@ impl Cmdlet for NewSubEthaCondvar {
 }
 
 /// Attaches to the condition at Path, which must exist.
+///
+/// # Examples
+///
+/// `$condvar = Open-SubEthaCondvar -Path C:\ipc\condvar`
 #[cmdlet(verb = "Open", noun = "SubEthaCondvar", alias = "Open-SECondvar", output = ["SubEtha.Condvar"])]
 #[derive(Default)]
 pub struct OpenSubEthaCondvar {
@@ -658,6 +702,10 @@ impl Cmdlet for OpenSubEthaCondvar {
 /// Timeout seconds pass, and writes whether the condition became true.
 /// Until runs from inside the wait on this thread; an error it raises
 /// ends the wait and is reported rather than read as a false answer.
+///
+/// # Examples
+///
+/// `Wait-SubEthaCondition -Path C:\ipc\condvar -Until { $counter.Load() -gt 0 } -Timeout 5`
 #[cmdlet(verb = "Wait", noun = "SubEthaCondition", alias = "Wait-SECondition", output = ["System.Boolean"])]
 #[derive(Default)]
 pub struct WaitSubEthaCondition {
@@ -799,6 +847,10 @@ impl FenceClock {
 
 /// Obtains the fence clock at Path holding Capacity participants,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$clock = New-SubEthaFenceClock -Path C:\ipc\fenceclock -Capacity 8`
 #[cmdlet(verb = "New", noun = "SubEthaFenceClock", alias = "New-SEFenceClock", output = ["SubEtha.FenceClock"])]
 #[derive(Default)]
 pub struct NewSubEthaFenceClock {
@@ -819,6 +871,10 @@ impl Cmdlet for NewSubEthaFenceClock {
 
 /// Attaches to the fence clock at Path, which must exist with the
 /// Capacity it was created with.
+///
+/// # Examples
+///
+/// `$clock = Open-SubEthaFenceClock -Path C:\ipc\fenceclock -Capacity 8`
 #[cmdlet(verb = "Open", noun = "SubEthaFenceClock", alias = "Open-SEFenceClock", output = ["SubEtha.FenceClock"])]
 #[derive(Default)]
 pub struct OpenSubEthaFenceClock {
@@ -925,6 +981,10 @@ impl Epochs {
 
 /// Obtains the epochs at Path holding Capacity tickets, creating them
 /// when the file does not exist.
+///
+/// # Examples
+///
+/// `$epochs = New-SubEthaEpochs -Path C:\ipc\epochs -Capacity 8`
 #[cmdlet(verb = "New", noun = "SubEthaEpochs", alias = "New-SEEpochs", output = ["SubEtha.Epochs"])]
 #[derive(Default)]
 pub struct NewSubEthaEpochs {
@@ -945,6 +1005,10 @@ impl Cmdlet for NewSubEthaEpochs {
 
 /// Attaches to the epochs at Path, which must exist with the Capacity
 /// they were created with.
+///
+/// # Examples
+///
+/// `$epochs = Open-SubEthaEpochs -Path C:\ipc\epochs -Capacity 8`
 #[cmdlet(verb = "Open", noun = "SubEthaEpochs", alias = "Open-SEEpochs", output = ["SubEtha.Epochs"])]
 #[derive(Default)]
 pub struct OpenSubEthaEpochs {

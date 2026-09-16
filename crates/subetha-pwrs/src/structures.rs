@@ -132,6 +132,10 @@ impl Arena {
 
 /// Obtains the arena at Path holding CapacityBytes, creating it when the
 /// file does not exist.
+///
+/// # Examples
+///
+/// `$arena = New-SubEthaArena -Path C:\ipc\arena -CapacityBytes 4096`
 #[cmdlet(verb = "New", noun = "SubEthaArena", alias = "New-SEArena", output = ["SubEtha.Arena"])]
 #[derive(Default)]
 pub struct NewSubEthaArena {
@@ -153,6 +157,10 @@ impl Cmdlet for NewSubEthaArena {
 /// Attaches to the arena at Path, which must exist with the
 /// CapacityBytes it was created with; ReadOnly opens it to resolve
 /// without interning.
+///
+/// # Examples
+///
+/// `$arena = Open-SubEthaArena -Path C:\ipc\arena -CapacityBytes 4096 -ReadOnly`
 #[cmdlet(verb = "Open", noun = "SubEthaArena", alias = "Open-SEArena", output = ["SubEtha.Arena"])]
 #[derive(Default)]
 pub struct OpenSubEthaArena {
@@ -267,6 +275,10 @@ impl LinkedList {
 
 /// Obtains the list at Path holding up to Capacity elements of
 /// ElementSize bytes, creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$list = New-SubEthaLinkedList -Path C:\ipc\linkedlist -Capacity 64 -ElementSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaLinkedList", alias = "New-SELinkedList", output = ["SubEtha.LinkedList"])]
 #[derive(Default)]
 pub struct NewSubEthaLinkedList {
@@ -296,6 +308,10 @@ impl Cmdlet for NewSubEthaLinkedList {
 
 /// Attaches to the list at Path, which must exist with the capacity and
 /// layout it was created with.
+///
+/// # Examples
+///
+/// `$list = Open-SubEthaLinkedList -Path C:\ipc\linkedlist -Capacity 64 -ElementSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaLinkedList", alias = "Open-SELinkedList", output = ["SubEtha.LinkedList"])]
 #[derive(Default)]
 pub struct OpenSubEthaLinkedList {
@@ -416,6 +432,10 @@ impl Slab {
 
 /// Obtains the slab at Path holding Capacity slots of ElementSize bytes,
 /// creating it when the file does not exist.
+///
+/// # Examples
+///
+/// `$slab = New-SubEthaSlab -Path C:\ipc\slab -Capacity 64 -ElementSize 16`
 #[cmdlet(verb = "New", noun = "SubEthaSlab", alias = "New-SESlab", output = ["SubEtha.Slab"])]
 #[derive(Default)]
 pub struct NewSubEthaSlab {
@@ -445,6 +465,10 @@ impl Cmdlet for NewSubEthaSlab {
 
 /// Attaches to the slab at Path, which must exist with the capacity and
 /// layout it was created with; ReadOnly opens it without write access.
+///
+/// # Examples
+///
+/// `$slab = Open-SubEthaSlab -Path C:\ipc\slab -Capacity 64 -ElementSize 16 -ReadOnly`
 #[cmdlet(verb = "Open", noun = "SubEthaSlab", alias = "Open-SESlab", output = ["SubEtha.Slab"])]
 #[derive(Default)]
 pub struct OpenSubEthaSlab {
@@ -629,6 +653,10 @@ impl BTreeMap {
 /// Obtains the ordered map at Path holding Capacity entries of
 /// KeySize-byte keys and ValueSize-byte values, creating it when the
 /// file does not exist.
+///
+/// # Examples
+///
+/// `$map = New-SubEthaBTreeMap -Path C:\ipc\btreemap -Capacity 64 -KeySize 8 -ValueSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaBTreeMap", alias = "New-SEBTreeMap", output = ["SubEtha.BTreeMap"])]
 #[derive(Default)]
 pub struct NewSubEthaBTreeMap {
@@ -658,6 +686,10 @@ impl Cmdlet for NewSubEthaBTreeMap {
 
 /// Attaches to the ordered map at Path, which must exist with the
 /// capacity and sizes it was created with.
+///
+/// # Examples
+///
+/// `$map = Open-SubEthaBTreeMap -Path C:\ipc\btreemap -Capacity 64 -KeySize 8 -ValueSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaBTreeMap", alias = "Open-SEBTreeMap", output = ["SubEtha.BTreeMap"])]
 #[derive(Default)]
 pub struct OpenSubEthaBTreeMap {
@@ -845,6 +877,10 @@ impl HashMap {
 /// Obtains the hash map at Path holding Capacity entries of
 /// KeySize-byte keys and ValueSize-byte values, creating it when the
 /// file does not exist.
+///
+/// # Examples
+///
+/// `$map = New-SubEthaHashMap -Path C:\ipc\hashmap -Capacity 64 -KeySize 8 -ValueSize 8`
 #[cmdlet(verb = "New", noun = "SubEthaHashMap", alias = "New-SEHashMap", output = ["SubEtha.HashMap"])]
 #[derive(Default)]
 pub struct NewSubEthaHashMap {
@@ -871,6 +907,10 @@ impl Cmdlet for NewSubEthaHashMap {
 
 /// Attaches to the hash map at Path, which must exist with the capacity
 /// and sizes it was created with.
+///
+/// # Examples
+///
+/// `$map = Open-SubEthaHashMap -Path C:\ipc\hashmap -Capacity 64 -KeySize 8 -ValueSize 8`
 #[cmdlet(verb = "Open", noun = "SubEthaHashMap", alias = "Open-SEHashMap", output = ["SubEtha.HashMap"])]
 #[derive(Default)]
 pub struct OpenSubEthaHashMap {
@@ -1005,6 +1045,10 @@ pub struct MpscPool {
 /// Makes a pool at Path of Producers rings of Capacity slots, drained
 /// by one consumer, and writes the producers and the consumer together.
 /// Open attaches to a pool that exists with the shape it was built at.
+///
+/// # Examples
+///
+/// `$pool = New-SubEthaMpscPool -Path C:\ipc\mpscpool -Producers 4 -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaMpscPool", alias = "New-SEMpscPool", output = ["SubEtha.MpscPool"])]
 #[derive(Default)]
 pub struct NewSubEthaMpscPool {
@@ -1134,6 +1178,10 @@ pub struct MpmcGrid {
 /// among Consumers, and writes the producers and the consumers
 /// together. Open attaches to a grid that exists with the shape it was
 /// built at.
+///
+/// # Examples
+///
+/// `$grid = New-SubEthaMpmcGrid -Path C:\ipc\mpmcgrid -Producers 4 -Consumers 2 -Capacity 64`
 #[cmdlet(verb = "New", noun = "SubEthaMpmcGrid", alias = "New-SEMpmcGrid", output = ["SubEtha.MpmcGrid"])]
 #[derive(Default)]
 pub struct NewSubEthaMpmcGrid {

@@ -354,6 +354,100 @@ The pointer types themselves are not here. Each holds a raw pointer or a
 reference count into Rust memory, and a script has no such value to
 point at.
 
+## Every cmdlet
+
+Every cmdlet the module exports, with what it obtains. Each also answers
+to a short name with the `SE` prefix, so `New-SubEthaRing` is
+`New-SERing`. `Get-Help <name> -Full` gives the parameters and an
+example for any of them.
+
+| Cmdlet | Obtains |
+|---|---|
+| `New-SubEthaAdaptiveQueue` | `SubEtha.AdaptiveQueue` |
+| `New-SubEthaArena`, `Open-SubEthaArena` | `SubEtha.Arena` |
+| `New-SubEthaAtomic`, `Open-SubEthaAtomic` | `SubEtha.Atomic` |
+| `New-SubEthaBitVec`, `Open-SubEthaBitVec` | `SubEtha.BitVec` |
+| `New-SubEthaBlockedBloomFilter`, `Open-SubEthaBlockedBloomFilter` | `SubEtha.BlockedBloomFilter` |
+| `New-SubEthaBloomFilter`, `Open-SubEthaBloomFilter` | `SubEtha.BloomFilter` |
+| `New-SubEthaBroadcastRing`, `Open-SubEthaBroadcastRing` | `SubEtha.BroadcastRing` |
+| `New-SubEthaBTreeMap`, `Open-SubEthaBTreeMap` | `SubEtha.BTreeMap` |
+| `New-SubEthaCapacity` | `SubEtha.Capacity` |
+| `New-SubEthaCapacityRing`, `Open-SubEthaCapacityRing` | `SubEtha.CapacityRing` |
+| `New-SubEthaCausalClock` | `SubEtha.CausalClock` |
+| `New-SubEthaCell`, `Open-SubEthaCell` | `SubEtha.Cell` |
+| `New-SubEthaChannel`, `Open-SubEthaChannel` | `SubEtha.Channel` |
+| `New-SubEthaClock` | `SubEtha.Clock` |
+| `New-SubEthaCondvar`, `Open-SubEthaCondvar` | `SubEtha.Condvar` |
+| `New-SubEthaCountMinSketch`, `Open-SubEthaCountMinSketch` | `SubEtha.CountMinSketch` |
+| `New-SubEthaDeque`, `Open-SubEthaDeque` | `SubEtha.Deque` |
+| `New-SubEthaEpochBarrier`, `Open-SubEthaEpochBarrier` | `SubEtha.EpochBarrier` |
+| `New-SubEthaEpochs`, `Open-SubEthaEpochs` | `SubEtha.Epochs` |
+| `New-SubEthaFenceClock`, `Open-SubEthaFenceClock` | `SubEtha.FenceClock` |
+| `New-SubEthaFineBloom` | `SubEtha.FineBloom` |
+| `New-SubEthaForecast` | `SubEtha.Forecast` |
+| `New-SubEthaFrameRegion`, `Open-SubEthaFrameRegion` | `SubEtha.FrameRegion` |
+| `Get-SubEthaTransport` | `System.String` |
+| `New-SubEthaGraph`, `Open-SubEthaGraph` | `SubEtha.Graph` |
+| `New-SubEthaHandleTable`, `Open-SubEthaHandleTable` | `SubEtha.HandleTable` |
+| `New-SubEthaHashMap`, `Open-SubEthaHashMap` | `SubEtha.HashMap` |
+| `New-SubEthaHeartbeat`, `Open-SubEthaHeartbeat` | `SubEtha.Heartbeat` |
+| `New-SubEthaHistogram`, `Open-SubEthaHistogram` | `SubEtha.Histogram` |
+| `New-SubEthaHolderTable`, `Open-SubEthaHolderTable` | `SubEtha.HolderTable` |
+| `New-SubEthaHyperLogLog`, `Open-SubEthaHyperLogLog` | `SubEtha.HyperLogLog` |
+| `New-SubEthaKvMap` | `SubEtha.KvMap` |
+| `New-SubEthaLamportPair` | `SubEtha.LamportConsumer`, `SubEtha.LamportProducer` |
+| `New-SubEthaLanedMap`, `Open-SubEthaLanedMap` | `SubEtha.LanedMap` |
+| `New-SubEthaLazyValue`, `Open-SubEthaLazyValue` | `SubEtha.LazyValue` |
+| `New-SubEthaLeaderElection`, `Open-SubEthaLeaderElection` | `SubEtha.LeaderElection` |
+| `New-SubEthaLinkedList`, `Open-SubEthaLinkedList` | `SubEtha.LinkedList` |
+| `New-SubEthaLocaleRing`, `Open-SubEthaLocaleRing` | `SubEtha.LocaleRing` |
+| `New-SubEthaLossBursts` | `SubEtha.LossBursts` |
+| `New-SubEthaLossKind` | `SubEtha.LossKind` |
+| `New-SubEthaLruCache`, `Open-SubEthaLruCache` | `SubEtha.LruCache` |
+| `Measure-SubEthaBloomSize` | `SubEtha.BloomSize` |
+| `Measure-SubEthaSketchSize` | `SubEtha.SketchSize` |
+| `New-SubEthaMpmcGrid` | `SubEtha.MpmcGrid` |
+| `New-SubEthaMpscPool` | `SubEtha.MpscPool` |
+| `New-SubEthaNotifierSet` | `SubEtha.NotifierSet` |
+| `New-SubEthaOwnerLease`, `Open-SubEthaOwnerLease` | `SubEtha.OwnerLease` |
+| `New-SubEthaPathChanges` | `SubEtha.PathChanges` |
+| `New-SubEthaPeriodicity` | `SubEtha.Periodicity` |
+| `New-SubEthaPubSub`, `Open-SubEthaPubSub` | `SubEtha.PubSub` |
+| `New-SubEthaQosPolicy` | `SubEtha.QosPolicy` |
+| `New-SubEthaQuicBridgeClient` | `SubEtha.QuicBridgeClient` |
+| `New-SubEthaQuicBridgeServer` | `SubEtha.QuicBridgeServer` |
+| `New-SubEthaRateLimiter`, `Open-SubEthaRateLimiter` | `SubEtha.RateLimiter` |
+| `Receive-SubEthaItem` | `System.Byte[]` |
+| `New-SubEthaRegion`, `Open-SubEthaRegion` | `SubEtha.Region` |
+| `New-SubEthaReorderWindow` | `SubEtha.ReorderWindow` |
+| `New-SubEthaReservoir`, `Open-SubEthaReservoir` | `SubEtha.Reservoir` |
+| `New-SubEthaRing`, `Open-SubEthaRing` | `SubEtha.Ring` |
+| `New-SubEthaRoundTripShape` | `SubEtha.RoundTripShape` |
+| `New-SubEthaRWLock`, `Open-SubEthaRWLock` | `SubEtha.RWLock` |
+| `New-SubEthaSelfSignedCert` | `SubEtha.Certificate` |
+| `New-SubEthaSemaphore`, `Open-SubEthaSemaphore` | `SubEtha.Semaphore` |
+| `Send-SubEthaItem` |  |
+| `New-SubEthaSensReceiver` | `SubEtha.SensReceiver` |
+| `New-SubEthaSensSender` | `SubEtha.SensSender` |
+| `New-SubEthaSharedArc`, `Open-SubEthaSharedArc` | `SubEtha.SharedArc` |
+| `New-SubEthaSlab`, `Open-SubEthaSlab` | `SubEtha.Slab` |
+| `New-SubEthaSpscRing`, `Open-SubEthaSpscRing` | `SubEtha.SpscRing` |
+| `New-SubEthaStack`, `Open-SubEthaStack` | `SubEtha.Stack` |
+| `New-SubEthaTcpBridgeClient` | `SubEtha.TcpBridgeClient` |
+| `New-SubEthaTcpBridgeServer` | `SubEtha.TcpBridgeServer` |
+| `New-SubEthaTimePointTile`, `Open-SubEthaTimePointTile` | `SubEtha.TimePointTile` |
+| `New-SubEthaTiming` | `SubEtha.Timing` |
+| `New-SubEthaTinyBloom` | `SubEtha.TinyBloom` |
+| `New-SubEthaTopologyMap`, `Open-SubEthaTopologyMap` | `SubEtha.TopologyMap` |
+| `New-SubEthaTower`, `Open-SubEthaTower` | `SubEtha.Tower` |
+| `New-SubEthaUniversal`, `Open-SubEthaUniversal` | `SubEtha.Universal` |
+| `New-SubEthaVec`, `Open-SubEthaVec` | `SubEtha.Vec` |
+| `New-SubEthaVersionChain`, `Open-SubEthaVersionChain` | `SubEtha.VersionChain` |
+| `New-SubEthaVersionedMap`, `Open-SubEthaVersionedMap` | `SubEtha.VersionedMap` |
+| `New-SubEthaVersionedSlab`, `Open-SubEthaVersionedSlab` | `SubEtha.VersionedSlab` |
+| `Wait-SubEthaCondition` | `System.Boolean` |
+| `New-SubEthaWorkQueue`, `Open-SubEthaWorkQueue` | `SubEtha.WorkQueue` |
+
 ## Threads and lifetimes
 
 Every method call on one object is serialized by the object, so an
