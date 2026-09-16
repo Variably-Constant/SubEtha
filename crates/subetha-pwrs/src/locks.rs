@@ -12,7 +12,7 @@ use subetha_cxc::owner_lease::{LeaseError, OwnerLease as SubethaOwnerLease};
 use subetha_cxc::shared_rw_lock::RWLockError;
 use subetha_cxc::shared_semaphore::SemaphoreError;
 
-use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, pid, seconds, LeaseValue, LEASE_VALUE_BYTES};
+use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, seconds, LeaseValue, LEASE_VALUE_BYTES};
 
 assert_send!(RWLock, Hold, Semaphore, PermitHold, OwnerLease, LeaseHold);
 
@@ -654,8 +654,3 @@ impl Drop for LeaseHold {
     }
 }
 
-/// Keeps the process id helper in use by the holds that name one.
-#[allow(dead_code)]
-fn this_process() -> u32 {
-    pid(None)
-}

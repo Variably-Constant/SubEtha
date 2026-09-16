@@ -720,7 +720,7 @@ impl Cmdlet for OpenSubEthaBTreeMap {
 /// What an insert into a hash map did.
 #[psenum(name = "SubEtha.InsertOutcome")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Inserted {
+pub enum InsertAnswer {
     /// The key was not there and is now.
     #[default]
     Inserted,
@@ -785,13 +785,13 @@ impl HashMap {
 
     /// Inserts or replaces, and says which it did, or that the map was
     /// full.
-    pub fn insert(&self, key: PsObject, value: PsObject) -> PsResult<Inserted> {
+    pub fn insert(&self, key: PsObject, value: PsObject) -> PsResult<InsertAnswer> {
         let key = bytes(&key)?;
         let value = bytes(&value)?;
         match self.inner.insert(&key, &value) {
-            Ok(InsertOutcome::Inserted) => Ok(Inserted::Inserted),
-            Ok(InsertOutcome::Updated) => Ok(Inserted::Updated),
-            Err(MapError::Full) => Ok(Inserted::Full),
+            Ok(InsertOutcome::Inserted) => Ok(InsertAnswer::Inserted),
+            Ok(InsertOutcome::Updated) => Ok(InsertAnswer::Updated),
+            Err(MapError::Full) => Ok(InsertAnswer::Full),
             Err(e) => Err(op_err("inserting", e)),
         }
     }

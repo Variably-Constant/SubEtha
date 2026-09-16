@@ -85,7 +85,7 @@ pub(crate) fn out_bytes(data: &[u8]) -> PsResult<PsObject> {
 
 /// A timeout in seconds as a duration; a negative one is refused.
 pub(crate) fn seconds(timeout: f64) -> PsResult<Duration> {
-    if !(timeout >= 0.0) || !timeout.is_finite() {
+    if !timeout.is_finite() || timeout < 0.0 {
         return Err(arg_err("the timeout must be a non-negative number of seconds"));
     }
     Ok(Duration::from_secs_f64(timeout))
@@ -159,8 +159,6 @@ impl<const N: usize> Default for Payload<N> {
 }
 
 impl<const N: usize> Payload<N> {
-    pub(crate) const MAX: usize = N;
-
     pub(crate) fn empty() -> Self {
         Self { len: 0, bytes: [0; N] }
     }
@@ -181,7 +179,7 @@ impl<const N: usize> Payload<N> {
     }
 
     /// The value as a `byte[]`.
-    pub(crate) fn to_ps(&self) -> PsResult<PsObject> {
+    pub(crate) fn to_ps(self) -> PsResult<PsObject> {
         out_bytes(self.as_bytes())
     }
 }

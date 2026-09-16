@@ -973,12 +973,6 @@ impl Ring {
         Ok(Self { path, max_producers: producers, max_consumers: consumers, stamps, inner: Arc::new(ring) })
     }
 
-    /// The shared handle, for the bridges and readers that take one of
-    /// their own.
-    pub(crate) fn handle(&self) -> Arc<AdaptiveRing> {
-        Arc::clone(&self.inner)
-    }
-
     fn try_send(&self, producer: usize, item: &[u8]) -> PsResult<bool> {
         match self.inner.try_send(producer, item) {
             Ok(()) => Ok(true),

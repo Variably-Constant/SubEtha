@@ -512,10 +512,10 @@ impl Cmdlet for NewSubEthaAdaptiveQueue {
         if senders < 1 || readers < 1 {
             return Err(arg_err("a queue needs at least one sender and one reader"));
         }
-        if let Some(rate) = self.auto_order {
-            if !rate.is_finite() || rate < 0.0 {
-                return Err(arg_err("AutoOrder is a number of inversions a second that is not negative"));
-            }
+        if let Some(rate) = self.auto_order
+            && (!rate.is_finite() || rate < 0.0)
+        {
+            return Err(arg_err("AutoOrder is a number of inversions a second that is not negative"));
         }
         let shape = MmfWorkloadShape::StreamingMpmc { n_producers: senders, n_consumers: readers };
         let inner = SubethaAdaptiveIpc::create_with_ordering(

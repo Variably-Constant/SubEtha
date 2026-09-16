@@ -30,6 +30,19 @@ Describe 'the cmdlets' {
         }
     }
 
+    It 'each declare what they write, so nothing emits undeclared' {
+        $missing = @($script:cmdlets | Where-Object { @($_.OutputType).Count -eq 0 } | ForEach-Object Name)
+        $missing -join ', ' | Should -BeNullOrEmpty
+    }
+
+    It 'each carry an example in their help' {
+        $missing = @($script:cmdlets | Where-Object {
+            @((Get-Help $_.Name -Full).Examples.Example | Where-Object { $_ } |
+                ForEach-Object { "$($_.Code)".Trim() } | Where-Object { $_ }).Count -eq 0
+        } | ForEach-Object Name)
+        $missing -join ', ' | Should -BeNullOrEmpty
+    }
+
     It 'each carry a synopsis that is a whole sentence' {
         foreach ($c in $script:cmdlets) {
             $synopsis = (Get-Help $c.Name).Synopsis

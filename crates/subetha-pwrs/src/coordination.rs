@@ -3,7 +3,6 @@
 //! the fence clock and epoch reclamation.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use pwrs::prelude::*;
 
@@ -16,7 +15,7 @@ use subetha_cxc::shared_fence_clock::{Hlc, SharedFenceClock};
 use subetha_cxc::shared_holder_table::SharedHolderTable;
 use subetha_cxc::shared_leader_election::SharedLeaderElection;
 
-use crate::common::{arg_err, assert_send, full_path, op_err, open_err, pid, seconds, size, ClockReading};
+use crate::common::{arg_err, assert_send, full_path, op_err, open_err, seconds, size, ClockReading};
 
 assert_send!(NotifierSet, Notifier, LeaderElection, HolderTable, Heartbeat, EpochBarrier, Condvar, FenceClock, Epochs);
 
@@ -1027,18 +1026,3 @@ impl Cmdlet for OpenSubEthaEpochs {
     }
 }
 
-/// A bounded wait's duration, for the families that take one.
-#[allow(dead_code)]
-pub(crate) fn bounded(timeout: f64) -> PsResult<Duration> {
-    let d = seconds(timeout)?;
-    if d.is_zero() {
-        return Err(arg_err("the timeout must be positive"));
-    }
-    Ok(d)
-}
-
-/// Keeps the process id helper in use by the families that name one.
-#[allow(dead_code)]
-fn this_process() -> u32 {
-    pid(None)
-}

@@ -55,7 +55,7 @@ impl Mover {
 /// # Examples
 ///
 /// `Get-Content .\lines.txt | Send-SubEthaItem -To $ring -Producer $producer`
-#[cmdlet(verb = "Send", noun = "SubEthaItem", alias = "Send-SEItem")]
+#[cmdlet(verb = "Send", noun = "SubEthaItem", alias = "Send-SEItem", output = ["System.Object"])]
 #[derive(Default)]
 pub struct SendSubEthaItem {
     /// The item, a `byte[]` or a string.

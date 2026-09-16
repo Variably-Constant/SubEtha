@@ -16,7 +16,7 @@ use subetha_cxc::shared_bit_vec::SharedBitVec;
 use subetha_cxc::shared_once_cell::SharedOnceCellDyn;
 use subetha_cxc::shared_vec::VecError;
 
-use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, pid, size};
+use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, size};
 
 assert_send!(Atomic, Region, Cell, SharedVec, SharedArc, LazyValue, BitVec);
 
@@ -1034,8 +1034,3 @@ impl Cmdlet for OpenSubEthaBitVec {
     }
 }
 
-/// Keeps the process id helper in use by the families that name one.
-#[allow(dead_code)]
-fn this_process() -> u32 {
-    pid(None)
-}
