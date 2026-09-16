@@ -60,6 +60,13 @@ use subetha_ffi::{
     subetha_atomic_u64_fetch_xor_explicit, subetha_atomic_u64_load, subetha_atomic_u64_load_explicit,
     subetha_atomic_u64_open, subetha_atomic_u64_reset, subetha_atomic_u64_store,
     subetha_atomic_u64_store_explicit, subetha_atomic_u64_swap, subetha_atomic_u64_swap_explicit,
+    subetha_borrow_registry_len, subetha_epochs_create, subetha_epochs_live_pins,
+    subetha_epochs_open_tickets, subetha_lazy_claim, subetha_lazy_create, subetha_lazy_flush,
+    subetha_lazy_open, subetha_lazy_publish, subetha_lazy_read_stats, subetha_lazy_reclaim,
+    subetha_lazy_stats, subetha_lazy_try_get, subetha_lazy_unlink, subetha_lazy_wait,
+    subetha_unlink_report, subetha_versioned_map_create_default, subetha_versioned_map_flush,
+    subetha_versioned_map_get, subetha_versioned_map_pin_epoch, subetha_versioned_map_read_stats,
+    subetha_versioned_map_stats, subetha_versioned_map_void_epoch,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -860,4 +867,130 @@ fn a_boolean_atomic_swaps_and_resets() {
         unsafe { subetha_atomic_bool_reset(reset_path.as_ptr(), true, MODE_STRICT, &mut fresh) },
         SUBETHA_OK
     );
+}
+
+#[test]
+fn a_lazy_value_is_published_once_by_whoever_claims_it() {
+    ensure_init();
+    let path = scratch("lazy");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_lazy_create(path.as_ptr(), 8, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    // Before anything is published there is nothing to get, which is an
+    // ordinary answer rather than a fault.
+    let mut buf = [0u8; 32];
+    let mut len = 0usize;
+    let before = unsafe { subetha_lazy_try_get(handle, buf.as_mut_ptr(), buf.len(), &mut len) };
+    assert_ne!(before, SUBETHA_OK, "nothing has been published yet");
+
+    let pid = std::process::id();
+    let mut won = false;
+    assert_eq!(unsafe { subetha_lazy_claim(handle, pid, &mut won) }, SUBETHA_OK);
+    assert!(won, "the first claimant wins the right to publish");
+
+    let value = [3u8; 8];
+    assert_eq!(
+        unsafe { subetha_lazy_publish(handle, pid, value.as_ptr(), value.len()) },
+        SUBETHA_OK
+    );
+
+    assert_eq!(
+        unsafe { subetha_lazy_try_get(handle, buf.as_mut_ptr(), buf.len(), &mut len) },
+        SUBETHA_OK
+    );
+    assert_eq!(&buf[..len], &value[..], "what was published is what is read");
+
+    // A wait on a value already there returns it rather than parking.
+    assert_eq!(
+        unsafe { subetha_lazy_wait(handle, 1_000, buf.as_mut_ptr(), buf.len(), &mut len) },
+        SUBETHA_OK
+    );
+    assert_eq!(&buf[..len], &value[..]);
+
+    let mut freed = false;
+    assert_eq!(unsafe { subetha_lazy_reclaim(handle, &mut freed) }, SUBETHA_OK);
+
+    let mut stats = subetha_lazy_stats::default();
+    assert_eq!(unsafe { subetha_lazy_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    assert_eq!(subetha_lazy_flush(handle), SUBETHA_OK);
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_lazy_open(path.as_ptr(), 8, MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+
+    let mut report = subetha_unlink_report::default();
+    assert_eq!(unsafe { subetha_lazy_unlink(path.as_ptr(), &mut report) }, SUBETHA_OK);
+}
+
+#[test]
+fn a_versioned_map_reads_a_key_and_reports_the_epoch_a_pin_would_take() {
+    ensure_init();
+    let tree = scratch("vmap");
+    let epochs = scratch("vmap-epochs");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_versioned_map_create_default(
+                tree.as_ptr(), 64, epochs.as_ptr(), 4, MODE_STRICT, &mut handle,
+            )
+        },
+        SUBETHA_OK
+    );
+
+    let mut stats = subetha_versioned_map_stats::default();
+    assert_eq!(unsafe { subetha_versioned_map_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    let key_size = stats.key_size as usize;
+    let key = vec![1u8; key_size];
+
+    let mut buf = vec![0u8; 64];
+    let mut len = 0usize;
+    // A key nothing put in is absent, and that is an answer, not a fault.
+    let missing = unsafe {
+        subetha_versioned_map_get(handle, key.as_ptr(), key.len(), buf.as_mut_ptr(), buf.len(), &mut len)
+    };
+    assert_ne!(missing, SUBETHA_OK, "the map holds nothing under that key yet");
+
+    let mut epoch = 0u64;
+    assert_eq!(unsafe { subetha_versioned_map_pin_epoch(handle, &mut epoch) }, SUBETHA_OK);
+
+    let mut touched = 1u64;
+    assert_eq!(
+        unsafe { subetha_versioned_map_void_epoch(handle, 999_999, &mut touched) },
+        SUBETHA_OK
+    );
+    assert_eq!(touched, 0, "nothing was written at an epoch nothing used");
+
+    assert_eq!(subetha_versioned_map_flush(handle), SUBETHA_OK);
+}
+
+#[test]
+fn the_epoch_table_reports_what_is_holding_reclamation_up() {
+    ensure_init();
+    let path = scratch("epochs");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_epochs_create(path.as_ptr(), 8, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    let mut pins = 1u64;
+    assert_eq!(unsafe { subetha_epochs_live_pins(handle, &mut pins) }, SUBETHA_OK);
+    assert_eq!(pins, 0, "nobody is reading, so nothing is pinned");
+
+    let mut tickets = 1u64;
+    assert_eq!(unsafe { subetha_epochs_open_tickets(handle, &mut tickets) }, SUBETHA_OK);
+    assert_eq!(tickets, 0, "no compound write is part way through");
+}
+
+#[test]
+fn the_borrow_registry_is_empty_between_calls() {
+    ensure_init();
+    // Each entry point publishes its borrow for the length of the call
+    // and takes it back, so nothing is published between two of them.
+    assert_eq!(subetha_borrow_registry_len(), 0);
 }
