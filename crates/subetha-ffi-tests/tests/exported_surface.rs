@@ -30,6 +30,17 @@ use subetha_ffi::{
     subetha_versioned_chain_flush_async, subetha_versioned_chain_open, subetha_versioned_chain_push,
     subetha_versioned_chain_read_at, subetha_versioned_chain_read_stats,
     subetha_versioned_chain_reset, subetha_versioned_chain_stats,
+    subetha_histogram_boundaries, subetha_histogram_bucket_for, subetha_histogram_count,
+    subetha_histogram_counts, subetha_histogram_create, subetha_histogram_flush,
+    subetha_histogram_flush_async, subetha_histogram_open, subetha_histogram_percentile,
+    subetha_histogram_read_stats, subetha_histogram_record, subetha_histogram_reset,
+    subetha_histogram_stats, subetha_reservoir_create, subetha_reservoir_flush,
+    subetha_reservoir_flush_async, subetha_reservoir_open, subetha_reservoir_read_stats,
+    subetha_reservoir_record, subetha_reservoir_reset, subetha_reservoir_snapshot,
+    subetha_reservoir_stats, subetha_topology_create, subetha_topology_fan_in,
+    subetha_topology_fan_out, subetha_topology_flush, subetha_topology_flush_async,
+    subetha_topology_open, subetha_topology_read_stats, subetha_topology_record_send,
+    subetha_topology_reset, subetha_topology_stats,
     subetha_cms_stats, subetha_cms_suggest, subetha_handle, subetha_init, SUBETHA_OK,
 };
 
@@ -378,6 +389,160 @@ fn a_rate_limiter_hands_out_its_capacity_and_then_refuses() {
     let mut reader: subetha_handle = 0;
     assert_eq!(
         unsafe { subetha_rate_limiter_open(path.as_ptr(), 2, 1, MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_topology_counts_who_sends_to_whom() {
+    ensure_init();
+    let path = scratch("topology");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_topology_create(path.as_ptr(), 4, 2, 2, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    let mut count = 0u64;
+    assert_eq!(
+        unsafe { subetha_topology_record_send(handle, 0, 1, &mut count) },
+        SUBETHA_OK
+    );
+    assert_eq!(count, 1, "the first send from nought to one is the first");
+    assert_eq!(
+        unsafe { subetha_topology_record_send(handle, 0, 2, &mut count) },
+        SUBETHA_OK
+    );
+
+    // Fan out counts the places one sender reaches, fan in the senders
+    // reaching one place.
+    let mut out = 0u32;
+    assert_eq!(unsafe { subetha_topology_fan_out(handle, 0, &mut out) }, SUBETHA_OK);
+    assert_eq!(out, 2, "nought reached two places");
+    let mut into = 0u32;
+    assert_eq!(unsafe { subetha_topology_fan_in(handle, 1, &mut into) }, SUBETHA_OK);
+    assert_eq!(into, 1, "one was reached by a single sender");
+
+    let mut stats = subetha_topology_stats::default();
+    assert_eq!(unsafe { subetha_topology_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    assert_eq!(subetha_topology_flush(handle), SUBETHA_OK);
+    assert_eq!(subetha_topology_flush_async(handle), SUBETHA_OK);
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_topology_open(path.as_ptr(), 4, MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+    let reset_path = scratch("topology-reset");
+    let mut fresh: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_topology_reset(reset_path.as_ptr(), 4, 2, 2, MODE_STRICT, &mut fresh) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_reservoir_keeps_a_bounded_sample_of_a_longer_stream() {
+    ensure_init();
+    let path = scratch("reservoir");
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_reservoir_create(path.as_ptr(), 4, MODE_STRICT, &mut handle) },
+        SUBETHA_OK
+    );
+
+    // A record is a fixed fifty-six bytes; anything else is refused.
+    // More values than the reservoir holds: a refusal there is how the
+    // sample stays unbiased rather than a fault.
+    let mut kept = 0usize;
+    for i in 0u8..16 {
+        let value = [i; 56];
+        let mut slot = 0u64;
+        let code = unsafe { subetha_reservoir_record(handle, value.as_ptr(), value.len(), &mut slot) };
+        if code == SUBETHA_OK {
+            kept += 1;
+        }
+    }
+    assert!(kept > 0, "a reservoir with room keeps something");
+
+    let mut buf = [0u8; 1024];
+    let mut len = 0usize;
+    assert_eq!(
+        unsafe { subetha_reservoir_snapshot(handle, buf.as_mut_ptr(), buf.len(), &mut len) },
+        SUBETHA_OK
+    );
+
+    let mut stats = subetha_reservoir_stats::default();
+    assert_eq!(unsafe { subetha_reservoir_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    assert_eq!(subetha_reservoir_flush(handle), SUBETHA_OK);
+    assert_eq!(subetha_reservoir_flush_async(handle), SUBETHA_OK);
+    assert_eq!(subetha_reservoir_reset(handle), SUBETHA_OK);
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe { subetha_reservoir_open(path.as_ptr(), 4, MODE_STRICT, &mut reader) },
+        SUBETHA_OK
+    );
+}
+
+#[test]
+fn a_histogram_puts_a_value_in_the_bucket_its_boundaries_name() {
+    ensure_init();
+    let path = scratch("histogram");
+    let bounds: [u64; 2] = [10, 100];
+    let mut handle: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_histogram_create(path.as_ptr(), bounds.as_ptr(), bounds.len(), MODE_STRICT, &mut handle)
+        },
+        SUBETHA_OK
+    );
+
+    // Two boundaries make three buckets: below ten, ten to a hundred, above.
+    let mut bucket = 0u64;
+    assert_eq!(unsafe { subetha_histogram_bucket_for(handle, 5, &mut bucket) }, SUBETHA_OK);
+    assert_eq!(bucket, 0, "five sits below the first boundary");
+
+    let mut recorded = 0u64;
+    assert_eq!(unsafe { subetha_histogram_record(handle, 5, &mut recorded) }, SUBETHA_OK);
+    assert_eq!(unsafe { subetha_histogram_record(handle, 50, &mut recorded) }, SUBETHA_OK);
+    assert_eq!(unsafe { subetha_histogram_record(handle, 500, &mut recorded) }, SUBETHA_OK);
+
+    let mut count = 0u64;
+    assert_eq!(unsafe { subetha_histogram_count(handle, 0, &mut count) }, SUBETHA_OK);
+    assert_eq!(count, 1, "one value landed below ten");
+
+    let mut counts = [0u64; 8];
+    let mut n = 0usize;
+    assert_eq!(
+        unsafe { subetha_histogram_counts(handle, counts.as_mut_ptr(), counts.len(), &mut n) },
+        SUBETHA_OK
+    );
+    assert_eq!(n, 3, "two boundaries make three buckets");
+
+    let mut read_bounds = [0u64; 8];
+    assert_eq!(
+        unsafe {
+            subetha_histogram_boundaries(handle, read_bounds.as_mut_ptr(), read_bounds.len(), &mut n)
+        },
+        SUBETHA_OK
+    );
+    assert_eq!(&read_bounds[..n], &bounds[..]);
+
+    let mut at = 0u64;
+    assert_eq!(unsafe { subetha_histogram_percentile(handle, 0.5, &mut at) }, SUBETHA_OK);
+
+    let mut stats = subetha_histogram_stats::default();
+    assert_eq!(unsafe { subetha_histogram_read_stats(handle, &mut stats) }, SUBETHA_OK);
+    assert_eq!(subetha_histogram_flush(handle), SUBETHA_OK);
+    assert_eq!(subetha_histogram_flush_async(handle), SUBETHA_OK);
+    assert_eq!(subetha_histogram_reset(handle), SUBETHA_OK);
+
+    let mut reader: subetha_handle = 0;
+    assert_eq!(
+        unsafe {
+            subetha_histogram_open(path.as_ptr(), bounds.as_ptr(), bounds.len(), MODE_STRICT, &mut reader)
+        },
         SUBETHA_OK
     );
 }
