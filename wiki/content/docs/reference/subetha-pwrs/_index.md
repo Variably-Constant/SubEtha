@@ -382,4 +382,11 @@ cargo pwrs build --release          # target/pwrs/SubEtha/
 cargo pwrs test --release           # cargo test, the build, then Pester in pwsh and Windows PowerShell
 ```
 
-The Pester suites in `tests/` cover every family, in both hosts.
+The Pester suites in `tests/` cover every family, in both hosts. They
+reach every cmdlet, class, enum and method the module exports, and a
+gate suite fails the run when one of those names is exercised nowhere,
+when a cmdlet has no `SE` alias resolving to it, or when a synopsis is
+not a whole sentence. Others attach a second time through every `Open-`
+and reset form, drive a second process of the same host over shared
+structures, and run several runspaces at once against one object and
+against handles of their own.

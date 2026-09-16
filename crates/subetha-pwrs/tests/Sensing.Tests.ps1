@@ -28,6 +28,7 @@ Describe 'SubEtha.SensSender and SubEtha.SensReceiver' {
         }
         $got | Should -Be @('hello', 'one', 'two')
         $send.DatagramsSent() | Should -BeGreaterThan 0
+        $send.DatagramsReceived() | Should -BeGreaterOrEqual 0
         $send.Switches() | Should -BeGreaterOrEqual 0
         $recv.Switches() | Should -BeGreaterOrEqual 0
         $recv.SendFailures() | Should -BeGreaterOrEqual 0
@@ -49,6 +50,7 @@ Describe 'SubEtha.SensSender and SubEtha.SensReceiver' {
 Describe 'the sensors' {
     It 'classifies a loss from the spacing' {
         $k = New-SubEthaLossKind
+        $k.GetType().FullName | Should -Be 'SubEtha.LossKind'
         1..20 | ForEach-Object { $k.ObserveSpacing(1000) }
         $k.ObserveDelay(500)
         $k.Classify(1, 1000) | Should -Be ([SubEtha.LossClass]::Wireless)
@@ -61,6 +63,7 @@ Describe 'the sensors' {
 
     It 'measures runs of losses' {
         $b = New-SubEthaLossBursts
+        $b.GetType().FullName | Should -Be 'SubEtha.LossBursts'
         $null -eq $b.MeanRunLength() | Should -BeTrue
         $pattern = @()
         1..50 | ForEach-Object { $pattern += @($true, $true, $true, $false, $false, $false, $false, $false, $false, $false) }
@@ -70,6 +73,7 @@ Describe 'the sensors' {
         $b.MeanRunLength() | Should -BeGreaterThan 1
         $b.SteadyLoss() | Should -BeGreaterThan 0
         $rates = $b.TransitionRates()
+        $rates.GetType().FullName | Should -Be 'SubEtha.BurstRates'
         $rates.Entering | Should -BeGreaterThan 0
         $rates.Leaving | Should -BeGreaterThan 0
         $b.Dispose()
@@ -77,6 +81,7 @@ Describe 'the sensors' {
 
     It 'reads jitter, spacing and trend' {
         $t = New-SubEthaTiming -Window 8
+        $t.GetType().FullName | Should -Be 'SubEtha.Timing'
         $t.Window | Should -Be 8
         0..15 | ForEach-Object { $t.Observe(1000 * $_, 1000 * $_ + 50 + ($_ % 3) * 10) }
         $t.Samples() | Should -BeGreaterThan 0
@@ -91,6 +96,7 @@ Describe 'the sensors' {
 
     It 'sees two groups of round trips' {
         $s = New-SubEthaRoundTripShape
+        $s.GetType().FullName | Should -Be 'SubEtha.RoundTripShape'
         $null -eq $s.TwoGroups() | Should -BeTrue
         $samples = @()
         1..100 | ForEach-Object { $samples += 1000; $samples += 9000 }
@@ -104,6 +110,7 @@ Describe 'the sensors' {
 
     It 'looks for a beat in the delays' {
         $p = New-SubEthaPeriodicity
+        $p.GetType().FullName | Should -Be 'SubEtha.Periodicity'
         $null -eq $p.Period() | Should -BeTrue
         $null -eq $p.SecondsToNext() | Should -BeTrue
         0..255 | ForEach-Object { $p.Observe($(if ($_ % 16 -eq 0) { 5000 } else { 100 }), 10000 * $_) }
@@ -128,6 +135,8 @@ Describe 'the sensors' {
         $c.TrainSamples() | Should -BeGreaterThan 0
         $link = $c.LinkCapacity()
         if ($null -ne $link) { $link | Should -BeGreaterThan 0 }
+        $rate = $c.TrainRate()
+        if ($null -ne $rate) { $rate | Should -BeGreaterThan 0 }
         $c.Reset()
         $c.PairSamples() | Should -Be 0
         $c.Dispose()
@@ -135,6 +144,7 @@ Describe 'the sensors' {
 
     It 'forecasts the next interval' {
         $f = New-SubEthaForecast
+        $f.GetType().FullName | Should -Be 'SubEtha.Forecast'
         1..10 | ForEach-Object { $f.Observe(125000, 1.0) }
         $f.MeanRate() | Should -BeGreaterThan 0
         $f.NextRate() | Should -BeGreaterThan 0
@@ -144,6 +154,7 @@ Describe 'the sensors' {
 
     It 'notices the route moving' {
         $p = New-SubEthaPathChanges
+        $p.GetType().FullName | Should -Be 'SubEtha.PathChanges'
         $null -eq $p.Last() | Should -BeTrue
         1..10 | ForEach-Object { $p.Observe(64, 0, 5) }
         1..10 | ForEach-Object { $p.Observe(64, 3, 9) }

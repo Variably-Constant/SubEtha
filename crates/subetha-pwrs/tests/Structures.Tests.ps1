@@ -44,7 +44,7 @@ Describe 'SubEtha.LinkedList' {
         $l = New-SubEthaLinkedList -Path (Join-Path $script:dir 'list') -Capacity 8 -ElementSize 4
         $l.Count() | Should -Be 0
         $b = $l.PushBack('bbbb')
-        $a = $l.PushFront('aaaa')
+        $null = $l.PushFront('aaaa')
         $l.PushBackMany(@('cccc', 'dddd')).Count | Should -Be 2
         $l.Count() | Should -Be 4
         Get-SEText $l.Get($b) | Should -Be 'bbbb'
@@ -92,6 +92,7 @@ Describe 'SubEtha.BTreeMap' {
         Get-SEText $m.Get('bb') | Should -Be 'TWO_'
         $null -eq $m.Get('zz') | Should -BeTrue
         $m.Contains('cc') | Should -BeTrue
+        $m.First().GetType().FullName | Should -Be 'SubEtha.Pair'
         Get-SEText $m.First().Key | Should -Be 'aa'
         Get-SEText $m.Last().Value | Should -Be 'four'
         Get-SEText $m.Remove('aa') | Should -Be 'one_'
@@ -117,6 +118,7 @@ Describe 'SubEtha.HashMap' {
         $null -eq $many[1] | Should -BeTrue
         $m.Contains('key3') | Should -BeTrue
         $x = $m.CompareExchange('key1', 'val2', 'val9')
+        $x.GetType().FullName | Should -Be 'SubEtha.Exchange'
         $x.Swapped | Should -BeTrue
         Get-SEText $x.Found | Should -Be 'val2'
         $y = $m.CompareExchange('key1', 'val2', 'val0')
@@ -135,6 +137,8 @@ Describe 'SubEtha.MpscPool' {
         $pool = New-SubEthaMpscPool -Path (Join-Path $script:dir 'mpsc') -Producers 2 -Capacity 8
         $pool.GetType().FullName | Should -Be 'SubEtha.MpscPool'
         $pool.Producers.Count | Should -Be 2
+        $pool.Producers[0].GetType().FullName | Should -Be 'SubEtha.MpscProducer'
+        $pool.Consumer.GetType().FullName | Should -Be 'SubEtha.MpscConsumer'
         $pool.Producers[0].Index | Should -Be 0
         $pool.Producers[1].Capacity | Should -Be 8
         $pool.Consumer.Producers | Should -Be 2
@@ -154,6 +158,8 @@ Describe 'SubEtha.MpmcGrid' {
         $grid = New-SubEthaMpmcGrid -Path (Join-Path $script:dir 'mpmc') -Producers 2 -Consumers 2 -Capacity 8
         $grid.Producers.Count | Should -Be 2
         $grid.Consumers.Count | Should -Be 2
+        $grid.Producers[0].GetType().FullName | Should -Be 'SubEtha.MpmcProducer'
+        $grid.Consumers[0].GetType().FullName | Should -Be 'SubEtha.MpmcConsumer'
         $grid.Consumers[0].Rings | Should -BeGreaterThan 0
         $grid.Producers[0].Push('a') | Should -BeTrue
         $grid.Producers[1].Push('b') | Should -BeTrue

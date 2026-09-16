@@ -62,6 +62,7 @@ Describe 'SubEtha.TimePointTile' {
         ($t.VisibleMask(15) -band (1 -shl $l1)) | Should -Not -Be 0
         $seen = $t.Visible(15)
         $seen.Count | Should -Be 1
+        $seen[0].GetType().FullName | Should -Be 'SubEtha.TileEntry'
         Get-SEText $seen[0].Bytes | Should -Be 'ten'
         $seen[0].Version | Should -Be 10
         $at = $t.At($l2)
@@ -110,6 +111,7 @@ Describe 'SubEtha.VersionedSlab' {
         $null -eq $many[1] | Should -BeTrue
         $history = $slab.History(0)
         $history.Count | Should -Be 2
+        $history[0].GetType().FullName | Should -Be 'SubEtha.SlotVersion'
         $null -eq $history[0].Died | Should -BeTrue
         $history[1].Died | Should -Not -BeNullOrEmpty
         $pin.Release()
@@ -120,6 +122,21 @@ Describe 'SubEtha.VersionedSlab' {
         $slab.SweepSlot(0) | Should -BeGreaterOrEqual 0
         $slab.VoidEpoch(999999) | Should -Be 0
         $slab.Flush()
+        $slab.Dispose()
+    }
+
+    It 'writes at named epochs and undoes one of them' {
+        $slab = New-SubEthaVersionedSlab -Path (Join-Path $script:dir 'vslab-at') -Capacity 4 -EpochsPath (Join-Path $script:dir 'vslab-at-epochs')
+        $slab.SetAt(0, 'old', 1)
+        $slab.SetAt(1, 'old', 1)
+        $slab.SetAt(0, 'new', 2)
+        $slab.SetAt(1, 'new', 2)
+        Get-SEText $slab.Get(0) | Should -Be 'new'
+        $slab.VoidEpoch(2) | Should -BeGreaterOrEqual 4
+        Get-SEText $slab.Get(0) | Should -Be 'old'
+        Get-SEText $slab.Get(1) | Should -Be 'old'
+        Get-SEText $slab.RetireAt(1, 7) | Should -Be 'old'
+        $null -eq $slab.Get(1) | Should -BeTrue
         $slab.Dispose()
     }
 }
@@ -133,18 +150,33 @@ Describe 'SubEtha.VersionedMap' {
         $m.Get(2) | Should -Be 20
         $null -eq $m.Get(9) | Should -BeTrue
         $pin = $m.Pin()
+        $pin.GetType().FullName | Should -Be 'SubEtha.MapPin'
         $m.Insert(4, 40) | Out-Null
         $m.Remove(1) | Should -Be 11
         $pin.Get(1) | Should -Be 11
         $null -eq $pin.Get(4) | Should -BeTrue
         $scan = $pin.Scan($null, $null, 100)
+        $scan[0].GetType().FullName | Should -Be 'SubEtha.Entry'
         ($scan | ForEach-Object { $_.Key }) | Should -Be @(1, 2, 3)
         $from = $pin.ScanFrom(2, $null, 100)
+        $from.GetType().FullName | Should -Be 'SubEtha.Scan'
         ($from.Entries | ForEach-Object { $_.Value }) | Should -Be @(20, 30)
         $pin.Release()
         $m.Sweep() | Should -BeGreaterOrEqual 0
         $m.Count() | Should -BeGreaterOrEqual 3
         $m.Flush()
+        $m.Dispose()
+    }
+
+    It 'inserts at named epochs and undoes one of them' {
+        $m = New-SubEthaVersionedMap -Path (Join-Path $script:dir 'vmap-at') -Capacity 64 -EpochsPath (Join-Path $script:dir 'vmap-at-epochs')
+        $null -eq $m.InsertAt(1, 10, 1) | Should -BeTrue
+        $null -eq $m.InsertAt(2, 20, 2) | Should -BeTrue
+        $m.Get(2) | Should -Be 20
+        $m.VoidEpoch(2) | Should -BeGreaterOrEqual 1
+        $null -eq $m.Get(2) | Should -BeTrue
+        $m.Get(1) | Should -Be 10
+        $m.RemoveAt(1, 3) | Should -Be 10
         $m.Dispose()
     }
 }
@@ -156,6 +188,7 @@ Describe 'SubEtha.LanedMap' {
         $claim = $m.ClaimLane()
         $claim.GetType().FullName | Should -Be 'SubEtha.LaneClaim'
         $claim.Held() | Should -BeTrue
+        $claim.Lanes() | Should -Be 2
         $null -eq $claim.Insert(7, 70) | Should -BeTrue
         $claim.InsertMany(@([uint64] 8), @([uint64] 80)).Count | Should -Be 1
         $m.HeldLanes() | Should -Be 1
@@ -172,6 +205,7 @@ Describe 'SubEtha.LanedMap' {
         $again.Release()
         { $m.ClaimLaneFor(12345) } | Should -Throw
         $pin = $m.Pin()
+        $pin.GetType().FullName | Should -Be 'SubEtha.LanedPin'
         ($pin.Scan($null, $null, 100) | ForEach-Object { $_.Key }) | Should -Be @(7)
         $pin.Get(7) | Should -Be 70
         $pin.ScanFrom($null, $null, 100).Entries.Count | Should -Be 1
@@ -194,10 +228,12 @@ Describe 'SubEtha.TopologyMap' {
         $t.FanIn(1) | Should -Be 1
         $t.TotalSends() | Should -Be 3
         $busy = $t.BusiestSender()
+        $busy.GetType().FullName | Should -Be 'SubEtha.FanCount'
         $busy.Participant | Should -Be 0
         $busy.Places | Should -Be 3
         $t.BusiestReceiver().Places | Should -Be 1
         $shape = $t.Recommend()
+        $shape.GetType().FullName | Should -Be 'SubEtha.Topology'
         $t.PublishRecommendation() | Should -Be $shape
         $t.PublishedRecommendation() | Should -Be $shape
         $t.RecommendationEpoch() | Should -BeGreaterThan 0
@@ -222,6 +258,7 @@ Describe 'SubEtha.Graph' {
         $g.OutDegree($a) | Should -Be 2
         $n = $g.Neighbors($a)
         $n.Count | Should -Be 2
+        $n[0].GetType().FullName | Should -Be 'SubEtha.Neighbor'
         ($n | Where-Object { $_.Edge -eq $e }).Value | Should -Be 5
         $g.RemoveEdge($a, $e) | Should -Be 5
         $g.OutDegree($a) | Should -Be 1
@@ -247,6 +284,7 @@ Describe 'SubEtha.Universal' {
         $u.Migrations() | Should -BeGreaterThan $m
         $u.Contains(1) | Should -BeTrue
         $counts = $u.OpCounts()
+        $counts.GetType().FullName | Should -Be 'SubEtha.OpCounts'
         $counts.Inserts | Should -BeGreaterOrEqual 3
         $u.Generation() | Should -BeGreaterOrEqual 0
         $u.Clear()

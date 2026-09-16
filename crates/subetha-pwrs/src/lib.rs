@@ -152,7 +152,7 @@ pwrs::export_module! {
     ],
     enums: [
         primitives::MemoryOrder, rings::OrderingMode, rings::Locale, rings::StampKind,
-        structures::ArenaAccess, structures::Inserted,
+        structures::Inserted,
         frontdoor::Durability, frontdoor::Reliability, frontdoor::OrderingNeed, frontdoor::QueueShape, frontdoor::QosPreset,
         versioned::Topology, versioned::SetStrategy,
         sensing::SensCodeKind, sensing::LossClassKind,

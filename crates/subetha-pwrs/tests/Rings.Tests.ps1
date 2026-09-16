@@ -40,6 +40,7 @@ Describe 'SubEtha.SpscRing' {
         $r = New-SubEthaSpscRing -Path (Join-Path $script:dir 'spsc-packed') -Capacity 8
         $r.PushPacked((ConvertTo-SEBytes 'aabbcc'), 2) | Should -Be 3
         $packed = $r.PopPacked(10)
+        $packed.GetType().FullName | Should -Be 'SubEtha.PackedItems'
         $packed.Count | Should -Be 3
         $packed.Bytes.Length | Should -Be (3 * 64)
         ConvertFrom-SEBytes $packed.Bytes[64..65] | Should -Be 'bb'
@@ -79,8 +80,10 @@ Describe 'SubEtha.CapacityRing' {
         $r.Capacity() | Should -Be 4
         $r.Send($p, 'a') | Should -BeTrue
         $r.Send($p, 'b') | Should -BeTrue
+        $generation = $r.PinGeneration()
         $r.MorphTo(16)
         $r.Capacity() | Should -Be 16
+        $r.PinGeneration() | Should -BeGreaterThan $generation
         $r.Send($p, 'c') | Should -BeTrue
         ($r.RecvMany($c, 10) | ForEach-Object { ConvertFrom-SEBytes $_ }) -join '' | Should -Be 'abc'
         $r.StalePops() | Should -BeGreaterOrEqual 0
@@ -141,6 +144,7 @@ Describe 'SubEtha.Ring' {
         $r.Send($p, 'hello') | Should -BeTrue
         $r.ApproxLen() | Should -Be 1
         $r.Shape() | Should -Not -BeNullOrEmpty
+        $r.TotalCapacity() | Should -BeGreaterOrEqual $r.Capacity()
         ConvertFrom-SEBytes $r.Recv($c) | Should -Be 'hello'
         $r.SendMany($p, @('a', 'b')) | Should -Be 2
         $r.SendPacked($p, (ConvertTo-SEBytes 'cd'), 1) | Should -Be 2
@@ -177,12 +181,18 @@ Describe 'SubEtha.Ring' {
         $null = $r.Send($p1, 'c')
         $items = $recv.Drain(100)
         $items.Count | Should -Be 3
+        $items[0].GetType().FullName | Should -Be 'SubEtha.StampedItem'
         ($items | ForEach-Object { ConvertFrom-SEBytes $_.Bytes }) -join '' | Should -Be 'abc'
         ($items | ForEach-Object { $_.Stamp }) | Sort-Object | Should -Be ($items | ForEach-Object { $_.Stamp })
         $recv.Strategy() | Should -Not -BeNullOrEmpty
         $recv.Corrections() | Should -BeGreaterOrEqual 0
-        $recv.Dispose()
+        # The receiver keeps the ring alive on its own: disposing the
+        # ring object first leaves the receiver usable.
+        $recv.RingShared() | Should -BeTrue
         $r.Dispose()
+        $recv.RingShared() | Should -BeFalse
+        @($recv.FlushAll()).Count | Should -Be 0
+        $recv.Dispose()
     }
 
     It 'refuses an ordered receiver on an unstamped ring' {

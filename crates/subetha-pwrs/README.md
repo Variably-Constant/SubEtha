@@ -200,6 +200,16 @@ Import-Module ../../target/pwrs/SubEtha/SubEtha.psd1
 and, on Windows, in Windows PowerShell as well. The module runs on
 PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
 
+The suites cover every cmdlet, class, enum and method the module
+exports, and one of them is a gate: it fails the run when an exported
+name is exercised nowhere, when a cmdlet has no `SE` alias resolving to
+it, or when a synopsis is not a whole sentence. Beside the per-family
+suites, one attaches to a structure a second time through every `Open-`
+and reset form, one drives a second process of the same host over a
+shared counter, ring, channel, lock, semaphore, lease and pubsub, and
+one runs several runspaces at once against a single object and against
+handles of their own.
+
 ## Threads and lifetimes
 
 Every method call on one object is serialized by the object, so an

@@ -52,6 +52,7 @@ Describe 'SubEtha.TcpBridge' {
         $accepting = Start-SEBackground -Script { param($s) $s.AcceptOne() } -Argument $server
 
         $client = New-SubEthaTcpBridgeClient -RingPath $source -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $addr.Port
+        $client.GetType().FullName | Should -Be 'SubEtha.TcpBridgeClient'
         $client.Server.Port | Should -Be $addr.Port
         $client.Run(5)
         $arrived = Wait-SEBackground $accepting
@@ -81,11 +82,13 @@ Describe 'SubEtha.QuicBridge' {
         1..3 | ForEach-Object { $null = $from.Send($p, "q-$_") }
 
         $server = New-SubEthaQuicBridgeServer -RingPath $sink -Capacity 64 -LocalPort 0 -LocalHost 127.0.0.1 -Cert $cert.Cert -Key $cert.Key
+        $server.GetType().FullName | Should -Be 'SubEtha.QuicBridgeServer'
         $addr = $server.LocalAddr()
         $addr.Port | Should -BeGreaterThan 0
         $accepting = Start-SEBackground -Script { param($s) $s.AcceptOne() } -Argument $server
 
         $client = New-SubEthaQuicBridgeClient -RingPath $source -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $addr.Port -Cert $cert.Cert -ServerName 'localhost'
+        $client.GetType().FullName | Should -Be 'SubEtha.QuicBridgeClient'
         $client.ServerName | Should -Be 'localhost'
         $client.Run(3)
         Wait-SEBackground $accepting | Should -Be 3

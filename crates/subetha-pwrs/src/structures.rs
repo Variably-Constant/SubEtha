@@ -40,11 +40,9 @@ pub struct Arena {
 }
 
 /// How an arena is opened.
-#[psenum(name = "SubEtha.ArenaAccess")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ArenaAccess {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArenaAccess {
     /// Interning and resolving.
-    #[default]
     ReadWrite,
     /// Resolving only.
     ReadOnly,
