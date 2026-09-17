@@ -1,19 +1,20 @@
 //! Race-free construction for the file-backed MMF primitives.
 //!
-//! [`create_or_attach`] elects one creator through an exclusive `create_new`;
-//! the winner initializes over a zeroed mapping and everyone else attaches to
-//! what the winner built. [`reset`] truncates and reinitializes.
+//! [`create_or_attach`] elects a builder on a marker beside the region,
+//! builds under a staging name, and publishes by linking that name to the
+//! real one, so the region's name only ever appears over complete bytes.
+//! Everyone else attaches. [`reset`] truncates and reinitializes.
 //!
-//! The election hands the winner the region's own name before the region
-//! exists, so a creator that dies while building leaves a file no one may
-//! replace: every later attacher waits out the deadline and is told to
-//! remove it by hand. Telling a dead creator from a slow one needs a
-//! liveness test this module does not have, and without one no recovery
-//! is safe.
+//! An attacher past the deadline drops the marker and elects again. That
+//! is safe because the link, not the marker, decides who publishes: a
+//! second builder finds the name taken and discards its staging region.
+//! The region's own name is never reclaimed, since a removal takes the
+//! name and not the file, leaving a slow builder filling in an orphan.
 
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use memmap2::{MmapMut, MmapOptions};
@@ -26,13 +27,18 @@ pub(crate) const INIT_WAIT: Duration = Duration::from_secs(5);
 /// Map the region at `path`, initializing it only if this caller wins the
 /// creation election.
 ///
-/// `total` is the region size. `init` runs exactly once, on the winner, over a
-/// zeroed mapping; it must publish whatever `ready` tests last, because
-/// attachers spin on it. `ready` reports whether a mapping is fully
-/// initialized - normally a magic-number check.
+/// `total` is the region size. `init` runs on the elected builder, over a
+/// zeroed mapping of its own staging region, at most once per call; it
+/// must write whatever `ready` tests last, because attachers spin on it.
+/// `ready` reports whether a mapping is initialized, normally a
+/// magic-number check.
 ///
-/// Returns the file and mapping. Errors if the region is smaller than `total`,
-/// or if an elected creator never finishes.
+/// Two builders overlap only when one takes the election over from
+/// another past its deadline; the link then picks one and the other's
+/// region is discarded.
+///
+/// Errors if the region is smaller than `total`, or if `path` is held by
+/// something this module did not publish.
 pub(crate) fn create_or_attach<I, R>(
     path: &Path,
     total: usize,
@@ -43,13 +49,174 @@ where
     I: FnOnce(*mut u8),
     R: Fn(*const u8) -> bool,
 {
-    match crate::region_file::create_new(path) {
-        Ok(file) => {
-            let mapped = build(&file, total, init)?;
-            Ok((file, mapped))
+    let marker = sibling(path, ".building")?;
+    match elect(path, &marker, total, &ready)? {
+        Some(pair) => Ok(pair),
+        None => {
+            let built = publish(path, total, init);
+            // Released after the link and whatever the outcome, so the
+            // next holder finds the region there and a failed build leaves
+            // nobody waiting out a deadline.
+            let released = drop_marker(&marker);
+            match built {
+                Ok(pair) => released.map(|()| pair),
+                // A peer published first, or the name holds a region built
+                // in place under its own name.
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    released?;
+                    match try_attach(path, total, &ready)? {
+                        Some(pair) => Ok(pair),
+                        None => Err(unreadable(path)),
+                    }
+                }
+                Err(e) => Err(e),
+            }
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => wait_for_region(path, total, &ready),
+    }
+}
+
+/// The error for a region name held by something this module did not
+/// publish. Names the file and the fix: removing it by hand is the whole
+/// of the recovery, since those bytes may belong to a region another
+/// build is filling in right now.
+fn unreadable(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "the region at {} never became readable: it is empty or unfinished, which a creator \
+             that died while building it in place leaves behind. Remove the file to let it be \
+             built again.",
+            path.display()
+        ),
+    )
+}
+
+/// `Some` when the region was published and this caller attached to it,
+/// `None` when this caller holds the marker and must build it.
+///
+/// A caller that wins the marker looks once more before building, since a
+/// builder may have published and released between its last look and its
+/// win.
+fn elect<R>(
+    path: &Path,
+    marker: &Path,
+    total: usize,
+    ready: &R,
+) -> io::Result<Option<(File, MmapMut)>>
+where
+    R: Fn(*const u8) -> bool,
+{
+    let mut deadline = Instant::now() + INIT_WAIT;
+    loop {
+        match crate::region_file::create_new(marker) {
+            Ok(_taken) => {
+                if let Some(pair) = try_attach(path, total, ready)? {
+                    drop_marker(marker)?;
+                    return Ok(Some(pair));
+                }
+                return Ok(None);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if let Some(pair) = try_attach(path, total, ready)? {
+                    return Ok(Some(pair));
+                }
+                if Instant::now() >= deadline {
+                    // The holder never published. A builder still alive
+                    // loses nothing: the link decides who wins.
+                    drop_marker(marker)?;
+                    deadline = Instant::now() + INIT_WAIT;
+                }
+                std::thread::yield_now();
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Build the region under a staging name and publish it as `path`.
+///
+/// The link fails with `AlreadyExists` rather than replacing, so whoever
+/// links first wins and no one overwrites a region a peer is using. Both
+/// names address one file afterwards, so dropping the staging name leaves
+/// the region and this mapping in place.
+fn publish<I>(path: &Path, total: usize, init: I) -> io::Result<(File, MmapMut)>
+where
+    I: FnOnce(*mut u8),
+{
+    let (staging, file) = create_staging(path)?;
+    let mapped = match build(&file, total, init) {
+        Ok(m) => m,
+        Err(e) => return Err(discard_staging(&staging, e)),
+    };
+    if let Err(e) = std::fs::hard_link(&staging, path) {
+        return Err(discard_staging(&staging, e));
+    }
+    crate::region_file::remove(&staging)?;
+    Ok((file, mapped))
+}
+
+/// Release the election marker. Already gone means another caller took it
+/// over past a deadline, which is the recovery working.
+fn drop_marker(marker: &Path) -> io::Result<()> {
+    match crate::region_file::remove(marker) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+/// How many staging names to try before giving up on finding a free one.
+const STAGING_ATTEMPTS: u32 = 64;
+
+/// Take a staging file under a name nothing else holds. A taken name is
+/// one an earlier run left behind, so it is retried rather than reported.
+fn create_staging(path: &Path) -> io::Result<(PathBuf, File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..STAGING_ATTEMPTS {
+        let staging = sibling(
+            path,
+            &format!(".staging.{}.{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)),
+        )?;
+        match crate::region_file::create_new(&staging) {
+            Ok(file) => return Ok((staging, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(format!(
+        "no free staging name for {} in {STAGING_ATTEMPTS} tries",
+        path.display()
+    )))
+}
+
+/// A name beside `path` carrying `suffix`. The same directory, because
+/// publishing links the finished region into place and a link cannot
+/// cross a file system.
+fn sibling(path: &Path, suffix: &str) -> io::Result<PathBuf> {
+    let Some(stem) = path.file_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} does not name a region file", path.display()),
+        ));
+    };
+    let mut name = stem.to_os_string();
+    name.push(suffix);
+    Ok(path.with_file_name(name))
+}
+
+/// Drop a staging region after a failure, reporting `cause`. One that
+/// cannot be removed is named in the error too, since it sits in the
+/// region's own directory.
+fn discard_staging(staging: &Path, cause: io::Error) -> io::Error {
+    match crate::region_file::remove(staging) {
+        Ok(()) => cause,
+        Err(removal) => io::Error::new(
+            cause.kind(),
+            format!(
+                "{cause}; the staging region at {} was also left behind: {removal}",
+                staging.display()
+            ),
+        ),
     }
 }
 
@@ -67,38 +234,6 @@ where
     }
     Ok(mmap)
 }
-
-/// Attach to a region an elected creator is still building, giving it
-/// until the deadline to finish.
-///
-/// A name that stays unready for the whole window belongs to a creator
-/// that died while building it. Nothing recovers that automatically -
-/// the file is indistinguishable from one a live creator is working on -
-/// so the error names the file and says what to do with it.
-fn wait_for_region<R>(path: &Path, total: usize, ready: &R) -> io::Result<(File, MmapMut)>
-where
-    R: Fn(*const u8) -> bool,
-{
-    let deadline = Instant::now() + INIT_WAIT;
-    loop {
-        if let Some(pair) = try_attach(path, total, ready)? {
-            return Ok(pair);
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "the region at {} never became readable: it is empty or unfinished, which a \
-                     creator that died while building it in place leaves behind. Remove the file \
-                     to let it be built again.",
-                    path.display()
-                ),
-            ));
-        }
-        std::thread::yield_now();
-    }
-}
-
 
 /// Convert an attach error for a caller with a layout-mismatch error of
 /// its own: a size mismatch becomes `mismatch`, anything else converts
@@ -200,16 +335,26 @@ mod tests {
 
     /// A fresh path for one test: whatever an earlier run left there is
     /// removed, and a removal refused for any reason but absence fails the
-    /// test rather than gating it on a stale region.
+    /// test rather than gating it on a stale region. The election marker
+    /// goes too, so a test starts with no builder holding the region.
     fn tmp(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("subetha-mmf-attach-{name}-{}.bin", std::process::id()));
-        match std::fs::remove_file(&p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => panic!("stale region {} not removed: {e}", p.display()),
+        let marker = sibling(&p, ".building").expect("the region path names a file");
+        for stale in [&p, &marker] {
+            match std::fs::remove_file(stale) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => panic!("stale file {} not removed: {e}", stale.display()),
+            }
         }
         p
+    }
+
+    /// The election marker beside a region. Reads only: tests assert on
+    /// whether it is there, so removing it here would void them.
+    fn marker_of(path: &std::path::Path) -> std::path::PathBuf {
+        sibling(path, ".building").expect("the region path names a file")
     }
 
     unsafe fn write_magic(ptr: *mut u8) {
@@ -295,30 +440,74 @@ mod tests {
         std::fs::remove_file(&p).expect("the region file is unmapped and removable");
     }
 
-    /// An empty file under the region's own name is waited on and then
-    /// reported, and the error says to remove it.
-    ///
-    /// Publishing by link never produces this state: a name appears only
-    /// over a finished region. What does produce it is an older build,
-    /// which took the region's own name first and sized it afterwards, so
-    /// a death in between left exactly this. Nothing can recover it
-    /// automatically - the file may equally be a region being built in
-    /// place by such a build right now - so the wait stands and the
-    /// message carries the fix.
+    /// A region name held by something this module did not publish is
+    /// reported, naming the file and the fix. Nothing recovers it: those
+    /// bytes may belong to a region another build is filling in.
     #[test]
-    fn an_empty_file_is_waited_on_and_then_named_in_the_error() {
+    fn an_empty_file_under_the_region_name_is_named_in_the_error() {
         let p = tmp("empty");
         File::create(&p).expect("an empty file at the region path");
-        let started = Instant::now();
-        let err = create_or_attach(&p, 64, |_| panic!("must not re-initialize"), has_magic)
+        let err = create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic)
             .expect_err("an empty file has no region to attach to");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
         assert!(!is_size_mismatch(&err));
-        assert!(started.elapsed() >= INIT_WAIT, "gave up early after {:?}", started.elapsed());
         let text = err.to_string();
         assert!(text.contains(&p.display().to_string()), "the error names the file: {text}");
         assert!(text.contains("Remove the file"), "the error carries the fix: {text}");
+        assert!(!marker_of(&p).exists(), "the election marker was released");
         std::fs::remove_file(&p).expect("the empty file is removable");
+    }
+
+    /// A builder that dies holding the marker does not keep the region
+    /// from being built: the next caller gives it until the deadline,
+    /// drops the marker, and builds the region itself.
+    #[test]
+    fn a_builder_that_dies_holding_the_marker_does_not_keep_the_region_from_being_built() {
+        let p = tmp("dead_builder");
+        let marker = marker_of(&p);
+        File::create(&marker).expect("the dead builder's marker");
+        assert!(!p.exists(), "it died before publishing anything");
+
+        let started = Instant::now();
+        let (f, m) = create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic)
+            .expect("the region is built despite the abandoned marker");
+        assert!(has_magic(m.as_ptr()), "and it is initialized");
+        assert!(
+            started.elapsed() >= INIT_WAIT,
+            "took the marker over after only {:?}, without giving a live builder its deadline",
+            started.elapsed()
+        );
+        assert!(!marker.exists(), "the marker is released once the region is published");
+
+        drop(m);
+        drop(f);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
+    }
+
+    /// Publishing leaves nothing beside the region: no marker, and no
+    /// staging file, which would be a full-size region nobody reclaims.
+    #[test]
+    fn publishing_leaves_no_marker_and_no_staging_file() {
+        let p = tmp("no_litter");
+        let (f, m) =
+            create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
+        assert!(p.exists(), "the region is published under its own name");
+        assert!(!marker_of(&p).exists(), "no election marker is left");
+
+        let dir = p.parent().expect("the region has a directory");
+        let stem = p.file_name().expect("the region has a name").to_string_lossy().to_string();
+        let mut strays = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("the directory lists") {
+            let name = entry.expect("the entry reads").file_name().to_string_lossy().to_string();
+            if name.starts_with(&stem) && name != stem {
+                strays.push(name);
+            }
+        }
+        assert!(strays.is_empty(), "left beside the region: {strays:?}");
+
+        drop(m);
+        drop(f);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
     }
 
 

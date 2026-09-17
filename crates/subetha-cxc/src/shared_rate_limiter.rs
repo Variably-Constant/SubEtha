@@ -431,20 +431,29 @@ mod tests {
     #[test]
     fn refill_scales_with_elapsed_time() {
         let p = tmp("refill");
-        // 1000 tokens/sec means 1 token per millisecond.
+        // 1000 tokens/sec means 1 token per millisecond. Windows are
+        // measured from before the build, where the refill clock starts:
+        // draining a full bucket takes the fast path, which leaves the
+        // stamp alone, so a later read credits everything since the build
+        // rather than since the drain.
+        let started = Instant::now();
         let r = SharedRateLimiter::create(&p, 100, 1000).unwrap();
-        // Drain.
         r.try_acquire(100).unwrap();
-        assert!(r.available() < 5, "after full drain, available should be ~0");
-        // Expect one token per millisecond of measured elapsed time,
-        // clamped at capacity. A sleep is a floor, not a duration: a
-        // 30ms request that the scheduler turns into 60ms refills 60
-        // tokens, which a window built around the requested 30 rejects.
-        let start = Instant::now();
+        let just_after = r.available();
+        let accrued = (started.elapsed().as_millis() as u32).min(100);
+        assert!(
+            just_after <= accrued + 5,
+            "after a full drain available={just_after} exceeds the {accrued} tokens that could \
+             have accrued since the bucket was built"
+        );
+        // Expect one token per millisecond of elapsed time, clamped at
+        // capacity. A sleep is a floor, not a duration: a 30ms request
+        // that the scheduler turns into 60ms refills 60 tokens, which a
+        // window built around the requested 30 rejects.
         thread::sleep(Duration::from_millis(30));
-        let lo = (start.elapsed().as_millis() as u32).min(100);
+        let lo = (started.elapsed().as_millis() as u32).min(100);
         let after = r.available();
-        let hi = (start.elapsed().as_millis() as u32).min(100);
+        let hi = (started.elapsed().as_millis() as u32).min(100);
         assert!(
             after + 5 >= lo && after <= hi + 5,
             "over {lo}..{hi}ms at 1000/s, available={after} should track elapsed"
@@ -465,18 +474,24 @@ mod tests {
     #[test]
     fn acquire_or_wait_blocks_then_succeeds() {
         let p = tmp("wait");
-        // 100 tokens/sec = 1 every 10ms.
-        let r = SharedRateLimiter::create(&p, 1, 100).unwrap();
+        // 10 tokens/sec = 1 every 100ms, slow enough that a scheduling
+        // gap cannot hand the call a free token.
+        let r = SharedRateLimiter::create(&p, 1, 10).unwrap();
         r.try_acquire(1).unwrap();
+        // The drain above left the stamp at build time, so the bucket is
+        // still credited for however long building took. This one goes
+        // the slow way and stamps the clock as it takes a token, leaving
+        // an empty bucket whose refill starts now.
+        r.acquire_or_wait(1, Duration::from_millis(2_000)).unwrap();
         let start = Instant::now();
-        // Need 1 more token; should wait ~10ms.
-        r.acquire_or_wait(1, Duration::from_millis(500)).unwrap();
+        // Need 1 more token; should wait ~100ms.
+        r.acquire_or_wait(1, Duration::from_millis(2_000)).unwrap();
         let elapsed = start.elapsed();
-        // It had to wait for a refill, and one token at 100/s is 10ms.
-        // Returning Ok is itself the proof it finished inside the 500ms
-        // budget it was given; an upper bound here would assert how
-        // fast the scheduler is rather than what the limiter does.
-        assert!(elapsed >= Duration::from_millis(5),
+        // It had to wait for a refill, and one token at 10/s is 100ms.
+        // Returning Ok is itself the proof it finished inside the budget
+        // it was given; an upper bound here would assert how fast the
+        // scheduler is rather than what the limiter does.
+        assert!(elapsed >= Duration::from_millis(20),
             "should have waited some time, got {elapsed:?}");
     }
 
@@ -532,16 +547,16 @@ mod tests {
     #[test]
     fn cross_handle_state_shared() {
         let p = tmp("cross-handle");
+        // Refill runs against the wall clock from the build, and an
+        // acquire a full bucket satisfies leaves that stamp alone, so the
+        // window starts before the build: at 10/sec the reader gains a
+        // token for every 100ms spent getting here.
+        let started = Instant::now();
         let writer = SharedRateLimiter::create(&p, 100, 10).unwrap();
         let reader = SharedRateLimiter::open(&p, 100, 10).unwrap();
-        // The refill runs against wall-clock, so any delay between the
-        // acquire and the read adds real tokens: at 10/sec one per
-        // 100ms. A fixed 59..=60 window asserts the two calls happen
-        // within 100ms of each other, which under load they do not.
-        let t0 = Instant::now();
         writer.try_acquire(40).unwrap();
         let avail = reader.available();
-        let elapsed_ms = t0.elapsed().as_millis() as u32;
+        let elapsed_ms = started.elapsed().as_millis() as u32;
         let refilled = elapsed_ms / 100;
         assert!(
             (59..=60 + refilled).contains(&avail),
