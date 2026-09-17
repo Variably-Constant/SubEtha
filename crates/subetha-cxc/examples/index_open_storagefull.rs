@@ -1,0 +1,127 @@
+//! Reproduce the failure that leaves PrismLQL's blob store blind.
+//!
+//! On the owner's host every boot reports
+//!
+//!   blob arena at wal\blobs could not be attached
+//!   (blob index: IoError(StorageFull))
+//!
+//! and the server then runs without 14 GB of payloads that are intact on
+//! disk. The failing call is `SharedHashMap::create` on one of twenty
+//! existing 64 MiB index files, from `open_index_segments` in
+//! lql-core/src/blob_arena.rs.
+//!
+//! Ruled out on the live host before writing this, so the reproduction
+//! does not chase them again: free space (identical at 18 GB and 47 GB),
+//! the manifest (32 bytes, correct magic, 2 GiB segments, 1<<20 slots),
+//! commit charge (51 GB free), and a truncated file - all twenty index
+//! files are exactly 67,108,928 bytes, which is what `map_file_size`
+//! computes for 1<<20 slots.
+//!
+//! What this varies is the one thing left: how many index-sized regions
+//! one process maps at once, and whether the failure is in creating them
+//! or in re-attaching them.
+//!
+//! Usage:
+//!   index_open_storagefull [segments] [dir]
+//!
+//! `segments` defaults to 20, the live store's count. `dir` defaults to
+//! a fresh temp directory. It prints one line per region for both the
+//! creating pass and the re-attaching pass, so a run that stops early
+//! says where and a run that survives says how far it got.
+
+use std::path::PathBuf;
+
+use subetha_cxc::shared_hash_map::{map_file_size, SharedHashMap};
+
+const SLOTS: usize = 1 << 20;
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    // A mistyped count must not quietly become the default: this run's
+    // whole purpose is the number of regions, so a silent 20 would
+    // answer a question nobody asked.
+    let segments: usize = match args.next() {
+        None => 20,
+        Some(a) => match a.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("the segment count {a:?} is not a number ({e})");
+                std::process::exit(2);
+            }
+        },
+    };
+    let dir: PathBuf = match args.next() {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let mut p = std::env::temp_dir();
+            p.push(format!("cxc_index_repro_{}", std::process::id()));
+            p
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("cannot create {}: {e}", dir.display());
+        std::process::exit(2);
+    }
+
+    let each = map_file_size(SLOTS);
+    println!(
+        "dir {}\nsegments {segments}, {each} bytes each, {:.2} GiB total",
+        dir.display(),
+        (segments * each) as f64 / (1u64 << 30) as f64
+    );
+
+    // Create them, as the store did over its life. Each is a fresh file,
+    // so this is set_len plus a full zeroing of the mapping.
+    let mut made = 0usize;
+    for n in 0..segments {
+        let p = dir.join(format!("{n:03}.index"));
+        match SharedHashMap::<u64, u64>::create(&p, SLOTS) {
+            Ok(_m) => {
+                made += 1;
+                println!("create {n:03}  ok");
+            }
+            Err(e) => {
+                println!("create {n:03}  FAILED {e:?}");
+                break;
+            }
+        }
+    }
+    println!("created {made} of {segments}");
+
+    // Open every one again in a single process and HOLD them, which is
+    // what the arena open does - it keeps every index segment mapped for
+    // the life of the store. Dropping each before the next would test
+    // something the server never does.
+    let mut held: Vec<SharedHashMap<u64, u64>> = Vec::new();
+    for n in 0..made {
+        let p = dir.join(format!("{n:03}.index"));
+        match SharedHashMap::<u64, u64>::create(&p, SLOTS) {
+            Ok(m) => {
+                held.push(m);
+                println!("attach {n:03}  ok  ({} held)", held.len());
+            }
+            Err(e) => {
+                println!("attach {n:03}  FAILED {e:?}  ({} held before it)", held.len());
+                break;
+            }
+        }
+    }
+    let mapped = held.len() * each;
+    println!(
+        "attached {} of {made}; {} mapped",
+        held.len(),
+        if mapped >= (1 << 30) {
+            format!("{:.2} GiB", mapped as f64 / (1u64 << 30) as f64)
+        } else {
+            format!("{} MiB", mapped / (1 << 20))
+        }
+    );
+    println!(
+        "VERDICT {}",
+        if held.len() == made && made == segments {
+            "no failure reproduced at this shape"
+        } else {
+            "reproduced - see the first FAILED line above"
+        }
+    );
+}
