@@ -253,6 +253,19 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             if crate::mmf_attach::is_size_mismatch(&e) {
                 MapError::LayoutMismatch
             } else {
+                // The raw OS error, before it is thrown away. MapError
+                // is Copy and carries only an ErrorKind, and ErrorKind
+                // is a lossy projection: StorageFull is reached from
+                // more than one Win32 code, and which one it is decides
+                // where to look. A caller holding the MapError cannot
+                // recover it, so it is said here or not at all.
+                eprintln!(
+                    "subetha-cxc: the region at {} ({total} bytes) could not be obtained: \
+                     {e} (kind {:?}, os error {:?})",
+                    path.as_ref().display(),
+                    e.kind(),
+                    e.raw_os_error(),
+                );
                 MapError::from(e)
             }
         })?;
