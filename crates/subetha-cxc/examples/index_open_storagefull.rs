@@ -21,19 +21,32 @@
 //! one process maps at once, and whether the failure is in creating them
 //! or in re-attaching them.
 //!
-//! Usage:
-//!   index_open_storagefull [segments] [dir]
+//! Twenty index segments alone do NOT reproduce it: measured on the
+//! build host, all twenty create and attach with 1.25 GiB mapped and no
+//! error. What that leaves is the seven 2 GiB payload segments the
+//! arena open maps BEFORE it opens the index, and holds while it does -
+//! so the question is what a process holding 14 GiB of mappings gets
+//! when it then asks for a 64 MiB one.
 //!
-//! `segments` defaults to 20, the live store's count. `dir` defaults to
-//! a fresh temp directory. It prints one line per region for both the
-//! creating pass and the re-attaching pass, so a run that stops early
-//! says where and a run that survives says how far it got.
+//! Usage:
+//!   index_open_storagefull [segments] [arenas] [dir]
+//!
+//! `segments` defaults to 20 and `arenas` to 0, which is the index-only
+//! shape. Pass 7 for the live store's shape; each arena is 2 GiB of
+//! real file, so that run writes 14 GB and needs the room. `dir`
+//! defaults to a fresh temp directory. It prints one line per region at
+//! every stage, so a run that stops early says where and a run that
+//! survives says how far it got.
 
 use std::path::PathBuf;
 
 use subetha_cxc::shared_hash_map::{map_file_size, SharedHashMap};
+use subetha_cxc::shared_string_arena::SharedStringArena;
 
 const SLOTS: usize = 1 << 20;
+
+/// What lql-core's blob arena uses per payload segment.
+const SEGMENT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -46,6 +59,16 @@ fn main() {
             Ok(n) => n,
             Err(e) => {
                 eprintln!("the segment count {a:?} is not a number ({e})");
+                std::process::exit(2);
+            }
+        },
+    };
+    let arenas: usize = match args.next() {
+        None => 0,
+        Some(a) => match a.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("the arena count {a:?} is not a number ({e})");
                 std::process::exit(2);
             }
         },
@@ -88,10 +111,34 @@ fn main() {
     }
     println!("created {made} of {segments}");
 
-    // Open every one again in a single process and HOLD them, which is
-    // what the arena open does - it keeps every index segment mapped for
-    // the life of the store. Dropping each before the next would test
-    // something the server never does.
+    // The payload segments, mapped and held before the index is opened,
+    // which is the order open_sized uses: every existing segment is
+    // attached in its while loop, and only then are the index segments
+    // opened. They stay mapped for the life of the store, so the index
+    // open happens with all of them held.
+    let mut arena_held: Vec<SharedStringArena> = Vec::new();
+    for n in 0..arenas {
+        let p = dir.join(format!("{n:03}.arena"));
+        match SharedStringArena::create(&p, SEGMENT_BYTES) {
+            Ok(a) => {
+                arena_held.push(a);
+                println!(
+                    "arena  {n:03}  ok  ({} held, {:.2} GiB)",
+                    arena_held.len(),
+                    (arena_held.len() * SEGMENT_BYTES) as f64 / (1u64 << 30) as f64
+                );
+            }
+            Err(e) => {
+                println!("arena  {n:03}  FAILED {e:?}  ({} held before it)", arena_held.len());
+                break;
+            }
+        }
+    }
+
+    // Open every index segment again in a single process and HOLD them,
+    // which is what the arena open does - it keeps every index segment
+    // mapped for the life of the store. Dropping each before the next
+    // would test something the server never does.
     let mut held: Vec<SharedHashMap<u64, u64>> = Vec::new();
     for n in 0..made {
         let p = dir.join(format!("{n:03}.index"));
@@ -106,19 +153,17 @@ fn main() {
             }
         }
     }
-    let mapped = held.len() * each;
+    let mapped = held.len() * each + arena_held.len() * SEGMENT_BYTES;
     println!(
-        "attached {} of {made}; {} mapped",
+        "attached {} of {made} index, {} of {arenas} arena; {:.2} GiB mapped in this process",
         held.len(),
-        if mapped >= (1 << 30) {
-            format!("{:.2} GiB", mapped as f64 / (1u64 << 30) as f64)
-        } else {
-            format!("{} MiB", mapped / (1 << 20))
-        }
+        arena_held.len(),
+        mapped as f64 / (1u64 << 30) as f64
     );
+    let whole = held.len() == made && made == segments && arena_held.len() == arenas;
     println!(
         "VERDICT {}",
-        if held.len() == made && made == segments {
+        if whole {
             "no failure reproduced at this shape"
         } else {
             "reproduced - see the first FAILED line above"
