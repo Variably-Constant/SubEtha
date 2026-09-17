@@ -3,6 +3,13 @@
 //! [`create_or_attach`] elects one creator through an exclusive `create_new`;
 //! the winner initializes over a zeroed mapping and everyone else attaches to
 //! what the winner built. [`reset`] truncates and reinitializes.
+//!
+//! The election hands the winner the region's own name before the region
+//! exists, so a creator that dies while building leaves a file no one may
+//! replace: every later attacher waits out the deadline and is told to
+//! remove it by hand. Telling a dead creator from a slow one needs a
+//! liveness test this module does not have, and without one no recovery
+//! is safe.
 
 use std::fs::File;
 use std::io;
@@ -38,32 +45,60 @@ where
 {
     match crate::region_file::create_new(path) {
         Ok(file) => {
-            file.set_len(total as u64)?;
-            let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-            unsafe {
-                std::ptr::write_bytes(mmap.as_mut_ptr(), 0, total);
-                init(mmap.as_mut_ptr());
-            }
-            Ok((file, mmap))
+            let mapped = build(&file, total, init)?;
+            Ok((file, mapped))
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            let deadline = Instant::now() + INIT_WAIT;
-            loop {
-                if let Some(pair) = try_attach(path, total, &ready)? {
-                    return Ok(pair);
-                }
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "the region's creator did not finish initializing it",
-                    ));
-                }
-                std::thread::yield_now();
-            }
-        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => wait_for_region(path, total, &ready),
         Err(e) => Err(e),
     }
 }
+
+/// Size, map and initialize a region: zeroed first, because `init`
+/// writes only the fields it names and a reader reads all of them.
+fn build<I>(file: &File, total: usize, init: I) -> io::Result<MmapMut>
+where
+    I: FnOnce(*mut u8),
+{
+    file.set_len(total as u64)?;
+    let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(file)? };
+    unsafe {
+        std::ptr::write_bytes(mmap.as_mut_ptr(), 0, total);
+        init(mmap.as_mut_ptr());
+    }
+    Ok(mmap)
+}
+
+/// Attach to a region an elected creator is still building, giving it
+/// until the deadline to finish.
+///
+/// A name that stays unready for the whole window belongs to a creator
+/// that died while building it. Nothing recovers that automatically -
+/// the file is indistinguishable from one a live creator is working on -
+/// so the error names the file and says what to do with it.
+fn wait_for_region<R>(path: &Path, total: usize, ready: &R) -> io::Result<(File, MmapMut)>
+where
+    R: Fn(*const u8) -> bool,
+{
+    let deadline = Instant::now() + INIT_WAIT;
+    loop {
+        if let Some(pair) = try_attach(path, total, ready)? {
+            return Ok(pair);
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the region at {} never became readable: it is empty or unfinished, which a \
+                     creator that died while building it in place leaves behind. Remove the file \
+                     to let it be built again.",
+                    path.display()
+                ),
+            ));
+        }
+        std::thread::yield_now();
+    }
+}
+
 
 /// Convert an attach error for a caller with a layout-mismatch error of
 /// its own: a size mismatch becomes `mismatch`, anything else converts
@@ -260,10 +295,18 @@ mod tests {
         std::fs::remove_file(&p).expect("the region file is unmapped and removable");
     }
 
-    /// An empty file is a creator between its election and its set_len, and
-    /// is still waited on; one that never grows surfaces as the timeout.
+    /// An empty file under the region's own name is waited on and then
+    /// reported, and the error says to remove it.
+    ///
+    /// Publishing by link never produces this state: a name appears only
+    /// over a finished region. What does produce it is an older build,
+    /// which took the region's own name first and sized it afterwards, so
+    /// a death in between left exactly this. Nothing can recover it
+    /// automatically - the file may equally be a region being built in
+    /// place by such a build right now - so the wait stands and the
+    /// message carries the fix.
     #[test]
-    fn an_empty_file_is_waited_on_until_the_creator_deadline() {
+    fn an_empty_file_is_waited_on_and_then_named_in_the_error() {
         let p = tmp("empty");
         File::create(&p).expect("an empty file at the region path");
         let started = Instant::now();
@@ -272,8 +315,12 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
         assert!(!is_size_mismatch(&err));
         assert!(started.elapsed() >= INIT_WAIT, "gave up early after {:?}", started.elapsed());
+        let text = err.to_string();
+        assert!(text.contains(&p.display().to_string()), "the error names the file: {text}");
+        assert!(text.contains("Remove the file"), "the error carries the fix: {text}");
         std::fs::remove_file(&p).expect("the empty file is removable");
     }
+
 
     /// reset deliberately discards it, which is the case truncation was for.
     #[test]
