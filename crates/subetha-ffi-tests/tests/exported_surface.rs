@@ -802,14 +802,10 @@ fn a_laned_map_walks_every_lane_in_key_order_one_page_at_a_time() {
 
     const STRIDE: usize = 16;
 
-    // Asked with no room, it still answers what the page holds, so a
-    // caller sizes its buffer from the map rather than guessing.
-    //
-    // That page is the first two keys rather than all three, and asking
-    // for a limit of sixteen does not change it: one lane's walk ended at
-    // the second key, and the third is withheld even though the other
-    // lane already reached it, because a lane that stops earlier may
-    // still hold a smaller key than one that ran on.
+    // With no room it still answers what the page holds, so a caller
+    // sizes its buffer from the map. That page is two keys, not three:
+    // one lane's walk ended at the second, and the third is withheld
+    // because a lane that stopped earlier may hold a smaller key.
     let mut len = 0usize;
     let mut count = 0usize;
     let mut has_frontier = false;

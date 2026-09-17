@@ -1,19 +1,12 @@
-//! Checks the C ABI the way the other two bindings are gated: every
-//! function the library exports must be called by something that goes
-//! through that ABI.
+//! Every function the library exports must be called by something that
+//! goes through the C ABI.
 //!
-//! No Rust lint can report an export nothing reaches. A `pub extern "C"`
-//! function is part of the library's API whether or not anyone calls it,
-//! and its symbol is in the shipped artifact either way, so the compiler
-//! has no reason to complain. Its caller is a C program, which the
-//! compiler cannot see. Only the suite can tell.
+//! No lint can report an export nothing reaches: a `pub extern "C"`
+//! function is part of the API whether or not anyone calls it, and its
+//! caller is a C program the compiler cannot see.
 //!
-//! The corpus is every caller that goes through the ABI: the C test
-//! programs, this crate's Rust tests, the header test beside the library,
-//! and the boundary bench, which is where the entry points that exist to
-//! be priced are called from.
-//!
-//! Reads only.
+//! The corpus is the C test programs, this crate's Rust tests, the header
+//! test beside the library, and the boundary bench. Reads only.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -34,12 +27,10 @@ fn this_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The files directly in `dir` whose name ends with `ext`.
-///
-/// A directory that cannot be read fails the test naming itself, rather
-/// than contributing nothing: a corpus that quietly lost a folder would
-/// report every function called only from there as unreached, and a
-/// source folder that quietly went missing would leave nothing to check.
+/// The files directly in `dir` whose name ends with `ext`. A directory
+/// that cannot be read fails the test naming itself: a corpus that
+/// quietly lost a folder reports everything called only from there as
+/// unreached.
 fn files_with(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()));
@@ -56,12 +47,10 @@ fn read(path: &Path) -> String {
 }
 
 /// `text` with its comments taken out, so a function named in prose next
-/// to a parenthesis does not read as a call.
-///
-/// String literals are stepped over rather than scanned, because a `//`
-/// inside one opens no comment. A literal opened with `r` takes no escape
-/// character, so the backslash ending a Windows path does not swallow the
-/// quote after it.
+/// to a parenthesis does not read as a call. String literals are stepped
+/// over, since a `//` inside one opens no comment; a literal opened with
+/// `r` takes no escape, so a trailing backslash does not swallow its
+/// closing quote.
 fn without_comments(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -105,11 +94,9 @@ fn is_name_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Whether `corpus` calls `name`.
-///
-/// The name must stand as a whole word with a `(` after it. A `use` that
-/// brings a function in writes the name without one, so importing a
-/// function and never calling it does not count as reaching it.
+/// Whether `corpus` calls `name`: a whole word with a `(` after it. A
+/// `use` writes the name without one, so importing a function and never
+/// calling it does not count as reaching it.
 fn calls(corpus: &str, name: &str) -> bool {
     let bytes = corpus.as_bytes();
     let mut from = 0;
@@ -157,11 +144,9 @@ fn every_exported_function_is_called_through_the_abi() {
     let ffi = ffi_dir();
     let exports = exported(&ffi);
 
-    // The list is read out of the source, so reading it wrongly has to
-    // fail here. Without this the gate passes with almost nothing to
-    // check, which is how a first count of this surface came out at 166
-    // against a true 839: the pattern it matched missed every function
-    // declared `pub unsafe extern "C"`.
+    // The list is read out of the source, so reading it wrongly fails
+    // here rather than passing with nothing to check. A pattern missing
+    // `pub unsafe extern "C"` counts this surface at 166 against 839.
     assert!(
         exports.len() > 800,
         "the exported functions are read from the library's source, and {} of them is too few to \
@@ -200,9 +185,8 @@ fn every_exported_function_is_called_through_the_abi() {
 
 #[test]
 fn a_name_only_imported_does_not_count_as_reached() {
-    // The gate above rests on this matcher, so its edges are stated here:
-    // a name is reached by a call and not by a mention, and a name is
-    // itself rather than the start of a longer one.
+    // The matcher's edges: a name is reached by a call and not by a
+    // mention, and is itself rather than the start of a longer one.
     assert!(calls("let rc = subetha_ring_flush(handle);", "subetha_ring_flush"));
     assert!(calls(
         "use subetha_ffi::{subetha_ring_flush};\nsubetha_ring_flush (h);",
