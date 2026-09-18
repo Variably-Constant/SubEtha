@@ -2,7 +2,7 @@
 //!
 //! A single `CONTROL` datagram carries a sequence of type-tagged,
 //! length-prefixed frames. Both endpoints emit `CONTROL` datagrams holding
-//! whatever frames they have to report, so the channel is symmetric: an ACK
+//! whatever frames they have to report, so the channel is symmetric: an ack
 //! from the receiver and a timing beat from the sender are the same packet
 //! shape, just different frames.
 //!

@@ -21,10 +21,10 @@
 //! one process maps at once, and whether the failure is in creating them
 //! or in re-attaching them.
 //!
-//! Twenty index segments alone do NOT reproduce it: measured on the
+//! Twenty index segments alone do not reproduce it: measured on the
 //! build host, all twenty create and attach with 1.25 GiB mapped and no
 //! error. What that leaves is the seven 2 GiB payload segments the
-//! arena open maps BEFORE it opens the index, and holds while it does -
+//! arena open maps before it opens the index, and holds while it does -
 //! so the question is what a process holding 14 GiB of mappings gets
 //! when it then asks for a 64 MiB one.
 //!

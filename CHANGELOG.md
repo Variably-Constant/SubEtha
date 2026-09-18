@@ -9,6 +9,8 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.4.1]
+
 ### Added
 
 - A PowerShell binding, `crates/subetha-pwrs`, built as the module
@@ -19,17 +21,43 @@ heading links to the commit that cut it.
   through the pipeline. Every cmdlet also answers to a short name with
   the `SE` prefix. Bytes cross as `byte[]` pinned in place, guards come
   back as objects that release on `Release()`, `Dispose()` or
-  collection, and the TCP and QUIC bridges are always built in. The
-  module is not published anywhere; it is built with `cargo pwrs` from
-  the crate. Every cmdlet, class, enum and method it exports is reached
-  by a Pester suite, and a gate suite fails the run when one is not.
-  `Get-Help` carries a synopsis, a description, help on every parameter
-  and one example for each of the 135 cmdlets, and the reference page
-  names them all.
-  All 176 tests pass in pwsh 7.6.6 and Windows PowerShell 5.1 on
+  collection, and the TCP and QUIC bridges are always built in. It is
+  built with `cargo pwrs` from the crate. Every cmdlet, class, enum and
+  method it exports is reached by a Pester suite, and a gate suite fails
+  the run when one is not. `Get-Help` carries a synopsis, a
+  description, help on every parameter and one example for each of the
+  135 cmdlets, and the reference page names them all.
+  All 178 tests pass in pwsh 7.6.6 and Windows PowerShell 5.1 on
   Windows x64 and in pwsh 7.6.5 on Ubuntu 24.04 on Linux x64; the
   native libraries of the two builds fold into one module folder that
   imports on both.
+
+- A gate over the C ABI, `crates/subetha-ffi-tests/tests/surface_gate.rs`.
+  It reads the exported functions out of the library's source and fails
+  when one is called by no test, no bench and no C program, the way the
+  Python and PowerShell bindings are already gated. All 839 exported
+  functions are reached; 182 of them were reached by nothing before.
+
+### Fixed
+
+- A region whose builder died while making it can be built again. The
+  builder is elected on a marker beside the region rather than by
+  creating the region's own name, and the region is built under a
+  staging name and published by linking it into place, so that name only
+  ever appears over complete bytes. Before this, a process that died
+  between winning the election and sizing the file left an empty region
+  that every later attacher waited five seconds on and none could
+  replace, permanently.
+
+- `SharedHashMap` reports the raw operating-system error before
+  `MapError` discards it, so a failure to attach says which system call
+  refused and why.
+
+- Three `SharedRateLimiter` tests no longer fail under load. They
+  measured their refill window from after the bucket was built, while
+  the bucket credits refill from the build itself: an acquire a full
+  bucket satisfies spends tokens without restamping the clock, by
+  design, so an under-limit caller pays no clock read.
 
 ## [0.4.0] - 2026-09-13
 
@@ -1535,7 +1563,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.4.1...HEAD
+[0.4.1]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/Variably-Constant/SubEtha/commit/0.4.0
 [0.3.3]: https://github.com/Variably-Constant/SubEtha/commit/0.3.3
 [0.3.2]: https://github.com/Variably-Constant/SubEtha/commit/0.3.2
