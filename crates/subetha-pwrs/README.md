@@ -226,7 +226,7 @@ cargo pwrs merge target/pwrs/SubEtha ../linux/SubEtha
 ```
 
 The manifests of two builds of one checkout are identical, which is
-what `merge` requires. All 176 Pester tests pass in pwsh 7.6.6 and in
+what `merge` requires. All 178 Pester tests pass in pwsh 7.6.6 and in
 Windows PowerShell 5.1 on Windows x64, and in pwsh 7.6.5 on Ubuntu
 24.04 on Linux x64. A merged folder carrying `win-x64` and `linux-x64`
 imports and runs on both.
