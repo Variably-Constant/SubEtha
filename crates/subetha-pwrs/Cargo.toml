@@ -26,10 +26,10 @@ subetha-core = { workspace = true }
 subetha-pointers = { workspace = true }
 # The binding framework. Its attributes turn a struct into a cmdlet or
 # a class and its build tool generates the managed shell around the
-# library. A path dependency on the checkout, which sits at this same
-# path on every machine that builds the crate, until the framework is
-# published.
-pwrs = { path = "C:/Temp/pwrs/crates/pwrs" }
+# library. Registered under the project's own name because crates.io
+# carries an unrelated `pwrs` from 2015; the library it builds is still
+# `pwrs`, which is what the source writes.
+pwrs = { package = "PoWerRuSt", version = "0.1.2" }
 
 # The bridges are written against an async runtime; the module holds one
 # for all of them and starts it the first time a bridge needs it.
