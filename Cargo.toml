@@ -63,11 +63,17 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
+# Symbols are for debugging on the machine that built the thing, not for
+# the artifact that ships. Left in, they are carried by the binary on
+# every target that has nowhere else to put them: the module's Linux
+# library came to 28.6 MB against the same library's 6.3 MB on Windows,
+# which writes them to a separate file that never ships.
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+strip = "symbols"
 
 [profile.bench]
 opt-level = 3

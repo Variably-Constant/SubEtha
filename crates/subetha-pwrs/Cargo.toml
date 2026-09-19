@@ -6,10 +6,49 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "PowerShell bindings for SubEtha: a module whose cmdlets and objects are the Rust directly rather than the C ABI."
+description = """Shared memory between processes, as PowerShell cmdlets and objects. \
+Rings, queues, channels, locks, atomics, counters and shared collections that \
+several processes on one machine read and write at the same time, each backed by \
+a memory-mapped file that outlives the session that made it. A New- cmdlet makes \
+one and an Open- cmdlet attaches to one another process has already made; the object \
+either one returns carries the operations as methods, and Send-SubEthaItem and \
+Receive-SubEthaItem move items through the pipeline. Bytes cross as byte[] pinned \
+in place rather than copied, and a lock or a hold comes back as an object that \
+releases on Release(), Dispose() or collection. Every cmdlet answers to a shorter \
+name with the SE prefix. Bound directly to Rust: the cmdlets are the library, not \
+a wrapper over a command line. Windows x64 and Linux x64 in one module, on \
+PowerShell 7 and Windows PowerShell 5.1."""
+# The gallery's tags. `cargo pwrs` writes `pwrs` and then these, so the
+# words a PowerShell user searches go here rather than in the workspace
+# set, which names the memory-mapping domain and not the host. The
+# registry's five-keyword cap does not apply either, since this crate
+# ships to the gallery and not to crates.io.
+keywords = ["powershell", "ipc", "shared-memory", "cross-process", "cmdlet", "bindings"]
+categories = ["concurrency", "api-bindings"]
 # This crate ships as a PowerShell module rather than to crates.io, so a
 # workspace publish never picks it up.
 publish = false
+
+# What the gallery shows that a cargo manifest has no field for.
+# `license` above is the SPDX name and the listing wants a link, release
+# notes and a copyright line have nowhere else to live, and the icon is
+# fetched as an image by whoever renders the listing, so it names the raw
+# file rather than the page GitHub wraps around it.
+[package.metadata.pwrs]
+license-uri = "https://github.com/Variably-Constant/SubEtha/blob/main/LICENSE-MIT"
+icon-uri = "https://raw.githubusercontent.com/Variably-Constant/SubEtha/main/assets/icon.png"
+copyright = "Copyright (c) 2026 Markus Newton"
+company = "Variably Constant"
+release-notes = """First release. 135 cmdlets over the shared-memory families: \
+atomics and counters, rings and queues, channels and pub/sub, locks and latches, \
+maps and slabs and lists, the probabilistic sketches, the versioned structures, \
+the link sensing that reports loss, timing and capacity on a path, and the TCP \
+and QUIC bridges. Get-Help carries a synopsis, a description, help on \
+every parameter and an example for each of them. Every cmdlet, class, enum and \
+method the module exports is reached by the Pester suite, and a gate suite fails \
+the run when one is not: 178 tests pass in PowerShell 7.6.6 and Windows PowerShell \
+5.1 on Windows x64, and in PowerShell 7.6.5 on Ubuntu 24.04 on Linux x64. Both \
+native libraries ship in the one module folder."""
 
 [lib]
 crate-type = ["cdylib"]
@@ -29,7 +68,7 @@ subetha-pointers = { workspace = true }
 # library. Registered under the project's own name because crates.io
 # carries an unrelated `pwrs` from 2015; the library it builds is still
 # `pwrs`, which is what the source writes.
-pwrs = { package = "PoWerRuSt", version = "0.1.2" }
+pwrs = { package = "PoWerRuSt", version = "0.1.4" }
 
 # The bridges are written against an async runtime; the module holds one
 # for all of them and starts it the first time a bridge needs it.

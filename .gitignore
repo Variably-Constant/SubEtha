@@ -46,3 +46,12 @@ AGENTS.md
 *.tmp
 rustc-ice-*.txt
 /docs/COLAB_E2E_HOWTO_NOTES.md
+
+# Debug symbols, on every platform that writes them to a file of their
+# own. They describe one build on one machine and are of no use to
+# anyone who did not make it, so they are never committed and never
+# shipped; the release profile strips them from the binaries too.
+*.pdb
+*.dwp
+*.debug
+*.dSYM/

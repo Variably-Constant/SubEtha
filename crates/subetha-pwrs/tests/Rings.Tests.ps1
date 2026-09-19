@@ -64,8 +64,14 @@ Describe 'SubEtha.BroadcastRing' {
         $r.PushMany(@('y', 'z')) | Should -Be 2
         $r.ProducerPosition() | Should -Be 3
         $r.Lag($a) | Should -Be 3
-        ConvertFrom-SEBytes $r.Recv($a) | Should -Be 'x'
-        ($r.RecvMany($b, 10) | ForEach-Object { ConvertFrom-SEBytes $_ }) -join '' | Should -Be 'xyz'
+        # Recv hands back a whole slot, so the bytes are the payload
+        # followed by zeros. The length is asserted against PayloadSize
+        # and the text with -BeExactly, because PowerShell's -eq treats
+        # trailing NULs as ignorable and passes whatever Recv returns.
+        $one = $r.Recv($a)
+        $one.Length | Should -Be $r.PayloadSize
+        Get-SEText $one | Should -BeExactly 'x'
+        ($r.RecvMany($b, 10) | ForEach-Object { Get-SEText $_ }) -join '' | Should -BeExactly 'xyz'
         $null -eq $r.Recv($b) | Should -BeTrue
         $r.UnregisterConsumer($a)
         $r.Dispose()
