@@ -15,9 +15,12 @@ either one returns carries the operations as methods, and Send-SubEthaItem and \
 Receive-SubEthaItem move items through the pipeline. Bytes cross as byte[] pinned \
 in place rather than copied, and a lock or a hold comes back as an object that \
 releases on Release(), Dispose() or collection. Every cmdlet answers to a shorter \
-name with the SE prefix. Bound directly to Rust: the cmdlets are the library, not \
-a wrapper over a command line. Windows x64 and Linux x64 in one module, on \
-PowerShell 7 and Windows PowerShell 5.1."""
+name with the SE prefix. Bound directly to Rust with PoWerRuSt (pwrs), Rust \
+bindings for writing PowerShell binary modules in the spirit of PyO3: the cmdlets \
+are the library, not a wrapper over a command line. Windows x64 and Linux x64 in \
+one module, on PowerShell 7 and Windows PowerShell 5.1. Source and issues at \
+https://github.com/Variably-Constant/SubEtha; the binding framework at \
+https://github.com/Variably-Constant/PWRS and https://crates.io/crates/PoWerRuSt."""
 # The gallery's tags. `cargo pwrs` writes `pwrs` and then these, so the
 # words a PowerShell user searches go here rather than in the workspace
 # set, which names the memory-mapping domain and not the host. The
