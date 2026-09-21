@@ -28,23 +28,10 @@
 
 ---
 
-<details open>
-<summary><b>What it does</b></summary>
-
-- One typed `Channel<T>` that works cross-thread, cross-process, and persisted to disk, with [no syscalls on the data path](https://variably-constant.github.io/SubEtha/docs/explanation/mmf-substrate/).
-- Lock-free rings whose atomic counters live *inside* the shared file, so one structure is thread-safe and process-safe at once - [no `Mutex`, no `Arc<Mutex>`](https://variably-constant.github.io/SubEtha/docs/explanation/concurrency-and-safety/).
-- A ring that [changes its own shape](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/rings/) between SPSC and MPMC under live producers and consumers, without losing an item.
-- Sync, blocking and async on the same handle, chosen per call site rather than baked into the type.
-- [Maps, slabs, lists, locks, atomics, sketches and versioned structures](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/catalog/), all in the same mapped region.
-- [TCP and QUIC bridges](https://variably-constant.github.io/SubEtha/docs/how-to/cross-host-bridge/) that carry the same channel between hosts.
-- An erasure-coded link that measures loss and [changes code while running](SENS_O_MATIC_WIRE.md).
-- Bindings for [Python](https://variably-constant.github.io/SubEtha/docs/how-to/python/) and [PowerShell](https://variably-constant.github.io/SubEtha/docs/how-to/powershell/), and a [C ABI](https://variably-constant.github.io/SubEtha/docs/reference/subetha-ffi/) for everything else.
-
-</details>
-
 <details>
 <summary><b>Table of contents</b></summary>
 
+- [Features](#features)
 - [Quick start](#quick-start)
 - [Why SubEtha?](#why-subetha)
 - [How it works](#how-it-works)
@@ -59,6 +46,24 @@
 - [Citations](#citations)
 - [Use of AI Tools](#use-of-ai-tools)
 - [License](#license)
+
+</details>
+
+---
+
+## Features
+
+<details open>
+<summary><b>What you get</b></summary>
+
+- One typed `Channel<T>` that works cross-thread, cross-process, and persisted to disk, with [no syscalls on the data path](https://variably-constant.github.io/SubEtha/docs/explanation/mmf-substrate/).
+- Lock-free rings whose atomic counters live *inside* the shared file, so one structure is thread-safe and process-safe at once - [no `Mutex`, no `Arc<Mutex>`](https://variably-constant.github.io/SubEtha/docs/explanation/concurrency-and-safety/).
+- A ring that [changes its own shape](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/rings/) between SPSC and MPMC under live producers and consumers, without losing an item.
+- Sync, blocking and async on the same handle, chosen per call site rather than baked into the type.
+- [Maps, slabs, lists, locks, atomics, sketches and versioned structures](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/catalog/), all in the same mapped region.
+- [TCP and QUIC bridges](https://variably-constant.github.io/SubEtha/docs/how-to/cross-host-bridge/) that carry the same channel between hosts.
+- An erasure-coded link that measures loss and [changes code while running](SENS_O_MATIC_WIRE.md).
+- Bindings for [Python](https://variably-constant.github.io/SubEtha/docs/how-to/python/) and [PowerShell](https://variably-constant.github.io/SubEtha/docs/how-to/powershell/), and a [C ABI](https://variably-constant.github.io/SubEtha/docs/reference/subetha-ffi/) for everything else.
 
 </details>
 
