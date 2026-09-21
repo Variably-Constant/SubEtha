@@ -59,7 +59,9 @@ jobs:
         working-directory: crates/subetha-py
         run: |
           python -m pip install --upgrade pip pytest
-          python -m pip install --no-index --find-links dist subetha
+          # The distribution is subetha-ipc; subetha is what it imports
+          # as. Asking pip for the import name matches no wheel in dist.
+          python -m pip install --no-index --find-links dist subetha-ipc
           python -c "import subetha; print(subetha.transports, subetha.free_threaded)"
           python -m pytest tests -q
 
@@ -115,7 +117,7 @@ jobs:
         working-directory: crates/subetha-py
         run: |
           python -m pip install --upgrade pip pytest
-          python -m pip install --no-index --find-links dist subetha
+          python -m pip install --no-index --find-links dist subetha-ipc
           # The module declares it does not need the lock. If that
           # declaration were missing or wrong the interpreter would
           # switch the lock back on here, which is what this catches.
