@@ -39,14 +39,18 @@ jobs:
         # kernels at run time anyway, so a baseline costs nothing. The
         # baseline has to name a processor the target actually has.
         # macos-latest is aarch64, where x86-64 is not a processor at
-        # all and the compiler says so and ignores the flag.
+        # all and the compiler says so and ignores the flag. apple-a14
+        # is the oldest Apple Silicon core, so a wheel built for it runs
+        # on every Mac that has one; `rustc --print target-cpus
+        # --target aarch64-apple-darwin` lists it and does not list
+        # apple-m1, which is an LLVM alias for the same thing.
         include:
           - os: ubuntu-latest
             rustflags: "-C target-cpu=x86-64"
           - os: windows-latest
             rustflags: "-C target-cpu=x86-64"
           - os: macos-latest
-            rustflags: "-C target-cpu=apple-m1"
+            rustflags: "-C target-cpu=apple-a14"
     steps:
       - uses: actions/checkout@v4
 
@@ -107,7 +111,7 @@ jobs:
             rustflags: "-C target-cpu=x86-64"
             python: "3.14t"
           - os: macos-latest
-            rustflags: "-C target-cpu=apple-m1"
+            rustflags: "-C target-cpu=apple-a14"
             python: "3.14t"
     steps:
       - uses: actions/checkout@v4
