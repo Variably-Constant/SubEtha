@@ -9,6 +9,8 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-21
+
 ### Added
 
 - The Python wheel and the PowerShell module both work on macOS arm64,
@@ -1763,7 +1765,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.5.1...HEAD
+[0.5.1]: https://github.com/Variably-Constant/SubEtha/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/Variably-Constant/SubEtha/compare/0.4.1...0.5.0
 [0.4.1]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/Variably-Constant/SubEtha/commit/0.4.0
