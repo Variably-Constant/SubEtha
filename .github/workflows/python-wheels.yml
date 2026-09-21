@@ -14,30 +14,39 @@ name: python wheels
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+    # Release tags here are bare, 0.5.0 rather than v0.5.0.
     tags:
-      - "v*"
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
-
-env:
-  # A published wheel targets the baseline, never the machine that built
-  # it. A build host whose cargo config says target-cpu=native produces
-  # a wheel that dies with an illegal instruction on import anywhere
-  # else, and the crate dispatches its wide kernels at run time anyway,
-  # so the baseline costs nothing. Set here rather than left to the
-  # runner, because the environment variable replaces a config file's
-  # setting and a config file is what would otherwise decide this.
-  RUSTFLAGS: "-C target-cpu=x86-64"
 
 jobs:
   stable-abi:
     name: stable ABI on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # A published wheel targets a baseline, never the machine that
+        # built it: a host whose cargo config says target-cpu=native
+        # produces a wheel that dies with an illegal instruction on
+        # import anywhere else, and the crate dispatches its wide
+        # kernels at run time anyway, so a baseline costs nothing. The
+        # baseline has to name a processor the target actually has.
+        # macos-latest is aarch64, where x86-64 is not a processor at
+        # all and the compiler says so and ignores the flag.
+        include:
+          - os: ubuntu-latest
+            rustflags: "-C target-cpu=x86-64"
+          - os: windows-latest
+            rustflags: "-C target-cpu=x86-64"
+          - os: macos-latest
+            rustflags: "-C target-cpu=apple-m1"
     steps:
       - uses: actions/checkout@v4
 
@@ -83,13 +92,23 @@ jobs:
   free-threaded:
     name: free-threaded ${{ matrix.python }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        # One wheel per free-threaded interpreter, because there is no
-        # stable ABI covering them yet.
-        python: ["3.14t"]
+        # Baseline per target, for the reason spelled out on the
+        # stable-ABI job above.
+        include:
+          - os: ubuntu-latest
+            rustflags: "-C target-cpu=x86-64"
+            python: "3.14t"
+          - os: windows-latest
+            rustflags: "-C target-cpu=x86-64"
+            python: "3.14t"
+          - os: macos-latest
+            rustflags: "-C target-cpu=apple-m1"
+            python: "3.14t"
     steps:
       - uses: actions/checkout@v4
 
