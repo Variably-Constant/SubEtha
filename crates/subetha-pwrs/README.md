@@ -225,11 +225,17 @@ cargo pwrs build --release                       # the building machine's rid
 cargo pwrs merge target/pwrs/SubEtha ../linux/SubEtha
 ```
 
-The manifests of two builds of one checkout are identical, which is
-what `merge` requires. All 178 Pester tests pass in pwsh 7.6.6 and in
-Windows PowerShell 5.1 on Windows x64, and in pwsh 7.6.5 on Ubuntu
-24.04 on Linux x64. A merged folder carrying `win-x64` and `linux-x64`
-imports and runs on both.
+`merge` requires the two manifests to be identical, which takes one
+checkout and one `cargo pwrs` version: the manifest gained fields
+between releases of the tool, so two hosts on different versions of it
+produce different manifests from the same source and `merge` refuses
+them. `cargo install --list` on each host is what settles that; the
+binary's file date does not, because the newest file can be the oldest
+version.
+
+All 181 Pester tests pass in pwsh 7.6.6 and in Windows PowerShell 5.1 on
+Windows x64, and in pwsh 7.6.5 on Ubuntu on Linux x64. A merged folder
+carrying `win-x64` and `linux-x64` imports and runs on both.
 
 ## Threads and lifetimes
 

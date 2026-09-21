@@ -80,9 +80,10 @@ maturin develop --release --features tcp-bridge,quic-bridge
 ```
 
 That difference shows up in the suite as well as in `transports`: the
-default build runs 494 tests and skips 7, and the same build with both
-bridges runs 500 and skips 1, because the bridge suites only exist when
-their feature is compiled in.
+default build passes 502 tests and skips 7, and the same build with both
+bridges passes 508 and skips 1, because the bridge suites only exist when
+their feature is compiled in. The one skip that survives both is a
+vectorized row that needs numpy.
 
 ## Confirm it works
 

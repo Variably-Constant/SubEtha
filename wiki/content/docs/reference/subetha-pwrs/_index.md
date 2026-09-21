@@ -517,6 +517,10 @@ against handles of their own.
 Only the native library under `runtimes/<rid>/native/` differs per
 platform, so each is built on its own machine and
 `cargo pwrs merge target/pwrs/SubEtha <folder built elsewhere>` folds
-them into one module. All 178 tests pass in pwsh 7.6.6 and in Windows
-PowerShell 5.1 on Windows x64, and in pwsh 7.6.5 on Ubuntu 24.04 on
-Linux x64; a folder carrying both natives imports and runs on either.
+them into one module. The two machines need the same `cargo pwrs`
+version as well as the same checkout, because the manifest gained fields
+between releases of the tool and `merge` refuses two that differ.
+
+All 181 tests pass in pwsh 7.6.6 and in Windows PowerShell 5.1 on
+Windows x64, and in pwsh 7.6.5 on Ubuntu on Linux x64; a folder carrying
+both natives imports and runs on either.
