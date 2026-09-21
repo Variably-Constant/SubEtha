@@ -11,7 +11,13 @@ BeforeAll {
     $script:corpus = $script:corpus -join "`n"
     $script:cmdlets = @(Get-Command -Module SubEtha -CommandType Cmdlet)
     $script:aliases = @(Get-Command -Module SubEtha -CommandType Alias)
-    $script:shell = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'SubEtha.Shell' } | Select-Object -First 1
+    # The shell assembly is loaded either under its plain name or with a
+    # build hash appended, so that two module versions can sit in one
+    # session without colliding. Both are this module's assembly.
+    $script:shell = [AppDomain]::CurrentDomain.GetAssemblies() |
+        Where-Object { $_.GetName().Name -eq 'SubEtha.Shell' -or $_.GetName().Name -like 'SubEtha.Shell.*' } |
+        Select-Object -First 1
+    if ($null -eq $script:shell) { throw 'the SubEtha.Shell assembly is not loaded; the module did not import' }
     $script:types = @($script:shell.GetExportedTypes() | Where-Object { $_.Namespace -eq 'SubEtha' })
 }
 
