@@ -4631,6 +4631,37 @@ int32_t subetha_broadcast_recv_wait(subetha_handle handle,
 int32_t subetha_broadcast_lag(subetha_handle handle, uint32_t consumer, uint64_t *out);
 
 /**
+ * Wait until `want` consumers have registered, writing how many there
+ * are when the wait ends into `out`.
+ *
+ * A count below `want` is not an error. It is the shortfall, and it is
+ * what the caller needs in order to say which of its readers never
+ * arrived.
+ *
+ * # Why a producer wants this
+ *
+ * A consumer registers at the head, so everything published before it
+ * registered is lost to it and nothing reports that: the push
+ * succeeds, the ring does not error, and a reader that started late is
+ * indistinguishable from one that is slow. Across processes the window
+ * is however long starting one takes. Publishing only once the readers
+ * are here is the only thing that closes it, because afterwards there
+ * is nothing left to detect.
+ *
+ * `timeout_ms` must be a real timeout. `SUBETHA_WAIT_FOREVER` is
+ * refused rather than honored: a producer waiting without end for a
+ * worker that will never start is a hang with nothing to diagnose it,
+ * which is the failure this call exists to replace with a number.
+ *
+ * # Safety
+ * `out` is a valid pointer.
+ */
+int32_t subetha_broadcast_wait_for_consumers(subetha_handle handle,
+                                             uint32_t want,
+                                             int64_t timeout_ms,
+                                             uint32_t *out);
+
+/**
  * A snapshot of the ring's state into `out`.
  *
  * # Safety

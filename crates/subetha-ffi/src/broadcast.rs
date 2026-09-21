@@ -13,15 +13,16 @@
 
 use std::ffi::c_char;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use subetha_cxc::adaptive_ring::UnlinkReport;
 use subetha_cxc::cross_process_waker::CrossProcessWaker;
 use subetha_cxc::shared_broadcast_ring::{broadcast_file_size, BroadcastError, SharedBroadcastRing};
 
 use crate::error::{
-    broadcast_code, fail, SUBETHA_E_INVALID_ARGUMENT, SUBETHA_E_RING_EMPTY, SUBETHA_E_RING_FULL,
-    SUBETHA_E_RING_PAYLOAD_TOO_LARGE, SUBETHA_E_WRONG_KIND, SUBETHA_OK,
+    broadcast_code, fail, SUBETHA_E_BROADCAST_INVALID_CONSUMER, SUBETHA_E_INVALID_ARGUMENT,
+    SUBETHA_E_RING_EMPTY, SUBETHA_E_RING_FULL, SUBETHA_E_RING_PAYLOAD_TOO_LARGE,
+    SUBETHA_E_WRONG_KIND, SUBETHA_OK,
 };
 use crate::batch::{run_pop_many, run_push_many};
 use crate::handle::{subetha_handle, Object, SUBETHA_KIND_BROADCAST};
@@ -553,9 +554,75 @@ pub unsafe extern "C" fn subetha_broadcast_lag(handle: subetha_handle, consumer:
         if consumer >= SUBETHA_BROADCAST_MAX_CONSUMERS {
             return fail(SUBETHA_E_INVALID_ARGUMENT, format!("consumer {consumer} is out of range"));
         }
-        let lag = b.ring.lag(consumer as usize);
+        // A slot nothing holds is refused rather than answered. Its
+        // cursor stays where its last holder stopped, so the distance
+        // from the producer to it is a number about nobody, and writing
+        // that into `out` alongside SUBETHA_OK would present it as a
+        // reading.
+        let Some(lag) = b.ring.try_lag(consumer as usize) else {
+            return fail(
+                SUBETHA_E_BROADCAST_INVALID_CONSUMER,
+                format!("consumer {consumer} holds no slot on this ring"),
+            );
+        };
         // SAFETY: checked non-null; the caller guarantees it is writable.
         unsafe { *out = lag };
+        SUBETHA_OK
+    })
+}
+
+/// Wait until `want` consumers have registered, writing how many there
+/// are when the wait ends into `out`.
+///
+/// A count below `want` is not an error. It is the shortfall, and it is
+/// what the caller needs in order to say which of its readers never
+/// arrived.
+///
+/// # Why a producer wants this
+///
+/// A consumer registers at the head, so everything published before it
+/// registered is lost to it and nothing reports that: the push
+/// succeeds, the ring does not error, and a reader that started late is
+/// indistinguishable from one that is slow. Across processes the window
+/// is however long starting one takes. Publishing only once the readers
+/// are here is the only thing that closes it, because afterwards there
+/// is nothing left to detect.
+///
+/// `timeout_ms` must be a real timeout. `SUBETHA_WAIT_FOREVER` is
+/// refused rather than honored: a producer waiting without end for a
+/// worker that will never start is a hang with nothing to diagnose it,
+/// which is the failure this call exists to replace with a number.
+///
+/// # Safety
+/// `out` is a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn subetha_broadcast_wait_for_consumers(
+    handle: subetha_handle,
+    want: u32,
+    timeout_ms: i64,
+    out: *mut u32,
+) -> i32 {
+    with_broadcast(handle, |b| {
+        if out.is_null() {
+            return fail(SUBETHA_E_INVALID_ARGUMENT, "out is null");
+        }
+        if want > SUBETHA_BROADCAST_MAX_CONSUMERS {
+            return fail(
+                SUBETHA_E_INVALID_ARGUMENT,
+                format!("want {want} is more consumers than a ring holds"),
+            );
+        }
+        if timeout_ms < 0 {
+            return fail(
+                SUBETHA_E_INVALID_ARGUMENT,
+                format!("timeout_ms {timeout_ms} must be a real timeout, not a wait without end"),
+            );
+        }
+        let have = b
+            .ring
+            .wait_for_consumers(want as usize, Duration::from_millis(timeout_ms as u64));
+        // SAFETY: checked non-null; the caller guarantees it is writable.
+        unsafe { *out = have as u32 };
         SUBETHA_OK
     })
 }

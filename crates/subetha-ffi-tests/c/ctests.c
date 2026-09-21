@@ -809,6 +809,12 @@ static void test_broadcast_ring(const char *scratch_prefix)
     EXPECT_CODE(subetha_broadcast_read_stats(h, &stats), SUBETHA_OK);
     CHECK(stats.capacity == 4 && stats.producer_position == 5 && stats.active_consumers == 2 && !stats.fully_drained);
     EXPECT_CODE(subetha_broadcast_unregister_consumer(h, b), SUBETHA_OK);
+    /* A slot nobody holds is refused rather than answered. Its cursor
+     * stays where its last holder stopped, so the distance from the
+     * producer to it is a number about nobody that grows with every
+     * push, and returning that beside SUBETHA_OK would present it as a
+     * reading. */
+    EXPECT_CODE(subetha_broadcast_lag(h, b, &lag), SUBETHA_E_BROADCAST_INVALID_CONSUMER);
     EXPECT_CODE(subetha_broadcast_recv_wait(h, a, out, sizeof out, &len, 1000), SUBETHA_OK);
     CHECK(out[0] == 'e');
     EXPECT_CODE(subetha_broadcast_read_stats(h, &stats), SUBETHA_OK);
@@ -836,8 +842,27 @@ static void test_broadcast_ring(const char *scratch_prefix)
     subetha_handle attacher = SUBETHA_HANDLE_NONE;
     EXPECT_CODE(subetha_broadcast_create(path, 8, &strict_options, &creator), SUBETHA_OK);
     EXPECT_CODE(subetha_broadcast_open(path, 8, &strict_options, &attacher), SUBETHA_OK);
+
+    /* The barrier. A producer publishing before its readers register
+     * loses everything it sent, and nothing reports that, so waiting is
+     * the only thing that closes the window. `arrived` is uint32_t
+     * where lag's out is uint64_t: one letter apart at the call and C
+     * would take either, so they are declared separately on purpose. */
+    uint32_t arrived = 99;
+    EXPECT_CODE(subetha_broadcast_wait_for_consumers(creator, 1, 50, &arrived), SUBETHA_OK);
+    CHECK(arrived == 0);
+    EXPECT_CODE(subetha_broadcast_wait_for_consumers(creator, 1, SUBETHA_WAIT_FOREVER, &arrived),
+                SUBETHA_E_INVALID_ARGUMENT);
+
     uint32_t c = 99;
     EXPECT_CODE(subetha_broadcast_register_consumer(attacher, &c), SUBETHA_OK);
+
+    /* Now it is satisfied at once, and a shortfall is a count rather
+     * than an error: one reader arrived where four were wanted. */
+    EXPECT_CODE(subetha_broadcast_wait_for_consumers(creator, 1, 50, &arrived), SUBETHA_OK);
+    CHECK(arrived == 1);
+    EXPECT_CODE(subetha_broadcast_wait_for_consumers(creator, 4, 50, &arrived), SUBETHA_OK);
+    CHECK(arrived == 1);
     EXPECT_CODE(subetha_broadcast_try_push(creator, (const uint8_t *)"b", 1), SUBETHA_OK);
     EXPECT_CODE(subetha_broadcast_recv_wait(attacher, c, out, sizeof out, &len, 1000), SUBETHA_OK);
     CHECK(out[0] == 'b');

@@ -392,9 +392,47 @@ impl BroadcastRing {
         Ok(())
     }
 
-    /// How far behind the producer a consumer is.
-    pub fn lag(&self, consumer: u64) -> PsResult<u64> {
-        Ok(self.inner.lag(size(consumer, "the consumer")?))
+    /// Waits until Want consumers have registered and returns how many
+    /// there are when the wait ends.
+    ///
+    /// A number below Want means TimeoutSeconds ran out first, and it
+    /// says how many of the readers you are about to publish for
+    /// actually arrived.
+    ///
+    /// This is what a producer does about the loss Lag cannot report. A
+    /// consumer starts at the head, so everything published before it
+    /// registered is lost to it and nothing says so; across processes
+    /// the window is however long starting a worker takes. Publishing
+    /// only once the readers are here closes it.
+    ///
+    /// It promises nothing about afterwards. A consumer counted here can
+    /// unregister, or its process can end, the moment this returns.
+    pub fn wait_for_consumers(&self, want: u64, timeout_seconds: f64) -> PsResult<u64> {
+        if !(timeout_seconds.is_finite() && timeout_seconds > 0.0) {
+            return Err(arg_err("the timeout must be a number of seconds above zero"));
+        }
+        let want = size(want, "the consumer count")?;
+        let waited = self.inner.wait_for_consumers(
+            want,
+            std::time::Duration::from_secs_f64(timeout_seconds),
+        );
+        Ok(waited as u64)
+    }
+
+    /// How many items are waiting for a consumer, or nothing when the id
+    /// names no live consumer of this ring.
+    ///
+    /// Nothing covers an id past the consumer table and an id that has
+    /// been given back, because a slot nobody holds keeps the cursor its
+    /// last holder left, and the distance from the producer to that
+    /// cursor is a number about nobody that grows with every send.
+    ///
+    /// Zero is not the same as nothing was lost. A consumer starts at
+    /// the head, so one registered after a burst was published is caught
+    /// up by this measure and saw none of it. Read ProducerPosition at
+    /// the moment you register to learn how much you will never see.
+    pub fn lag(&self, consumer: u64) -> PsResult<Option<u64>> {
+        Ok(self.inner.try_lag(size(consumer, "the consumer")?))
     }
 
     /// The position the producer has reached.

@@ -142,13 +142,50 @@ by [`CapacityBroadcastRing`](../capacity-broadcast-ring/)'s morph
 prune to decide whether a stale broadcast backing can be dropped.
 Constant time over `MAX_CONSUMERS` (16 loads + comparisons; ~50 ns).
 
-### Observer: `lag(consumer_idx)` (dashboard)
+### Observer: `try_lag(consumer_idx)` / `lag(consumer_idx)` (dashboard)
 
 ```text
-producer_seq.load - consumer_seqs[consumer_idx].load
+1. if consumer_idx >= MAX_CONSUMERS: return None
+2. if consumer_active[consumer_idx] == 0: return None
+3. return producer_seq.load - consumer_seqs[consumer_idx].load
 ```
 
-Two atomic loads + subtraction. ~1 ns.
+`lag` is the same question without the `Option`: it answers
+`u64::MAX` where `try_lag` answers `None`. Both refuse a slot nothing
+holds, because `unregister()` clears the active flag and leaves the
+cursor where its last holder stopped, so the distance from the producer
+to that cursor is a reading about nobody and it grows with every push.
+
+Three atomic loads + subtraction. ~1 ns.
+
+A live consumer's `0` says nothing is waiting, not that nothing was
+lost. A consumer starts at the producer's current seq, so one that
+registered after a burst was published reads `0` having seen none of
+it; `producer_position()` at the moment of registration is what says
+how much it will never see.
+
+### Producer: `wait_for_consumers(want, timeout) -> usize`
+
+```text
+1. spin up to 64 yields while active_consumer_count() < want
+2. then sleep 500us per turn until count >= want or deadline passed
+3. return active_consumer_count()
+```
+
+Answers how many consumers are registered when the wait ends. A count
+below `want` means the timeout ran out first, and the number is the
+shortfall rather than an error.
+
+A consumer registers at the head, so everything published before it
+registered is lost to it and nothing reports that: the push succeeds,
+the ring does not error, and a reader that started late looks exactly
+like one that is slow. Across processes the window is however long
+starting one takes. Publishing only once the readers are here is what
+closes it, because afterwards there is nothing left to detect.
+
+It does not promise that consumers stay: it answers about the moment
+it returns, and a consumer counted there can unregister immediately
+after. It is a starting gun, not a guarantee of attendance.
 
 ```mermaid
 graph LR

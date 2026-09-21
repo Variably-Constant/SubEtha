@@ -115,13 +115,32 @@ consumer-side hot atomics is mitigated by separation.
 4. consumer_seqs[consumer_idx].fetch_add(1, Release)
 ```
 
-### Observer: `lag(consumer_idx)` (dashboard)
+### Observer: `try_lag(consumer_idx)` / `lag(consumer_idx)` (dashboard)
 
 ```text
-producer_seq.load - consumer_seqs[consumer_idx].load
+1. if consumer_idx >= MAX_CONSUMERS: return None
+2. if consumer_active[consumer_idx] == 0: return None
+3. return producer_seq.load - consumer_seqs[consumer_idx].load
 ```
 
-Two atomic loads + subtraction. ~1 ns.
+`lag` answers `u64::MAX` where `try_lag` answers `None`. A slot nothing
+holds keeps the cursor its last holder left, so the distance from the
+producer to it is a reading about nobody.
+
+Three atomic loads + subtraction. ~1 ns.
+
+### Producer: `wait_for_consumers(want, timeout) -> usize`
+
+```text
+1. spin up to 64 yields while active_consumer_count() < want
+2. then sleep 500us per turn until count >= want or deadline passed
+3. return active_consumer_count()
+```
+
+A count below `want` is the shortfall, not an error. A consumer
+registers at the head, so anything published before it registered is
+lost to it and nothing afterwards can detect that: `lag` reads `0` for
+a consumer that saw none of it.
 
 ```mermaid
 graph LR

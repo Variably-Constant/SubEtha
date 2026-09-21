@@ -17,8 +17,25 @@ The distribution is `subetha-ipc` because `subetha` on PyPI belongs to
 an unrelated project. The package it installs is `subetha`, so code
 says `import subetha`.
 
-This page is the reference. To install it and send a first message,
-start at [SubEtha from Python](../../tutorial/python/).
+This page describes the surface by family. The complete surface, every
+name with every type, is generated from the type stub and split across
+two pages:
+
+- [What the values look like](values/) - real output, captured from a
+  run against the built extension, for the shapes a type name cannot
+  convey.
+- [Every class, in full](classes/) - all 91 classes, with every
+  attribute and every method signature.
+- [Module functions, attributes and exceptions](module/) - what
+  `import subetha` gives you besides the classes.
+
+Both are produced by `crates/subetha-py/tools/export_reference.py`
+reading `python/subetha/__init__.pyi`, which `tests/test_surface.py`
+holds against the compiled module, so a name there is a name that
+ships. Regenerate them whenever the surface changes.
+
+To install it and send a first message, start at
+[SubEtha from Python](../../tutorial/python/).
 
 ## What a call costs, and what follows
 

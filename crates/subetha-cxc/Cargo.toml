@@ -211,6 +211,10 @@ name = "async_overhead"
 harness = false
 
 [[bench]]
+name = "park_vs_retry"
+harness = false
+
+[[bench]]
 name = "async_fanout"
 harness = false
 

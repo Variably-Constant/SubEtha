@@ -189,8 +189,15 @@ if "tcp" in subetha.transports:
 
 ## Where to go next
 
+- [The Python how-to guides](../../how-to/python/) for installing,
+  picking a structure, making it fast, threads and asyncio, bridging
+  two hosts, and what to do when something does not work.
+- [How the Python binding works](../../explanation/python-binding/) for
+  why the package is shaped the way it is.
 - [The `subetha-py` reference](../../reference/subetha-py/) for every
-  class and what it costs.
+  class and what it costs, and from there
+  [what the values look like](../../reference/subetha-py/values/) and
+  [every class in full](../../reference/subetha-py/classes/).
 - [Cross-process round trip](../../tutorial/cross-process-roundtrip/)
   for the same exercise from Rust.
 - [SubEtha from C and C++](../../tutorial/c-and-cpp/) for the C ABI,

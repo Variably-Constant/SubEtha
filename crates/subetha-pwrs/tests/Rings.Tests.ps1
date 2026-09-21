@@ -76,6 +76,66 @@ Describe 'SubEtha.BroadcastRing' {
         $r.UnregisterConsumer($a)
         $r.Dispose()
     }
+
+    It 'says nothing for a consumer id nobody holds' {
+        # Zero means caught up, and it has to mean only that. An id that
+        # has been given back and an id past the table are both "no such
+        # consumer", and a number for either puts them in the same
+        # bucket as a reader that is up to date.
+        $r = New-SubEthaBroadcastRing -Path (Join-Path $script:dir 'bcast-none') -Capacity 8
+        $a = $r.RegisterConsumer()
+        $r.PushMany(@('x', 'y', 'z')) | Should -Be 3
+        $r.Lag($a) | Should -Be 3
+
+        $r.UnregisterConsumer($a)
+        $null -eq $r.Lag($a) | Should -BeTrue
+
+        # Whatever the producer does next, an id nobody holds stays
+        # nothing rather than drifting further behind.
+        $r.Push('after') | Should -BeTrue
+        $null -eq $r.Lag($a) | Should -BeTrue
+
+        $null -eq $r.Lag(10000) | Should -BeTrue
+        $r.Dispose()
+    }
+
+    It 'reports a consumer that missed everything as caught up' {
+        # The case the documentation warns about, pinned as behavior. A
+        # consumer starts at the head, so one registered after a burst
+        # is caught up by this measure and saw none of it.
+        $r = New-SubEthaBroadcastRing -Path (Join-Path $script:dir 'bcast-late') -Capacity 8
+        $r.PushMany(@('x', 'y', 'z')) | Should -Be 3
+
+        $missed = $r.ProducerPosition()
+        $late = $r.RegisterConsumer()
+
+        $missed | Should -Be 3
+        $r.Lag($late) | Should -Be 0
+        $null -eq $r.Recv($late) | Should -BeTrue
+        $r.Dispose()
+    }
+
+    It 'lets a producer wait for its readers' {
+        # What a producer can do about the loss Lag cannot report:
+        # publish only once the readers are registered. The answer is
+        # what arrived, so a shortfall is a number rather than a hang.
+        $r = New-SubEthaBroadcastRing -Path (Join-Path $script:dir 'bcast-wait') -Capacity 8
+
+        $began = [System.Diagnostics.Stopwatch]::StartNew()
+        $r.WaitForConsumers(1, 0.05) | Should -Be 0
+        $began.Stop()
+        $began.ElapsedMilliseconds | Should -BeGreaterOrEqual 40
+
+        $a = $r.RegisterConsumer()
+        $r.WaitForConsumers(1, 0.05) | Should -Be 1
+
+        # Having waited, the first item published is not lost.
+        $r.Push('first') | Should -BeTrue
+        Get-SEText $r.Recv($a) | Should -BeExactly 'first'
+
+        { $r.WaitForConsumers(1, 0) } | Should -Throw
+        $r.Dispose()
+    }
 }
 
 Describe 'SubEtha.CapacityRing' {

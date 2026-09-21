@@ -1,0 +1,24 @@
+[package]
+name = "subetha-spec-c"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A second implementation of the Sens-O-Matic wire format, written in C from the specification rather than from the Rust, and checked against the frozen vectors."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# There are deliberately no SubEtha dependencies here, and adding one
+# would end the point of the crate. A C program built on subetha-ffi
+# shares every assumption of the first implementation, so it cannot
+# disagree with it, and a second implementation that cannot disagree
+# proves nothing about the specification. What this crate reads is the
+# document and the frozen vector files, both as text.
+[dependencies]
+
+[build-dependencies]
+cc = "1"

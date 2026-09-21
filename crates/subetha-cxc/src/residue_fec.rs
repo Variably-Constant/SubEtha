@@ -34,6 +34,60 @@ const MODULI: [u32; 32] = [
 /// Chunks a value is split into, and residues sent for it, at most.
 pub const MAX_MODULI: usize = MODULI.len();
 
+/// `decode` tracks which residues arrived as one bit per modulus in a
+/// `u32`, so the table may not outgrow that word without the shift
+/// becoming undefined. Stated here rather than left for whoever adds the
+/// thirty-third prime to discover.
+const _: () = assert!(MAX_MODULI <= u32::BITS as usize);
+
+/// The shift Barrett reduction is taken at.
+///
+/// Every modulus lies in `[2^16, 2^17)`, and every value reduced here is
+/// a product of two residues, so it is below `2^34`. Barrett's bound
+/// wants the shift at twice the modulus width, which is that.
+const BARRETT_SHIFT: u32 = 34;
+
+/// `floor(2^34 / m)` for each modulus.
+///
+/// This is what turns `x % m` into a multiply and a shift. The moduli
+/// are a published constant table, so the reciprocals are known at
+/// compile time and cost nothing at run time.
+const BARRETT: [u64; MAX_MODULI] = {
+    let mut out = [0u64; MAX_MODULI];
+    let mut i = 0;
+    while i < MAX_MODULI {
+        out[i] = (1u64 << BARRETT_SHIFT) / MODULI[i] as u64;
+        i += 1;
+    }
+    out
+};
+
+/// `x mod m`, for `x` below `2^34` and `m` the modulus at `idx`.
+///
+/// Garner's inner loop is a modular multiply-subtract per pair of
+/// residues, so the reduction runs as often as the multiply beside it.
+/// A 64-bit `div` is twenty to thirty cycles against that multiply's
+/// three, which is why the moduli being a constant table earns its
+/// keep: every reciprocal is known at compile time.
+///
+/// The estimate can fall at most two multiples of `m` short, never over,
+/// so two conditional subtractions land it exactly. Written as
+/// subtractions rather than a loop because the count is a proof rather
+/// than a condition to discover.
+#[inline(always)]
+fn reduce(x: u64, idx: usize) -> u32 {
+    let m = MODULI[idx] as u64;
+    let q = (x * BARRETT[idx]) >> BARRETT_SHIFT;
+    let mut r = x - q * m;
+    if r >= m {
+        r -= m;
+    }
+    if r >= m {
+        r -= m;
+    }
+    r as u32
+}
+
 /// What went wrong encoding or decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResidueError {
@@ -88,6 +142,14 @@ pub struct ResidueCode {
     /// `inv[i * n + j]` is `moduli[i]^-1 mod moduli[j]`, which is what
     /// Garner's algorithm consumes. Flat so a lookup is one index.
     inv: Vec<u32>,
+    /// `residual[i * n + j]` is `moduli[i] mod moduli[j]`, the factor
+    /// Horner multiplies by when evaluating the digits at another
+    /// modulus.
+    ///
+    /// Both operands are constants of the code, and the loop that wants
+    /// this runs once per digit per column: four thousand lookups for a
+    /// 1 KiB packet, over the same handful of values.
+    residual: Vec<u32>,
 }
 
 impl ResidueCode {
@@ -98,14 +160,16 @@ impl ResidueCode {
             return Err(ResidueError::TooManyModuli);
         }
         let mut inv = vec![0u32; n * n];
+        let mut residual = vec![0u32; n * n];
         for i in 0..n {
             for j in 0..n {
+                residual[i * n + j] = MODULI[i] % MODULI[j];
                 if i != j {
                     inv[i * n + j] = mod_inv(MODULI[i] % MODULI[j], MODULI[j]);
                 }
             }
         }
-        Ok(Self { k, n, inv })
+        Ok(Self { k, n, inv, residual })
     }
 
     /// Chunks the code carries.
@@ -129,42 +193,66 @@ impl ResidueCode {
     }
 
     /// Garner's mixed-radix digits for `have`, which names distinct
-    /// moduli of this code in ascending order. The digits come back in
+    /// moduli of this code in ascending order, written into `digits` in
     /// the same order.
-    fn mixed_radix(&self, have: &[(usize, u32)]) -> Result<Vec<u32>, ResidueError> {
-        let mut digits = vec![0u32; have.len()];
+    ///
+    /// The caller owns the buffer because this runs once per 16-bit
+    /// column of a packet, 512 times for a 1 KiB one, and a heap
+    /// allocation on that path costs more than the arithmetic it would
+    /// carry.
+    fn mixed_radix(
+        &self,
+        have: &[(usize, u32)],
+        digits: &mut [u32],
+    ) -> Result<(), ResidueError> {
+        if digits.len() != have.len() {
+            return Err(ResidueError::LengthMismatch);
+        }
         for (slot, &(idx, residue)) in have.iter().enumerate() {
             if idx >= self.n {
                 return Err(ResidueError::BadResidueIndex);
             }
             let m = MODULI[idx];
-            let m64 = m as u64;
-            let mut value = residue % m;
+            let mut value = reduce(residue as u64, idx);
             // Take out the contribution of every earlier digit, then
             // divide by the modulus that digit carries.
             for (earlier, &(prev_idx, _)) in have[..slot].iter().enumerate() {
-                let d = digits[earlier] % m;
-                value = (value + m - d) % m;
-                value = (value as u64 * self.inv[prev_idx * self.n + idx] as u64 % m64) as u32;
+                let d = reduce(digits[earlier] as u64, idx);
+                // Both terms are below `m`, so the difference taken this
+                // way is below `2m` and one subtraction settles it.
+                value += m - d;
+                if value >= m {
+                    value -= m;
+                }
+                value = reduce(value as u64 * self.inv[prev_idx * self.n + idx] as u64, idx);
             }
             digits[slot] = value;
         }
-        Ok(digits)
+        Ok(())
     }
 
-    /// The digits evaluated modulo `target`, by Horner from the most
-    /// significant down, so the value they represent is reduced without
-    /// being formed.
-    fn evaluate_mod(&self, have: &[(usize, u32)], digits: &[u32], target: u32) -> u32 {
-        let t = target as u64;
-        let mut acc: u64 = 0;
+    /// The digits evaluated modulo the modulus at `target`, by Horner
+    /// from the most significant down, so the value they represent is
+    /// reduced without being formed.
+    ///
+    /// `target` names the modulus rather than carrying it, because the
+    /// reduction is by a precomputed reciprocal and that is looked up by
+    /// index.
+    fn evaluate_mod(&self, have: &[(usize, u32)], digits: &[u32], target: usize) -> u32 {
+        let t = MODULI[target];
+        let mut acc: u32 = 0;
         for slot in (0..digits.len()).rev() {
-            acc = (acc + digits[slot] as u64 % t) % t;
+            // Both below `t`, so the sum is below `2t`.
+            acc += reduce(digits[slot] as u64, target);
+            if acc >= t {
+                acc -= t;
+            }
             if slot > 0 {
-                acc = acc * (MODULI[have[slot - 1].0] as u64 % t) % t;
+                let step = self.residual[have[slot - 1].0 * self.n + target];
+                acc = reduce(acc as u64 * step as u64, target);
             }
         }
-        acc as u32
+        acc
     }
 
     /// The `r` redundant residues for `chunks`, which is `k` values each
@@ -173,11 +261,21 @@ impl ResidueCode {
         if chunks.len() != self.k || repair.len() != self.redundancy() {
             return Err(ResidueError::LengthMismatch);
         }
-        let have: Vec<(usize, u32)> =
-            (0..self.k).map(|i| (i, chunks[i] as u32)).collect();
-        let digits = self.mixed_radix(&have)?;
+        // On the stack, not the heap. `MAX_MODULI` bounds `k`, so the
+        // worst case is a few hundred bytes of frame, and this runs once
+        // per column of every packet.
+        let mut have = [(0usize, 0u32); MAX_MODULI];
+        for (i, slot) in have[..self.k].iter_mut().enumerate() {
+            *slot = (i, chunks[i] as u32);
+        }
+        let have = &have[..self.k];
+
+        let mut digits = [0u32; MAX_MODULI];
+        let digits = &mut digits[..self.k];
+        self.mixed_radix(have, digits)?;
+
         for (slot, out) in repair.iter_mut().enumerate() {
-            *out = self.evaluate_mod(&have, &digits, MODULI[self.k + slot]);
+            *out = self.evaluate_mod(have, digits, self.k + slot);
         }
         Ok(())
     }
@@ -195,23 +293,48 @@ impl ResidueCode {
         if have.len() < self.k {
             return Err(ResidueError::NotEnoughResidues);
         }
-        // Any k suffice, and the k lowest-indexed carry the smallest
-        // moduli, whose product is the bound the value was encoded
-        // under. Garner also wants them in ascending order.
-        let mut used: Vec<(usize, u32)> = have.to_vec();
-        used.sort_unstable_by_key(|(i, _)| *i);
-        used.dedup_by_key(|(i, _)| *i);
-        if used.len() < self.k {
+        // One slot per modulus the code has, so a residue placed at its
+        // own index arrives in the ascending order Garner wants, a
+        // repeated index loses to the first one, and nothing is sorted
+        // or allocated. The k lowest indices carry the smallest moduli,
+        // whose product is the bound the value was encoded under.
+        let mut residues = [0u32; MAX_MODULI];
+        let mut present: u32 = 0;
+        for &(idx, residue) in have {
+            if idx >= self.n {
+                return Err(ResidueError::BadResidueIndex);
+            }
+            if present & (1 << idx) == 0 {
+                present |= 1 << idx;
+                residues[idx] = residue;
+            }
+        }
+        if (present.count_ones() as usize) < self.k {
             return Err(ResidueError::NotEnoughResidues);
         }
-        used.truncate(self.k);
-        let digits = self.mixed_radix(&used)?;
+
+        let mut used = [(0usize, 0u32); MAX_MODULI];
+        let mut taken = 0usize;
+        for idx in 0..self.n {
+            if taken == self.k {
+                break;
+            }
+            if present & (1 << idx) != 0 {
+                used[taken] = (idx, residues[idx]);
+                taken += 1;
+            }
+        }
+        let used = &used[..self.k];
+
+        let mut digits = [0u32; MAX_MODULI];
+        let digits = &mut digits[..self.k];
+        self.mixed_radix(used, digits)?;
         for (i, slot) in out.iter_mut().enumerate() {
             // A chunk that arrived is already known; one that did not is
             // the digits evaluated at its own modulus.
             *slot = match used.iter().find(|(idx, _)| *idx == i) {
                 Some(&(_, residue)) => residue as u16,
-                None => self.evaluate_mod(&used, &digits, MODULI[i]) as u16,
+                None => self.evaluate_mod(used, digits, i) as u16,
             };
         }
         Ok(())
@@ -382,6 +505,66 @@ impl PacketResidueCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reduction that replaced the divide gives the same answer the
+    /// divide gave, for every modulus.
+    ///
+    /// This is the one place where being wrong is silent: a reduction
+    /// off by a multiple of `m` produces a repair packet that decodes to
+    /// plausible bytes rather than an error, so the round-trip tests
+    /// below would pass on data that had been quietly corrupted. It is
+    /// checked directly instead.
+    ///
+    /// Two sweeps. The small multiples of `m` are where the conditional
+    /// subtractions decide, so every value up to `4m` is tried
+    /// exhaustively. The rest of the range is walked with a fixed
+    /// deterministic stride, so the test measures the code and not the
+    /// day it ran.
+    #[test]
+    fn the_barrett_reduction_agrees_with_the_divide_it_replaced() {
+        for idx in 0..MAX_MODULI {
+            let m = MODULI[idx] as u64;
+            for x in 0..=(4 * m) {
+                assert_eq!(
+                    reduce(x, idx) as u64,
+                    x % m,
+                    "modulus {m} at {x}, near a correction boundary"
+                );
+            }
+
+            let mut state: u64 = 0x2545_F491_4F6C_DD1D ^ idx as u64;
+            for _ in 0..200_000 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                // The bound the reduction is proved under: every value
+                // it sees is a product of two residues.
+                let x = state % (1 << BARRETT_SHIFT);
+                assert_eq!(reduce(x, idx) as u64, x % m, "modulus {m} at {x}");
+            }
+
+            // The largest value that can reach it, which is where an
+            // overflow in the estimate would show.
+            let top = (1u64 << BARRETT_SHIFT) - 1;
+            assert_eq!(reduce(top, idx) as u64, top % m);
+        }
+    }
+
+    /// Every product of two residues stays inside the bound the
+    /// reduction is proved under.
+    ///
+    /// The proof rests on the input being below `2^34`. The largest
+    /// input is a residue times a modular inverse, both below the
+    /// largest modulus, so this checks that the table cannot grow past
+    /// the point where that stops holding.
+    #[test]
+    fn a_product_of_two_residues_stays_inside_the_barrett_bound() {
+        let largest = MODULI[MAX_MODULI - 1] as u64;
+        assert!(
+            (largest - 1) * (largest - 1) < (1u64 << BARRETT_SHIFT),
+            "the modulus table has outgrown the shift the reduction uses"
+        );
+    }
 
     /// Every chunk comes back when nothing was lost.
     #[test]

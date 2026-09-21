@@ -28,6 +28,14 @@ is asked rather than waiting. `poll` therefore asks on this thread and
 yields to the loop between tries, which is cheap because each ask is
 non-blocking.
 
+**A notifier can, and it costs different things on each platform.**
+`wait` hands the notifier's descriptor to the event loop on Unix, where
+waiting then costs nothing at all. Windows has no public way to watch
+the handle it gives out: the proactor loop, which is the default there,
+does not implement `add_reader`, and the Windows selector loop selects
+only on sockets. So on Windows the wait runs on a worker thread. What
+you await is the same either way; only what it costs differs.
+
     import asyncio
     import subetha
     from subetha import aio
@@ -44,15 +52,24 @@ everywhere else.
 """
 
 import asyncio
+import sys
 
 __all__ = [
     "recv",
     "send",
+    "wait",
     "with_permit",
     "with_read_lock",
     "with_write_lock",
     "poll",
 ]
+
+# Whether this interpreter's event loop can be handed a notifier's
+# descriptor. Everywhere but Windows it can. On Windows the default loop
+# since 3.8 is the proactor, which does not implement `add_reader` at
+# all, and switching to the Windows selector loop does not help because
+# its select accepts sockets and nothing else.
+_LOOP_TAKES_THE_DESCRIPTOR = sys.platform != "win32"
 
 # How long each underlying wait runs before it comes back to be retried.
 # A cancelled await cannot interrupt a wait already in progress, so this
@@ -177,6 +194,62 @@ async def with_write_lock(lock, work, timeout=None):
         lambda seconds: lock.write_for(timeout=seconds), work, timeout
     )
     return None if got is None else got[0]
+
+
+async def wait(notifier, timeout=None):
+    """Wait for a signal on a `Notifier` without blocking the loop.
+
+    `True` when a signal arrived, `False` when `timeout` seconds passed
+    with none. `None` waits for as long as it takes.
+
+    Like the blocking `Notifier.wait`, this does not consume the signal.
+    A notifier stays readable until somebody drains it, so a loop that
+    waits again without calling `drain` returns at once on the signal it
+    already saw:
+
+        while await aio.wait(n, timeout=5):
+            n.drain()
+            handle_whatever_arrived()
+
+    On Unix the descriptor goes to the event loop, so waiting occupies
+    nothing. On Windows there is no public way to watch the handle a
+    notifier gives out, so the wait runs on a worker thread from the
+    loop's executor, and a wait with no timeout holds that thread until
+    a signal arrives. Give Windows waits a timeout if the pool is
+    small.
+
+    One waiter per notifier. A loop keeps one reader per descriptor, so
+    a second coroutine awaiting the same notifier replaces the first
+    one's callback and the first never wakes. Give each waiter a
+    notifier of its own, which is what `NotifierSet.attach` is for: a
+    signal wakes every notifier in the set, so several waiters is what
+    the set is shaped for and sharing one is not.
+    """
+    if timeout is not None and timeout < 0:
+        raise ValueError("the timeout must not be negative")
+
+    loop = asyncio.get_running_loop()
+    if not _LOOP_TAKES_THE_DESCRIPTOR:
+        return await loop.run_in_executor(None, notifier.wait, timeout)
+
+    fd = notifier.native
+    signaled = loop.create_future()
+
+    def readable():
+        if not signaled.done():
+            signaled.set_result(True)
+
+    loop.add_reader(fd, readable)
+    try:
+        if timeout is None:
+            return await signaled
+        return await asyncio.wait_for(signaled, timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        return False
+    finally:
+        # Before the future is discarded, so an already-readable
+        # descriptor cannot go on calling back into a dead waiter.
+        loop.remove_reader(fd)
 
 
 async def poll(receiver, timeout=None, every=0.005):

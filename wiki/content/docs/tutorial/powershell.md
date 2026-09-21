@@ -177,6 +177,12 @@ always in the module, and `Get-SubEthaTransport` lists them.
 
 ## Where to go next
 
+- [The PowerShell how-to guides](../../how-to/powershell/) for
+  installing from the gallery, picking a structure for your shape,
+  making it fast, runspaces and lifetimes, bridging two hosts, and what
+  to do when something does not work.
+- [How the PowerShell binding works](../../explanation/powershell-binding/)
+  for why the surface is shaped the way it is.
 - [The `subetha-pwrs` reference](../../reference/subetha-pwrs/) for
   every cmdlet and object.
 - [SubEtha from Python](../python/) for the same primitives from

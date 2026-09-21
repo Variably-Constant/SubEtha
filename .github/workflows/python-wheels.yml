@@ -63,6 +63,16 @@ jobs:
           python -c "import subetha; print(subetha.transports, subetha.free_threaded)"
           python -m pytest tests -q
 
+      # Whether help() has anything to say is a property of the built
+      # module rather than of the source, and the source-side count has
+      # been wrong in both directions: a parser gap called a documented
+      # method bare, and a doc comment in a place PyO3 does not carry
+      # would never reach __doc__ at all. Asked here, of the wheel.
+      - name: Check every method has something for help()
+        shell: bash
+        working-directory: crates/subetha-py
+        run: python tools/check_docs.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-abi3-${{ matrix.os }}

@@ -208,6 +208,86 @@ def test_a_broadcast_consumer_lags_and_catches_up(scratch):
     assert ring.lag(consumer) == 0
 
 
+def test_broadcast_lag_says_none_when_the_id_names_no_consumer(scratch):
+    """Zero means caught up, and it must mean only that.
+
+    An id nobody holds and an id past the table are both "no such
+    consumer", and answering either with a number puts them in the same
+    bucket as a reader that is up to date.
+    """
+    ring = subetha.BroadcastRing(scratch("bcast"), capacity=8)
+    consumer = ring.register_consumer()
+    ring.push_many([bytes([i]) for i in range(3)])
+    assert ring.lag(consumer) == 3
+
+    ring.unregister_consumer(consumer)
+    assert ring.lag(consumer) is None
+
+    # Whatever the producer does next, an id nobody holds stays None
+    # rather than drifting further behind.
+    ring.push(b"after")
+    assert ring.lag(consumer) is None
+
+    assert ring.lag(10_000) is None
+
+
+def test_broadcast_lag_is_zero_for_a_consumer_that_missed_everything(scratch):
+    """The case the documentation warns about, pinned as behavior.
+
+    A consumer registers at the head, so one registered after a burst is
+    caught up by this measure and saw none of it. `producer_position` at
+    the moment of registration is what tells a caller how much it will
+    never see.
+    """
+    ring = subetha.BroadcastRing(scratch("bcast"), capacity=8)
+    ring.push_many([bytes([i]) for i in range(3)])
+
+    missed = ring.producer_position
+    late = ring.register_consumer()
+
+    assert missed == 3, "three items were published before anyone registered"
+    assert ring.lag(late) == 0, "caught up with the head, having read nothing"
+    assert ring.recv(late) is None, "and there is nothing there to read"
+
+
+def test_a_broadcast_producer_can_wait_for_its_readers(scratch):
+    """The barrier answers with what arrived rather than hanging.
+
+    This is what a producer does about the loss `lag` cannot report:
+    publish only once the readers are registered, because a consumer
+    starts at the head and everything before it is gone.
+    """
+    ring = subetha.BroadcastRing(scratch("bcast"), capacity=8)
+
+    began = time.monotonic()
+    assert ring.wait_for_consumers(1, timeout=0.05) == 0, "nobody registered"
+    assert time.monotonic() - began >= 0.04, "it must wait, not give up at once"
+
+    ring.register_consumer()
+    assert ring.wait_for_consumers(1, timeout=0.05) == 1
+
+    with pytest.raises(ValueError):
+        ring.wait_for_consumers(1, timeout=0)
+
+
+def test_a_late_reader_releases_the_broadcast_barrier(scratch):
+    """And having waited, the producer's first item is not lost."""
+    ring = subetha.BroadcastRing(scratch("bcast"), capacity=8)
+    taken = []
+
+    def join_late():
+        time.sleep(0.02)
+        taken.append(ring.register_consumer())
+
+    reader = threading.Thread(target=join_late)
+    reader.start()
+    assert ring.wait_for_consumers(1, timeout=5.0) == 1
+    reader.join()
+
+    assert ring.push(b"first") is True
+    assert ring.recv(taken[0]).startswith(b"first")
+
+
 def test_a_broadcast_ring_counts_its_consumers(scratch):
     ring = subetha.BroadcastRing(scratch("bcast"), capacity=4)
     consumer = ring.register_consumer()
@@ -475,7 +555,7 @@ def test_a_notifier_wakes_on_a_signal(scratch):
     watcher = notifiers.attach()
     assert notifiers.attached >= 1
     notifiers.signal()
-    assert watcher.wait(timeout=2.0) is True, "a signalled notifier should wake"
+    assert watcher.wait(timeout=2.0) is True, "a signaled notifier should wake"
 
 
 def test_a_notifier_times_out_when_nothing_signals(scratch):
@@ -505,7 +585,7 @@ def test_a_notifier_wakes_from_another_thread(scratch):
 def test_a_notifier_hands_out_its_native_object(scratch):
     notifiers = subetha.NotifierSet(scratch("notify"))
     watcher = notifiers.attach()
-    # A file descriptor on Unix, an event HANDLE on Windows. Both are
+    # A file descriptor on Unix, an event handle on Windows. Both are
     # integers here; what an event loop can do with it differs.
     assert isinstance(watcher.native, int)
     assert isinstance(watcher.index, int)

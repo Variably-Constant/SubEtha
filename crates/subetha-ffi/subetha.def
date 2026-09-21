@@ -127,6 +127,7 @@ EXPORTS
     subetha_broadcast_try_recv_many
     subetha_broadcast_unlink
     subetha_broadcast_unregister_consumer
+    subetha_broadcast_wait_for_consumers
     subetha_broadcast_wake_all
     subetha_btree_clear
     subetha_btree_contains

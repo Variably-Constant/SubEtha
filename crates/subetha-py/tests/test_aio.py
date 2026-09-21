@@ -173,3 +173,87 @@ def test_polling_a_quiet_link_answers_empty(scratch):
         return await aio.poll(reader, timeout=0.2)
 
     assert asyncio.run(main()) == []
+
+
+def test_waiting_on_a_notifier_leaves_the_loop_running(scratch):
+    """The signal arrives and the loop kept ticking while it was awaited.
+
+    Counting the ticks is the point: a wait that blocked the loop would
+    return the same answer with none of them.
+    """
+    notifiers = subetha.NotifierSet(scratch("notify"))
+    waiter = notifiers.attach()
+
+    async def main():
+        ticks = 0
+
+        async def tick():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        async def signal_shortly():
+            await asyncio.sleep(0.1)
+            notifiers.signal()
+
+        ticker = asyncio.create_task(tick())
+        sender = asyncio.create_task(signal_shortly())
+        arrived = await aio.wait(waiter, timeout=10)
+        await sender
+        ticker.cancel()
+        return arrived, ticks
+
+    arrived, ticks = asyncio.run(main())
+    assert arrived is True
+    assert ticks >= 3, "the loop must have run other work while waiting"
+
+
+def test_waiting_on_a_quiet_notifier_answers_false(scratch):
+    notifiers = subetha.NotifierSet(scratch("notify"))
+    waiter = notifiers.attach()
+
+    async def main():
+        began = time.monotonic()
+        arrived = await aio.wait(waiter, timeout=0.2)
+        return arrived, time.monotonic() - began
+
+    arrived, took = asyncio.run(main())
+    assert arrived is False
+    assert took >= 0.15, "it must have waited rather than answered at once"
+
+
+def test_a_notifier_wait_leaves_the_signal_for_the_caller_to_drain(scratch):
+    """The awaited form matches the blocking one: neither consumes it.
+
+    A notifier stays readable until somebody drains it, so waiting twice
+    without draining answers at once the second time. That is the
+    behavior the blocking `Notifier.wait` has, and the two must not
+    disagree.
+    """
+    notifiers = subetha.NotifierSet(scratch("notify"))
+    waiter = notifiers.attach()
+    notifiers.signal()
+
+    async def main():
+        first = await aio.wait(waiter, timeout=5)
+        again = await aio.wait(waiter, timeout=5)
+        waiter.drain()
+        after = await aio.wait(waiter, timeout=0.2)
+        return first, again, after
+
+    first, again, after = asyncio.run(main())
+    assert first is True
+    assert again is True, "an undrained signal is still there"
+    assert after is False, "and draining it clears it"
+
+
+def test_a_notifier_wait_refuses_a_negative_timeout(scratch):
+    notifiers = subetha.NotifierSet(scratch("notify"))
+    waiter = notifiers.attach()
+
+    async def main():
+        with pytest.raises(ValueError):
+            await aio.wait(waiter, timeout=-1)
+
+    asyncio.run(main())

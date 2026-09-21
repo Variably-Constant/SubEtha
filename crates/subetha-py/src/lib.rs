@@ -196,11 +196,19 @@ impl Atomic {
             .map_err(|e| os_err("attaching to the atomic", e))
     }
 
+    /// Read the value.
+    ///
+    /// `order` names how this read is ordered against the rest of the
+    /// calling thread's work: `relaxed`, `acquire`, `release`, `acq_rel`
+    /// or `seq_cst`. Any other name is a `ValueError`.
     #[pyo3(signature = (order = "seq_cst"))]
     fn load(&self, order: &str) -> PyResult<u64> {
         Ok(self.inner.load(ordering(order)?))
     }
 
+    /// Write the value, discarding whatever was there without reading it.
+    /// Use `swap` when the previous value matters, or `compare_exchange`
+    /// when the write should land only if nobody else got there first.
     #[pyo3(signature = (value, order = "seq_cst"))]
     fn store(&self, value: u64, order: &str) -> PyResult<()> {
         self.inner.store(value, ordering(order)?);
@@ -286,10 +294,15 @@ impl Atomic {
         Ok(first)
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The mapping goes when the last reference to this object
+    /// goes, not at the end of the block, and the file outlives the
+    /// process either way.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -367,10 +380,15 @@ impl Region {
             .map_err(|e| os_err("writing a slot", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A `memoryview` taken inside the block stays valid after
+    /// it, because the view holds its own reference to the region and the
+    /// export count is what keeps the mapping under it.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -580,10 +598,14 @@ impl SpscRing {
         Ok((packed, taken))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Nothing is drained: items still in the ring stay there
+    /// for whoever attaches next, because the file outlives the process.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -605,6 +627,9 @@ struct BroadcastRing {
 
 #[pymethods]
 impl BroadcastRing {
+    /// Obtain the broadcast ring at `path` holding `capacity` slots,
+    /// creating it when the file does not exist and attaching to what is
+    /// already there when it does.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         SharedBroadcastRing::create(path, capacity)
@@ -612,6 +637,8 @@ impl BroadcastRing {
             .map_err(|e| os_err("opening the broadcast ring", e))
     }
 
+    /// Attach to a broadcast ring that already exists, raising `OSError`
+    /// when it does not. `capacity` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         SharedBroadcastRing::open(path, capacity)
@@ -637,13 +664,33 @@ impl BroadcastRing {
             .map_err(|e| os_err("registering a consumer", e))
     }
 
+    /// Give up a consumer position, so the producer stops holding slots
+    /// for it.
+    ///
+    /// This matters more than it looks: a consumer that goes away without
+    /// calling it keeps its position registered, and once the producer is
+    /// a full lap ahead of that stalled position every `push` answers
+    /// `False` forever. A position outside the range is ignored rather
+    /// than raising.
     fn unregister_consumer(&self, consumer: usize) {
         self.inner.unregister_consumer(consumer);
     }
 
-    /// How far behind the producer a consumer is.
-    fn lag(&self, consumer: usize) -> u64 {
-        self.inner.lag(consumer)
+    /// How many items are waiting for a consumer, or `None` when the id
+    /// names no live consumer of this ring.
+    ///
+    /// `None` covers an id past the consumer table and an id that has
+    /// been given back, because a slot nobody holds keeps the cursor its
+    /// last holder left and the distance to the producer is then a
+    /// number about nobody.
+    ///
+    /// Zero is not the same as "nothing was lost". A consumer starts at
+    /// the head, so one registered after a burst was published is
+    /// caught up by this measure and saw none of it. Read
+    /// `producer_position` at the moment you register to learn how much
+    /// you will never see.
+    fn lag(&self, consumer: usize) -> Option<u64> {
+        self.inner.try_lag(consumer)
     }
 
     #[getter]
@@ -656,6 +703,41 @@ impl BroadcastRing {
         self.inner.active_consumer_count()
     }
 
+    /// Wait until `want` consumers have registered, and answer how many
+    /// there are when the wait ends.
+    ///
+    /// An answer below `want` means the timeout ran out first, and the
+    /// number says how many of the readers you are about to publish for
+    /// actually arrived.
+    ///
+    /// This is what a producer does about the loss `lag` cannot report.
+    /// A consumer starts at the head, so everything published before it
+    /// registered is lost to it and nothing says so; across processes
+    /// the window is however long starting a worker takes. Publishing
+    /// only once the readers are here closes it.
+    ///
+    /// It promises nothing about afterwards. A consumer counted here can
+    /// unregister, or its process can die, the moment this returns. It
+    /// is a starting gun, not a register of attendance.
+    ///
+    /// The interpreter is detached while waiting, so other threads run.
+    #[pyo3(signature = (want, timeout = 5.0))]
+    fn wait_for_consumers(&self, py: Python<'_>, want: usize, timeout: f64) -> PyResult<usize> {
+        if timeout.is_nan() || timeout <= 0.0 {
+            return Err(PyValueError::new_err("the timeout must be positive"));
+        }
+        let ring: &SharedBroadcastRing = &self.inner;
+        let wait = std::time::Duration::from_secs_f64(timeout);
+        Ok(py.detach(|| ring.wait_for_consumers(want, wait)))
+    }
+
+    /// Publish one item, which every registered consumer will see.
+    ///
+    /// `False` means the slowest registered consumer is a full lap
+    /// behind, so the slot about to be overwritten still holds something
+    /// it has not read. That is an answer rather than a failure. A ring
+    /// nobody has registered against never fills, because a broadcast to
+    /// nobody has nothing to hold back for.
     fn push(&self, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_push(item) {
             Ok(()) => Ok(true),
@@ -664,6 +746,9 @@ impl BroadcastRing {
         }
     }
 
+    /// Publish a run of items, stopping at the first that will not fit,
+    /// and answer how many landed. A count below what was handed in means
+    /// the rest were not published and are still the caller's to keep.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -704,10 +789,15 @@ impl BroadcastRing {
         Ok(taken)
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A consumer position taken inside the block is still
+    /// registered after it: give it up with `unregister_consumer` rather
+    /// than relying on the block to do it.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -731,6 +821,9 @@ struct Cell {
 
 #[pymethods]
 impl Cell {
+    /// Obtain the cell at `path` holding `value_size` bytes, creating it
+    /// when the file does not exist and attaching to the value already
+    /// there when it does.
     #[new]
     fn new(path: &str, value_size: usize) -> PyResult<Self> {
         RawCell::create(path, value_size)
@@ -738,6 +831,9 @@ impl Cell {
             .map_err(|e| os_err("opening the cell", e))
     }
 
+    /// Attach to a cell that already exists, raising `OSError` when it
+    /// does not. `value_size` must be the one it was created with,
+    /// because it is part of the layout rather than a hint.
     #[staticmethod]
     fn open(path: &str, value_size: usize) -> PyResult<Self> {
         RawCell::open(path, value_size)
@@ -757,6 +853,11 @@ impl Cell {
         self.inner.version()
     }
 
+    /// Read the value, always `value_size` bytes.
+    ///
+    /// Read `version` either side when it matters whether what you got
+    /// was written since you last looked: the same version twice means
+    /// nothing was written between.
     fn get(&self) -> PyResult<Vec<u8>> {
         let mut out = vec![0u8; self.inner.value_size()];
         self.inner
@@ -765,20 +866,32 @@ impl Cell {
         Ok(out)
     }
 
+    /// Replace the value and step `version`, so a reader watching that
+    /// number sees this write happened.
     fn set(&self, value: &[u8]) -> PyResult<()> {
         self.inner
             .set(value)
             .map_err(|e| os_err("writing the cell", e))
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it.
+    ///
+    /// Another process mapping the same file sees a write without this.
+    /// Flushing is about what survives the machine stopping, not about
+    /// what other processes can see.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing the cell", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Nothing is flushed on the way out: call `flush` where
+    /// durability matters.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -813,6 +926,15 @@ struct Vec_ {
 
 #[pymethods]
 impl Vec_ {
+    /// Obtain the vec at `path` holding up to `capacity` elements of
+    /// `element_size` bytes, creating it when the file does not exist and
+    /// attaching to what is already there when it does.
+    ///
+    /// The capacity is fixed at creation. This grows up to it and never
+    /// past it, which is what lets every process work out where an
+    /// element lives without asking anyone. `alignment` and `tag` are
+    /// part of the layout written into the file, so attaching to an
+    /// existing vec means matching them rather than requesting them.
     #[new]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn new(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -823,6 +945,9 @@ impl Vec_ {
         Ok(Self { inner })
     }
 
+    /// Attach to a vec that already exists, raising `OSError` when it
+    /// does not. Every layout argument must be the one it was created
+    /// with: they describe the file rather than asking anything of it.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn open(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -848,6 +973,8 @@ impl Vec_ {
         self.inner.is_writable()
     }
 
+    /// How many elements are live, which is not the capacity. A vec that
+    /// has never been pushed to is empty, and `bool(vec)` is `False`.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -885,6 +1012,12 @@ impl Vec_ {
         }
     }
 
+    /// Read element `index`, or `None` when it is past what is live.
+    ///
+    /// The read goes through the slot's seqlock, so a writer racing it
+    /// loses to a retry rather than handing back a torn element. Use
+    /// `read_range` for a run: it crosses the boundary once instead of
+    /// once per element.
     fn get(&self, index: usize) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; self.inner.layout().slot_size];
         match self.inner.get(index, &mut out) {
@@ -894,24 +1027,42 @@ impl Vec_ {
         }
     }
 
+    /// Overwrite element `index`, stepping its seqlock either side so a
+    /// reader racing this retries instead of seeing half of each value.
+    ///
+    /// The index must be below the length, not merely below the capacity:
+    /// this writes over an element that is already there and cannot
+    /// append. An index past what is live is an `OSError`; `push` is what
+    /// adds.
     fn set(&self, index: usize, value: &[u8]) -> PyResult<()> {
         self.inner
             .set(index, value)
             .map_err(|e| os_err("writing", e))
     }
 
+    /// Drop every element, so the length goes to zero. The capacity and
+    /// the file are left as they are, and the space is reused by the next
+    /// `push`.
     fn clear(&self) -> PyResult<()> {
         self.inner.clear().map_err(|e| os_err("clearing", e))
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees a
+    /// write without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The elements stay where they are for whoever attaches
+    /// next; `clear` is what empties a vec, not the end of a block.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -979,6 +1130,9 @@ struct NotifierSet {
 
 #[pymethods]
 impl NotifierSet {
+    /// Obtain the notifier set at `path`, creating it when the file does
+    /// not exist. Attaching does not by itself give this process a
+    /// notifier: call `attach` for that.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         SubethaNotifierSet::file(path)
@@ -992,7 +1146,7 @@ impl NotifierSet {
         self.inner.attached()
     }
 
-    /// Wake every attached notifier, and say how many were signalled.
+    /// Wake every attached notifier, and say how many were signaled.
     fn signal(&self) -> usize {
         self.inner.signal()
     }
@@ -1015,12 +1169,16 @@ impl NotifierSet {
 ///
 /// # Reaching an event loop
 ///
-/// `native` hands out the underlying object, and what it is differs by
-/// platform: a file descriptor on Unix, which `asyncio`'s
-/// `loop.add_reader` accepts, and an event `HANDLE` on Windows, which
-/// the proactor loop does not. There is no uniform asyncio integration
-/// here yet, and pretending otherwise would hand a caller a number their
-/// loop silently ignores. `wait` with a timeout works everywhere.
+/// `subetha.aio.wait` is the awaitable form and works on every platform.
+/// What it costs differs, because `native` hands out a different object
+/// on each: a file descriptor on Unix, which `asyncio`'s
+/// `loop.add_reader` takes, so waiting occupies nothing; and an event
+/// `HANDLE` on Windows, which nothing in asyncio's public surface can
+/// watch, so the wait runs on a worker thread there.
+///
+/// Reach for `native` only to hand the notifier to something else that
+/// knows what to do with a descriptor. `wait` blocks, and
+/// `subetha.aio.wait` does not.
 #[pyclass(module = "subetha")]
 struct Notifier {
     inner: Box<SubethaNotifier>,
@@ -1110,6 +1268,13 @@ impl SharedArc {
             .map_err(|e| os_err("opening the shared value", e))
     }
 
+    /// Attach to a shared value that already exists, counting this
+    /// process as another holder.
+    ///
+    /// `value_bytes` must be the size it was created with. `keep_on_last`
+    /// is this holder's own answer to what should become of the file once
+    /// the last holder lets go. A `max_holders` below one is a
+    /// `ValueError`, and a file that is not there is an `OSError`.
     #[staticmethod]
     #[pyo3(signature = (path, value_bytes, max_holders = 16, keep_on_last = false))]
     fn open(path: &str, value_bytes: usize, max_holders: usize, keep_on_last: bool) -> PyResult<Self> {
@@ -1147,16 +1312,28 @@ impl SharedArc {
         Ok(out)
     }
 
+    /// Overwrite as many bytes as `value` carries, starting at `offset`.
+    /// A range running past the end of the value is an `OSError` rather
+    /// than a short write. The partner of `read_at`, for a caller that
+    /// wants one field of a large record rather than all of it.
     fn write_at(&self, offset: usize, value: &[u8]) -> PyResult<()> {
         self.inner
             .write_at(offset, value)
             .map_err(|e| os_err("writing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without letting go of the value, and let an
+    /// exception through.
+    ///
+    /// This is worth knowing here more than elsewhere: the holder count
+    /// falls when the last reference to this object is collected, not at
+    /// the end of the block, so a `with` statement does not decide when
+    /// the file goes. Drop the name to let go of it.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -1190,6 +1367,9 @@ struct LeaderElection {
 
 #[pymethods]
 impl LeaderElection {
+    /// Obtain the election at `path`, creating it when the file does not
+    /// exist. Creating one claims nothing: `try_claim` is what takes the
+    /// role.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         SharedLeaderElection::create(path)
@@ -1197,6 +1377,8 @@ impl LeaderElection {
             .map_err(|e| os_err("opening the election", e))
     }
 
+    /// Attach to an election that already exists, raising `OSError` when
+    /// it does not.
     #[staticmethod]
     fn open(path: &str) -> PyResult<Self> {
         SharedLeaderElection::open(path)
@@ -1233,6 +1415,9 @@ impl LeaderElection {
         self.inner.current_leader()
     }
 
+    /// Whether `pid` holds the role right now, defaulting to this
+    /// process. This only asks. `beat` is what keeps a claim alive, and
+    /// asking never renews one.
     #[pyo3(signature = (pid = None))]
     fn am_i_leader(&self, pid: Option<u32>) -> bool {
         self.inner.am_i_leader(pid.unwrap_or_else(std::process::id))
@@ -1250,6 +1435,11 @@ impl LeaderElection {
         self.inner.global_epoch()
     }
 
+    /// Step the global epoch and answer the new value, not the old one.
+    ///
+    /// The grace period a stalled leader is given is counted in epochs,
+    /// so something has to tick them or a dead leader's claim never ages
+    /// out. The leader usually does it once per scan.
     fn tick_epoch(&self) -> u64 {
         self.inner.tick_epoch()
     }
@@ -1274,6 +1464,9 @@ struct HolderTable {
 
 #[pymethods]
 impl HolderTable {
+    /// Obtain the holder table at `path` with `capacity` slots, creating
+    /// it when the file does not exist. A capacity of zero is a
+    /// `ValueError`, because a table with no slots can serve nobody.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         if capacity == 0 {
@@ -1284,6 +1477,8 @@ impl HolderTable {
             .map_err(|e| os_err("opening the holder table", e))
     }
 
+    /// Attach to a holder table that already exists, raising `OSError`
+    /// when it does not. `capacity` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         SharedHolderTable::open(path, capacity)
@@ -1323,6 +1518,9 @@ impl HolderTable {
         self.inner.payload(slot)
     }
 
+    /// Give a slot back, so the next `claim` or `reserve` can hand it to
+    /// somebody else. A process that exits without releasing leaves its
+    /// slot held, and nothing here reclaims it.
     fn release(&self, slot: usize) {
         self.inner.release(slot);
     }
@@ -1348,6 +1546,12 @@ struct Heartbeat {
 
 #[pymethods]
 impl Heartbeat {
+    /// Obtain the heartbeat table at `path` with `capacity` slots,
+    /// creating it when the file does not exist. A capacity of zero is a
+    /// `ValueError`.
+    ///
+    /// Creating the table registers nothing. Each participant takes its
+    /// own slot with `register` and keeps it alive with `beat`.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         if capacity == 0 {
@@ -1358,6 +1562,8 @@ impl Heartbeat {
             .map_err(|e| os_err("opening the heartbeat table", e))
     }
 
+    /// Attach to a heartbeat table that already exists, raising `OSError`
+    /// when it does not. `capacity` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         HeartbeatTable::open(path, capacity)
@@ -1380,6 +1586,13 @@ impl Heartbeat {
             .map_err(|e| os_err("registering", e))
     }
 
+    /// Give a slot back, so another process can register into it.
+    ///
+    /// A process that exits without this leaves its slot registered, and
+    /// that is the mechanism rather than a leak: the slot stops beating,
+    /// and once its last beat is further back than the grace period
+    /// everyone else reads it as dead. Unregistering is the tidy exit
+    /// that skips the wait.
     fn unregister(&self, slot: usize) {
         self.inner.unregister(slot);
     }
@@ -1395,6 +1608,11 @@ impl Heartbeat {
         self.inner.global_epoch()
     }
 
+    /// Step the global epoch and answer the new value, not the old one.
+    ///
+    /// Liveness here is measured in epochs rather than seconds, so a
+    /// watchdog ticks this once per scan and a slot whose last beat is
+    /// too many epochs back reads as dead. Nothing ticks on its own.
     fn tick_global_epoch(&self) -> u64 {
         self.inner.tick_global_epoch()
     }
@@ -1438,6 +1656,13 @@ struct EpochBarrier {
 
 #[pymethods]
 impl EpochBarrier {
+    /// Obtain the barrier at `path`, creating it when the file does not
+    /// exist.
+    ///
+    /// It counts live peers through `heartbeat`, and `grace_epochs` is
+    /// how many epochs a participant may go without beating before it
+    /// stops being counted. That is what keeps a process dying mid-wait
+    /// from holding the barrier shut for the others.
     #[new]
     #[pyo3(signature = (path, heartbeat, grace_epochs = 3))]
     fn new(path: &str, heartbeat: PyRef<'_, Heartbeat>, grace_epochs: u64) -> PyResult<Self> {
@@ -1446,6 +1671,9 @@ impl EpochBarrier {
             .map_err(|e| os_err("opening the barrier", e))
     }
 
+    /// Attach to a barrier that already exists, raising `OSError` when it
+    /// does not. The heartbeat table and the grace period are this
+    /// participant's own, given here the same way they are at creation.
     #[staticmethod]
     #[pyo3(signature = (path, heartbeat, grace_epochs = 3))]
     fn open(path: &str, heartbeat: PyRef<'_, Heartbeat>, grace_epochs: u64) -> PyResult<Self> {
@@ -1533,6 +1761,8 @@ struct Condvar {
 
 #[pymethods]
 impl Condvar {
+    /// Obtain the condition at `path`, creating it when the file does not
+    /// exist and attaching to the live one when it does.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         SharedCondvar::create(path)
@@ -1540,6 +1770,8 @@ impl Condvar {
             .map_err(|e| os_err("opening the condition", e))
     }
 
+    /// Attach to a condition that already exists, raising `OSError` when
+    /// it does not.
     #[staticmethod]
     fn open(path: &str) -> PyResult<Self> {
         SharedCondvar::open(path)
@@ -1652,6 +1884,13 @@ struct LazyValue {
 
 #[pymethods]
 impl LazyValue {
+    /// Obtain the lazy value at `path` holding `value_bytes` bytes,
+    /// creating it when the file does not exist. Zero bytes is a
+    /// `ValueError`.
+    ///
+    /// Creating it publishes nothing. The value arrives when some process
+    /// wins `claim` and calls `publish`; everyone else reads `get` or
+    /// blocks in `wait`.
     #[new]
     fn new(path: &str, value_bytes: usize) -> PyResult<Self> {
         if value_bytes == 0 {
@@ -1662,6 +1901,10 @@ impl LazyValue {
             .map_err(|e| os_err("opening the lazy value", e))
     }
 
+    /// Attach to a lazy value that already exists, raising `OSError` when
+    /// it does not. `value_bytes` must be the size it was created with.
+    /// Attaching says nothing about whether anything has been published
+    /// yet: `ready` answers that.
     #[staticmethod]
     fn open(path: &str, value_bytes: usize) -> PyResult<Self> {
         SharedOnceCellDyn::open(path, value_bytes)
@@ -1750,6 +1993,13 @@ struct FenceClock {
 
 #[pymethods]
 impl FenceClock {
+    /// Obtain the clock at `path` with room for `capacity` participants,
+    /// creating it when the file does not exist. A capacity of zero is a
+    /// `ValueError`.
+    ///
+    /// One slot per participant is what makes `global_fence` a scan over
+    /// the slots rather than a lock every process contends on. Creating
+    /// the clock takes no slot: `register` does that.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         if capacity == 0 {
@@ -1760,6 +2010,8 @@ impl FenceClock {
             .map_err(|e| os_err("opening the clock", e))
     }
 
+    /// Attach to a clock that already exists, raising `OSError` when it
+    /// does not. `capacity` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         SharedFenceClock::open(path, capacity)
@@ -1785,6 +2037,10 @@ impl FenceClock {
             .map_err(|e| os_err("registering", e))
     }
 
+    /// Give a participant slot back, so another process can take it. The
+    /// readings it contributed stay in the shared clock: giving up the
+    /// slot stops this participant advancing, it does not rewind what it
+    /// already published.
     fn unregister(&self, slot: usize) {
         self.inner.unregister(slot);
     }
@@ -1833,6 +2089,14 @@ struct BloomFilter {
 
 #[pymethods]
 impl BloomFilter {
+    /// Obtain the filter at `path` with `n_bits` bits and `n_hashes` hash
+    /// functions, creating it when the file does not exist. Either being
+    /// zero is a `ValueError`.
+    ///
+    /// The pair decides both the false-positive rate and which bits an
+    /// item touches, so it is part of the layout rather than a tuning
+    /// knob. `suggest_config` works it out from an item count and the
+    /// rate you are willing to accept.
     #[new]
     fn new(path: &str, n_bits: usize, n_hashes: u32) -> PyResult<Self> {
         if n_bits == 0 || n_hashes == 0 {
@@ -1845,6 +2109,9 @@ impl BloomFilter {
             .map_err(|e| os_err("opening the filter", e))
     }
 
+    /// Attach to a filter that already exists, raising `OSError` when it
+    /// does not. `n_bits` and `n_hashes` must be the ones it was created
+    /// with, because together they decide which bits an item touches.
     #[staticmethod]
     fn open(path: &str, n_bits: usize, n_hashes: u32) -> PyResult<Self> {
         SharedBloomFilter::open(path, n_bits, n_hashes)
@@ -1885,6 +2152,11 @@ impl BloomFilter {
         self.inner.estimated_false_positive_rate()
     }
 
+    /// Add an item.
+    ///
+    /// Nothing can be taken out again. A Bloom filter only ever gains
+    /// bits, so `false_positive_rate` climbs with every insert and
+    /// `clear` is the only way back.
     fn insert(&self, item: &[u8]) -> PyResult<()> {
         self.inner
             .insert(item)
@@ -1909,6 +2181,9 @@ impl BloomFilter {
             .map_err(|e| os_err("looking up", e))
     }
 
+    /// `False` means definitely absent, `True` means probably present at
+    /// about `false_positive_rate`. The same answer `in` gives, named so
+    /// a caller can pass it around rather than write the operator.
     fn contains(&self, item: &[u8]) -> PyResult<bool> {
         self.inner
             .contains(item)
@@ -1928,6 +2203,9 @@ impl BloomFilter {
         Ok(answers)
     }
 
+    /// Clear every bit, so the filter is empty again and
+    /// `false_positive_rate` goes back to nothing. The size and the hash
+    /// count are unchanged, and every process mapping the file sees it.
     fn clear(&self) {
         self.inner.clear();
     }
@@ -2025,18 +2303,29 @@ impl CapacityRing {
         self.inner.pin_generation()
     }
 
+    /// Take a producer position, which every `send` names. A ring built
+    /// with one producer has exactly one to take, and asking past
+    /// `max_producers` raises rather than answering.
     fn register_producer(&self) -> PyResult<usize> {
         self.inner
             .register_producer()
             .map_err(|e| os_err("registering a producer", e))
     }
 
+    /// Take a consumer position, which every `recv` names.
+    ///
+    /// Register before anything is sent. A consumer starts where the ring
+    /// is when it registers, so one registered after a burst has already
+    /// gone by sees none of it, and nothing reports that.
     fn register_consumer(&self) -> PyResult<usize> {
         self.inner
             .register_consumer()
             .map_err(|e| os_err("registering a consumer", e))
     }
 
+    /// Send one item from `producer`. `False` means the ring is full,
+    /// which is an answer rather than a failure; an item too long for a
+    /// slot raises.
     fn send(&self, producer: usize, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_send(producer, item) {
             Ok(()) => Ok(true),
@@ -2045,6 +2334,10 @@ impl CapacityRing {
         }
     }
 
+    /// Send a run of items from one producer, stopping at the first that
+    /// will not fit, and answer how many landed. A count short of what
+    /// was handed in means the rest were not sent and are still the
+    /// caller's to hold.
     fn send_many(&self, producer: usize, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut sent = 0;
         for item in &items {
@@ -2057,6 +2350,12 @@ impl CapacityRing {
         Ok(sent)
     }
 
+    /// Take the next item for `consumer`, or `None` when there is nothing
+    /// to take.
+    ///
+    /// A morph does not interrupt this. Backings a resize has superseded
+    /// are drained oldest first, so an item sent before the resize still
+    /// arrives, and `stale_pops` counts how many came that way.
     fn recv(&self, consumer: usize) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
         match self.inner.try_recv(consumer, &mut out) {
@@ -2069,6 +2368,9 @@ impl CapacityRing {
         }
     }
 
+    /// Take up to `max_items` for `consumer` in one crossing, stopping
+    /// early when the ring runs dry. An empty list means there was
+    /// nothing, which is the same answer `recv` gives as `None`.
     fn recv_many(&self, consumer: usize, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
         let mut taken = Vec::new();
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
@@ -2163,10 +2465,16 @@ impl CapacityRing {
         self.inner.inversions()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A prewarmed backing is still held afterwards, and a
+    /// producer or consumer position taken inside is still registered:
+    /// `clear_warm` gives back the first, and nothing gives back the
+    /// second.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -2298,12 +2606,22 @@ impl LocaleRing {
             .map_err(|e| os_err("registering a producer", e))
     }
 
+    /// Take a consumer position, which every `recv` names. Registered on
+    /// all three backings at once, like a producer, so a migration does
+    /// not lose it.
+    ///
+    /// Register before anything is sent. A consumer starts where the ring
+    /// is when it registers, so one registered after a burst has already
+    /// gone by sees none of it, and nothing reports that.
     fn register_consumer(&self) -> PyResult<usize> {
         self.inner
             .register_consumer()
             .map_err(|e| os_err("registering a consumer", e))
     }
 
+    /// Send one item from `producer` into whichever locale is live.
+    /// `False` means the ring is full, which is an answer rather than a
+    /// failure; an item too long for a slot raises.
     fn send(&self, producer: usize, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_send(producer, item) {
             Ok(()) => Ok(true),
@@ -2312,6 +2630,10 @@ impl LocaleRing {
         }
     }
 
+    /// Send a run of items from one producer, stopping at the first that
+    /// will not fit, and answer how many landed. A count short of what
+    /// was handed in means the rest were not sent and are still the
+    /// caller's to hold.
     fn send_many(&self, producer: usize, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut sent = 0;
         for item in &items {
@@ -2324,6 +2646,12 @@ impl LocaleRing {
         Ok(sent)
     }
 
+    /// Take the next item for `consumer`, or `None` when there is nothing
+    /// to take.
+    ///
+    /// A migration does not interrupt this and does not need the reader
+    /// to reconnect: `migrate_to` carries what is already in the ring to
+    /// the new locale, and this keeps reading.
     fn recv(&self, consumer: usize) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
         match self.inner.try_recv(consumer, &mut out) {
@@ -2336,6 +2664,9 @@ impl LocaleRing {
         }
     }
 
+    /// Take up to `max_items` for `consumer` in one crossing, stopping
+    /// early when the ring runs dry. An empty list means there was
+    /// nothing, which is the same answer `recv` gives as `None`.
     fn recv_many(&self, consumer: usize, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
         let mut taken = Vec::new();
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
@@ -2389,10 +2720,14 @@ impl LocaleRing {
         self.inner.inversions()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The ring stays in whichever locale it was migrated to,
+    /// and a position taken inside the block is still registered.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -2444,6 +2779,13 @@ struct Epochs {
 
 #[pymethods]
 impl Epochs {
+    /// Obtain the epoch table at `path` with room for `capacity` open
+    /// tickets, creating it when the file does not exist. A capacity of
+    /// zero is a `ValueError`.
+    ///
+    /// The capacity is how many tickets may be outstanding at once, so
+    /// `claim_ticket` raises rather than queueing once they are all
+    /// taken. Size it by how many compound writes can overlap.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         if capacity == 0 {
@@ -2454,6 +2796,8 @@ impl Epochs {
             .map_err(|e| os_err("opening the epochs", e))
     }
 
+    /// Attach to an epoch table that already exists, raising `OSError`
+    /// when it does not. `capacity` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         SharedEpochs::open(path, capacity)
@@ -2544,6 +2888,14 @@ struct LruCache {
 
 #[pymethods]
 impl LruCache {
+    /// Obtain the cache at `path` holding `capacity` entries of
+    /// `key_size` and `value_size` bytes, creating it when the file does
+    /// not exist. A capacity of zero is a `ValueError`.
+    ///
+    /// Both widths are fixed: they are part of the layout every process
+    /// reads out of the file, not a maximum this one is willing to store.
+    /// The cache never grows past the capacity, so a `put` into a full
+    /// one evicts the least recently used entry.
     #[new]
     fn new(path: &str, capacity: u32, key_size: usize, value_size: usize) -> PyResult<Self> {
         if capacity == 0 {
@@ -2554,6 +2906,9 @@ impl LruCache {
             .map_err(|e| os_err("opening the cache", e))
     }
 
+    /// Attach to a cache that already exists, raising `OSError` when it
+    /// does not. The capacity and both widths must be the ones it was
+    /// created with.
     #[staticmethod]
     fn open(path: &str, capacity: u32, key_size: usize, value_size: usize) -> PyResult<Self> {
         RawLruCache::open(path, capacity, key_size, value_size)
@@ -2576,6 +2931,8 @@ impl LruCache {
         self.inner.value_size()
     }
 
+    /// How many entries the cache holds, which is at most the capacity
+    /// because a full cache evicts rather than growing.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -2619,6 +2976,8 @@ impl LruCache {
         self.inner.touch(key).map_err(|e| os_err("touching", e))
     }
 
+    /// Whether the key is present, without counting as use. Asking does
+    /// not save an entry from eviction; `touch` is what does that.
     fn __contains__(&self, key: &[u8]) -> PyResult<bool> {
         self.inner
             .contains_key(key)
@@ -2634,6 +2993,13 @@ impl LruCache {
             .map_err(|e| os_err("inserting", e))
     }
 
+    /// Put a run of pairs in, and answer how many.
+    ///
+    /// Unlike the batch forms on the rings, this does not stop early: a
+    /// cache always has room because a full one evicts instead of
+    /// refusing, so the answer is always the length of what was handed
+    /// in. Put more pairs than the capacity and the earlier ones in the
+    /// same call are the ones evicted.
     fn put_many(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<usize> {
         for (key, value) in &pairs {
             self.inner
@@ -2643,6 +3009,8 @@ impl LruCache {
         Ok(pairs.len())
     }
 
+    /// Take a key out and answer the value it held, or `None` when it was
+    /// not there. The freed room goes to the next `put`.
     fn remove(&self, key: &[u8]) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; self.inner.value_size()];
         match self.inner.remove(key, &mut out) {
@@ -2652,10 +3020,14 @@ impl LruCache {
         }
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The entries stay in the file for whoever attaches next,
+    /// which is the point of a cache that outlives the process.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -2694,6 +3066,9 @@ impl HyperLogLog {
             .map_err(|e| os_err("opening the counter", e))
     }
 
+    /// Attach to a counter that already exists, raising `OSError` when it
+    /// does not. `precision` must be the one it was created with, because
+    /// it sets how many registers the file holds.
     #[staticmethod]
     #[pyo3(signature = (path, precision = 14))]
     fn open(path: &str, precision: u8) -> PyResult<Self> {
@@ -2712,6 +3087,12 @@ impl HyperLogLog {
         self.inner.n_registers()
     }
 
+    /// Record having seen `item`.
+    ///
+    /// Nothing is kept: the item is hashed into a register and thrown
+    /// away, which is why the memory does not grow with what it has seen
+    /// and why it can only ever estimate. Inserting the same item twice
+    /// changes nothing.
     fn insert(&self, item: &[u8]) {
         self.inner.insert(item);
     }
@@ -2731,10 +3112,16 @@ impl HyperLogLog {
         self.inner.estimate()
     }
 
+    /// Zero every register, so the counter is empty again and `estimate`
+    /// answers nothing seen. Every process mapping the file sees it.
     fn reset(&self) {
         self.inner.reset();
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// registers without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
@@ -2757,6 +3144,14 @@ struct CountMinSketch {
 
 #[pymethods]
 impl CountMinSketch {
+    /// Obtain the sketch at `path` with `depth` rows of `width` cells,
+    /// creating it when the file does not exist. Either being zero is a
+    /// `ValueError`.
+    ///
+    /// The pair is the layout: it sets which cells an item hashes to, so
+    /// two processes disagreeing about it read different sketches out of
+    /// one file. `suggest_config` works the pair out from the error and
+    /// the confidence you want instead.
     #[new]
     fn new(path: &str, depth: u32, width: u32) -> PyResult<Self> {
         if depth == 0 || width == 0 {
@@ -2769,6 +3164,9 @@ impl CountMinSketch {
             .map_err(|e| os_err("opening the sketch", e))
     }
 
+    /// Attach to a sketch that already exists, raising `OSError` when it
+    /// does not. `depth` and `width` must be the ones it was created
+    /// with, because together they decide which cells an item touches.
     #[staticmethod]
     fn open(path: &str, depth: u32, width: u32) -> PyResult<Self> {
         SharedCountMinSketch::open(path, depth, width)
@@ -2804,6 +3202,11 @@ impl CountMinSketch {
         self.inner.total_inserts()
     }
 
+    /// Record one occurrence of `item`.
+    ///
+    /// The item itself is not kept, only counts in the cells it hashes
+    /// to, which is why the memory is fixed and the answer can only ever
+    /// be an over-estimate.
     fn insert(&self, item: &[u8]) {
         self.inner.insert(item);
     }
@@ -2814,6 +3217,9 @@ impl CountMinSketch {
         self.inner.insert_n(item, count);
     }
 
+    /// Record one occurrence of each item in one crossing, and answer how
+    /// many were handed in. Nothing here can refuse, so the count is
+    /// always the length of the sequence.
     fn insert_many(&self, items: Vec<Vec<u8>>) -> usize {
         for item in &items {
             self.inner.insert(item);
@@ -2827,10 +3233,15 @@ impl CountMinSketch {
         self.inner.estimate_count(item)
     }
 
+    /// One estimate per item, in the order they were given, from a single
+    /// crossing rather than one per item. Each answer has the same
+    /// never-under, sometimes-over property as `estimate_count`.
     fn estimate_many(&self, items: Vec<Vec<u8>>) -> Vec<u64> {
         items.iter().map(|i| self.inner.estimate_count(i)).collect()
     }
 
+    /// Zero every cell and the insert total, so the sketch is empty
+    /// again. Every process mapping the file sees it.
     fn reset(&self) {
         self.inner.reset();
     }
@@ -2865,6 +3276,8 @@ impl BitVec {
             .map_err(|e| os_err("opening the bit vector", e))
     }
 
+    /// Attach to a bit vector that already exists, raising `OSError` when
+    /// it does not. `capacity_bits` must be the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity_bits: usize) -> PyResult<Self> {
         SharedBitVec::open(path, capacity_bits)
@@ -2877,6 +3290,9 @@ impl BitVec {
         self.inner.capacity_bits()
     }
 
+    /// How many bits the vector addresses, which is its capacity and not
+    /// a count of the bits that are set. It never changes, so `len` on a
+    /// bit vector is a constant rather than a measurement.
     fn __len__(&self) -> usize {
         self.inner.capacity_bits()
     }
@@ -2904,10 +3320,14 @@ impl BitVec {
             .map_err(|e| os_err("toggling a bit", e))
     }
 
+    /// Whether bit `index` is set, without changing it. An index past the
+    /// capacity is an `OSError`.
     fn get(&self, index: usize) -> PyResult<bool> {
         self.inner.get(index).map_err(|e| os_err("reading a bit", e))
     }
 
+    /// The same answer `get` gives, so `bits[3]` reads bit three. There
+    /// is no slicing and no negative indexing: an index is a bit number.
     fn __getitem__(&self, index: usize) -> PyResult<bool> {
         self.get(index)
     }
@@ -2949,6 +3369,10 @@ impl Histogram {
             .map_err(|e| os_err("opening the histogram", e))
     }
 
+    /// Attach to a histogram that already exists, raising `OSError` when
+    /// it does not. `boundaries` must be the ones it was created with:
+    /// they are the bucket edges written into the file, so a different
+    /// list reads the counts against the wrong edges.
     #[staticmethod]
     fn open(path: &str, boundaries: Vec<u64>) -> PyResult<Self> {
         SharedHistogram::open(path, &boundaries)
@@ -2991,6 +3415,9 @@ impl Histogram {
         values.len()
     }
 
+    /// How many values fell in one bucket, by its index. A bucket past
+    /// `n_buckets` is an `OSError`. Use `counts` when you want them all:
+    /// it costs one crossing rather than one per bucket.
     fn count(&self, bucket: usize) -> PyResult<u64> {
         self.inner
             .count(bucket)
@@ -3025,6 +3452,14 @@ struct RateLimiter {
 
 #[pymethods]
 impl RateLimiter {
+    /// Obtain the limiter at `path` holding at most `capacity` tokens and
+    /// refilling `refill_per_second` of them each second, creating it
+    /// when the file does not exist. Either being zero is a `ValueError`.
+    ///
+    /// There is one bucket in one file, so the rate holds across every
+    /// process that opens it rather than once per process. The capacity
+    /// is the burst a caller can take at once; the refill is the rate it
+    /// settles to.
     #[new]
     fn new(path: &str, capacity: u32, refill_per_second: u32) -> PyResult<Self> {
         if capacity == 0 || refill_per_second == 0 {
@@ -3037,6 +3472,9 @@ impl RateLimiter {
             .map_err(|e| os_err("opening the limiter", e))
     }
 
+    /// Attach to a limiter that already exists, raising `OSError` when it
+    /// does not. The capacity and refill rate must be the ones it was
+    /// created with.
     #[staticmethod]
     fn open(path: &str, capacity: u32, refill_per_second: u32) -> PyResult<Self> {
         SharedRateLimiter::open(path, capacity, refill_per_second)
@@ -3071,10 +3509,20 @@ impl RateLimiter {
         }
     }
 
+    /// Refill the bucket to full, which is the opposite of what the name
+    /// suggests: this hands out capacity rather than taking it away.
+    ///
+    /// It is for tests and for an operator clearing a jam, not for the
+    /// request path. Nothing coordinates it with `try_acquire`, so a
+    /// reset landing beside concurrent takes can let through more than
+    /// the capacity in that instant.
     fn reset(&self) {
         self.inner.reset();
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// token count without this.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
@@ -3217,6 +3665,10 @@ impl Ring {
         self.inner.approx_len()
     }
 
+    /// Whether the ring looked empty when asked. Read without stopping
+    /// the producers, so it is a sighting rather than a promise: a send
+    /// can land the instant after. Treat `None` from `recv` as the real
+    /// answer, and use this for reporting.
     fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -3348,10 +3800,15 @@ impl Ring {
         })
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Producer and consumer positions taken inside the block
+    /// are still registered after it, and items still in the ring stay
+    /// there for whoever attaches next.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -3588,6 +4045,9 @@ impl ReorderWindow {
         self.inner.corrections()
     }
 
+    /// How many items are held in the window waiting for a gap to fill,
+    /// which is not how many have passed through. An empty window is
+    /// falsy, so `if not window:` works.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -3624,6 +4084,14 @@ struct Stack {
 
 #[pymethods]
 impl Stack {
+    /// Obtain the stack at `path` with room for `capacity` items of
+    /// `element_size` bytes, creating it when the file does not exist.
+    /// A capacity below one is a `ValueError`, and so is a layout the
+    /// alignment cannot satisfy.
+    ///
+    /// Any number of processes may push and pop at once. The order is
+    /// last in, first out, so this is the wrong shape when the oldest
+    /// item should be served first.
     #[new]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn new(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -3637,6 +4105,10 @@ impl Stack {
             .map_err(|e| os_err("opening the stack", e))
     }
 
+    /// Attach to a stack that already exists, raising `OSError` when it
+    /// does not. Every layout argument describes the file rather than
+    /// asking anything of it, so all of them must match what it was
+    /// created with.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn open(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -3667,6 +4139,10 @@ impl Stack {
         self.inner.approx_len()
     }
 
+    /// Whether the stack looked empty when asked. Read without stopping
+    /// anyone else, so it is a sighting rather than a promise: a push can
+    /// land the instant after. Treat `None` from `pop` as the real
+    /// answer, and use this for reporting.
     fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -3680,6 +4156,9 @@ impl Stack {
         }
     }
 
+    /// Push a run of items in one crossing, stopping at the first that
+    /// will not fit, and answer how many landed. They go on in the order
+    /// given, so the last one handed in is the first one `pop` returns.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -3701,6 +4180,9 @@ impl Stack {
         })
     }
 
+    /// Take up to `max_items` in one crossing, stopping early when the
+    /// stack runs dry, newest first. An empty list means there was
+    /// nothing, and nothing here raises.
     fn pop_many(&self, max_items: usize) -> Vec<Vec<u8>> {
         let mut taken = Vec::new();
         for _ in 0..max_items {
@@ -3722,14 +4204,22 @@ impl Stack {
         })
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// writes without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Nothing is popped on the way out: whatever is on the
+    /// stack stays there for whoever attaches next.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -3808,6 +4298,9 @@ impl Deque {
         }
     }
 
+    /// Push a run of items in one crossing, stopping at the first that
+    /// will not fit, and answer how many landed. They go on the owner's
+    /// end, the end `pop` takes from and `steal` does not.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -3840,6 +4333,10 @@ impl Deque {
         })
     }
 
+    /// Steal up to `max_items` from the far end in one crossing, stopping
+    /// early when there is nothing left to take. An empty list means the
+    /// deque was empty or the owner won every race for the last items,
+    /// which a thief cannot tell apart and does not need to.
     fn steal_many(&self, max_items: usize) -> Vec<Vec<u8>> {
         let mut taken = Vec::new();
         for _ in 0..max_items {
@@ -3851,14 +4348,23 @@ impl Deque {
         taken
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// writes without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Nothing is drained on the way out: whatever is in the
+    /// deque stays there for whoever attaches next, including for a
+    /// thief still stealing from the other end.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -3895,6 +4401,12 @@ struct PubSub {
 
 #[pymethods]
 impl PubSub {
+    /// Obtain the pubsub ring at `path` holding `capacity` items,
+    /// creating it when the file does not exist.
+    ///
+    /// Creating it subscribes nobody. A subscriber starts from where the
+    /// ring is when it subscribes, so anything published before that is
+    /// not waiting for it.
     #[new]
     fn new(path: &str, capacity: usize) -> PyResult<Self> {
         PubSubRing::create(path, capacity)
@@ -3902,6 +4414,9 @@ impl PubSub {
             .map_err(|e| os_err("opening the pubsub ring", e))
     }
 
+    /// Attach to a pubsub ring that already exists, raising `OSError`
+    /// when it does not. `capacity` must be the one it was created with.
+    /// Attaching does not subscribe: take a subscription of your own.
     #[staticmethod]
     fn open(path: &str, capacity: usize) -> PyResult<Self> {
         PubSubRing::open(path, capacity)
@@ -4087,6 +4602,9 @@ impl LamportProducer {
         SPSC_PAYLOAD_BYTES
     }
 
+    /// Push one item. `False` means the ring is full and the consumer has
+    /// not caught up, which is an answer rather than a failure; an item
+    /// longer than `payload_size` raises.
     fn push(&self, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_push(item) {
             Ok(()) => Ok(true),
@@ -4095,6 +4613,9 @@ impl LamportProducer {
         }
     }
 
+    /// Push a run of items in one crossing, stopping at the first that
+    /// will not fit, and answer how many landed. A count short of what
+    /// was handed in leaves the rest with the caller.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -4107,6 +4628,14 @@ impl LamportProducer {
         Ok(pushed)
     }
 
+    /// Push items cut out of one buffer, `item_len` bytes each, and
+    /// answer how many landed.
+    ///
+    /// This is the cheapest shape on this class: the caller hands over
+    /// one object, and no Python object is built per item on either side.
+    /// A trailing piece shorter than `item_len` is pushed as it is. Stops
+    /// at the first that will not fit, and an `item_len` of zero is a
+    /// `ValueError`.
     fn push_buffer(&self, data: &[u8], item_len: usize) -> PyResult<usize> {
         if item_len == 0 {
             return Err(PyValueError::new_err("item_len must not be zero"));
@@ -4140,6 +4669,9 @@ impl LamportConsumer {
         self.inner.capacity()
     }
 
+    /// Take the next item, or `None` when the ring is empty. Items arrive
+    /// in the order the producer sent them, because there is exactly one
+    /// producer.
     fn pop(&self) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
         match self.inner.try_pop(&mut out) {
@@ -4152,6 +4684,9 @@ impl LamportConsumer {
         }
     }
 
+    /// Take up to `max_items` in one crossing, stopping early when the
+    /// ring runs dry. An empty list means there was nothing, which is the
+    /// same answer `pop` gives as `None`.
     fn pop_many(&self, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
         let mut taken = Vec::new();
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
@@ -4211,6 +4746,13 @@ struct FrameRegion {
 
 #[pymethods]
 impl FrameRegion {
+    /// Obtain the frame region at `path` holding `block_count` blocks of
+    /// `block_size` bytes, creating it when the file does not exist.
+    ///
+    /// Blocks are addressed rather than queued: every one exists from
+    /// creation and any index below `block_count` can be written or read
+    /// straight away. The size is a whole block, so a shorter payload
+    /// leaves the rest of its block as it was.
     #[new]
     fn new(path: &str, block_size: usize, block_count: usize) -> PyResult<Self> {
         SubetnaFrameRegion::create(path, block_size, block_count)
@@ -4218,6 +4760,10 @@ impl FrameRegion {
             .map_err(|e| os_err("opening the frame region", e))
     }
 
+    /// Attach to a frame region that already exists, raising `OSError`
+    /// when it does not. The block size and count must be the ones it was
+    /// created with: they are the layout, so a mismatch reads the blocks
+    /// at the wrong offsets.
     #[staticmethod]
     fn open(path: &str, block_size: usize, block_count: usize) -> PyResult<Self> {
         SubetnaFrameRegion::open(path, block_size, block_count)
@@ -4264,6 +4810,12 @@ impl FrameRegion {
         }
     }
 
+    /// Write `payload` into block `index`, checking first that it fits.
+    ///
+    /// A payload longer than `block_size` is a `ValueError` rather than a
+    /// truncated write, so a caller cannot lose the tail of a frame
+    /// without being told. A shorter one leaves the rest of the block as
+    /// it was, so a reader has to know how much of the block is its own.
     fn write_block(&self, index: u32, payload: &[u8]) -> PyResult<()> {
         if payload.len() > self.inner.block_size() {
             return Err(PyValueError::new_err(
@@ -4295,10 +4847,14 @@ impl FrameRegion {
         Ok(out)
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The blocks stay as they were written for whoever attaches
+    /// next.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -4341,6 +4897,11 @@ impl RWLock {
 
 #[pymethods]
 impl RWLock {
+    /// Obtain the lock at `path`, creating it when the file does not
+    /// exist and attaching to the live one when it does.
+    ///
+    /// Creating it takes nothing. A hold comes from `read` or `write`,
+    /// and belongs to the thread that took it.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         BlockingRWLock::create(path)
@@ -4348,6 +4909,9 @@ impl RWLock {
             .map_err(|e| PyOSError::new_err(format!("opening the lock: {e:?}")))
     }
 
+    /// Attach to a lock that already exists, raising `OSError` when it
+    /// does not. Attaching takes nothing: `read` and `write` are what
+    /// take a hold.
     #[staticmethod]
     fn open(path: &str) -> PyResult<Self> {
         BlockingRWLock::open(path)
@@ -4480,10 +5044,19 @@ struct Hold {
 
 #[pymethods]
 impl Hold {
+    /// Answer the same object, which is why a hold is normally taken as
+    /// `with lock.write() as held:` rather than bound to a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the lock back, and let an exception through.
+    ///
+    /// This one really does release, and releasing on the way out is the
+    /// point of taking a hold in a `with` block: an exception inside it
+    /// still gives the lock back, where a hold left to be collected keeps
+    /// every other process waiting until then. The hold belongs to the
+    /// thread that took it, so it must be given back on that thread.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.give_back();
@@ -4873,10 +5446,18 @@ struct LeaseHold {
 
 #[pymethods]
 impl LeaseHold {
+    /// Answer the same object, which is why a hold is normally taken as
+    /// `with lease.acquire() as held:` rather than bound to a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the lease back, and let an exception through.
+    ///
+    /// This one really does release, and that is the point of taking it
+    /// in a `with` block: an exception inside still hands the lease on,
+    /// where a hold left to be collected keeps the next owner waiting for
+    /// the lease to expire instead.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.give_back();
@@ -5034,10 +5615,17 @@ impl Reservoir {
         self.inner.reset();
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// sample without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Start writing the mapping back to its file and return at once,
+    /// without waiting for the write to land. Nothing is on disk yet when
+    /// this returns; `flush` is the form that waits.
     fn flush_async(&self) -> PyResult<()> {
         self.inner.flush_async().map_err(|e| os_err("flushing", e))
     }
@@ -5048,14 +5636,21 @@ impl Reservoir {
         SLOT_VALUE_BYTES
     }
 
+    /// How many values are held in the sample right now, which is at most
+    /// the capacity and is not `total_seen`. A reservoir that has been
+    /// offered a million values still holds only its capacity.
     fn __len__(&self) -> usize {
         self.inner.snapshot().len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The sample and the total seen both stay for whoever
+    /// attaches next; `reset` is what empties a reservoir.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5131,6 +5726,12 @@ impl BlockedBloomFilter {
         ))
     }
 
+    /// Add an item, setting its bits inside a single cache-line block.
+    ///
+    /// Confining a key to one block is what makes this faster than the
+    /// plain filter, which touches bits spread across the whole bit
+    /// array. Nothing can be taken out again, so the false-positive rate
+    /// only climbs.
     fn insert(&self, item: &[u8]) {
         self.inner.insert(item);
     }
@@ -5176,14 +5777,22 @@ impl BlockedBloomFilter {
         self.inner.n_blocks()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// bits without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The bits stay set for whoever attaches next, and nothing
+    /// is flushed on the way out.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5294,6 +5903,9 @@ impl HandleTable {
             .collect()
     }
 
+    /// Whether the handle is still live. A handle that has been given
+    /// back answers `False`, and so does one from an earlier generation
+    /// of the same slot, which is what the generation in a handle is for.
     fn __contains__(&self, handle: u64) -> bool {
         self.inner.contains(handle_from_raw(handle))
     }
@@ -5316,10 +5928,17 @@ impl HandleTable {
         self.inner.capacity()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// entries without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Start writing the mapping back to its file and return at once,
+    /// without waiting for the write to land. Nothing is on disk yet when
+    /// this returns; `flush` is the form that waits.
     fn flush_async(&self) -> PyResult<()> {
         self.inner.flush_async().map_err(|e| os_err("flushing", e))
     }
@@ -5330,14 +5949,20 @@ impl HandleTable {
         LEASE_VALUE_BYTES
     }
 
+    /// How many handles are live, which is not the capacity. A handle
+    /// given back stops being counted at once.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Handles taken inside the block are still live after it:
+    /// they are named by the table, not owned by this object.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5455,10 +6080,17 @@ impl TimePointTile {
         self.inner.is_full()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// points without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Start writing the mapping back to its file and return at once,
+    /// without waiting for the write to land. Nothing is on disk yet when
+    /// this returns; `flush` is the form that waits.
     fn flush_async(&self) -> PyResult<()> {
         self.inner.flush_async().map_err(|e| os_err("flushing", e))
     }
@@ -5475,14 +6107,20 @@ impl TimePointTile {
         SLOT_VALUE_BYTES
     }
 
+    /// How many of the tile's sixteen places are taken. `full` is the
+    /// same question asked the other way round.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The points recorded stay for whoever attaches next, and
+    /// nothing is flushed on the way out.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5575,10 +6213,17 @@ impl VersionChain {
         self.inner.capacity()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// versions without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Start writing the mapping back to its file and return at once,
+    /// without waiting for the write to land. Nothing is on disk yet when
+    /// this returns; `flush` is the form that waits.
     fn flush_async(&self) -> PyResult<()> {
         self.inner.flush_async().map_err(|e| os_err("flushing", e))
     }
@@ -5589,14 +6234,21 @@ impl VersionChain {
         LEASE_VALUE_BYTES
     }
 
+    /// How many versions the chain holds, which is not the capacity and
+    /// not the number of distinct values: one value written three times
+    /// is three versions until something reclaims the older two.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Every version written inside the block is still in the
+    /// chain after it, and nothing is reclaimed on the way out.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5764,6 +6416,10 @@ impl VersionedSlab {
         self.inner.capacity()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// versions without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
@@ -5780,10 +6436,15 @@ impl VersionedSlab {
         LEASE_VALUE_BYTES
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A `SlabPin` taken inside the block is not given back
+    /// here: pin it in its own `with` block, or the epoch it holds keeps
+    /// reclamation waiting.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -5865,10 +6526,18 @@ impl SlabPin {
         self.guard.is_some()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the pin back, and let an exception through.
+    ///
+    /// This one really does release: the epoch stops being held, so the
+    /// slab can reclaim versions no one can still see. Reading through
+    /// the pin after the block answers nothing, and `repr` says it was
+    /// given back. This is the reason to take a pin in a `with` block
+    /// rather than leaving it to be collected.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.guard = None;
@@ -6046,14 +6715,23 @@ impl VersionedMap {
         self.inner.capacity()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// entries without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A `MapPin` taken inside the block is not given back here:
+    /// pin it in its own `with` block, or the epoch it holds keeps
+    /// `sweep` from reclaiming anything.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -6149,10 +6827,18 @@ impl MapPin {
         self.guard.is_some()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the pin back, and let an exception through.
+    ///
+    /// This one really does release: the epoch stops being held, so
+    /// `sweep` can reclaim what no reader can still see. Reading through
+    /// the pin after the block answers nothing, and `repr` says it was
+    /// given back. A pin left to be collected instead holds reclamation
+    /// up for as long as the object lives.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.guard = None;
@@ -6329,6 +7015,11 @@ impl LanedMap {
         self.inner.lanes()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Every lane goes at once, not only the ones this
+    /// process has claimed. Another process mapping the same file sees
+    /// the entries without this; flushing is about surviving a machine
+    /// that stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(laned_err)
     }
@@ -6339,10 +7030,14 @@ impl LanedMap {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. A `LaneClaim` or `LanedPin` taken inside the block is not
+    /// given back here; each belongs in a `with` block of its own.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -6449,10 +7144,17 @@ impl LaneClaim {
         self.guard.is_some()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the lane back, and let an exception through.
+    ///
+    /// This one really does release: another process can claim the lane
+    /// straight away. A claim left to be collected instead holds the lane
+    /// until then, and `reap_dead_claims` on the map is what recovers one
+    /// whose process died without giving it back.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.guard = None;
@@ -6546,10 +7248,17 @@ impl LanedPin {
         self.guard.is_some()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Give the pin back, and let an exception through.
+    ///
+    /// This one really does release: the epoch stops being held, so the
+    /// map can reclaim versions no reader can still see. Reading through
+    /// the pin after the block answers nothing, and `repr` says it was
+    /// given back.
     #[pyo3(signature = (*_args))]
     fn __exit__(&mut self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         self.guard = None;
@@ -6735,10 +7444,14 @@ impl TopologyMap {
         self.inner.n_nodes()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Everything recorded stays counted for whoever attaches
+    /// next; `reset` is what clears the observations.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -6892,18 +7605,30 @@ impl Graph {
         self.inner.max_edges()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// nodes and edges without this; flushing is about surviving a
+    /// machine that stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Start writing the mapping back to its file and return at once,
+    /// without waiting for the write to land. Nothing is on disk yet when
+    /// this returns; `flush` is the form that waits.
     fn flush_async(&self) -> PyResult<()> {
         self.inner.flush_async().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Node and edge indices handed out inside the block still
+    /// name the same nodes and edges after it, and nothing is flushed on
+    /// the way out.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -6960,6 +7685,13 @@ impl Universal {
             .map_err(|e| os_err("resetting the set", e))
     }
 
+    /// Add a value to the set.
+    ///
+    /// This is a set, so adding a value already there changes nothing and
+    /// is not an error. The insert may be what tips the set from one
+    /// storage strategy to the other, which `strategy` and `migrations`
+    /// report; that happens underneath and nothing about the call says
+    /// so.
     fn insert(&self, value: u64) -> PyResult<()> {
         self.inner
             .insert(value)
@@ -6976,6 +7708,8 @@ impl Universal {
         Ok(values.len())
     }
 
+    /// Whether the value is in the set. Exact, not probabilistic: unlike
+    /// the filters, a `True` here is a fact.
     fn __contains__(&self, value: u64) -> PyResult<bool> {
         self.inner
             .contains(&value)
@@ -7007,6 +7741,9 @@ impl Universal {
         self.inner.snapshot().map_err(|e| os_err("reading", e))
     }
 
+    /// Take every value out, so the set is empty again. The storage
+    /// strategy it had migrated to is kept rather than reset, and
+    /// `migrations` goes on counting from where it was.
     fn clear(&self) -> PyResult<()> {
         self.inner.clear().map_err(|e| os_err("clearing", e))
     }
@@ -7058,14 +7795,21 @@ impl Universal {
         self.inner.op_histogram()
     }
 
+    /// How many values the set holds. It can raise, unlike most `len`
+    /// implementations, because reading the count means reading the
+    /// mapping and that can fail.
     fn __len__(&self) -> PyResult<usize> {
         self.inner.len().map_err(|e| os_err("reading", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Whatever strategy it migrated to inside the block is the
+    /// one it is still in afterwards.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -7218,6 +7962,10 @@ impl Tower {
         self.inner.value_size()
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Every level goes, not just the bottom one.
+    /// Another process mapping the same file sees the values without
+    /// this; flushing is about surviving a machine that stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| tower_err("flushing", e))
     }
@@ -7227,10 +7975,14 @@ impl Tower {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Paths handed out inside the block still resolve to the
+    /// same values after it, and nothing is flushed on the way out.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -8270,10 +9022,15 @@ impl Channel {
         SLOT_VALUE_BYTES
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing the channel, and let an exception
+    /// through. Nothing is signaled to the other end: a reader waiting
+    /// on it goes on waiting, so a sender that means to say it is done
+    /// has to say so in the messages it sends.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -8501,10 +9258,14 @@ impl AdaptiveQueue {
         SLOT_VALUE_BYTES
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Whatever shape it changed into inside the block is the
+    /// one it is still in afterwards, and anything queued stays queued.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -8638,10 +9399,14 @@ impl WorkQueue {
         SLOT_VALUE_BYTES
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Work still in the queue stays there for whoever attaches
+    /// next, and no worker is told to stop.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -8664,6 +9429,13 @@ struct KvMap {
 
 #[pymethods]
 impl KvMap {
+    /// Obtain the map at `path`, creating it when the file does not
+    /// exist. Keys and values are both sixty-four bit integers.
+    ///
+    /// `readers` and `writers` are how many of each will take part, and
+    /// the shape underneath is chosen from them rather than named: this
+    /// is the surface for a caller who wants a map between processes
+    /// without picking one. Either below one is a `ValueError`.
     #[new]
     #[pyo3(signature = (path, capacity = 1024, readers = 1, writers = 1))]
     fn new(path: &str, capacity: usize, readers: usize, writers: usize) -> PyResult<Self> {
@@ -8719,6 +9491,9 @@ impl KvMap {
         keys.into_iter().map(|key| self.inner.get(&key)).collect()
     }
 
+    /// Whether the key has a value. Reads the value and throws it away,
+    /// so it costs what `get` costs; call `get` when you want the value
+    /// as well rather than asking twice.
     fn __contains__(&self, key: u64) -> bool {
         self.inner.get(&key).is_some()
     }
@@ -8732,10 +9507,13 @@ impl KvMap {
         self.inner.len()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The entries stay in the file for whoever attaches next.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -8811,6 +9589,9 @@ impl TinyBloom {
         Self { inner }
     }
 
+    /// Add a key, setting its bits. Nothing can be taken out again, and
+    /// the filter is only sixty-four bits wide, so the rate of wrong
+    /// yeses climbs quickly past `suggested_capacity` keys.
     fn insert(&mut self, key: &[u8]) {
         self.inner.insert(key);
     }
@@ -8823,6 +9604,9 @@ impl TinyBloom {
         keys.len()
     }
 
+    /// `False` means the key is definitely absent, `True` means it is
+    /// probably present. A filter this small says yes wrongly often once
+    /// it holds more than a handful of keys.
     fn __contains__(&self, key: &[u8]) -> bool {
         self.inner.might_contain(key)
     }
@@ -8887,6 +9671,12 @@ struct FineBloom {
 
 #[pymethods]
 impl FineBloom {
+    /// An empty filter, or one already holding `keys`.
+    ///
+    /// Unlike `BloomFilter`, this one lives in the process rather than in
+    /// a mapped file: it has no path, and another process cannot see it.
+    /// It is a few words of bits meant to travel beside a value, which is
+    /// what makes it worth having next to the file-backed filter.
     #[new]
     #[pyo3(signature = (keys = None))]
     fn new(keys: Option<Vec<Vec<u8>>>) -> Self {
@@ -8899,10 +9689,15 @@ impl FineBloom {
         Self { inner }
     }
 
+    /// Add a key, setting its bits. Nothing can be taken out again, and
+    /// the rate of wrong yeses climbs past `suggested_capacity` keys.
     fn insert(&mut self, key: &[u8]) {
         self.inner.insert(key);
     }
 
+    /// Add a run of keys in one crossing, and answer how many were handed
+    /// in. Nothing here can refuse, so the count is always the length of
+    /// the sequence.
     fn insert_many(&mut self, keys: Vec<Vec<u8>>) -> usize {
         for key in &keys {
             self.inner.insert(key.as_slice());
@@ -8910,6 +9705,8 @@ impl FineBloom {
         keys.len()
     }
 
+    /// `False` means the key is definitely absent, `True` means it is
+    /// probably present.
     fn __contains__(&self, key: &[u8]) -> bool {
         self.inner.might_contain(key)
     }
@@ -8919,6 +9716,8 @@ impl FineBloom {
         self.inner.might_contain(key)
     }
 
+    /// Ask about a run of keys in one crossing, answering one `True` or
+    /// `False` per key in the order they were given.
     fn contains_many(&self, keys: Vec<Vec<u8>>) -> Vec<bool> {
         keys.iter()
             .map(|key| self.inner.might_contain(key.as_slice()))
@@ -8956,6 +9755,11 @@ struct Clock {
 
 #[pymethods]
 impl Clock {
+    /// A reading built from the two parts given, both defaulting to zero.
+    ///
+    /// This does not read the machine's clock: it is for rebuilding a
+    /// reading that arrived from somewhere else, so that `merge` can fold
+    /// it in. `now` is the one that takes the time.
     #[new]
     #[pyo3(signature = (physical = 0, logical = 0))]
     fn new(physical: u64, logical: u64) -> Self {
@@ -9149,6 +9953,10 @@ struct LossKind {
 
 #[pymethods]
 impl LossKind {
+    /// A sensor with nothing observed yet. It lives in this process and
+    /// has no file behind it, so two processes each keep their own.
+    /// Feed it with `observe_spacing` and `observe_delay` before asking
+    /// it anything.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(LossClassSensor::new()) }
@@ -9212,6 +10020,9 @@ struct LossBursts {
 
 #[pymethods]
 impl LossBursts {
+    /// A model with nothing observed yet. It lives in this process and
+    /// has no file behind it. Feed it with `observe` or `observe_many`,
+    /// one call per item, saying whether that item was lost.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(BurstModel::new()) }
@@ -9360,6 +10171,9 @@ struct RoundTripShape {
 
 #[pymethods]
 impl RoundTripShape {
+    /// A shape with nothing observed yet. It lives in this process and
+    /// has no file behind it. Feed it with `observe` or `observe_many`,
+    /// in microseconds, before asking it anything.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(RttShape::new()) }
@@ -9423,6 +10237,9 @@ struct Periodicity {
 
 #[pymethods]
 impl Periodicity {
+    /// A sensor with nothing observed yet. It lives in this process and
+    /// has no file behind it. Each `observe` needs both the delay and
+    /// when it was taken, because a beat can only be found against time.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(PeriodicitySensor::new()) }
@@ -9546,6 +10363,9 @@ struct Forecast {
 
 #[pymethods]
 impl Forecast {
+    /// A forecast with nothing observed yet. It lives in this process and
+    /// has no file behind it. Feed it whole intervals with `observe`,
+    /// each one a byte count and how long it covered.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(ArrivalForecast::new()) }
@@ -9596,6 +10416,9 @@ struct PathChanges {
 
 #[pymethods]
 impl PathChanges {
+    /// A sensor with nothing observed yet. It lives in this process and
+    /// has no file behind it. Feed it with `observe`, one call per item
+    /// received, and it infers from the spread of what it is told.
     #[new]
     fn new() -> Self {
         Self { inner: Box::new(PathSensor::new()) }
@@ -9684,6 +10507,9 @@ impl Semaphore {
             .map_err(|e| PyOSError::new_err(format!("opening the semaphore: {e:?}")))
     }
 
+    /// Attach to a semaphore that already exists, raising `OSError` when
+    /// it does not. `max_permits` must be the one it was created with,
+    /// and attaching takes no permit: `acquire` is what does.
     #[staticmethod]
     fn open(path: &str, max_permits: u32) -> PyResult<Self> {
         BlockingSemaphore::open(path, max_permits)
@@ -9775,6 +10601,8 @@ struct PermitHold {
 
 #[pymethods]
 impl PermitHold {
+    /// Answer the same object, which is why a permit is normally taken as
+    /// `with semaphore.acquire() as permit:` rather than bound to a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -9789,6 +10617,11 @@ impl PermitHold {
         Ok(false)
     }
 
+    /// Give the permit back now rather than at the end of a block.
+    /// Calling it twice is harmless, and `held` says whether it is still
+    /// out. A genuine failure is raised rather than dropped: releasing
+    /// more permits than the semaphore allows is a fault in the caller's
+    /// bookkeeping, not a condition to ignore.
     fn release(&mut self) -> PyResult<()> {
         self.give_back()
             .map_err(|e| PyOSError::new_err(format!("releasing the permit: {e:?}")))
@@ -9847,6 +10680,12 @@ struct Arena {
 
 #[pymethods]
 impl Arena {
+    /// Obtain the arena at `path` holding `capacity_bytes` of interned
+    /// text, creating it when the file does not exist.
+    ///
+    /// The capacity is bytes of storage, not a count of strings, and the
+    /// arena only ever grows: nothing is freed, so `intern` answers
+    /// `None` once the space is gone.
     #[new]
     fn new(path: &str, capacity_bytes: usize) -> PyResult<Self> {
         SharedStringArena::create(path, capacity_bytes)
@@ -9854,6 +10693,9 @@ impl Arena {
             .map_err(|e| os_err("opening the arena", e))
     }
 
+    /// Attach to an arena that already exists, able to intern into it.
+    /// Raises `OSError` when it is not there. `capacity_bytes` must be
+    /// the one it was created with.
     #[staticmethod]
     fn open(path: &str, capacity_bytes: usize) -> PyResult<Self> {
         SharedStringArena::open(path, capacity_bytes)
@@ -9861,6 +10703,12 @@ impl Arena {
             .map_err(|e| os_err("attaching to the arena", e))
     }
 
+    /// Attach for reading only, so `intern` cannot be called and
+    /// `writable` answers `False`.
+    ///
+    /// This is the shape for a process that resolves references somebody
+    /// else interned: it takes a read-only mapping, so a bug in it cannot
+    /// write over the arena everyone shares.
     #[staticmethod]
     fn open_read_only(path: &str, capacity_bytes: usize) -> PyResult<Self> {
         SharedStringArena::open_read_only(path, capacity_bytes)
@@ -9951,10 +10799,14 @@ impl Arena {
         Ok(out)
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. References handed out inside the block stay valid after
+    /// it: they name bytes in the file, not anything this object owns.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -9978,6 +10830,13 @@ struct LinkedList {
 
 #[pymethods]
 impl LinkedList {
+    /// Obtain the list at `path` with room for `capacity` nodes of
+    /// `element_size` bytes, creating it when the file does not exist.
+    ///
+    /// The capacity counts nodes and is fixed at creation. A node index
+    /// is a position in that fixed array rather than a pointer, which is
+    /// what makes an index handed to another process mean the same node
+    /// there.
     #[new]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn new(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -9987,6 +10846,9 @@ impl LinkedList {
             .map_err(|e| os_err("opening the list", e))
     }
 
+    /// Attach to a list that already exists, raising `OSError` when it
+    /// does not. Every layout argument describes the file rather than
+    /// asking anything of it, so all of them must match.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn open(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -10006,6 +10868,8 @@ impl LinkedList {
         self.inner.layout().slot_size
     }
 
+    /// How many nodes the list holds, which is not the capacity. An empty
+    /// list is falsy, so `if not list:` works.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -10024,6 +10888,13 @@ impl LinkedList {
             .map_err(|e| os_err("adding at the back", e))
     }
 
+    /// Add a run of values at the back in one crossing, and answer the
+    /// node index of each, in order.
+    ///
+    /// Unlike the ring batch forms this does not stop early and answer a
+    /// count: a full list raises, so a short list of indices never
+    /// happens and every value handed in is either placed or the call
+    /// fails.
     fn push_back_many(&self, values: Vec<Vec<u8>>) -> PyResult<Vec<u32>> {
         let mut indices = Vec::with_capacity(values.len());
         for value in &values {
@@ -10074,10 +10945,14 @@ impl LinkedList {
         Ok(out)
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The nodes stay linked for whoever attaches next, and a
+    /// node index taken inside the block is still valid after it.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -10105,6 +10980,13 @@ struct Slab {
 
 #[pymethods]
 impl Slab {
+    /// Obtain the slab at `path` with `capacity` slots of `element_size`
+    /// bytes, creating it when the file does not exist.
+    ///
+    /// Every slot exists from the moment the file does, unlike a `Vec`
+    /// where a slot has to be pushed before it is there. So a slab is
+    /// addressed rather than appended to, and any index below the
+    /// capacity is readable straight away.
     #[new]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn new(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -10114,6 +10996,9 @@ impl Slab {
             .map_err(|e| os_err("opening the slab", e))
     }
 
+    /// Attach to a slab that already exists, able to write into it.
+    /// Raises `OSError` when it is not there, and every layout argument
+    /// must be the one it was created with.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn open(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -10123,6 +11008,12 @@ impl Slab {
             .map_err(|e| os_err("attaching to the slab", e))
     }
 
+    /// Attach for reading only, so `set` and `write_range` raise and
+    /// `writable` answers `False`.
+    ///
+    /// The mapping itself is read-only, so this is a guarantee about the
+    /// process rather than a convention it agrees to keep: a bug in a
+    /// reader cannot write over a slab the writers share.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, element_size, alignment = 1, tag = 0))]
     fn open_read_only(path: &str, capacity: usize, element_size: usize, alignment: usize, tag: u64) -> PyResult<Self> {
@@ -10147,10 +11038,19 @@ impl Slab {
         self.inner.is_writable()
     }
 
+    /// How many slots the slab has, which is its capacity and not a count
+    /// of the ones written to. Every slot exists from creation, so this
+    /// never changes and a slab is never empty.
     fn __len__(&self) -> usize {
         self.inner.capacity()
     }
 
+    /// Read slot `index`, always `element_size` bytes. A slot nobody has
+    /// written to reads as zeros rather than raising, because it exists
+    /// from creation. An index past the capacity is an `OSError`.
+    ///
+    /// The read goes through the slot's seqlock, so a writer racing it
+    /// loses to a retry rather than handing back a torn element.
     fn get(&self, index: usize) -> PyResult<Vec<u8>> {
         let mut out = vec![0u8; self.inner.layout().slot_size];
         self.inner
@@ -10159,6 +11059,15 @@ impl Slab {
         Ok(out)
     }
 
+    /// Overwrite slot `index`, stepping its seqlock either side so a
+    /// reader racing this retries instead of seeing half of each value.
+    /// An index past the capacity, or a slab opened read-only, is an
+    /// `OSError`.
+    ///
+    /// One writer per slot. The seqlock makes a torn read detectable but
+    /// does nothing to make a torn write safe, so two processes writing
+    /// the same slot at once corrupt it and nothing reports that. Give
+    /// each writer its own slots, or put a lock over the shared ones.
     fn set(&self, index: usize, value: &[u8]) -> PyResult<()> {
         self.inner
             .set(index, value)
@@ -10203,14 +11112,22 @@ impl Slab {
         Ok(data.len() / size)
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// slots without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. Nothing is flushed on the way out: call `flush` where
+    /// durability matters.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -10235,6 +11152,14 @@ struct BTreeMap_ {
 
 #[pymethods]
 impl BTreeMap_ {
+    /// Obtain the map at `path` holding `capacity` entries of `key_size`
+    /// and `value_size` bytes, creating it when the file does not exist.
+    /// A capacity below one is a `ValueError`.
+    ///
+    /// Keys are ordered by unsigned byte comparison, so `first` and
+    /// `last` mean the same thing in every language reading the file and
+    /// no comparator has to cross the boundary. Both widths are fixed:
+    /// they are the layout, not a maximum.
     #[new]
     #[pyo3(signature = (path, capacity, key_size, value_size, tag = 0))]
     fn new(path: &str, capacity: usize, key_size: usize, value_size: usize, tag: u64) -> PyResult<Self> {
@@ -10246,6 +11171,9 @@ impl BTreeMap_ {
             .map_err(|e| os_err("opening the map", e))
     }
 
+    /// Attach to a map that already exists, raising `OSError` when it
+    /// does not. The capacity, both widths and the tag must be the ones
+    /// it was created with.
     #[staticmethod]
     #[pyo3(signature = (path, capacity, key_size, value_size, tag = 0))]
     fn open(path: &str, capacity: usize, key_size: usize, value_size: usize, tag: u64) -> PyResult<Self> {
@@ -10274,6 +11202,8 @@ impl BTreeMap_ {
         self.inner.node_count()
     }
 
+    /// How many entries the map holds, which is not the capacity and not
+    /// `nodes`: a node is a block of the tree and holds several entries.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -10291,6 +11221,13 @@ impl BTreeMap_ {
         }
     }
 
+    /// Insert or replace a run of pairs, stopping at the first the map
+    /// has no room for, and answer how many landed.
+    ///
+    /// This is where the batch form differs from `insert`: a full map
+    /// stops the run and shortens the count, where `insert` on its own
+    /// raises. The previous value is not collected, so a caller who needs
+    /// what a key held has to call `insert` per pair.
     fn insert_many(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<usize> {
         let mut done = 0;
         for (key, value) in &pairs {
@@ -10303,6 +11240,8 @@ impl BTreeMap_ {
         Ok(done)
     }
 
+    /// What `key` holds, or `None` when it holds nothing. The value is
+    /// always `value_size` bytes.
     fn get(&self, key: &[u8]) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; self.inner.value_size()];
         match self.inner.get(key, &mut out) {
@@ -10312,12 +11251,16 @@ impl BTreeMap_ {
         }
     }
 
+    /// Whether the key is present, without bringing its value back over
+    /// the boundary. Cheaper than `get` when the value is not wanted.
     fn __contains__(&self, key: &[u8]) -> PyResult<bool> {
         self.inner
             .contains_key(key)
             .map_err(|e| os_err("looking up", e))
     }
 
+    /// Take a key out and answer what it held, or `None` when it held
+    /// nothing. The room it used goes back to the map.
     fn remove(&self, key: &[u8]) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; self.inner.value_size()];
         match self.inner.remove(key, &mut out) {
@@ -10349,18 +11292,29 @@ impl BTreeMap_ {
         }
     }
 
+    /// Remove every entry, so the map is empty and its room is free
+    /// again. The capacity and both widths are unchanged, and every
+    /// process mapping the file sees it.
     fn clear(&self) {
         self.inner.clear();
     }
 
+    /// Ask the operating system to write the mapping back to its file,
+    /// and wait for it. Another process mapping the same file sees the
+    /// entries without this; flushing is about surviving a machine that
+    /// stops.
     fn flush(&self) -> PyResult<()> {
         self.inner.flush().map_err(|e| os_err("flushing", e))
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The entries stay in the file for whoever attaches next,
+    /// and nothing is flushed: call `flush` where durability matters.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -10384,6 +11338,13 @@ struct HashMap_ {
 
 #[pymethods]
 impl HashMap_ {
+    /// Obtain the map at `path` holding `capacity` entries of `key_size`
+    /// and `value_size` bytes, creating it when the file does not exist.
+    ///
+    /// Both widths are fixed: they are the layout every process reads out
+    /// of the file, not a maximum this one will store. The capacity never
+    /// grows, so a full map refuses an insert rather than rehashing into
+    /// something bigger.
     #[new]
     fn new(path: &str, capacity: usize, key_size: usize, value_size: usize) -> PyResult<Self> {
         RawHashMap::create(path, capacity, key_size, value_size)
@@ -10391,6 +11352,9 @@ impl HashMap_ {
             .map_err(|e| os_err("opening the map", e))
     }
 
+    /// Attach to a map that already exists, raising `OSError` when it
+    /// does not. The capacity and both widths must be the ones it was
+    /// created with.
     #[staticmethod]
     fn open(path: &str, capacity: usize, key_size: usize, value_size: usize) -> PyResult<Self> {
         RawHashMap::open(path, capacity, key_size, value_size)
@@ -10413,6 +11377,9 @@ impl HashMap_ {
         self.inner.value_size()
     }
 
+    /// How many entries the map holds, which is not the capacity and does
+    /// not count tombstones: a removed key stops being counted here while
+    /// its marker still occupies a slot. Read `tombstones` for those.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -10441,6 +11408,9 @@ impl HashMap_ {
         Ok(done)
     }
 
+    /// What `key` holds, or `None` when it holds nothing. The value is
+    /// always `value_size` bytes. Use `get_many` for a run of keys: it
+    /// costs one crossing rather than one per key.
     fn get(&self, key: &[u8]) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; self.inner.value_size()];
         match self.inner.get(key, &mut out) {
@@ -10465,6 +11435,8 @@ impl HashMap_ {
         Ok(answers)
     }
 
+    /// Whether the key is present, without bringing its value back over
+    /// the boundary. Cheaper than `get` when the value is not wanted.
     fn __contains__(&self, key: &[u8]) -> PyResult<bool> {
         self.inner
             .contains_key(key)
@@ -10498,6 +11470,10 @@ impl HashMap_ {
         Ok((swapped, current))
     }
 
+    /// Remove every entry and every tombstone, so both `len` and
+    /// `tombstones` go to zero and the whole capacity is usable again.
+    /// The widths are unchanged, and every process mapping the file sees
+    /// it. This is the only thing that clears tombstones.
     fn clear(&self) {
         self.inner.clear();
     }
@@ -10507,10 +11483,13 @@ impl HashMap_ {
         self.inner.tombstone_count()
     }
 
+    /// Answer the same object, so a `with` block can give it a name.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
+    /// Leave the block without closing anything, and let an exception
+    /// through. The entries stay in the file for whoever attaches next.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -10547,6 +11526,12 @@ impl MpscProducer {
         SPSC_PAYLOAD_BYTES
     }
 
+    /// Push one item into this producer's own ring.
+    ///
+    /// `False` means that ring is full, which is an answer rather than a
+    /// failure. A full ring here does not mean the pool is full: the
+    /// other producers have rings of their own, and only the consumer
+    /// drains this one.
     fn push(&self, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_push(item) {
             Ok(()) => Ok(true),
@@ -10555,6 +11540,9 @@ impl MpscProducer {
         }
     }
 
+    /// Push a run of items in one crossing, stopping at the first that
+    /// will not fit, and answer how many landed. A count short of what
+    /// was handed in leaves the rest with the caller.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -10567,6 +11555,14 @@ impl MpscProducer {
         Ok(pushed)
     }
 
+    /// Push items cut out of one buffer, `item_len` bytes each, and
+    /// answer how many landed.
+    ///
+    /// This is the cheapest shape on this class: the caller hands over
+    /// one object, and no Python object is built per item on either side.
+    /// A trailing piece shorter than `item_len` is pushed as it is. Stops
+    /// at the first that will not fit, and an `item_len` of zero is a
+    /// `ValueError`.
     fn push_buffer(&self, data: &[u8], item_len: usize) -> PyResult<usize> {
         if item_len == 0 {
             return Err(PyValueError::new_err("item_len must not be zero"));
@@ -10609,6 +11605,14 @@ impl MpscConsumer {
         self.inner.approx_total_len()
     }
 
+    /// Take the next item from whichever producer's ring has one, or
+    /// `None` when they are all empty.
+    ///
+    /// What one producer sent arrives in the order it sent it, because
+    /// that producer has a ring to itself. Across producers there is no
+    /// order at all: the consumer walks the rings in turn, so two items
+    /// sent at the same moment by different producers can arrive either
+    /// way round.
     fn pop(&self) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
         match self.inner.try_pop(&mut out) {
@@ -10621,6 +11625,9 @@ impl MpscConsumer {
         }
     }
 
+    /// Take up to `max_items` in one crossing, stopping early once every
+    /// ring is empty. An empty list means there was nothing, which is the
+    /// same answer `pop` gives as `None`.
     fn pop_many(&self, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
         let mut taken = Vec::new();
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
@@ -10686,6 +11693,11 @@ impl MpmcProducer {
         self.inner.capacity()
     }
 
+    /// Push one item into this producer's own ring.
+    ///
+    /// `False` means that ring is full, which is an answer rather than a
+    /// failure. A full ring here does not mean the grid is full: the
+    /// other producers have rings of their own.
     fn push(&self, item: &[u8]) -> PyResult<bool> {
         match self.inner.try_push(item) {
             Ok(()) => Ok(true),
@@ -10694,6 +11706,9 @@ impl MpmcProducer {
         }
     }
 
+    /// Push a run of items in one crossing, stopping at the first that
+    /// will not fit, and answer how many landed. A count short of what
+    /// was handed in leaves the rest with the caller.
     fn push_many(&self, items: Vec<Vec<u8>>) -> PyResult<usize> {
         let mut pushed = 0;
         for item in &items {
@@ -10730,6 +11745,13 @@ impl MpmcConsumer {
         self.inner.approx_subset_len()
     }
 
+    /// Take the next item from one of the rings this consumer was given,
+    /// or `None` when they are all empty.
+    ///
+    /// It never takes from a ring another consumer was given, which is
+    /// what lets several consumers drain the grid at once without
+    /// agreeing anything between them. So `None` here means this
+    /// consumer's own rings are empty, not that the grid is.
     fn pop(&self) -> PyResult<Option<Vec<u8>>> {
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];
         match self.inner.try_pop(&mut out) {
@@ -10742,6 +11764,9 @@ impl MpmcConsumer {
         }
     }
 
+    /// Take up to `max_items` in one crossing from this consumer's own
+    /// rings, stopping early once they are empty. An empty list means
+    /// there was nothing, which is the same answer `pop` gives as `None`.
     fn pop_many(&self, max_items: usize) -> PyResult<Vec<Vec<u8>>> {
         let mut taken = Vec::new();
         let mut out = vec![0u8; SPSC_PAYLOAD_BYTES];

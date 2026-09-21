@@ -1,42 +1,32 @@
-//! Reproduce the failure that leaves PrismLQL's blob store blind.
+//! What a process already holding many gigabytes of mappings gets when
+//! it asks for one more.
 //!
-//! On the owner's host every boot reports
+//! A store that keeps its payloads in large mapped segments and its
+//! index in small ones opens both at startup, the payload segments
+//! first and held while the index opens. `SharedHashMap::create` on an
+//! existing 64 MiB index file can answer `IoError(StorageFull)` there
+//! while the same call succeeds on an idle process, and the file is
+//! intact either way.
 //!
-//!   blob arena at wal\blobs could not be attached
-//!   (blob index: IoError(StorageFull))
+//! Free space is not the cause, and neither is a short file: this varies
+//! the one thing left, which is how much a single process has mapped
+//! when it makes the call, and whether creating a region and
+//! re-attaching one behave the same at that point.
 //!
-//! and the server then runs without 14 GB of payloads that are intact on
-//! disk. The failing call is `SharedHashMap::create` on one of twenty
-//! existing 64 MiB index files, from `open_index_segments` in
-//! lql-core/src/blob_arena.rs.
-//!
-//! Ruled out on the live host before writing this, so the reproduction
-//! does not chase them again: free space (identical at 18 GB and 47 GB),
-//! the manifest (32 bytes, correct magic, 2 GiB segments, 1<<20 slots),
-//! commit charge (51 GB free), and a truncated file - all twenty index
-//! files are exactly 67,108,928 bytes, which is what `map_file_size`
-//! computes for 1<<20 slots.
-//!
-//! What this varies is the one thing left: how many index-sized regions
-//! one process maps at once, and whether the failure is in creating them
-//! or in re-attaching them.
-//!
-//! Twenty index segments alone do not reproduce it: measured on the
-//! build host, all twenty create and attach with 1.25 GiB mapped and no
-//! error. What that leaves is the seven 2 GiB payload segments the
-//! arena open maps before it opens the index, and holds while it does -
-//! so the question is what a process holding 14 GiB of mappings gets
-//! when it then asks for a 64 MiB one.
+//! Index segments alone do not reproduce it. Twenty create and attach
+//! with 1.25 GiB mapped and no error, so the payload segments are what
+//! matters and the question is what the small mapping gets after the
+//! large ones are in hand.
 //!
 //! Usage:
 //!   index_open_storagefull [segments] [arenas] [dir]
 //!
-//! `segments` defaults to 20 and `arenas` to 0, which is the index-only
-//! shape. Pass 7 for the live store's shape; each arena is 2 GiB of
-//! real file, so that run writes 14 GB and needs the room. `dir`
-//! defaults to a fresh temp directory. It prints one line per region at
-//! every stage, so a run that stops early says where and a run that
-//! survives says how far it got.
+//! `segments` defaults to 20 and `arenas` to 0, the index-only shape.
+//! Each arena is 2 GiB of real file, so a run with several writes tens
+//! of gigabytes and needs the room. `dir` defaults to a fresh temp
+//! directory. It prints one line per region at every stage, so a run
+//! that stops early says where and one that survives says how far it
+//! got.
 
 use std::path::PathBuf;
 
@@ -45,7 +35,7 @@ use subetha_cxc::shared_string_arena::SharedStringArena;
 
 const SLOTS: usize = 1 << 20;
 
-/// What lql-core's blob arena uses per payload segment.
+/// One payload segment, at the size a store of this shape uses.
 const SEGMENT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 fn main() {

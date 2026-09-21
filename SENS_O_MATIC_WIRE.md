@@ -286,6 +286,63 @@ These are constants of the format. The values are distinct and nonzero, and
 those are the only properties they need: what limits recovery is which
 repairs cover which symbols, not the values chosen.
 
+#### Recovering a symbol
+
+A repair is one equation. It determines one unknown, and the unknown it
+determines is a symbol whose coefficient is nonzero.
+
+**A repair recovers a symbol when exactly one of the symbols it covers is
+missing.** Covered means a nonzero coefficient. A window may be full of
+holes and still be solvable, as long as only one of those holes falls
+where the coefficient is nonzero; the rest are not in the equation and
+their absence costs nothing.
+
+Recover it as
+`missing = (payload - sum of the other covered symbols) / coefficient`,
+where the subtraction is the same exclusive-or as the sum and the
+division is a multiply by the GF(2^8) inverse.
+
+This is stated rather than left to follow from the coefficient rule
+above, because the obvious reading is wrong in a way nothing reports.
+Taking the condition to be that exactly one symbol *of the window* is
+missing is correct at density 15 and incorrect at every density below
+it, so an implementation reading it that way passes a full-density test
+suite and then quietly recovers less than it could. It does not fail; it
+declines. The window sweep of section 8 exists to separate the two
+readings.
+
+#### What a decoder must do, and what it may do
+
+A receiver **must**:
+
+- derive coefficients exactly as above, and refuse a repair whose
+  generator it cannot reproduce (it must not decode with different
+  coefficients; see the warning earlier in this section);
+- recover a symbol when a repair it holds determines it, by the rule
+  just given.
+
+A receiver **may** do more. Repairs with overlapping windows form a
+linear system over GF(2^8), and solving that system recovers symbols
+that no single repair determines on its own. Nothing here requires it
+and nothing here forbids it: an implementation that solves across
+repairs is conforming, and so is one that only ever uses a repair with a
+single covered hole.
+
+**Recovery power is therefore a quality of an implementation, not a
+property of this format.** Two conforming receivers given the same
+frames and the same losses may recover different numbers of symbols.
+What they must never do is recover *different bytes* for the same
+symbol, which is what the coefficient rule pins down.
+
+It follows that the recovered counts in the section 8 vectors are what
+the reference decoder achieves. They are neither a floor a conforming
+receiver must reach nor a ceiling it must not exceed, and a conformance
+suite should not treat them as either. As it happens they do not
+currently separate the two strategies: over the six geometries in
+`rlc.txt`, solving the whole system recovers exactly the same set as
+taking one hole at a time. That is a fact about those geometries rather
+than a guarantee about all of them.
+
 ### 4.5 NAK (type `0x0C`), receiver to sender
 
 | Offset | Size | Field |
@@ -589,6 +646,12 @@ cannot change without them changing.
 
 Both state their source data as arithmetic on the symbol or shard index, so
 an implementation reproduces them without a random source.
+
+Each repair line names the window it covers. That is deliberate: when a
+sender emits a repair, and how wide it opens the window, is the control
+law of section 3 and therefore policy, so it does not follow from this
+document and a second implementation is not expected to derive it. Check
+the repairs the file states; do not try to generate the same sequence.
 
 The geometries sweep deliberately. A single geometry admits an
 implementation that agrees at that point and disagrees everywhere else, so

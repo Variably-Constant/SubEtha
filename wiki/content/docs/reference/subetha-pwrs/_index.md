@@ -14,8 +14,37 @@ PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
 Import-Module SubEtha
 ```
 
-This page is the reference. To build it and send a first message, start
-at [SubEtha from PowerShell](../../tutorial/powershell/).
+This page is the reference. To install it and send a first message,
+start at [SubEtha from PowerShell](../../tutorial/powershell/). For a
+task rather than a surface, the
+[PowerShell how-to guides](../../how-to/powershell/) cover installing,
+choosing a structure, making it fast, runspaces and lifetimes, bridging
+two hosts and diagnosing a failure;
+[how the binding works](../../explanation/powershell-binding/) covers
+why it is shaped this way.
+
+This page describes the surface by family. The complete surface, every
+name with every type, is generated from the built module and split
+across three pages:
+
+- [What the values look like](values/) - real output, captured from a
+  run, for the shapes a type name cannot convey.
+- [Every cmdlet, in full](cmdlets/) - all 135, grouped by family with a
+  contents list: each parameter, its type, whether it is required, its
+  position, what it takes from the pipeline, what the cmdlet writes,
+  and the properties and methods of whatever came back.
+- [Every object, in full](classes/) - all 117 object types, with each
+  property and each method signature and return type.
+- [Every enum](enums/) - all 14, with their values.
+
+Those three are produced by
+`crates/subetha-pwrs/tools/Export-Reference.ps1` reading the module
+itself, so they cannot disagree with what ships. Regenerate them
+whenever the surface changes.
+
+Every cmdlet also carries its own help, which is the faster lookup
+while you are in a shell: `Get-Help New-SubEthaRing -Full` gives a
+description, every parameter and an example.
 
 ## What a call costs, and what follows
 

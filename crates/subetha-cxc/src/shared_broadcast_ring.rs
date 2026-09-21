@@ -71,6 +71,7 @@ use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use memmap2::{MmapMut, MmapOptions};
 
@@ -498,13 +499,42 @@ impl SharedBroadcastRing {
         }
     }
 
-    /// Number of messages this consumer has not yet read.
-    pub fn lag(&self, consumer_idx: usize) -> u64 {
+    /// Number of messages this consumer has not yet read, or `None` when
+    /// `consumer_idx` names no live consumer of this ring.
+    ///
+    /// Two things name no live consumer. An index past the consumer
+    /// table is one. So is a slot nothing holds: `unregister_consumer`
+    /// clears the active flag and leaves the cursor where its last
+    /// holder stopped, so the distance from the producer to that cursor
+    /// is a number about nobody, and it grows with every push.
+    ///
+    /// What this does not answer, which is the thing callers reach for
+    /// it to find out: a consumer registers at the head, so one that
+    /// registered after everything was published reads zero here and has
+    /// missed all of it. Zero means nothing is waiting, not that nothing
+    /// was lost. `producer_position` at the moment of registration is
+    /// what says how much a consumer will never see.
+    pub fn try_lag(&self, consumer_idx: usize) -> Option<u64> {
+        if consumer_idx >= MAX_CONSUMERS {
+            return None;
+        }
         let hdr = self.header();
-        if consumer_idx >= MAX_CONSUMERS { return 0; }
+        if hdr.consumer_active[consumer_idx].load(Ordering::Acquire) == 0 {
+            return None;
+        }
         let prod = hdr.producer_seq.load(Ordering::Acquire);
         let my = hdr.consumer_seqs[consumer_idx].load(Ordering::Acquire);
-        prod.saturating_sub(my)
+        Some(prod.saturating_sub(my))
+    }
+
+    /// Number of messages this consumer has not yet read.
+    ///
+    /// `u64::MAX` when `consumer_idx` names no live consumer, because
+    /// zero there would say "caught up" about something that is not a
+    /// reader, which is the answer a caller can act on least. `try_lag`
+    /// says the same thing as an `Option`.
+    pub fn lag(&self, consumer_idx: usize) -> u64 {
+        self.try_lag(consumer_idx).unwrap_or(u64::MAX)
     }
 
     /// Current producer cursor (total messages pushed since creation).
@@ -518,6 +548,57 @@ impl SharedBroadcastRing {
         (0..MAX_CONSUMERS)
             .filter(|&i| hdr.consumer_active[i].load(Ordering::Acquire) != 0)
             .count()
+    }
+
+    /// Wait until `want` consumers have registered, and answer how many
+    /// are registered when the wait ends.
+    ///
+    /// A count below `want` means the timeout ran out first, and the
+    /// number is the shortfall: it says how many of the readers a
+    /// producer is about to publish for actually arrived.
+    ///
+    /// # Why a producer wants this
+    ///
+    /// A consumer registers at the head, so everything published before
+    /// it registered is lost to it, and nothing reports that: the push
+    /// succeeds, the ring does not error, and a reader that started late
+    /// looks exactly like one that is slow. The window is however long
+    /// registration takes, which across processes is however long
+    /// starting one takes, tens to hundreds of milliseconds during which
+    /// a producer can write a great deal.
+    ///
+    /// Publishing only once the readers are here closes that window.
+    /// It is the one thing a producer can do about the loss, because
+    /// after the fact there is nothing left to detect: `lag` reads zero
+    /// for a consumer that missed everything.
+    ///
+    /// # What it does not promise
+    ///
+    /// That consumers do not leave afterwards. It answers about the
+    /// moment it returns, and a consumer registered then can unregister
+    /// or its process can die immediately after. It is a starting gun,
+    /// not a guarantee of attendance.
+    #[must_use]
+    pub fn wait_for_consumers(&self, want: usize, timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        // Registration is a startup event, so the first look usually
+        // settles it and the rest of this never runs. Yielding before
+        // sleeping keeps the common case off the clock, whose
+        // granularity is a couple of hundred microseconds on some hosts
+        // and would otherwise set a floor on how fast this can answer.
+        for _ in 0..64 {
+            if self.active_consumer_count() >= want {
+                return self.active_consumer_count();
+            }
+            std::thread::yield_now();
+        }
+        loop {
+            let have = self.active_consumer_count();
+            if have >= want || Instant::now() >= deadline {
+                return have;
+            }
+            std::thread::sleep(Duration::from_micros(500));
+        }
     }
 
     pub fn flush(&self) -> Result<(), BroadcastError> {
@@ -696,6 +777,100 @@ mod tests {
         let mut buf = [0u8; BROADCAST_PAYLOAD_BYTES];
         r.try_recv(c, &mut buf).unwrap();
         assert_eq!(r.lag(c), 2);
+    }
+
+    /// An index the consumer table does not reach names no consumer, and
+    /// saying so is the whole point: zero there reads as "caught up"
+    /// about a reader that does not exist.
+    #[test]
+    fn lag_says_nothing_for_an_index_past_the_table() {
+        let p = tmp("lag-past-table");
+        let r = SharedBroadcastRing::create(&p, 8).unwrap();
+        for i in 0..3u32 {
+            r.try_push(&payload_of(i)).unwrap();
+        }
+        assert_eq!(r.try_lag(MAX_CONSUMERS), None);
+        assert_eq!(r.lag(MAX_CONSUMERS), u64::MAX);
+    }
+
+    /// A slot nobody holds names no consumer either, whether it was
+    /// never taken or has been given back. Its cursor stays where its
+    /// last holder left it, so the distance to the producer is a number
+    /// about nobody that grows with every push.
+    #[test]
+    fn lag_says_nothing_for_a_slot_nobody_holds() {
+        let p = tmp("lag-dead-slot");
+        let r = SharedBroadcastRing::create(&p, 8).unwrap();
+
+        // Never taken.
+        assert_eq!(r.try_lag(0), None);
+
+        let c = r.register_consumer().unwrap();
+        for i in 0..3u32 {
+            r.try_push(&payload_of(i)).unwrap();
+        }
+        assert_eq!(r.try_lag(c), Some(3));
+
+        // Given back. What it reads now must not depend on how much the
+        // producer goes on to publish.
+        r.unregister_consumer(c);
+        assert_eq!(r.try_lag(c), None);
+        assert_eq!(r.lag(c), u64::MAX);
+        for i in 3..6u32 {
+            r.try_push(&payload_of(i)).unwrap();
+        }
+        assert_eq!(r.try_lag(c), None);
+    }
+
+    /// The barrier answers at once when the readers are already there,
+    /// and reports the shortfall rather than hanging when they are not.
+    #[test]
+    fn waiting_for_consumers_reports_how_many_arrived() {
+        let p = tmp("await-cons");
+        let r = SharedBroadcastRing::create(&p, 8).unwrap();
+
+        // Nobody wanted, nobody needed.
+        assert_eq!(r.wait_for_consumers(0, Duration::from_millis(50)), 0);
+
+        r.register_consumer().unwrap();
+        r.register_consumer().unwrap();
+        assert_eq!(r.wait_for_consumers(2, Duration::from_millis(50)), 2);
+
+        // Short by one. The answer is what arrived, which is what a
+        // producer needs in order to say who it is missing.
+        let began = Instant::now();
+        assert_eq!(r.wait_for_consumers(3, Duration::from_millis(50)), 2);
+        assert!(
+            began.elapsed() >= Duration::from_millis(40),
+            "it must have actually waited, not given up on the first look"
+        );
+    }
+
+    /// A consumer arriving late releases the producer, which is the
+    /// whole point: the window this closes is however long starting a
+    /// reader takes.
+    #[test]
+    fn a_late_consumer_releases_the_barrier() {
+        let p = tmp("await-late");
+        let r = std::sync::Arc::new(SharedBroadcastRing::create(&p, 8).unwrap());
+
+        let joining = {
+            let r = std::sync::Arc::clone(&r);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                r.register_consumer().unwrap()
+            })
+        };
+
+        assert_eq!(r.wait_for_consumers(1, Duration::from_secs(5)), 1);
+        let consumer = joining.join().unwrap();
+
+        // And because the producer waited, the reader sees what it
+        // publishes rather than starting past it.
+        r.try_push(&payload_of(7)).unwrap();
+        let mut buf = [0u8; BROADCAST_PAYLOAD_BYTES];
+        r.try_recv(consumer, &mut buf).unwrap();
+        assert_eq!(unpack(&buf), 7);
     }
 
     #[test]
