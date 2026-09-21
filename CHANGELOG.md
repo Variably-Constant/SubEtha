@@ -9,6 +9,42 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+### Fixed
+
+- The wheel workflow installs the distribution by its own name. Both of
+  its check steps asked pip for `subetha`, which is what the package
+  imports as; the distribution is `subetha-ipc`, so pip matched no wheel
+  in `dist` and answered "from versions: none" on every platform. The
+  workflow had never been run, so a name wrong in both places had never
+  failed anything. Running it produced the first Linux wheels SubEtha
+  has published.
+
+- The README links the published Guide. Its Documentation section called
+  the Guide the canonical reference and then pointed at `wiki/`, the Hugo
+  source, so a reader following it got markdown rather than the Guide.
+  The site was named nowhere in that file although every crate README
+  carries a badge to it. There is now a badge, a line naming it, and
+  links to the four sections. GitHub Pages does not appear under a Wiki
+  tab, so a README link and the repository's Website field are the only
+  ways anyone finds it.
+
+- Three pages stated test counts measured before 0.5.0: the Python
+  install page said 494 and 7 skipped for a default build and 500 and 1
+  with both bridges, where the measured figures are 502 and 7, and 508
+  and 1. Both PowerShell pages said 178 Pester tests, where the measured
+  figure is 181 on each of PowerShell 7.6.6, Windows PowerShell 5.1 and
+  PowerShell 7.6.5 on Linux. The README badge said 1331, which matched
+  no suite, and is now one badge per surface.
+
+- Both PowerShell pages said that identical manifests follow from one
+  checkout, which is what `cargo pwrs merge` requires. One checkout is
+  not sufficient: the manifest gained fields between releases of the
+  tool, so two hosts on different versions of it produce different
+  manifests from the same source and the merge is refused. They now say
+  the tool version has to match as well, and that `cargo install --list`
+  is what settles it, because the newest binary on disk can be the
+  oldest version.
+
 ## [0.5.0] - 2026-09-20
 
 Three surfaces answer `lag` differently for a consumer that is not
