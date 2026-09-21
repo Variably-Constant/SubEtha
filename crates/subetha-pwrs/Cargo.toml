@@ -54,7 +54,11 @@ documentation surface it did not have: a reference generated from the module's o
 help covering all 135 cmdlets and 118 classes, a page showing what each value \
 actually looks like when a scenario is run against the built module, and a guide \
 covering installing, choosing a structure, runspaces and lifetimes, bridging two \
-hosts and troubleshooting. Both native libraries ship in the one module folder."""
+hosts and troubleshooting. Every cmdlet, class, enum and method the module exports \
+is reached by the Pester suite, and a gate suite fails the run when one is not: 181 \
+tests pass in PowerShell 7.6.6 and Windows PowerShell 5.1 on Windows x64, and in \
+PowerShell 7.6.5 on Ubuntu on Linux x64. Both native libraries ship in the one \
+module folder."""
 
 [lib]
 crate-type = ["cdylib"]
