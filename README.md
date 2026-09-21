@@ -15,11 +15,20 @@
 </p>
 
 <p align="center">
+  <a href="https://variably-constant.github.io/SubEtha/"><img alt="The SubEtha Guide" src="https://img.shields.io/badge/guide-variably--constant.github.io-blue"></a>
   <a href="LICENSE-MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <a href="rust-toolchain.toml"><img alt="Rust: stable" src="https://img.shields.io/badge/Rust-stable-brightgreen?logo=rust"></a>
   <img alt="Platforms: Win/Linux/macOS x86_64+ARM64" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20x86__64%20%7C%20ARM64-blue">
-  <img alt="Tests: 1331 passing" src="https://img.shields.io/badge/tests-1331%20passing-brightgreen">
+  <img alt="Rust tests: 1810 passing" src="https://img.shields.io/badge/Rust%20tests-1810%20passing-brightgreen">
+  <img alt="Python tests: 502 passing" src="https://img.shields.io/badge/Python%20tests-502%20passing-brightgreen">
+  <img alt="PowerShell tests: 181 passing" src="https://img.shields.io/badge/PowerShell%20tests-181%20passing-brightgreen">
   <img alt="Cross-process: 37 ns one-way" src="https://img.shields.io/badge/cross--process-37%20ns%20one--way-orange">
+</p>
+
+<p align="center">
+  <strong><a href="https://variably-constant.github.io/SubEtha/">Read the SubEtha Guide</a></strong> -
+  tutorials, how-to guides, the generated reference for every binding, and
+  the explanations behind them.
 </p>
 
 ---
@@ -1000,12 +1009,26 @@ The 1.62x `AdaptiveIpc::send::<u64>` speedup is delivered by an in-source `TypeI
 
 > *The original Guide outsold the Encyclopedia Galactica despite many omissions and much that was apocryphal, or at least wildly inaccurate, for two reasons: it was slightly cheaper, and it had the words DON'T PANIC printed in large friendly letters on the cover. The SubEtha Guide aspires to the same cover with fewer of the omissions: every number in it was measured, every example compiles, and the panics, where unavoidable, are documented.*
 
-The canonical reference is the SubEtha Guide:
+The canonical reference is the SubEtha Guide, published at
+**<https://variably-constant.github.io/SubEtha/>** (the *Don't Panic*
+edition). It carries the tutorials, the how-to guides for each binding,
+the generated reference for every cmdlet, class and method, and the
+explanations behind the design:
+
+- [Tutorials](https://variably-constant.github.io/SubEtha/docs/tutorial/): start here.
+- [How-to guides](https://variably-constant.github.io/SubEtha/docs/how-to/): installing, choosing a structure, making it fast, bridging two hosts, troubleshooting.
+- [Reference](https://variably-constant.github.io/SubEtha/docs/reference/): generated from the source and the built modules, per crate and per binding.
+- [Explanation](https://variably-constant.github.io/SubEtha/docs/explanation/): why the design is what it is.
+
+The pages are built from [`wiki/`](wiki/) by
+[`wiki-deploy.yml`](.github/workflows/wiki-deploy.yml) on every push to
+`main` that touches them, so that site and this repository never disagree.
+
+Also in this repository:
 
 - [`docs/CROSS_PROCESS_IPC_PERFORMANCE.md`](docs/CROSS_PROCESS_IPC_PERFORMANCE.md): the perf table with methodology audit and reproducibility instructions.
 - [`docs/cross_process_ipc_results.json`](docs/cross_process_ipc_results.json): machine-readable leaderboard, timestamped per run.
 - [`crates/subetha-cxc/src/mmf_dispatcher.rs`](crates/subetha-cxc/src/mmf_dispatcher.rs): the `MmfDispatcher` that maps workload shapes to primitives.
-- [`wiki/`](wiki/): Hugo-rendered SubEtha Guide (the *Don't Panic* edition).
 
 [`SENS_O_MATIC_WIRE.md`](SENS_O_MATIC_WIRE.md) at the repository root is
 the **normative** wire specification for the Sens-O-Matic transport: both
