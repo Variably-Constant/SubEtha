@@ -1,0 +1,70 @@
+# The macOS half of the PowerShell module.
+#
+# The module ships one native per platform under runtimes/<rid>/native/.
+# Windows, Linux and FreeBSD natives are built on hosts we own. No host
+# we own is arm64, so this is the only place an osx-arm64 dylib can come
+# from, and a release that wants one has to take it from here.
+#
+# It runs on every push rather than by dispatch because the alternative
+# is remembering, and not remembering is what left macOS untested across
+# three releases: the wheel workflow was dispatch-and-tag only, its tag
+# pattern matched no tag this project has ever cut, and so it had never
+# run at all until the night macOS was finally looked at.
+#
+# The suite runs here too. A native nobody has tested is not worth
+# shipping, and this is also the only machine that can test it.
+
+name: pwrs macos
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  module:
+    name: PowerShell module on macOS arm64
+    runs-on: macos-latest
+    env:
+      # macos-latest is aarch64. An x86 baseline here is accepted with a
+      # warning that says it is ignoring the processor, and miscompiles
+      # anyway - that is what made every f64 wrong in the macOS wheel.
+      # apple-a14 is the oldest Apple Silicon core, so a native built
+      # for it runs on every Mac that has one.
+      RUSTFLAGS: "-C target-cpu=apple-a14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the host has
+        shell: bash
+        run: |
+          uname -m
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          dotnet --version
+
+      - name: Install the build tool
+        run: cargo install cargo-pwrs --force
+
+      - name: Build the module
+        shell: bash
+        run: cargo pwrs build --release --manifest-dir crates/subetha-pwrs
+
+      - name: Run the Pester suite
+        shell: bash
+        run: cargo pwrs test --release --manifest-dir crates/subetha-pwrs
+
+      # The whole folder rather than the dylib alone, so whoever merges
+      # can check the manifest against the other platforms' before
+      # folding the native in. They must be identical or `cargo pwrs
+      # merge` refuses, and a mismatch means the hosts disagree about the
+      # build tool rather than about the source.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pwrs-module-osx-arm64
+          path: target/pwrs/SubEtha
