@@ -123,7 +123,7 @@ Local IPC normally means picking the least-bad option from a menu that all goes 
   <img alt="Cross-process IPC one-way latency comparison" src="docs/platform_ipc_dotplot.png">
 </picture>
 
-Measured **126-498x faster than the fastest canonical kernel IPC mechanism on every platform tested** (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback), and 5.0-11.4x faster than iceoryx2's zero-copy shared memory where it builds. Six platforms, 10,000 round-trips, 8-byte payloads, same backing everywhere. All four pinned channel shapes land between 36.8 and 114.9 ns one-way.
+Measured **126-499x faster than the fastest canonical kernel IPC mechanism on every platform tested** (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback), and 5.0-11.4x faster than iceoryx2's zero-copy shared memory where it builds. Six platforms, 10,000 round-trips, 8-byte payloads, same backing everywhere. All four pinned channel shapes land between 36.8 and 114.9 ns one-way.
 
 The rings are not only a cross-process tool. The same lock-free shapes run thread-to-thread with no mapped file, against `crossbeam_channel`, `flume`, `rtrb` and `std::sync::mpsc`. At 4 producers / 4 consumers a SubEtha shape wins on every multi-core host; the specialists still win where they are built to, and `rtrb` takes raw 1P/1C everywhere. None of that field crosses a process boundary at all.
 
