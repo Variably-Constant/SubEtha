@@ -9,6 +9,25 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+### Added
+
+- The Python wheel and the PowerShell module both work on macOS arm64,
+  and the module works on FreeBSD x64 as well. Every platform was
+  measured rather than assumed: 502 Python tests and 181 Pester tests on
+  macOS, and 181 Pester tests on FreeBSD under PowerShell 7.5.5 on
+  .NET 9. The module's managed half turns out to be reproducible, since
+  building one commit on Windows, Linux and macOS produces a
+  byte-identical manifest and shell assembly, so only the native library
+  is genuinely per-platform.
+
+  FreeBSD needs two things arranged that SubEtha does not control.
+  Building wants `PWRS_TOOLSET=5.3.0`, because the C# toolset the build
+  tool fetches by default requires .NET 10 and FreeBSD packages nothing
+  past 9. Running the suite wants `$IsLinux` set, because Pester decides
+  the platform from three booleans that are all false there and throws
+  rather than guessing. Neither is needed to use the module: it imports
+  on FreeBSD unaided and all 135 cmdlets work.
+
 ### Fixed
 
 - The wheel workflow installs the distribution by its own name. Both of

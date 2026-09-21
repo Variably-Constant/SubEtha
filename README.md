@@ -18,7 +18,7 @@
   <a href="https://pypi.org/project/subetha-ipc/"><img alt="PyPI" src="https://img.shields.io/pypi/v/subetha-ipc?label=PyPI"></a>
   <a href="https://www.powershellgallery.com/packages/SubEtha"><img alt="PowerShell Gallery" src="https://img.shields.io/powershellgallery/v/SubEtha?label=gallery"></a>
   <a href="LICENSE-MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20x86__64%20%7C%20ARM64-blue">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20FreeBSD%20%7C%20x86__64%20%7C%20ARM64-blue">
 </p>
 
 <p align="center">

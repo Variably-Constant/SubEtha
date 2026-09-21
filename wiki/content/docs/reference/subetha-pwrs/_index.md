@@ -517,10 +517,29 @@ against handles of their own.
 Only the native library under `runtimes/<rid>/native/` differs per
 platform, so each is built on its own machine and
 `cargo pwrs merge target/pwrs/SubEtha <folder built elsewhere>` folds
-them into one module. The two machines need the same `cargo pwrs`
-version as well as the same checkout, because the manifest gained fields
-between releases of the tool and `merge` refuses two that differ.
+them into one module. Every machine needs the same `cargo pwrs` version
+as well as the same checkout, because the manifest gained fields between
+releases of the tool and `merge` refuses two that differ. The managed
+half is reproducible: built on Windows, Linux and macOS from one commit,
+the manifest and the shell assembly come out byte-identical, so only the
+natives are genuinely per-platform.
 
-All 181 tests pass in pwsh 7.6.6 and in Windows PowerShell 5.1 on
-Windows x64, and in pwsh 7.6.5 on Ubuntu on Linux x64; a folder carrying
-both natives imports and runs on either.
+All 181 tests pass on each of four platforms:
+
+| Platform | Host | Native |
+|---|---|---|
+| Windows x64 | pwsh 7.6.6 and Windows PowerShell 5.1 | `win-x64/subetha_pwrs.dll` |
+| Linux x64 | pwsh 7.6.5 | `linux-x64/libsubetha_pwrs.so` |
+| macOS arm64 | pwsh 7.6.5 | `osx-arm64/libsubetha_pwrs.dylib` |
+| FreeBSD x64 | pwsh 7.5.5 on .NET 9 | `freebsd-x64/libsubetha_pwrs.so` |
+
+FreeBSD is the one that needs arranging, for two reasons that are not
+this module's. Building it needs `PWRS_TOOLSET=5.3.0`, because the C#
+compiler the tool fetches by default wants .NET 10 and FreeBSD packages
+nothing past 9. Running the suite needs `$IsLinux` set, because Pester
+decides the platform by testing three booleans that are all false there
+and throws rather than guessing; it reads them with `Get-Variable`,
+which resolves through the scope chain, so
+`Set-Variable -Name IsLinux -Value $true -Scope Global -Force` answers it
+without modifying Pester. The module itself needs neither: it imports on
+FreeBSD unaided and every cmdlet works.

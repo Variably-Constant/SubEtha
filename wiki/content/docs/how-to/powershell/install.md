@@ -6,8 +6,16 @@ weight: 10
 # Install the module
 
 `SubEtha` is on the PowerShell Gallery. One module folder carries both
-hosts and both platforms, so the same install serves PowerShell 7 on
-.NET 10 and Windows PowerShell 5.1, on Windows x64 and on Linux x64.
+hosts and every platform, so the same install serves PowerShell 7 and
+Windows PowerShell 5.1, on Windows x64, Linux x64 and macOS arm64.
+
+The PowerShell 7 half is not tied to a particular .NET. Its assembly is
+compiled against the reference set of the PowerShell that built it and
+declares no target framework, so it runs on the PowerShell that loads
+it. That is why the module works on FreeBSD, where PowerShell 7.5.5 runs
+on .NET 9: the module imports and all 135 cmdlets work, and only the
+test harness needs coaxing, which [the reference](../../reference/subetha-pwrs/)
+explains.
 
 ## From the gallery
 
