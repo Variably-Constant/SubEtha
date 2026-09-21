@@ -42,16 +42,19 @@ license-uri = "https://github.com/Variably-Constant/SubEtha/blob/main/LICENSE-MI
 icon-uri = "https://raw.githubusercontent.com/Variably-Constant/SubEtha/main/assets/icon.png"
 copyright = "Copyright (c) 2026 Markus Newton"
 company = "Variably Constant"
-release-notes = """First release. 135 cmdlets over the shared-memory families: \
-atomics and counters, rings and queues, channels and pub/sub, locks and latches, \
-maps and slabs and lists, the probabilistic sketches, the versioned structures, \
-the link sensing that reports loss, timing and capacity on a path, and the TCP \
-and QUIC bridges. Get-Help carries a synopsis, a description, help on \
-every parameter and an example for each of them. Every cmdlet, class, enum and \
-method the module exports is reached by the Pester suite, and a gate suite fails \
-the run when one is not: 178 tests pass in PowerShell 7.6.6 and Windows PowerShell \
-5.1 on Windows x64, and in PowerShell 7.6.5 on Ubuntu 24.04 on Linux x64. Both \
-native libraries ship in the one module folder."""
+release-notes = """A broadcast producer can wait for its readers. A consumer \
+registers at the head, so anything published before it registered is lost to it \
+and nothing reports that: the push succeeds, and a reader that started late looks \
+exactly like one that is slow. WaitForConsumers closes that window and answers how \
+many readers are present when the wait ends, so a shortfall is a number rather than \
+a hang. Lag now answers $null instead of a number when the id names no live \
+consumer, which covers an id past the table and one that has been given back; a \
+script that only ever passes a registered id sees no change. The module also has a \
+documentation surface it did not have: a reference generated from the module's own \
+help covering all 135 cmdlets and 118 classes, a page showing what each value \
+actually looks like when a scenario is run against the built module, and a guide \
+covering installing, choosing a structure, runspaces and lifetimes, bridging two \
+hosts and troubleshooting. Both native libraries ship in the one module folder."""
 
 [lib]
 crate-type = ["cdylib"]

@@ -9,6 +9,18 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-20
+
+Three surfaces answer `lag` differently for a consumer that is not
+there, which is why this is a minor rather than a patch. Python's
+`BroadcastRing.lag` returns `int | None` where it returned `int`,
+PowerShell's `Lag` returns `$null` where it returned a number, and
+`subetha_broadcast_lag` returns
+`SUBETHA_E_BROADCAST_INVALID_CONSUMER` where it returned `SUBETHA_OK`
+and wrote a number into `out`. A caller that only ever passes a
+registered consumer id sees no change. The `### Changed` entry below
+says what the old answers were and why they were wrong.
+
 ### Added
 
 - A guide layer for both bindings, under
@@ -1696,7 +1708,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.4.1...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/Variably-Constant/SubEtha/compare/0.4.1...0.5.0
 [0.4.1]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/Variably-Constant/SubEtha/commit/0.4.0
 [0.3.3]: https://github.com/Variably-Constant/SubEtha/commit/0.3.3

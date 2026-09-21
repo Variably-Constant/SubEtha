@@ -40,8 +40,8 @@ and installs nothing, which suits a repository that carries its
 dependencies or a machine with no route to the gallery:
 
 ```powershell
-Save-PSResource -Name SubEtha -Version 0.4.1 -Path .\lib -TrustRepository
-Import-Module .\lib\SubEtha\0.4.1\SubEtha.psd1
+Save-PSResource -Name SubEtha -Version 0.5.0 -Path .\lib -TrustRepository
+Import-Module .\lib\SubEtha\0.5.0\SubEtha.psd1
 ```
 
 Copy that folder to an offline machine and `Import-Module` against the
