@@ -431,13 +431,16 @@ mod tests {
     #[test]
     fn refill_scales_with_elapsed_time() {
         let p = tmp("refill");
-        // 1000 tokens/sec means 1 token per millisecond. Windows are
-        // measured from before the build, where the refill clock starts:
-        // draining a full bucket takes the fast path, which leaves the
-        // stamp alone, so a later read credits everything since the build
-        // rather than since the drain.
+        // 1000 tokens/sec means 1 token per millisecond. The refill clock
+        // starts inside the build, when the region is laid out after its
+        // file is made and mapped, so the time since the build returned is
+        // a floor on what has accrued and the time since before it is a
+        // ceiling. Draining a full bucket takes the fast path, which
+        // leaves the stamp alone, so a later read credits everything since
+        // the build rather than since the drain.
         let started = Instant::now();
         let r = SharedRateLimiter::create(&p, 100, 1000).unwrap();
+        let built = Instant::now();
         r.try_acquire(100).unwrap();
         let just_after = r.available();
         let accrued = (started.elapsed().as_millis() as u32).min(100);
@@ -451,7 +454,7 @@ mod tests {
         // that the scheduler turns into 60ms refills 60 tokens, which a
         // window built around the requested 30 rejects.
         thread::sleep(Duration::from_millis(30));
-        let lo = (started.elapsed().as_millis() as u32).min(100);
+        let lo = (built.elapsed().as_millis() as u32).min(100);
         let after = r.available();
         let hi = (started.elapsed().as_millis() as u32).min(100);
         assert!(
