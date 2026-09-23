@@ -3153,7 +3153,17 @@ static void test_tcp_bridge(const char *scratch_prefix)
     }
 
     /* Built with the feature: a server on a port the system picks, a
-     * client aimed at it, and the ring carried between them. */
+     * client aimed at it, and a ring carried between them. `ring` is the
+     * sink; the bridge pushes as its producer 0, and this thread pops as
+     * its consumer. */
+    subetha_handle source = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &source), SUBETHA_OK);
+    uint32_t source_producer = 0, source_consumer = 0, sink_producer = 0, sink_consumer = 0;
+    EXPECT_CODE(subetha_ring_register_producer(source, &source_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(source, &source_consumer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_producer(ring, &sink_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(ring, &sink_consumer), SUBETHA_OK);
+
     subetha_handle server = SUBETHA_HANDLE_NONE;
     EXPECT_CODE(subetha_tcp_bridge_server(ring, "127.0.0.1:0", SUBETHA_MODE_MANAGED, &server),
                 SUBETHA_OK);
@@ -3169,7 +3179,62 @@ static void test_tcp_bridge(const char *scratch_prefix)
     EXPECT_CODE(subetha_tcp_bridge_read_stats(server, &stats), SUBETHA_OK);
     CHECK(stats.role == SUBETHA_BRIDGE_SERVER && !stats.running && !stats.finished);
 
+    /* The items sit in the source ring before the client runs, each a
+     * payload whose every byte follows from its index. */
+    enum { TCP_ITEMS = 40 };
+    for (uint32_t i = 0; i < TCP_ITEMS; i++) {
+        uint8_t payload[SUBETHA_RING_PAYLOAD_MAX];
+        for (size_t b = 0; b < sizeof payload; b++) {
+            payload[b] = (uint8_t)(i * 7u + b);
+        }
+        memcpy(payload, &i, sizeof i);
+        EXPECT_CODE(subetha_ring_try_push(source, source_producer, payload, sizeof payload), SUBETHA_OK);
+    }
+    /* Managed: the accept runs on the server's own thread and this
+     * returns at once. */
+    EXPECT_CODE(subetha_tcp_bridge_run(server, TCP_ITEMS, 10000), SUBETHA_OK);
+
+    char addr[64];
+    snprintf(addr, sizeof addr, "127.0.0.1:%u", (unsigned)port);
+    subetha_handle client = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_tcp_bridge_client(source, addr, SUBETHA_MODE_STRICT, &client), SUBETHA_OK);
+    /* Strict: this thread carries the transfer and returns when every
+     * item has shipped. */
+    EXPECT_CODE(subetha_tcp_bridge_run(client, TCP_ITEMS, 10000), SUBETHA_OK);
+    EXPECT_CODE(subetha_tcp_bridge_read_stats(client, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_CLIENT && stats.finished && !stats.running);
+    CHECK(stats.items == TCP_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* The server's run ends once the items have landed in the sink. */
+    for (int waited = 0; waited < 10000; waited++) {
+        EXPECT_CODE(subetha_tcp_bridge_read_stats(server, &stats), SUBETHA_OK);
+        if (stats.finished) {
+            break;
+        }
+        sleep_us(1000);
+    }
+    CHECK(stats.finished && stats.items == TCP_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* Every item, in order, byte for byte, and nothing after them. */
+    for (uint32_t i = 0; i < TCP_ITEMS; i++) {
+        uint8_t out[SUBETHA_RING_SLOT_BYTES];
+        size_t len = 0;
+        EXPECT_CODE(subetha_ring_try_pop(ring, sink_consumer, out, sizeof out, &len), SUBETHA_OK);
+        uint32_t got = 0;
+        memcpy(&got, out, sizeof got);
+        bool whole = len == SUBETHA_RING_SLOT_BYTES && got == i;
+        for (size_t b = sizeof got; b < SUBETHA_RING_PAYLOAD_MAX; b++) {
+            whole = whole && out[b] == (uint8_t)(i * 7u + b);
+        }
+        CHECK(whole);
+    }
+    uint8_t spare[SUBETHA_RING_SLOT_BYTES];
+    size_t spare_len = 0;
+    EXPECT_CODE(subetha_ring_try_pop(ring, sink_consumer, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
+
+    EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(ring), SUBETHA_OK);
 }
 
@@ -3278,6 +3343,128 @@ static void test_blocking_tcp_bridge(const char *scratch_prefix)
     uint8_t spare[SUBETHA_RING_SLOT_BYTES];
     size_t spare_len = 0;
     EXPECT_CODE(subetha_spsc_try_pop(sink, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
+
+    EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(sink), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
+}
+
+/* The QUIC bridge over the loopback, under a certificate the test mints
+ * for itself. Its entry points exist in every build, and minting the
+ * certificate is the call that says which build this is: a library
+ * without the feature must refuse every call and name the feature, and
+ * one with it must carry a ring across the connection. The server runs in
+ * managed mode so its accept sits on its own thread; the client runs in
+ * strict mode and returns once the server has acknowledged every item and
+ * the client's close has gone out; the sink ring is read back on this
+ * thread once the server's run reports finished. */
+static void test_quic_bridge(const char *scratch_prefix)
+{
+    (void)scratch_prefix;
+    subetha_handle source = SUBETHA_HANDLE_NONE, sink = SUBETHA_HANDLE_NONE, bridge = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &source), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &sink), SUBETHA_OK);
+
+    static uint8_t cert[8192];
+    static uint8_t key[8192];
+    size_t cert_len = 0, key_len = 0;
+    int32_t minted = subetha_quic_self_signed_cert("localhost", cert, sizeof cert, &cert_len, key, sizeof key,
+                                                   &key_len);
+    if (minted == SUBETHA_E_NOT_SUPPORTED) {
+        char detail[512];
+        size_t needed = subetha_last_error_detail(detail, sizeof detail);
+        CHECK(needed > 0 && strstr(detail, "quic-bridge") != NULL);
+        EXPECT_CODE(subetha_quic_bridge_server(sink, "127.0.0.1:0", cert, 1, key, 1, SUBETHA_MODE_STRICT, &bridge),
+                    SUBETHA_E_NOT_SUPPORTED);
+        EXPECT_CODE(subetha_quic_bridge_client(source, "127.0.0.1:9", "127.0.0.1:0", "localhost", cert, 1,
+                                               SUBETHA_MODE_STRICT, &bridge),
+                    SUBETHA_E_NOT_SUPPORTED);
+        EXPECT_CODE(subetha_handle_destroy(sink), SUBETHA_OK);
+        EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
+        return;
+    }
+    EXPECT_CODE(minted, SUBETHA_OK);
+    CHECK(cert_len > 0 && key_len > 0);
+
+    /* The bridge pops the source as its consumer 0 and pushes the sink as
+     * its producer 0; this thread pushes the source and pops the sink. */
+    uint32_t source_producer = 0, source_consumer = 0, sink_producer = 0, sink_consumer = 0;
+    EXPECT_CODE(subetha_ring_register_producer(source, &source_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(source, &source_consumer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_producer(sink, &sink_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(sink, &sink_consumer), SUBETHA_OK);
+
+    subetha_handle server = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_quic_bridge_server(sink, "127.0.0.1:0", cert, cert_len, key, key_len, SUBETHA_MODE_MANAGED,
+                                           &server),
+                SUBETHA_OK);
+    uint32_t kind = 0;
+    EXPECT_CODE(subetha_handle_kind(server, &kind), SUBETHA_OK);
+    CHECK(kind == SUBETHA_KIND_QUIC_BRIDGE);
+    uint16_t port = 0;
+    EXPECT_CODE(subetha_quic_bridge_local_port(server, &port), SUBETHA_OK);
+    CHECK(port != 0);
+    subetha_quic_bridge_stats stats;
+    EXPECT_CODE(subetha_quic_bridge_read_stats(server, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_SERVER && !stats.running && !stats.finished);
+
+    /* The items sit in the source ring before the client runs, each a
+     * payload whose every byte follows from its index. */
+    enum { QUIC_ITEMS = 40 };
+    for (uint32_t i = 0; i < QUIC_ITEMS; i++) {
+        uint8_t payload[SUBETHA_RING_PAYLOAD_MAX];
+        for (size_t b = 0; b < sizeof payload; b++) {
+            payload[b] = (uint8_t)(i * 7u + b);
+        }
+        memcpy(payload, &i, sizeof i);
+        EXPECT_CODE(subetha_ring_try_push(source, source_producer, payload, sizeof payload), SUBETHA_OK);
+    }
+    /* Managed: the accept runs on the server's own thread and this
+     * returns at once. */
+    EXPECT_CODE(subetha_quic_bridge_run(server, QUIC_ITEMS, 10000), SUBETHA_OK);
+
+    char addr[64];
+    snprintf(addr, sizeof addr, "127.0.0.1:%u", (unsigned)port);
+    subetha_handle client = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_quic_bridge_client(source, addr, "127.0.0.1:0", "localhost", cert, cert_len,
+                                           SUBETHA_MODE_STRICT, &client),
+                SUBETHA_OK);
+    EXPECT_CODE(subetha_quic_bridge_local_port(client, &port), SUBETHA_E_INVALID_ARGUMENT);
+    /* Strict: this thread carries the transfer and returns when the
+     * server has acknowledged every item. */
+    EXPECT_CODE(subetha_quic_bridge_run(client, QUIC_ITEMS, 10000), SUBETHA_OK);
+    EXPECT_CODE(subetha_quic_bridge_read_stats(client, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_CLIENT && stats.finished && !stats.running);
+    CHECK(stats.items == QUIC_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* The server's run ends once the items have landed in the sink and
+     * the client has closed the connection. */
+    for (int waited = 0; waited < 10000; waited++) {
+        EXPECT_CODE(subetha_quic_bridge_read_stats(server, &stats), SUBETHA_OK);
+        if (stats.finished) {
+            break;
+        }
+        sleep_us(1000);
+    }
+    CHECK(stats.finished && stats.items == QUIC_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* Every item, in order, byte for byte, and nothing after them. */
+    for (uint32_t i = 0; i < QUIC_ITEMS; i++) {
+        uint8_t out[SUBETHA_RING_SLOT_BYTES];
+        size_t len = 0;
+        EXPECT_CODE(subetha_ring_try_pop(sink, sink_consumer, out, sizeof out, &len), SUBETHA_OK);
+        uint32_t got = 0;
+        memcpy(&got, out, sizeof got);
+        bool whole = len == SUBETHA_RING_SLOT_BYTES && got == i;
+        for (size_t b = sizeof got; b < SUBETHA_RING_PAYLOAD_MAX; b++) {
+            whole = whole && out[b] == (uint8_t)(i * 7u + b);
+        }
+        CHECK(whole);
+    }
+    uint8_t spare[SUBETHA_RING_SLOT_BYTES];
+    size_t spare_len = 0;
+    EXPECT_CODE(subetha_ring_try_pop(sink, sink_consumer, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
 
     EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
@@ -5985,6 +6172,7 @@ int subetha_ctest_run(const char *scratch_prefix)
     test_waker(scratch_prefix);
     test_tcp_bridge(scratch_prefix);
     test_blocking_tcp_bridge(scratch_prefix);
+    test_quic_bridge(scratch_prefix);
     test_sens(scratch_prefix);
     test_sens_standalone_codes(scratch_prefix);
     test_endpoint_registry(scratch_prefix);

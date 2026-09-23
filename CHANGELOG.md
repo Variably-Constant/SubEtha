@@ -96,6 +96,16 @@ heading links to the commit that cut it.
   runtime ends with the call, as the C API's does. The 200 rounds took
   26 s in place of 4 s in 7.4.20 and 52 s in place of 7 s in 7.6.5.
 
+- The C API's QUIC bridge server could not be made:
+  `subetha_quic_bridge_server` bound its endpoint with no runtime
+  entered, which quinn refuses, so every call answered
+  `SUBETHA_E_RING_IO`. The TCP bridge server could be made but never
+  received: it bound its listener on a runtime that ended with the
+  constructor and accepted on another. Each server now keeps the runtime
+  it bound in and runs every accept on it. The C suite carries 40 items
+  end to end through each bridge; on FreeBSD x64 with the transports
+  built, it failed 176 checks before and passes after.
+
 - `Sidecar::scan_now` could drain an observation ring while the node's
   own scan thread drained it too, although a ring has one consumer, so
   observations were counted twice or replayed and a slot could be read
