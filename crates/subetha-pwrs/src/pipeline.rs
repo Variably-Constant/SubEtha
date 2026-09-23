@@ -23,6 +23,9 @@ enum Mover {
     SendRecv,
     /// `Send(producer, item)` and `Recv(consumer)`.
     SendRecvNumbered,
+    /// `Push(item)` and `Recv(consumer)`: a broadcast ring's producer is
+    /// unnumbered and its consumers are numbered.
+    Broadcast,
     /// `Publish(item)`; reading needs a subscriber, whose `Next()`.
     Publish,
     /// `Next()` only.
@@ -38,7 +41,7 @@ impl Mover {
             | "SubEtha.MpscConsumer" | "SubEtha.MpmcProducer" | "SubEtha.MpmcConsumer" | "SubEtha.WorkQueue" => Mover::PushPop,
             "SubEtha.Channel" | "SubEtha.AdaptiveQueue" | "SubEtha.SensSender" => Mover::SendRecv,
             "SubEtha.Ring" | "SubEtha.CapacityRing" | "SubEtha.LocaleRing" => Mover::SendRecvNumbered,
-            "SubEtha.BroadcastRing" => Mover::SendRecvNumbered,
+            "SubEtha.BroadcastRing" => Mover::Broadcast,
             "SubEtha.PubSub" => Mover::Publish,
             "SubEtha.Subscriber" => Mover::Next,
             "SubEtha.Deque" => Mover::Deque,
@@ -92,12 +95,9 @@ impl Cmdlet for SendSubEthaItem {
             Mover::SendRecv => self.to.call("Send", &[item])?,
             Mover::SendRecvNumbered => {
                 let producer = self.producer.unwrap_or(0).into_ps()?;
-                if self.to.type_name()? == "SubEtha.BroadcastRing" {
-                    self.to.call("Push", &[item])?
-                } else {
-                    self.to.call("Send", &[producer, item])?
-                }
+                self.to.call("Send", &[producer, item])?
             }
+            Mover::Broadcast => self.to.call("Push", &[item])?,
             Mover::Publish => {
                 self.to.call("Publish", &[item])?;
                 return Ok(());
@@ -158,7 +158,9 @@ impl Cmdlet for ReceiveSubEthaItem {
                     }
                 }
                 Mover::SendRecv => self.from.call("Recv", &[])?,
-                Mover::SendRecvNumbered => self.from.call("Recv", &[self.consumer.unwrap_or(0).into_ps()?])?,
+                Mover::SendRecvNumbered | Mover::Broadcast => {
+                    self.from.call("Recv", &[self.consumer.unwrap_or(0).into_ps()?])?
+                }
                 Mover::Next => self.from.call("Next", &[])?,
                 Mover::Publish => return Err(arg_err("a SubEtha.PubSub is read through a subscriber; receive from its Subscribe()").terminating()),
             };
