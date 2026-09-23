@@ -1,11 +1,25 @@
-//! Workspace tasks that cargo alone does not cover: the C ABI's install
-//! layout, and the packaging gate that proves a C consumer can find and
-//! link it.
+//! Workspace tasks that cargo alone does not cover: the release gate over
+//! every crate and every feature, the C ABI's install layout, and the
+//! packaging gate that proves a C consumer can find and link it.
 //!
 //! ```text
+//! cargo run -p xtask -- gate
 //! cargo run -p xtask -- ffi-install --prefix <dir> [--debug]
 //! cargo run -p xtask -- ffi-package-gate
 //! ```
+//!
+//! `gate` is the release gate, run on each host that ships. It lints with
+//! every warning an error and tests: first the workspace with default
+//! features, then each crate that declares features on its own, with its
+//! defaults and then with every feature it declares, and then the Python
+//! package's own suite as it ships and with every feature. A feature is
+//! left off only where [`LEFT_OFF`] names it, and the run says so with the
+//! reason; every other feature is built on every host, so one declared
+//! tomorrow is in the gate without an edit here. Each crate runs in its
+//! own cargo invocation, so no crate is tested with a feature only
+//! another crate turned on. Everything builds without debug info, which
+//! keeps the run within a gate host's disk. The run ends with every step
+//! and its verdict.
 //!
 //! `ffi-install` builds `subetha-ffi` and lays out `include/`, `lib/`,
 //! `bin/` on Windows, `lib/pkgconfig/subetha.pc` and `lib/cmake/subetha/`
@@ -25,7 +39,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- ffi-install --prefix <dir> [--debug]\n       cargo run -p xtask -- ffi-package-gate";
+const USAGE: &str = "usage: cargo run -p xtask -- gate\n       cargo run -p xtask -- ffi-install --prefix <dir> [--debug]\n       cargo run -p xtask -- ffi-package-gate";
 
 /// The line a consumer's run prints when the ABI worked end to end.
 const CONSUMER_OK: &str = "subetha consumer: ok";
@@ -33,6 +47,7 @@ const CONSUMER_OK: &str = "subetha consumer: ok";
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let outcome = match args.first().map(String::as_str) {
+        Some("gate") => gate(&args[1..]),
         Some("ffi-install") => ffi_install_command(&args[1..]),
         Some("ffi-package-gate") => ffi_package_gate(&args[1..]),
         _ => Err(USAGE.to_string()),
@@ -42,6 +57,371 @@ fn main() -> ExitCode {
         Err(why) => {
             eprintln!("xtask: {why}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The hosts a [`LeftOff`] entry applies on.
+enum Hosts {
+    Every,
+    /// Named as `std::env::consts::OS` names them.
+    Only(&'static [&'static str]),
+}
+
+impl Hosts {
+    fn covers(&self, os: &str) -> bool {
+        match self {
+            Hosts::Every => true,
+            Hosts::Only(names) => names.contains(&os),
+        }
+    }
+}
+
+/// A feature a crate's full pass leaves off, and why.
+struct LeftOff {
+    krate: &'static str,
+    feature: &'static str,
+    hosts: Hosts,
+    why: &'static str,
+}
+
+/// Every feature the gate leaves off. A feature not named here is built
+/// on every host.
+const LEFT_OFF: &[LeftOff] = &[
+    LeftOff {
+        krate: "subetha-py",
+        feature: "extension-module",
+        hosts: Hosts::Every,
+        why: "it leaves libpython out of the link, which the crate's test binaries need; \
+              the Python pass builds the extension with it",
+    },
+    LeftOff {
+        krate: "subetha-cxc",
+        feature: "zmq-bench",
+        hosts: Hosts::Only(&["freebsd"]),
+        why: "zmq-sys 0.12 always compiles its vendored libzmq 4.3.4, and zeromq-src \
+              has no FreeBSD configuration: it never generates platform.hpp",
+    },
+];
+
+/// One step of the gate and how it ended.
+enum Verdict {
+    Pass,
+    Fail(String),
+    Skipped(String),
+}
+
+/// Every step the gate took, in order, for the summary it ends with.
+#[derive(Default)]
+struct Report {
+    steps: Vec<(String, Verdict)>,
+}
+
+impl Report {
+    /// Runs `cmd` with its output going straight to the gate's own, and
+    /// records whether it succeeded. Answers whether it did, so a step
+    /// that needs the one before it can stand down.
+    fn step(&mut self, what: String, cmd: &mut Command) -> bool {
+        println!("=== GATE {what} ===");
+        let verdict = match cmd.status() {
+            Ok(status) if status.success() => Verdict::Pass,
+            Ok(status) => Verdict::Fail(format!("exited {status}")),
+            Err(e) => Verdict::Fail(format!("could not be started: {e}")),
+        };
+        let passed = matches!(verdict, Verdict::Pass);
+        if let Verdict::Fail(why) = &verdict {
+            println!("=== GATE {what}: FAIL {why} ===");
+        }
+        self.steps.push((what, verdict));
+        passed
+    }
+
+    fn fail(&mut self, what: String, why: String) {
+        println!("=== GATE {what}: FAIL {why} ===");
+        self.steps.push((what, Verdict::Fail(why)));
+    }
+
+    fn skip(&mut self, what: String, why: String) {
+        println!("=== GATE {what}: SKIPPED {why} ===");
+        self.steps.push((what, Verdict::Skipped(why)));
+    }
+
+    fn failures(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|(_, verdict)| matches!(verdict, Verdict::Fail(_)))
+            .count()
+    }
+
+    fn print(&self) {
+        println!("=== GATE SUMMARY on {} ===", env::consts::OS);
+        for (what, verdict) in &self.steps {
+            match verdict {
+                Verdict::Pass => println!("PASS     {what}"),
+                Verdict::Fail(why) => println!("FAIL     {what}: {why}"),
+                Verdict::Skipped(why) => println!("SKIPPED  {what}: {why}"),
+            }
+        }
+    }
+}
+
+/// A workspace member and the features it declares, `default` aside.
+struct Member {
+    name: String,
+    features: Vec<String>,
+}
+
+fn gate(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!("gate takes no arguments\n{USAGE}"));
+    }
+    let root = workspace_root();
+    let members = workspace_members(&root)?;
+    let python = python_interpreter();
+    let py = python.as_deref();
+    let mut report = Report::default();
+
+    // pyo3's build script needs an interpreter, so without one the Python
+    // crate cannot be built at all, and every pass says so.
+    let mut workspace_args = vec!["--workspace"];
+    if python.is_none() {
+        workspace_args.extend(["--exclude", "subetha-py"]);
+        report.skip(
+            "subetha-py in every pass".to_string(),
+            "no Python interpreter on this host, and pyo3 needs one to build".to_string(),
+        );
+    }
+
+    // The workspace as it ships: every crate with its default features,
+    // which is also every feature-gated entry point's refusal.
+    report.step(
+        "clippy workspace, default features".to_string(),
+        cargo(&root, py)
+            .arg("clippy")
+            .args(&workspace_args)
+            .args(["--all-targets", "--", "-D", "warnings"]),
+    );
+    report.step(
+        "test workspace, default features".to_string(),
+        cargo(&root, py).arg("test").args(&workspace_args).arg("--no-fail-fast"),
+    );
+
+    // Each crate with features on its own, so nothing it is tested with
+    // came from another crate: its defaults, then every feature it
+    // declares that this host can build.
+    for member in members.iter().filter(|m| !m.features.is_empty()) {
+        if member.name == "subetha-py" && python.is_none() {
+            continue;
+        }
+        let name = member.name.as_str();
+        report.step(
+            format!("clippy {name}, default features"),
+            cargo(&root, py).args(["clippy", "-p", name, "--all-targets", "--", "-D", "warnings"]),
+        );
+        report.step(
+            format!("test {name}, default features"),
+            cargo(&root, py).args(["test", "-p", name, "--no-fail-fast"]),
+        );
+        let mut on = Vec::new();
+        for feature in &member.features {
+            let left_off = LEFT_OFF.iter().find(|l| {
+                l.krate == name && l.feature == feature.as_str() && l.hosts.covers(env::consts::OS)
+            });
+            match left_off {
+                Some(l) => report.skip(format!("{name} feature {feature}"), l.why.to_string()),
+                None => on.push(feature.as_str()),
+            }
+        }
+        let on = on.join(",");
+        report.step(
+            format!("clippy {name}, features {on}"),
+            cargo(&root, py).args([
+                "clippy",
+                "-p",
+                name,
+                "--all-targets",
+                "--features",
+                on.as_str(),
+                "--",
+                "-D",
+                "warnings",
+            ]),
+        );
+        report.step(
+            format!("test {name}, features {on}"),
+            cargo(&root, py).args(["test", "-p", name, "--no-fail-fast", "--features", on.as_str()]),
+        );
+    }
+
+    match (&python, members.iter().find(|m| m.name == "subetha-py")) {
+        (Some(python), Some(py)) => python_passes(&root, python, &py.features, &mut report),
+        (None, _) => {}
+        (Some(_), None) => report.fail(
+            "pytest subetha-py".to_string(),
+            "cargo metadata lists no subetha-py".to_string(),
+        ),
+    }
+
+    report.print();
+    match report.failures() {
+        0 => Ok(()),
+        n => Err(format!("{n} gate step(s) failed")),
+    }
+}
+
+/// The cargo that launched this task, run from the workspace root. The
+/// Python the gate found is named to pyo3, so the crate builds against
+/// the interpreter its suite then runs in.
+fn cargo(root: &Path, python: Option<&Path>) -> Command {
+    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.current_dir(root);
+    if let Some(python) = python {
+        cmd.env("PYO3_PYTHON", python);
+    }
+    without_debug_info(&mut cmd);
+    cmd
+}
+
+/// Builds with no debug info. The gate keeps a debug build of every
+/// feature configuration in one target directory, and debug info is
+/// most of each one's size; with it, a full gate outgrows 15 GB of disk.
+/// Code, features and tests are unchanged; a failing test's backtrace
+/// loses its file and line numbers.
+fn without_debug_info(cmd: &mut Command) -> &mut Command {
+    cmd.env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .env("CARGO_PROFILE_TEST_DEBUG", "0")
+}
+
+/// Every workspace member with the features its manifest declares, as
+/// cargo reads them.
+fn workspace_members(root: &Path) -> Result<Vec<Member>, String> {
+    let out = cargo(root, None)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .map_err(|e| format!("cargo metadata could not be run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo metadata failed ({}):\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("cargo metadata printed no JSON: {e}"))?;
+    let ids: Vec<&str> = meta["workspace_members"]
+        .as_array()
+        .ok_or("cargo metadata listed no workspace members")?
+        .iter()
+        .map(|id| id.as_str().ok_or("a workspace member id is not a string"))
+        .collect::<Result<_, _>>()?;
+    let mut members = Vec::new();
+    for package in meta["packages"]
+        .as_array()
+        .ok_or("cargo metadata listed no packages")?
+    {
+        let id = package["id"].as_str().ok_or("a package has no id")?;
+        if !ids.contains(&id) {
+            continue;
+        }
+        let name = package["name"].as_str().ok_or("a package has no name")?;
+        let declared = package["features"]
+            .as_object()
+            .ok_or_else(|| format!("{name} has no feature table"))?;
+        let mut features: Vec<String> = declared
+            .keys()
+            .filter(|feature| feature.as_str() != "default")
+            .cloned()
+            .collect();
+        features.sort();
+        members.push(Member {
+            name: name.to_string(),
+            features,
+        });
+    }
+    if members.len() != ids.len() {
+        return Err(format!(
+            "cargo metadata listed {} workspace members and described {}",
+            ids.len(),
+            members.len()
+        ));
+    }
+    members.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(members)
+}
+
+/// The interpreter the gate builds and tests against: `PYO3_PYTHON` when
+/// it is set, as pyo3 itself reads it, and otherwise the first Python on
+/// PATH that runs and carries `venv`. A name on PATH is not enough on
+/// Windows, where `python3.exe` can be the Store's alias, which offers to
+/// install Python rather than running it.
+fn python_interpreter() -> Option<PathBuf> {
+    if let Some(named) = env::var_os("PYO3_PYTHON") {
+        return Some(PathBuf::from(named));
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &["python", "python3"]
+    } else {
+        &["python3", "python"]
+    };
+    names.iter().filter_map(|name| find_on_path(name)).find(|candidate| {
+        Command::new(candidate)
+            .args(["-c", "import venv"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    })
+}
+
+/// The Python package's own suite, built by maturin into a virtual
+/// environment made for the run: as it ships, and with every feature
+/// the crate declares.
+fn python_passes(root: &Path, python: &Path, features: &[String], report: &mut Report) {
+    let venv = target_dir(root).join("gate-python");
+    if let Err(why) = remove_tree(&venv) {
+        report.fail("python environment".to_string(), why);
+        return;
+    }
+    let venv_python = if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    };
+    let made = report.step(
+        "python environment".to_string(),
+        Command::new(python).arg("-m").arg("venv").arg(&venv),
+    ) && report.step(
+        "python environment: maturin and pytest".to_string(),
+        Command::new(&venv_python).args(["-m", "pip", "install", "--upgrade", "pip", "maturin", "pytest"]),
+    );
+    if !made {
+        report.skip(
+            "pytest subetha-py".to_string(),
+            "the environment it runs in could not be made".to_string(),
+        );
+        return;
+    }
+    let package = root.join("crates").join("subetha-py");
+    let every = features.join(",");
+    for (label, with) in [("as it ships", None), ("with every feature", Some(every.as_str()))] {
+        let mut develop = Command::new(&venv_python);
+        without_debug_info(&mut develop)
+            .current_dir(&package)
+            .env("VIRTUAL_ENV", &venv)
+            .args(["-m", "maturin", "develop"]);
+        if let Some(with) = with {
+            develop.args(["--features", with]);
+        }
+        if report.step(format!("maturin develop subetha-py {label}"), &mut develop) {
+            report.step(
+                format!("pytest subetha-py {label}"),
+                Command::new(&venv_python)
+                    .current_dir(&package)
+                    .args(["-m", "pytest", "tests", "-q"]),
+            );
+        } else {
+            report.skip(
+                format!("pytest subetha-py {label}"),
+                "the extension did not build".to_string(),
+            );
         }
     }
 }

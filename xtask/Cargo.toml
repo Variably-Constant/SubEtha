@@ -5,9 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Workspace tasks cargo alone does not cover: the C ABI's install layout and its packaging gate."
+description = "Workspace tasks cargo alone does not cover: the release gate over every crate and feature, the C ABI's install layout and its packaging gate."
 
 [dependencies]
 # Finds the host's C compiler the way the C suite's build script does, so
 # the packaging gate can compile the consumer directly where cmake is absent.
 cc = "1"
+# Reads `cargo metadata`, which is where the release gate learns every
+# feature each crate declares.
+serde_json = "1"

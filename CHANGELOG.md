@@ -23,6 +23,19 @@ heading links to the commit that cut it.
   on Windows 11 ARM64 (Azure Cobalt 100) too, with the monitor tier on
   and off.
 
+- The release gate, `cargo run -p xtask -- gate`, lints and tests every
+  crate at its defaults and with every feature it declares, each crate
+  in a build of its own, and runs the Python package's suite as it
+  ships and with every feature. The gates before it built no
+  feature-gated code: none of the C API's transports, the Python bridge
+  classes, or subetha-cxc's `tls`, `tcp-tls-bridge`, `residue-fec`,
+  `wire-locale`, `linux-futex-raw` and benchmark features, and not
+  subetha-cxc with no features at all. That is how the C bridge servers
+  and the `wire-locale` link fixed below shipped broken in 0.5.1. The
+  C suite's `transports` feature runs it against a library carrying
+  every transport. What the gate leaves off, on which host and why, is
+  in [Run the release gate](https://variably-constant.github.io/SubEtha/docs/how-to/run-the-release-gate/).
+
 ### Changed
 
 - The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.2.1,

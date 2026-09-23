@@ -12,6 +12,12 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[features]
+# The suite against a library carrying every transport. Without it the
+# transports' entry points are the refusals, which the suite checks as
+# well, so the release gate runs it both ways.
+transports = ["subetha-ffi/transports", "subetha-ffi/tcp-tls-bridge"]
+
 [dependencies]
 subetha-ffi = { workspace = true, features = ["test-hooks"] }
 
