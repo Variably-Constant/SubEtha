@@ -782,4 +782,244 @@ mod tests {
         }
         assert!(engaged_once, "a regular cadence must engage the predictor");
     }
+
+    /// Cells of the two-process round trip, each with a fresh pair of
+    /// processes.
+    const ECHO_CELLS: u64 = 40;
+    /// Frames each cell sends and has echoed.
+    const ECHO_FRAMES: u64 = 2_000;
+    /// How long one receive may wait before its wake counts as lost.
+    const ECHO_LOST_WAKE: Duration = Duration::from_secs(30);
+    /// Slots in each direction's ring.
+    const ECHO_SLOTS: usize = 4;
+    /// Bytes in one region block.
+    const ECHO_BLOCK_BYTES: usize = 4096;
+    /// Blocks in each direction's region: one per ring slot, one the
+    /// sender holds before its descriptor is in the ring, and one the
+    /// receiver holds between taking a descriptor and freeing its block.
+    const ECHO_BLOCKS: usize = ECHO_SLOTS + 2;
+    /// The frame the peer sends once it has opened both directions.
+    const ECHO_READY: [u8; 1] = [0x52];
+
+    fn with_suffix(base: &Path, suffix: &str) -> std::path::PathBuf {
+        let mut name = base.as_os_str().to_owned();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    }
+
+    /// The four files one direction at `base` maps, removed when the
+    /// guards drop. Declared before the direction, they drop after it.
+    fn direction_files(base: &Path) -> [crate::test_paths::TmpFile; 4] {
+        let name = base
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("the direction's base name is text");
+        [".ring.bin", ".cw.bin", ".pw.bin", ".region.bin"]
+            .map(|suffix| crate::test_paths::TmpFile::new(format!("{name}{suffix}")))
+    }
+
+    /// One direction of the round trip, carrying a frame the way a stage
+    /// boundary does: its bytes in a region block, and a descriptor
+    /// naming the block, `[len: u32][block: u32]`, through the ring. Each
+    /// frame costs a block allocated, written, read and freed, and each
+    /// receive a fresh slot buffer.
+    struct EchoDirection {
+        ring: BlockingSpscRing,
+        region: crate::frame_region::FrameRegion,
+    }
+
+    impl EchoDirection {
+        fn create(base: &Path) -> Self {
+            Self {
+                ring: BlockingSpscRing::create(base, ECHO_SLOTS).expect("the ring is created"),
+                region: crate::frame_region::FrameRegion::create(
+                    with_suffix(base, ".region.bin"),
+                    ECHO_BLOCK_BYTES,
+                    ECHO_BLOCKS,
+                )
+                .expect("the region is created"),
+            }
+        }
+
+        fn open(base: &Path) -> Result<Self, String> {
+            Ok(Self {
+                ring: BlockingSpscRing::open(base, ECHO_SLOTS)
+                    .map_err(|e| format!("the ring: {e:?}"))?,
+                region: crate::frame_region::FrameRegion::open(
+                    with_suffix(base, ".region.bin"),
+                    ECHO_BLOCK_BYTES,
+                    ECHO_BLOCKS,
+                )
+                .map_err(|e| format!("the region: {e:?}"))?,
+            })
+        }
+
+        /// Copies `frame` into a free block and sends the descriptor; a
+        /// send that fails gives the block back.
+        fn send(&self, frame: &[u8]) -> Result<(), String> {
+            let block = self.region.alloc().ok_or("no region block was free")?;
+            self.region.write_block(block, frame);
+            let len = u32::try_from(frame.len()).expect("a frame fits a block");
+            let mut descriptor = [0u8; 8];
+            descriptor[..4].copy_from_slice(&len.to_le_bytes());
+            descriptor[4..].copy_from_slice(&block.to_le_bytes());
+            self.ring
+                .send_blocking(&descriptor, Some(ECHO_LOST_WAKE))
+                .map_err(|e| {
+                    self.region.free(block);
+                    format!("{e:?}")
+                })
+        }
+
+        /// Takes a descriptor, copies its block into `out` and frees the
+        /// block.
+        fn recv(&self, out: &mut Vec<u8>) -> Result<(), String> {
+            let mut slot = vec![0u8; crate::spsc_ring::SPSC_PAYLOAD_BYTES];
+            self.ring
+                .recv_blocking(&mut slot, Some(ECHO_LOST_WAKE))
+                .map_err(|e| format!("{e:?}"))?;
+            let len = u32::from_le_bytes(slot[..4].try_into().expect("4 bytes")) as usize;
+            let block = u32::from_le_bytes(slot[4..8].try_into().expect("4 bytes"));
+            out.clear();
+            self.region.read_block_into(block, len, out);
+            self.region.free(block);
+            Ok(())
+        }
+    }
+
+    /// The peer half of the round trip: when the test binary is re-run
+    /// with `SUBETHA_RING_ECHO_PEER` naming a cell's base path, it opens
+    /// both directions, announces itself and echoes every frame, exiting
+    /// 1 on the first receive or send that fails; otherwise it passes at
+    /// once.
+    #[test]
+    fn ring_echo_peer_role() {
+        let Some(base) = std::env::var_os("SUBETHA_RING_ECHO_PEER") else {
+            return;
+        };
+        fn fail(what: String) -> ! {
+            eprintln!("ring echo peer: {what}");
+            std::process::exit(1);
+        }
+        let base = std::path::PathBuf::from(base);
+        let to_peer = EchoDirection::open(&with_suffix(&base, ".out"))
+            .unwrap_or_else(|e| fail(format!("opening the outbound direction: {e}")));
+        let to_coordinator = EchoDirection::open(&with_suffix(&base, ".in"))
+            .unwrap_or_else(|e| fail(format!("opening the inbound direction: {e}")));
+        if let Err(e) = to_coordinator.send(&ECHO_READY) {
+            fail(format!("announcing: {e}"));
+        }
+        let mut frame = Vec::new();
+        for i in 0..ECHO_FRAMES {
+            if let Err(e) = to_peer.recv(&mut frame) {
+                fail(format!("frame {i}: receiving: {e}"));
+            }
+            if let Err(e) = to_coordinator.send(&frame) {
+                fail(format!("frame {i}: echoing: {e}"));
+            }
+        }
+        std::process::exit(0);
+    }
+
+    /// Kills the echo peer when a cell ends before reaping it, so a lost
+    /// wake leaves no process waiting on its own.
+    struct EchoPeer(Option<std::process::Child>);
+
+    impl EchoPeer {
+        fn reap(mut self) -> std::process::ExitStatus {
+            let mut child = self.0.take().expect("the peer is reaped once");
+            child.wait().expect("the peer is waited on")
+        }
+    }
+
+    impl Drop for EchoPeer {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                if let Err(e) = child.kill() {
+                    eprintln!("the echo peer was not killed: {e}");
+                }
+                if let Err(e) = child.wait() {
+                    eprintln!("the echo peer was not reaped: {e}");
+                }
+            }
+        }
+    }
+
+    /// Frames cross between two processes and back with no hold, over a
+    /// fresh pair of processes per cell, each frame in a region block
+    /// that a descriptor through the ring names. A producer's head store
+    /// followed by its wake scan races a consumer's parked-mask set
+    /// followed by its re-check of the ring; a receive that waits out its
+    /// timeout lost that race.
+    #[test]
+    fn a_round_trip_between_two_processes_loses_no_wake() {
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let mut problems = Vec::new();
+        for cell in 0..ECHO_CELLS {
+            let base = std::env::temp_dir()
+                .join(format!("subetha-ring-echo-{}-{cell}", std::process::id()));
+            let _outbound_files = direction_files(&with_suffix(&base, ".out"));
+            let _inbound_files = direction_files(&with_suffix(&base, ".in"));
+            let to_peer = EchoDirection::create(&with_suffix(&base, ".out"));
+            let to_coordinator = EchoDirection::create(&with_suffix(&base, ".in"));
+            let peer = EchoPeer(Some(
+                std::process::Command::new(&exe)
+                    .arg("blocking_spsc_ring::tests::ring_echo_peer_role")
+                    .arg("--exact")
+                    .arg("--nocapture")
+                    .env("SUBETHA_RING_ECHO_PEER", &base)
+                    .spawn()
+                    .expect("the peer process spawns"),
+            ));
+            let mut frame = Vec::new();
+            match to_coordinator.recv(&mut frame) {
+                Ok(()) if frame == ECHO_READY => {}
+                Ok(()) => {
+                    problems.push(format!("cell {cell}: the peer announced {frame:?}"));
+                    continue;
+                }
+                Err(e) => {
+                    problems.push(format!("cell {cell}: the peer's announcement: {e}"));
+                    continue;
+                }
+            }
+            let mut lost = None;
+            for i in 0..ECHO_FRAMES {
+                let sent = i.to_le_bytes();
+                if let Err(e) = to_peer.send(&sent) {
+                    lost = Some(format!("cell {cell} frame {i}: sending: {e}"));
+                    break;
+                }
+                let start = Instant::now();
+                match to_coordinator.recv(&mut frame) {
+                    Ok(()) if frame == sent => {}
+                    Ok(()) => {
+                        lost = Some(format!("cell {cell} frame {i}: the echo was {frame:?}"));
+                        break;
+                    }
+                    Err(e) => {
+                        lost = Some(format!(
+                            "cell {cell} frame {i}: receiving the echo: {e} after {:?}",
+                            start.elapsed()
+                        ));
+                        break;
+                    }
+                }
+            }
+            match lost {
+                Some(line) => problems.push(line),
+                None => {
+                    let status = peer.reap();
+                    if !status.success() {
+                        problems.push(format!("cell {cell}: the peer ended with {status}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} of {ECHO_CELLS} cells failed: {problems:?}",
+            problems.len()
+        );
+    }
 }
