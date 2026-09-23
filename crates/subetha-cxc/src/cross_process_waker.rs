@@ -125,7 +125,11 @@
 //! double-check in the blocking-recv wrapper: after parking,
 //! re-call try_recv before calling wait. If try_recv succeeds,
 //! release the token and return. Only if it still returns Empty
-//! does the consumer call wait.
+//! does the consumer call wait. The double-check holds because
+//! `try_park` ends with a SeqCst fence and every wake scan starts
+//! with one: publish-then-scan and park-then-re-check are each a
+//! store followed by a load, which x86 and ARM64 both reorder
+//! without a full fence.
 //!
 //! # Linux-futex-raw escape hatch
 //!
@@ -455,6 +459,11 @@ impl CrossProcessWaker {
                 // Publish the slot to producers.
                 slot.state.store(STATE_PARKED, Ordering::Release);
                 self.mask_set(idx);
+                // The parker's half of the fence pair in wake_candidates:
+                // the caller's re-check of its ring comes after this, so
+                // either that re-check sees the producer's item or the
+                // producer's scan sees this slot.
+                std::sync::atomic::fence(Ordering::SeqCst);
                 return Ok(WakerToken { slot: idx as u32 });
             }
         }
@@ -496,8 +505,16 @@ impl CrossProcessWaker {
     /// Iterator over candidate slot indices for a wake scan: the
     /// parked-mask bits when the mask covers every slot, else the
     /// full range.
+    ///
+    /// It starts with a SeqCst fence, paired with the one at the end of
+    /// `try_park`. The caller has just published an item (a ring's head
+    /// store) and is about to read the mask; without a fence on each
+    /// side both reads may see the old value, the producer finding no
+    /// parked bit and the parker's re-check finding no item, and the
+    /// parker sleeps through the item.
     #[inline]
     fn wake_candidates(&self) -> WakeCandidates {
+        std::sync::atomic::fence(Ordering::SeqCst);
         if self.capacity <= 64 {
             WakeCandidates::Mask(
                 self.header().parked_mask.load(Ordering::Acquire),
