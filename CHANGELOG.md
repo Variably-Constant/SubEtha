@@ -106,6 +106,15 @@ heading links to the commit that cut it.
   end to end through each bridge; on FreeBSD x64 with the transports
   built, it failed 176 checks before and passes after.
 
+- With `wire-locale` on, a shared library linking subetha-cxc failed to
+  link on Linux: libxdp-sys's make build compiles libxdp's static
+  objects without `-fPIC`, and the link stopped at a `R_X86_64_PC32`
+  relocation against `stderr`. subetha-cxc now selects libxdp-sys's cc
+  build, which compiles them position-independent. On Linux x86-64,
+  `cargo build -p subetha-ffi --features subetha-cxc/wire-locale`
+  failed before and links after, and subetha-cxc's 1,502 tests pass
+  with the feature on.
+
 - `Sidecar::scan_now` could drain an observation ring while the node's
   own scan thread drained it too, although a ring has one consumer, so
   observations were counted twice or replayed and a slot could be read

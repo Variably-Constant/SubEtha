@@ -54,6 +54,11 @@ io-uring = { workspace = true }
 # rings + libxdp's redirect program). Opt-in behind the wire-locale
 # feature; Linux-target only.
 xsk-rs = { version = "0.8", optional = true }
+# The libxdp that xsk-rs links, named here only to select its cc build,
+# which compiles libxdp position-independent so wire-locale links into a
+# shared library as well as an executable. Its make build compiles the
+# static objects without -fPIC.
+libxdp-sys = { version = "0.2.4", optional = true, features = ["use_cc_build"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -119,7 +124,7 @@ linux-futex-raw = []
 # XDP on Windows (in-box xdpapi.dll). Default off; needs root + a NIC (or
 # veth/feth) at runtime. xsk-rs is Linux-target-gated, so the feature pulls no
 # extra dependency on the other targets.
-wire-locale = ["dep:xsk-rs"]
+wire-locale = ["dep:xsk-rs", "dep:libxdp-sys"]
 # ZeroMQ (ipc://) cross-process bench contender in cross_process_compare. Off
 # by default; pulls the `zmq` crate (links C libzmq). Enable where libzmq is
 # installed: `cargo run --release --example cross_process_compare --features zmq-bench`.
