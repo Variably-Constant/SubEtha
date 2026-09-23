@@ -59,34 +59,34 @@ costs, and it differs between the two hosts more than anything in the
 library does. Three shapes cross less often, and the surface is built
 around them:
 
-- **A batch call** carries many operations over one call. `FetchAddMany`,
+- A batch call carries many operations over one call. `FetchAddMany`,
   `SendMany`, `RecvMany`, `InsertMany`, `GetMany`, `Drain` and their kin
   are all this shape.
-- **A packed buffer** carries many items in one `byte[]` with no object
-  per item. `PushPacked`, `SendPacked` and `PopPacked` on the rings, and
+- A packed buffer carries many items in one `byte[]` with no object per
+  item. `PushPacked`, `SendPacked` and `PopPacked` on the rings, and
   `ReadRange` and `WriteRange` on the vector and the slab.
-- **The pipeline** is for a script that reads as a pipeline; per record
-  it costs about what a method call does in PowerShell 7 and several
-  times that in Windows PowerShell.
+- The pipeline is for a script that reads as a pipeline; per record it
+  costs about what a method call does in PowerShell 7 and several times
+  that in Windows PowerShell.
 
 `bench/CallShapes.ps1` in the crate reproduces every row above on the
 reader's own machine, in whichever host runs it.
 
 ## The two layers
 
-**Cmdlets obtain a structure.** `New-` creates the file when it does not
+Cmdlets obtain a structure. `New-` creates the file when it does not
 exist and attaches to it when it does; `Open-` attaches to one that must
 already exist. Every path is resolved against the session's current
 location, the way every other cmdlet resolves one.
 
-**Objects operate on it.** What a cmdlet writes is an object of a
+Objects operate on it. What a cmdlet writes is an object of a
 `SubEtha.*` type whose methods are the operations the Rust type offers,
 one method per operation: `$ring.Send($producer, $bytes)`,
 `$map.Insert(7, 70)`, `$lock.Write()`. A method call is one native call
 into the library, with no pipeline in between.
 
-**The pipeline moves items.** `Send-SubEthaItem` sends whatever is piped
-in to any structure that moves items and hands back what the structure
+The pipeline moves items. `Send-SubEthaItem` sends whatever is piped in
+to any structure that moves items and hands back what the structure
 refused; `Receive-SubEthaItem` reads a structure out into the pipeline.
 
 ## What crosses
@@ -102,11 +102,11 @@ take and return `ulong`.
 
 ## The conventions
 
-- **A refusal is an answer, not a fault.** A push that does not fit
-  returns `$false`; a pop with nothing to take returns `$null`; a sweep
-  that freed nothing returns `0`. Only a genuine fault is an error.
-- **An error from a method is an exception; from a cmdlet, an error
-  record.** Every error carries an id starting `SubEtha`: `SubEthaOpen`
+- A refusal is an answer, not a fault. A push that does not fit returns
+  `$false`; a pop with nothing to take returns `$null`; a sweep that
+  freed nothing returns `0`. Only a genuine fault is an error.
+- An error from a method is an exception; from a cmdlet, an error
+  record. Every error carries an id starting `SubEtha`: `SubEthaOpen`
   when a structure could not be obtained, `SubEthaArgument` for an
   argument that cannot be right, `SubEthaOperation` for a failure
   underneath, `SubEthaLagged` when a subscriber fell far enough behind
@@ -114,75 +114,62 @@ take and return `ulong`.
   lease or a lane is held by somebody else, `SubEthaWrongLane` when a
   key belongs to another lane, and `SubEthaReleased` for a pin or hold
   already given back.
-- **Anything holding a resource is disposable.** A hold, a permit, a
-  pin or a lane claim gives its resource back when `Release()` is
-  called, when the object is disposed, or when the garbage collector
-  finalizes it. Every object frees its mapping the same way.
-- **A value that is not measured yet is `$null`**, which is a different
+- Anything holding a resource is disposable. A hold, a permit, a pin or
+  a lane claim gives its resource back when `Release()` is called, when
+  the object is disposed, or when the garbage collector finalizes it.
+  Every object frees its mapping the same way.
+- A value that is not measured yet is `$null`, which is a different
   answer from zero.
-- **Many-item forms everywhere.** `SendMany`, `RecvMany`, `PushPacked`,
+- Many-item forms are everywhere. `SendMany`, `RecvMany`, `PushPacked`,
   `PopPacked`, `InsertMany`, `GetMany` and `Drain` carry a run of items
   across one call.
 
 ## What is here
 
-**The front door.** `Channel`, a queue between processes that can be
-waited on. `WorkQueue`, work one process owns and others steal from.
-`KvMap`. `AdaptiveQueue`, which picks its shape from the traffic it sees
-rather than from what was declared. `QosPolicy`, what a stream needs
-written down.
-
-**Rings and channels.** `Ring`, the adaptive ring, with producer and
-consumer registration, framing for payloads larger than a slot, and a
-shape that changes under the traffic. `SpscRing`, `BroadcastRing`,
-`PubSub` with `Subscriber`, `LamportProducer` and `LamportConsumer`
-from `New-SubEthaLamportPair`, and the pools from `New-SubEthaMpscPool`
-and `New-SubEthaMpmcGrid`, which hand out every end together because
-the shape is what makes them correct.
-
-**Rings that change themselves.** `CapacityRing` resizes without losing
-what is in flight. `LocaleRing` moves between process-private memory, a
-mapped file and named memory without its senders and readers
-reconnecting.
-
-**Order.** A `Ring` built with `-Stamps` marks each item with the order
-its sender made it in; `OrderedReceiver` delivers by those marks, and
-`ReorderWindow` is the same window over items from anywhere else.
-
-**Shared state.** `Atomic`, `Cell`, `Vec`, `Slab`, `HashMap`,
-`BTreeMap`, `LinkedList`, `Deque`, `Stack`, `Arena`, `Region` and
-`FrameRegion`.
-
-**State with a history.** `VersionChain`, `VersionedSlab` with
-`SlabPin`, `VersionedMap` with `MapPin`, `LanedMap` with `LaneClaim` and
-`LanedPin`, and `Epochs`, the table they share.
-
-**Coordination.** `RWLock` and `Semaphore`, whose holds are objects
-rather than tokens. `Condvar`, whose condition is a script block run
-from inside the wait by `Wait-SubEthaCondition`. `LazyValue`,
-`OwnerLease`, `Heartbeat`, `EpochBarrier`, `LeaderElection`,
-`HolderTable`, `FenceClock`, `SharedArc` and `NotifierSet`.
-
-**Probabilistic.** `BloomFilter`, `BlockedBloomFilter`,
-`CountMinSketch`, `HyperLogLog`, `Histogram`, `RateLimiter`, `BitVec`
-and `Reservoir`, with `Measure-SubEthaBloomSize` and
-`Measure-SubEthaSketchSize` to size the first three from what they
-mean.
-
-**Specialist.** `HandleTable`, `TimePointTile`, `Tower`, `Graph`,
-`TopologyMap` and `Universal`.
-
-**Reaching another machine.** `SensSender` and `SensReceiver`, the two
-ends of a link that keeps working as the network gets worse, and the
-TCP and QUIC bridges that carry a whole ring to another host, with
-`New-SubEthaSelfSignedCert` for the QUIC certificate. The module always
-carries all three; `Get-SubEthaTransport` lists them.
-
-**Sensing.** `LossKind`, `LossBursts`, `Timing`, `RoundTripShape`,
-`Periodicity`, `Capacity`, `Forecast` and `PathChanges`.
-
-**Values that ride beside a pointer.** `TinyBloom`, `FineBloom`,
-`Clock` and `CausalClock`.
+- The front door: `Channel`, a queue between processes that can be
+  waited on; `WorkQueue`, work one process owns and others steal from;
+  `KvMap`; `AdaptiveQueue`, which picks its shape from the traffic it
+  sees rather than from what was declared; and `QosPolicy`, what a
+  stream needs written down.
+- Rings and channels: `Ring`, the adaptive ring, with producer and
+  consumer registration, framing for payloads larger than a slot, and a
+  shape that changes under the traffic; `SpscRing`, `BroadcastRing`,
+  `PubSub` with `Subscriber`, `LamportProducer` and `LamportConsumer`
+  from `New-SubEthaLamportPair`, and the pools from
+  `New-SubEthaMpscPool` and `New-SubEthaMpmcGrid`, which hand out every
+  end together because the shape is what makes them correct.
+- Rings that change themselves: `CapacityRing` resizes without losing
+  what is in flight, and `LocaleRing` moves between process-private
+  memory, a mapped file and named memory without its senders and
+  readers reconnecting.
+- Order: a `Ring` built with `-Stamps` marks each item with the order
+  its sender made it in; `OrderedReceiver` delivers by those marks, and
+  `ReorderWindow` is the same window over items from anywhere else.
+- Shared state: `Atomic`, `Cell`, `Vec`, `Slab`, `HashMap`, `BTreeMap`,
+  `LinkedList`, `Deque`, `Stack`, `Arena`, `Region` and `FrameRegion`.
+- State with a history: `VersionChain`, `VersionedSlab` with `SlabPin`,
+  `VersionedMap` with `MapPin`, `LanedMap` with `LaneClaim` and
+  `LanedPin`, and `Epochs`, the table they share.
+- Coordination: `RWLock` and `Semaphore`, whose holds are objects
+  rather than tokens; `Condvar`, whose condition is a script block run
+  from inside the wait by `Wait-SubEthaCondition`; and `LazyValue`,
+  `OwnerLease`, `Heartbeat`, `EpochBarrier`, `LeaderElection`,
+  `HolderTable`, `FenceClock`, `SharedArc` and `NotifierSet`.
+- Probabilistic: `BloomFilter`, `BlockedBloomFilter`, `CountMinSketch`,
+  `HyperLogLog`, `Histogram`, `RateLimiter`, `BitVec` and `Reservoir`,
+  with `Measure-SubEthaBloomSize` and `Measure-SubEthaSketchSize` to
+  size the first three from what they mean.
+- Specialist: `HandleTable`, `TimePointTile`, `Tower`, `Graph`,
+  `TopologyMap` and `Universal`.
+- Reaching another machine: `SensSender` and `SensReceiver`, the two
+  ends of a link that keeps working as the network gets worse, and the
+  TCP and QUIC bridges that carry a whole ring to another host, with
+  `New-SubEthaSelfSignedCert` for the QUIC certificate. The module
+  always carries all three; `Get-SubEthaTransport` lists them.
+- Sensing: `LossKind`, `LossBursts`, `Timing`, `RoundTripShape`,
+  `Periodicity`, `Capacity`, `Forecast` and `PathChanges`.
+- Values that ride beside a pointer: `TinyBloom`, `FineBloom`, `Clock`
+  and `CausalClock`.
 
 ## Building it
 

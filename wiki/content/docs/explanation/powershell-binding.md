@@ -43,15 +43,15 @@ two operations, in opposite orders, differing by more than tenfold.
 A surface that picked one shape for everything would be wrong in one
 host or the other. So the module splits by what the operation is for:
 
-- **Cmdlets obtain a structure.** This happens once. `New-SubEthaRing`
+- Cmdlets obtain a structure, which happens once. `New-SubEthaRing`
   creates the file when it is absent and attaches when it is present;
   `Open-SubEthaRing` insists it already exists. Being cmdlets, they get
   parameter binding, `-ErrorAction`, tab completion and help for free,
   and their cost is paid once rather than per item.
-- **Methods operate on it.** This happens constantly.
+- Methods operate on it, which happens constantly.
   `$ring.Send($producer, $bytes)` is one native call plus the host's
   method invocation, with no pipeline in the way.
-- **The pipeline moves items when the script is a pipeline.**
+- The pipeline moves items when the script is a pipeline.
   `Send-SubEthaItem` and `Receive-SubEthaItem` exist because some
   scripts genuinely read as pipelines, and paying a record's cost for
   that shape is a reasonable trade at modest rates.

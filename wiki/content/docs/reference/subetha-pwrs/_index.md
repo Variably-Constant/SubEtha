@@ -70,16 +70,16 @@ does: PowerShell 7 reads a property cheaply and calls a method dearly,
 Windows PowerShell the other way round. Three shapes cross less often,
 and the surface is built around them:
 
-- **A batch call** carries many operations over one call.
-  `FetchAddMany`, `SendMany`, `RecvMany`, `InsertMany`, `GetMany`,
-  `Drain` and their kin are all this shape.
-- **A packed buffer** carries many items in one `byte[]` with no object
-  per item: `PushPacked`, `SendPacked` and `PopPacked` on the rings,
+- A batch call carries many operations over one call. `FetchAddMany`,
+  `SendMany`, `RecvMany`, `InsertMany`, `GetMany`, `Drain` and their kin
+  are all this shape.
+- A packed buffer carries many items in one `byte[]` with no object per
+  item: `PushPacked`, `SendPacked` and `PopPacked` on the rings,
   `ReadRange` and `WriteRange` on the vector and the slab. Read whole,
   it is tens of nanoseconds an item in either host.
-- **The pipeline** is for a script that reads as a pipeline. Per record
-  it costs about what a method call does in PowerShell 7 and several
-  times that in Windows PowerShell.
+- The pipeline is for a script that reads as a pipeline. Per record it
+  costs about what a method call does in PowerShell 7 and several times
+  that in Windows PowerShell.
 
 `bench/CallShapes.ps1` in the crate reproduces every row above on the
 reader's own machine, in whichever host runs it.
@@ -91,18 +91,18 @@ call on an object the module returned costs one native call into the
 library plus the host's own method invocation, which the table above
 puts a number on. So the module is built in two layers:
 
-- **Cmdlets obtain a structure.** `New-SubEthaRing` creates the file
+- Cmdlets obtain a structure. `New-SubEthaRing` creates the file
   when it does not exist and attaches to it when it does;
   `Open-SubEthaRing` attaches to one that must already exist. A path is
   resolved against the session's current location. Every cmdlet also
   answers to a shorter name with the `SE` prefix: `New-SERing`.
-- **Objects operate on it.** What a cmdlet writes is an object of a
+- Objects operate on it. What a cmdlet writes is an object of a
   `SubEtha.*` type. Its properties are what was fixed when the
   structure was obtained (the path, the capacity, the slot size), and
   its methods are the operations the Rust type offers, one method per
   operation, named in PascalCase after the Rust: `$ring.RegisterProducer()`,
   `$ring.Send($producer, $bytes)`, `$map.Insert(7, 70)`.
-- **The pipeline moves items.** `Send-SubEthaItem -To $structure` sends
+- The pipeline moves items. `Send-SubEthaItem -To $structure` sends
   whatever is piped in and writes back what the structure refused, so a
   full ring hands the item back rather than dropping it.
   `Receive-SubEthaItem -From $structure` reads a structure out into the
@@ -131,12 +131,12 @@ width each.
 
 ## The conventions
 
-- **A refusal is an answer, not a fault.** A push that does not fit
-  returns `$false`; a pop with nothing to take returns `$null`; a sweep
-  that freed nothing returns `0`; a sample that kept nothing returns
+- A refusal is an answer, not a fault. A push that does not fit returns
+  `$false`; a pop with nothing to take returns `$null`; a sweep that
+  freed nothing returns `0`; a sample that kept nothing returns
   `$null`. Only a genuine fault is an error.
-- **A method fails with an exception; a cmdlet writes an error
-  record**, non-terminating unless the cmdlet cannot go on, so
+- A method fails with an exception; a cmdlet writes an error record,
+  non-terminating unless the cmdlet cannot go on, so
   `-ErrorAction` works the PowerShell way. Every error id starts with
   `SubEtha`: `SubEthaOpen` when a structure could not be obtained,
   `SubEthaArgument` for an argument that cannot be right,
@@ -147,15 +147,15 @@ width each.
   `SubEthaKeyAbsent` when no lane holds a key, `SubEthaNotOwner` and
   `SubEthaLease` from the lease, and `SubEthaReleased` for a pin, hold
   or claim already given back.
-- **Anything holding a resource is disposable.** A hold, a permit, a
+- Anything holding a resource is disposable. A hold, a permit, a
   pin or a lane claim gives its resource back on `Release()`, on
   `Dispose()`, and when the garbage collector finalizes it, so a script
   that leaves a block early does not strand a lock. Every object frees
   its mapping the same way, and `IsDisposed` says whether it has.
-- **A value that is not measured yet is `$null`**, which is a different
+- A value that is not measured yet is `$null`, which is a different
   answer from zero.
-- **`-ErrorAction Stop` on a cmdlet turns a refusal to obtain into an
-  exception**, which is what a test or a script that cannot go on wants.
+- `-ErrorAction Stop` on a cmdlet turns a refusal to obtain into an
+  exception, which is what a test or a script that cannot go on wants.
 
 ## The front door
 

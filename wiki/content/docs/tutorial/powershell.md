@@ -121,16 +121,17 @@ PowerShell 7 and several times that in Windows PowerShell; the Rust
 underneath costs seven nanoseconds. Two shapes avoid paying the call
 per item.
 
-**Carry many operations over one call.** Every family has a batched
-form:
+The first carries many operations over one call. Every family has a
+batched form:
 
 ```powershell
 $ring.SendMany($producer, @('one', 'two', 'three'))
 $items = $ring.RecvMany($consumer, 256)
 ```
 
-**Cross once with everything packed.** The rings take and answer items
-packed end to end in one `byte[]`, so no object is built per item:
+The second crosses once with everything packed. The rings take and
+answer items packed end to end in one `byte[]`, so no object is built
+per item:
 
 ```powershell
 $ring.SendPacked($producer, $buffer, 64)      # every 64 bytes of $buffer is one item

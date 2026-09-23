@@ -120,16 +120,18 @@ It needs TLS 1.2, which the gallery has required since April 2020:
 The same module folder serves both hosts, and a script can still behave
 differently in each.
 
-**Timing.** The two hosts disagree about what is expensive. A method
-call costs 1907 ns in PowerShell 7 and 651 ns in Windows PowerShell; a
-property read is the other way round. A pipeline record costs 1712 ns
-and 7955 ns respectively, so a pipeline-heavy script that is acceptable
-in 7 can be five times worse in 5.1. See
-[Make it fast](../make-it-fast/).
+### Timing
 
-**Enums.** A `SubEtha.*` enum can be given by its type or by its name
-as a string, and the string form is the one that reads the same in both
-hosts:
+The two hosts disagree about what is expensive. A method call costs
+1907 ns in PowerShell 7 and 651 ns in Windows PowerShell; a property
+read is the other way round. A pipeline record costs 1712 ns and
+7955 ns respectively, so a pipeline-heavy script that is acceptable in
+7 can be five times worse in 5.1. See [Make it fast](../make-it-fast/).
+
+### Enums
+
+A `SubEtha.*` enum can be given by its type or by its name as a string,
+and the string form is the one that reads the same in both hosts:
 
 ```powershell
 $hits.FetchAdd(1, [SubEtha.MemoryOrder]::Relaxed)
@@ -156,7 +158,7 @@ share.
 
 ## A reader that sees nothing, or sees only some of it
 
-**Register the consumer before anything is produced.** A consumer
+Register the consumer before anything is produced. A consumer
 starts at the head, not at the beginning, so one registered after the
 writer has run sees nothing that was already there. Nothing reports
 this: the ring does not error, the send does not fail, and a reader
