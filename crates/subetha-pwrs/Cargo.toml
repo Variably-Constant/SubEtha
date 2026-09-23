@@ -17,8 +17,9 @@ in place rather than copied, and a lock or a hold comes back as an object that \
 releases on Release(), Dispose() or collection. Every cmdlet answers to a shorter \
 name with the SE prefix. Bound directly to Rust with PoWerRuSt (pwrs), Rust \
 bindings for writing PowerShell binary modules in the spirit of PyO3: the cmdlets \
-are the library, not a wrapper over a command line. Windows x64 and Linux x64 in \
-one module, on PowerShell 7 and Windows PowerShell 5.1. Source and issues at \
+are the library, not a wrapper over a command line. Windows x64, Linux x64, macOS \
+arm64 and FreeBSD x64 in one module, on PowerShell 7 and Windows PowerShell 5.1. \
+Source and issues at \
 https://github.com/Variably-Constant/SubEtha; the binding framework at \
 https://github.com/Variably-Constant/PWRS and https://crates.io/crates/PoWerRuSt."""
 # The gallery's tags. `cargo pwrs` writes `pwrs` and then these, so the
@@ -40,7 +41,7 @@ publish = false
 [package.metadata.pwrs]
 license-uri = "https://github.com/Variably-Constant/SubEtha/blob/main/LICENSE-MIT"
 icon-uri = "https://raw.githubusercontent.com/Variably-Constant/SubEtha/main/assets/icon.png"
-copyright = "Copyright (c) 2026 Markus Newton"
+copyright = "Copyright (c) 2026 Mark Newton"
 company = "Variably Constant"
 release-notes = """A broadcast producer can wait for its readers. A consumer \
 registers at the head, so anything published before it registered is lost to it \
@@ -78,7 +79,7 @@ subetha-pointers = { workspace = true }
 # library. Registered under the project's own name because crates.io
 # carries an unrelated `pwrs` from 2015; the library it builds is still
 # `pwrs`, which is what the source writes.
-pwrs = { package = "PoWerRuSt", version = "0.1.4" }
+pwrs = { package = "PoWerRuSt", version = "0.2.0" }
 
 # The bridges are written against an async runtime; the module holds one
 # for all of them and starts it the first time a bridge needs it.
