@@ -2,8 +2,10 @@
 #
 # No host we own is Windows on ARM64, so the waker's path there, the WFE
 # monitor tier and then the named-event park, is built and run here or
-# nowhere. It runs on dispatch only: it answers one question about one
-# module, and a push elsewhere in the tree does not change the answer.
+# nowhere. It answers one question about one module, so it runs on a
+# push to the branch that carries the park and on dispatch, never on
+# every push: GitHub dispatches only a workflow the default branch has,
+# and until this one is on main the branch push is what runs it.
 #
 # The image's Rust is older than the workspace's rust-version, so the
 # stable toolchain is installed first. ring, which the test build pulls
@@ -14,6 +16,9 @@ name: waker arm64
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - windows-kernel-park
 
 permissions:
   contents: read
