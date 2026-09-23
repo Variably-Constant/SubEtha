@@ -167,9 +167,10 @@ struct WakerHeader {
     /// zero mask makes the no-waiters case - the overwhelmingly
     /// common one on a healthy ring - a single cache line instead of
     /// `capacity` slot lines. The bit is advisory: stale-set bits
-    /// are filtered by the per-slot state check, and a not-yet-set
-    /// bit is covered by the parker's pre-wait double-check, the
-    /// same race window the full scan always had. Capacities > 64
+    /// are filtered by the per-slot state check, and a bit a scan
+    /// does not see yet is covered by the parker's pre-wait
+    /// double-check, which the fences in `try_park` and
+    /// `wake_candidates` order against the scan. Capacities > 64
     /// skip the mask and full-scan.
     parked_mask: AtomicU64,
     _pad: [u8; 64 - 24],

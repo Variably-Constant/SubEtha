@@ -97,8 +97,8 @@ sleeps on the event `park_event` names instead.
    from slot 0; the first FREE slot wins).
 2. Store the target sequence into `slot.target_seq` (Relaxed; the
    Release store in step 3 publishes it).
-3. Release-store `state = PARKED`, and set the slot's bit in the
-   header's `parked_mask`.
+3. Release-store `state = PARKED`, set the slot's bit in the
+   header's `parked_mask`, then issue a SeqCst fence.
 4. Platform wait on `&slot.state` expecting `PARKED`. Every wait
    first runs the bounded MONITOR tier (below); on budget expiry:
    - Linux: `futex(FUTEX_WAIT)` shared, no `FUTEX_PRIVATE_FLAG`;
@@ -152,8 +152,9 @@ park.
 
 ### Wake (producer side)
 
-`wake_up_to(seq)` first loads the header's `parked_mask` word
-(one bit per slot index below 64, maintained at park/release):
+`wake_up_to(seq)` issues a SeqCst fence, then loads the header's
+`parked_mask` word (one bit per slot index below 64, maintained at
+park/release):
 a zero mask answers the common nobody-is-parked case from one
 cache line instead of touching every slot line. For each
 candidate slot whose `state == PARKED` and `target_seq <= seq`:
@@ -188,9 +189,15 @@ and `try_park`, a producer can publish and call `wake_up_to`
 which finds zero PARKED slots. The fix is the caller's
 double-check after `try_park`: re-poll the underlying primitive's
 non-blocking surface before actually calling `wait`. If data is
-now present, `release` the slot and proceed. The combined
-unsafe window is the few nanoseconds between `state = PARKED`
-and the re-poll load.
+now present, `release` the slot and proceed.
+
+The double-check holds because of the two fences above.
+Publishing and then scanning is a store followed by a load, and so
+is parking and then re-polling. x86 and ARM64 both let such a load
+complete before the store, so without a fence on each side the
+scan can miss the parked bit while the re-poll misses the item,
+and the waiter sleeps until its timeout. With both fences, either
+the scan sees the bit or the re-poll sees the item.
 
 The blocking ring wrappers ([`BlockingSpscRing`]({{< ref
 "../rings/blocking-spsc-ring" >}}), [`BlockingMpscRing`]({{< ref
