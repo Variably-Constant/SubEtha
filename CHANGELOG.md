@@ -82,6 +82,14 @@ heading links to the commit that cut it.
   and PowerShell bridges included. It now writes nothing when it
   succeeds.
 
+- `Sidecar::scan_now` could drain an observation ring while the node's
+  own scan thread drained it too, although a ring has one consumer, so
+  observations were counted twice or replayed and a slot could be read
+  while its producer rewrote it. Each node's scans now take turns. With
+  four threads calling `scan_now` beside the node's thread while one
+  producer pushed 200,000 observations, the sidecar counted 535,879 to
+  627,373 of them before and 200,000 after, on Linux x86-64.
+
 ## [0.5.1] - 2026-09-21
 
 ### Added

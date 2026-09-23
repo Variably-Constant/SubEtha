@@ -263,11 +263,16 @@ const POLL_INTERVAL: Duration = Duration::from_micros(200);
 /// A single node's instance vec + scanning thread. One per NUMA node.
 struct NodeSidecar {
     instances: RwLock<Vec<Option<Registration>>>,
+    /// Held for the whole of one scan of the node. Each observation ring
+    /// has one consumer, and both the node's thread and `scan_now` drain
+    /// the node's rings, so they take turns rather than popping one ring
+    /// together.
+    draining: Mutex<()>,
 }
 
 impl NodeSidecar {
     fn new() -> Self {
-        Self { instances: RwLock::new(Vec::new()) }
+        Self { instances: RwLock::new(Vec::new()), draining: Mutex::new(()) }
     }
 }
 
@@ -352,6 +357,7 @@ impl Sidecar {
 
     fn scan_node(&self, node_idx: usize) {
         let Some(node) = self.nodes.get(node_idx) else { return };
+        let _draining = node.draining.lock();
         let guard = node.instances.read();
         Self::scan_instances(&guard);
     }
@@ -539,6 +545,9 @@ impl Sidecar {
 
     /// Force one scan iteration synchronously across all NUMA nodes.
     /// Useful for tests where we don't want to wait for the poll interval.
+    /// It takes turns with each node's own scan, so when it returns, an
+    /// observation pushed before the call has been drained and counted by
+    /// one scan or the other.
     pub fn scan_now(&self) {
         for node_idx in 0..self.nodes.len() {
             self.scan_node(node_idx);
@@ -1098,5 +1107,57 @@ mod tests {
         // Cleanup so test does not leak.
         s.unregister(id1);
         s.unregister(id2);
+    }
+
+    /// Threads calling `scan_now` beside the node's own scan thread.
+    const RACING_SCANNERS: usize = 4;
+    /// Observations the producer offers while the scans race.
+    const RACED_PUSHES: u64 = 200_000;
+
+    /// A ring has one consumer, so however many scans run at once, each
+    /// observation the ring accepted is counted exactly once. Several
+    /// threads call `scan_now` in a loop beside the node's own scan
+    /// thread while a producer pushes.
+    #[test]
+    fn concurrent_scans_count_each_observation_once() {
+        let s = Sidecar::new();
+        let inst = Box::new(BareInstance::new());
+        let id = unsafe {
+            s.register_raw(
+                NonNull::from(inst.header()),
+                NonNull::from(inst.ring()),
+                None,
+                Box::new(NoMigrationPolicy),
+            )
+        };
+        let producing = AtomicBool::new(true);
+        let accepted = thread::scope(|scope| {
+            for _ in 0..RACING_SCANNERS {
+                scope.spawn(|| {
+                    while producing.load(Ordering::Acquire) {
+                        s.scan_now();
+                    }
+                });
+            }
+            let mut accepted = 0u64;
+            for _ in 0..RACED_PUSHES {
+                let pushed = inst.ring().push(Observation {
+                    instance_id: 0,
+                    op_kind: 1,
+                    flags: 0,
+                    latency_ticks: 1,
+                    ..Observation::ZERO
+                });
+                if pushed {
+                    accepted += 1;
+                }
+            }
+            producing.store(false, Ordering::Release);
+            accepted
+        });
+        s.scan_now();
+        let observed = s.stats(id).expect("the instance is registered").ops_observed;
+        s.unregister(id);
+        assert_eq!(observed, accepted, "each accepted observation is counted once");
     }
 }
