@@ -8,7 +8,7 @@ weight: 58
 `subetha-pwrs` gives PowerShell the memory-mapped primitives directly,
 with no C shim between the shell and the Rust. It ships as a PowerShell
 module named `SubEtha` rather than to crates.io, and runs on
-PowerShell 7.5 and later and on Windows PowerShell 5.1.
+PowerShell 7.4 and later and on Windows PowerShell 5.1.
 
 ```powershell
 Import-Module SubEtha
@@ -524,13 +524,13 @@ releases of the tool and `merge` refuses two that differ.
 binary's file date does not, because the newest file can be the oldest
 version.
 
-Built from one commit on all four platforms, the manifest, the format
-file, the help and the Windows PowerShell shell come out byte-identical.
-The PowerShell 7 shell differs with the PowerShell that builds it, which
-also sets the oldest PowerShell 7 it loads in
+Built from one commit, everything but the native comes out
+byte-identical whichever machine builds it: the manifest, the format
+file, the script, the help and both shells. Built on Windows in pwsh
+7.6.6, on Linux in pwsh 7.6.5 and on FreeBSD in pwsh 7.5.5, every one of
+those files matched, so any platform's build can be the folder the
+others are merged into
 ([how the binding works](../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)).
-The published folder takes the FreeBSD build, on PowerShell 7.5.5, as
-its base.
 
 All 182 tests pass on each of four platforms, each running the folder
 it built:
@@ -542,10 +542,8 @@ it built:
 | macOS arm64 | pwsh 7.6.5 | `osx-arm64/libsubetha_pwrs.dylib` |
 | FreeBSD x64 | pwsh 7.5.5 on .NET 9 | `freebsd-x64/libsubetha_pwrs.so` |
 
-The FreeBSD-based folder, with the Windows and Linux natives folded in,
-passes the same 182 in pwsh 7.6.6 and Windows PowerShell 5.1 on Windows,
-in pwsh 7.6.5 and 7.5.11 on Linux, and in pwsh 7.5.5 on FreeBSD.
-PowerShell 7.4.20 refuses it at import.
+The folder built on Linux in pwsh 7.6.5 passes the same 182 there in
+pwsh 7.5.11 and 7.4.20 as well.
 
 FreeBSD is the one that needs arranging, for two reasons that are not
 this module's. Building it needs `PWRS_TOOLSET=5.3.0`, because the C#

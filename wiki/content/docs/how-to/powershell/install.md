@@ -6,7 +6,7 @@ weight: 10
 # Install the module
 
 `SubEtha` is on the PowerShell Gallery. One module folder carries both
-hosts and every platform, so the same install serves PowerShell 7.5 and
+hosts and every platform, so the same install serves PowerShell 7.4 and
 later and Windows PowerShell 5.1, on Windows x64, Linux x64, macOS arm64
 and FreeBSD x64.
 
@@ -110,15 +110,15 @@ command count cannot.
 
 | | |
 |---|---|
-| hosts | PowerShell 7.5 or later, Windows PowerShell 5.1 |
+| hosts | PowerShell 7.4 or later, Windows PowerShell 5.1 |
 | platforms | Windows x64, Linux x64, macOS arm64, FreeBSD x64 |
 | needed to use | nothing else |
-| needed to build | Rust, and `cargo pwrs` from the `cargo-pwrs` crate at 0.2.0 |
+| needed to build | Rust, and `cargo pwrs` from the `cargo-pwrs` crate at 0.2.1 |
 
 The module is a binary module bound directly to Rust, so it runs where
 its native runs. A platform outside those four, Windows or Linux on
 Arm among them, needs a `cargo pwrs build` on that platform followed by
-a `merge`. Why PowerShell 7 starts at 7.5 is in
+a `merge`. Why PowerShell 7 starts at 7.4 is in
 [how the binding works](../../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms).
 
 ## Where to go next

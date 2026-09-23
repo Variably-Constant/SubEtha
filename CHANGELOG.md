@@ -25,20 +25,19 @@ heading links to the commit that cut it.
 
 ### Changed
 
-- The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.2.0,
-  and its PowerShell 7 half on PowerShell 7.5.5, so it imports in
-  PowerShell 7.5 and later where 0.5.1 needed 7.6. That half is compiled
-  against the assemblies of the PowerShell that builds it and loads on
-  that PowerShell's .NET or a later one. In Windows PowerShell 5.1 the
-  module shares a session with another module built by cargo-pwrs 0.2.0
-  that declares classes; with one built by 0.1.8 or earlier, whichever
-  of the two is imported second fails if it declares classes or enums,
-  as the troubleshoot page describes. All 182 Pester tests pass on
-  Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, on Linux x64 and
-  macOS arm64 in pwsh 7.6.5, and on FreeBSD x64 in pwsh 7.5.5. A folder
-  built the release's way passes them in pwsh 7.6.6 and Windows
-  PowerShell 5.1 on Windows, in 7.6.5 and 7.5.11 on Linux and in 7.5.5
-  on FreeBSD; PowerShell 7.4.20 refuses it.
+- The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.2.1,
+  which compile its PowerShell 7 half against .NET 8 and PowerShell
+  7.4's references whichever pwsh does the build, so it imports in
+  PowerShell 7.4 and later where 0.5.1 needed 7.6. Built from one commit
+  on Windows, Linux and FreeBSD, every file of the module but the native
+  is byte-identical. In Windows PowerShell 5.1 the module shares a
+  session with another module built by cargo-pwrs 0.2.0 or later that
+  declares classes; with one built by 0.1.8 or earlier, whichever of the
+  two is imported second fails if it declares classes or enums, as the
+  troubleshoot page describes. All 182 Pester tests pass on Windows x64
+  in pwsh 7.6.6 and Windows PowerShell 5.1, on Linux x64 in pwsh 7.6.5,
+  7.5.11 and 7.4.20, on macOS arm64 in pwsh 7.6.5, and on FreeBSD x64
+  in pwsh 7.5.5.
 
 - `Send-SubEthaItem` works out once, when the pipeline begins, whether
   it is sending to a `BroadcastRing`, rather than asking every item's

@@ -204,16 +204,16 @@ handles of their own.
 ## Platforms
 
 The published module carries natives for Windows x64, Linux x64, macOS
-arm64 and FreeBSD x64, and runs on PowerShell 7.5 and later and on
+arm64 and FreeBSD x64, and runs on PowerShell 7.4 and later and on
 Windows PowerShell 5.1. All 182 Pester tests pass on each platform:
-Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, Linux x64 and
-macOS arm64 in pwsh 7.6.5, and FreeBSD x64 in pwsh 7.5.5 on .NET 9.
+Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, Linux x64 in pwsh
+7.6.5, 7.5.11 and 7.4.20, macOS arm64 in pwsh 7.6.5, and FreeBSD x64 in
+pwsh 7.5.5 on .NET 9.
 
 Each native is built on its own platform and folded into one folder with
 `cargo pwrs merge`. The
 [reference](https://variably-constant.github.io/SubEtha/docs/reference/subetha-pwrs/#building-and-testing)
-covers the merge, what FreeBSD needs to build and test the module, and
-which build the published folder starts from.
+covers the merge and what FreeBSD needs to build and test the module.
 
 ## Threads and lifetimes
 

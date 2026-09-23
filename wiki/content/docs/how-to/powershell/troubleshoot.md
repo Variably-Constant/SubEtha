@@ -87,7 +87,7 @@ enums, with:
 The type initializer for 'Pwrs.Modules.<Name>.PwrsModule' threw an exception.
 ```
 
-This module declares classes and is built by 0.2.0; SubEtha 0.5.1 and
+This module declares classes and is built by 0.2.1; SubEtha 0.5.1 and
 every release before it were built by 0.1.x. PWRS measured it in every
 import order and records it in its
 [0.2.0 changelog](https://github.com/Variably-Constant/PWRS/blob/main/CHANGELOG.md).
@@ -95,15 +95,15 @@ PowerShell 7 gives each module its own runtime and imports them in any
 order. In 5.1, import the older module in a session of its own, or use
 a release of it built by 0.2.0 or later.
 
-### PowerShell 7.4 cannot import it
+### A PowerShell 7 older than 7.4 cannot import it
 
-The import stops at:
+The import stops at a line naming the PowerShell and .NET it found:
 
 ```
-Could not load file or assembly 'System.Diagnostics.Process, Version=9.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
+SubEtha needs PowerShell 7.4 or later: its PowerShell 7 half is built against .NET 8, and this is PowerShell <version> on .NET <version>.
 ```
 
-The PowerShell 7 half needs PowerShell 7.5 or later
+The PowerShell 7 half needs PowerShell 7.4 or later
 ([how the binding works](../../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)
 says why). On Windows, Windows PowerShell 5.1 loads the other half.
 

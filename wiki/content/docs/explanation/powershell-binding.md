@@ -149,15 +149,13 @@ runtimes/freebsd-x64/native/  libsubetha_pwrs.so
 The `.psm1` selects the shell for the host it is imported into and
 loads the native beside it. Nothing is chosen by the caller.
 
-The two shells are built differently. The Windows PowerShell shell is
-compiled against .NET Standard 2.0 reference assemblies from NuGet, so
-every machine builds the same bytes. The PowerShell 7 shell is compiled
-against the assemblies of the PowerShell that builds it, so it loads on
-that PowerShell's .NET and later ones and fails on an earlier one: a
-shell built on PowerShell 7.6 references .NET 10, and PowerShell 7.4
-and 7.5 refuse it with `Unable to find type [Pwrs.Bootstrap.Loader]`.
-The published folder's is built on PowerShell 7.5.5, so it loads in
-PowerShell 7.5 and later.
+Both shells are compiled against reference assemblies fetched from
+NuGet rather than against the PowerShell doing the build, so every
+machine builds the same bytes. The Windows PowerShell shell targets
+.NET Standard 2.0. The PowerShell 7 shell targets .NET 8 and the
+`System.Management.Automation` 7.4.0 reference, so it loads in
+PowerShell 7.4 and later. On an older PowerShell 7 the module's script
+stops the import with a line naming the PowerShell it needs.
 
 Only the native differs per platform, so each is built on its own
 machine and `cargo pwrs merge` folds the folders into one. The merge
