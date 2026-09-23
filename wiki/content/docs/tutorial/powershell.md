@@ -25,8 +25,9 @@ cargo pwrs build --release
 Import-Module ../../target/pwrs/SubEtha/SubEtha.psd1
 ```
 
-One module folder serves PowerShell 7 on .NET 10 and Windows
-PowerShell 5.1. Every cmdlet has a long name and a short one: this page
+One module folder serves PowerShell 7 and Windows PowerShell 5.1.
+Built here, its PowerShell 7 half needs the PowerShell 7 that built it
+or a later one. Every cmdlet has a long name and a short one: this page
 uses the long ones, and `New-SEAtomic` is `New-SubEthaAtomic`.
 
 ## A counter two processes share

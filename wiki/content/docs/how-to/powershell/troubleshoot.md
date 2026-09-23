@@ -51,15 +51,17 @@ $ring = Open-SubEthaRing -Path C:\ipc\events -Capacity 4096 -ErrorAction Stop
 
 ## Import problems
 
-**`Import-Module SubEtha` says the module is not found.** Check it
-installed where this host looks: `Get-Module -ListAvailable SubEtha`.
-Windows PowerShell 5.1 and PowerShell 7 have different module paths,
-and `Install-PSResource` from one does not necessarily put it where the
-other looks. `Save-PSResource` plus an explicit path avoids the
-question entirely.
+### `Import-Module SubEtha` says the module is not found
 
-**The import succeeds but the first cmdlet fails.** The managed shell
-and the native library load separately. Confirm both:
+Check it installed where this host looks:
+`Get-Module -ListAvailable SubEtha`. Windows PowerShell 5.1 and
+PowerShell 7 have different module paths, and `Install-PSResource` from
+one does not necessarily put it where the other looks.
+`Save-PSResource` plus an explicit path avoids the question entirely.
+
+### The import succeeds but the first cmdlet fails
+
+The managed shell and the native library load separately. Confirm both:
 
 ```powershell
 (Get-Command -Module SubEtha -CommandType Cmdlet).Count    # 135 if the shell bound
@@ -68,11 +70,46 @@ $a = New-SubEthaAtomic -Path (Join-Path $env:TEMP 'check') # exercises the nativ
 
 A module folder is only complete with `runtimes/<rid>/native/` present
 for the platform you are on: `subetha_pwrs.dll` for Windows x64,
-`libsubetha_pwrs.so` for Linux x64. A folder built on one platform
-carries one of them, which is what `cargo pwrs merge` exists to fix.
+`libsubetha_pwrs.so` for Linux x64 and FreeBSD x64, and
+`libsubetha_pwrs.dylib` for macOS arm64. The published module carries
+all four. A folder built on one platform carries only its own, which is
+what `cargo pwrs merge` exists to fix.
 
-**Windows PowerShell 5.1 cannot reach the gallery.** It needs TLS 1.2,
-which the gallery has required since April 2020:
+### Windows PowerShell 5.1 refuses the second of two PWRS modules
+
+In Windows PowerShell 5.1 the runtime of the first module built with
+PWRS serves every PWRS module imported after it. When one of two such
+modules was built by `cargo-pwrs` 0.1.8 or earlier and the other by
+0.2.0 or later, the one imported second fails if it declares classes or
+enums, with:
+
+```
+The type initializer for 'Pwrs.Modules.<Name>.PwrsModule' threw an exception.
+```
+
+This module declares classes and is built by 0.2.0; SubEtha 0.5.1 and
+every release before it were built by 0.1.x. PWRS measured it in every
+import order and records it in its
+[0.2.0 changelog](https://github.com/Variably-Constant/PWRS/blob/main/CHANGELOG.md).
+PowerShell 7 gives each module its own runtime and imports them in any
+order. In 5.1, import the older module in a session of its own, or use
+a release of it built by 0.2.0 or later.
+
+### PowerShell 7.4 cannot import it
+
+The import stops at:
+
+```
+Could not load file or assembly 'System.Diagnostics.Process, Version=9.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'
+```
+
+The PowerShell 7 half needs PowerShell 7.5 or later
+([how the binding works](../../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)
+says why). On Windows, Windows PowerShell 5.1 loads the other half.
+
+### Windows PowerShell 5.1 cannot reach the gallery
+
+It needs TLS 1.2, which the gallery has required since April 2020:
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

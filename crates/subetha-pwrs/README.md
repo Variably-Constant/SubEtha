@@ -197,8 +197,8 @@ Import-Module ../../target/pwrs/SubEtha/SubEtha.psd1
 ```
 
 `cargo pwrs test --release` runs the Pester suites in `tests/` in pwsh
-and, on Windows, in Windows PowerShell as well. The module runs on
-PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
+and, on Windows, in Windows PowerShell as well. A folder built here
+needs the PowerShell 7 that built it, or a later one.
 
 `Get-Help` carries a synopsis, a description, help on every parameter
 and one example for each of the 135 cmdlets, all generated from the
@@ -216,39 +216,17 @@ handles of their own.
 
 ## Platforms
 
-Only the native library under `runtimes/<rid>/native/` differs per
-platform, so each one is built on its own machine and the folders are
-folded into a single module:
+The published module carries natives for Windows x64, Linux x64, macOS
+arm64 and FreeBSD x64, and runs on PowerShell 7.5 and later and on
+Windows PowerShell 5.1. All 182 Pester tests pass on each platform:
+Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, Linux x64 and
+macOS arm64 in pwsh 7.6.5, and FreeBSD x64 in pwsh 7.5.5 on .NET 9.
 
-```powershell
-cargo pwrs build --release                       # the building machine's rid
-cargo pwrs merge target/pwrs/SubEtha ../linux/SubEtha
-```
-
-`merge` requires the two manifests to be identical, which takes one
-checkout and one `cargo pwrs` version: the manifest gained fields
-between releases of the tool, so two hosts on different versions of it
-produce different manifests from the same source and `merge` refuses
-them. `cargo install --list` on each host is what settles that; the
-binary's file date does not, because the newest file can be the oldest
-version.
-
-All 181 Pester tests pass on four platforms: Windows x64 in both pwsh
-7.6.6 and Windows PowerShell 5.1, Linux x64 and macOS arm64 in pwsh
-7.6.5, and FreeBSD x64 in pwsh 7.5.5 on .NET 9. A merged folder carrying
-`win-x64`, `linux-x64` and `osx-arm64` imports and runs on each.
-
-The managed half is reproducible across all of them: built from one
-commit on three machines, the manifest and the shell assembly come out
-byte-identical, so the natives are the only genuinely per-platform part.
-
-FreeBSD needs two things arranged that this module does not control.
-`PWRS_TOOLSET=5.3.0` to build, because the default C# toolset wants
-.NET 10 and FreeBSD packages nothing past 9. `$IsLinux` set to run the
-suite, because Pester decides the platform from three booleans that are
-all false there; it reads them through `Get-Variable`, so a global of
-that name answers it without modifying Pester. The module itself imports
-there unaided.
+Each native is built on its own platform and folded into one folder with
+`cargo pwrs merge`. The
+[reference](https://variably-constant.github.io/SubEtha/docs/reference/subetha-pwrs/#building-and-testing)
+covers the merge, what FreeBSD needs to build and test the module, and
+which build the published folder starts from.
 
 ## Threads and lifetimes
 

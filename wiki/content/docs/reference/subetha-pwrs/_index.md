@@ -8,7 +8,7 @@ weight: 58
 `subetha-pwrs` gives PowerShell the memory-mapped primitives directly,
 with no C shim between the shell and the Rust. It ships as a PowerShell
 module named `SubEtha` rather than to crates.io, and runs on
-PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
+PowerShell 7.5 and later and on Windows PowerShell 5.1.
 
 ```powershell
 Import-Module SubEtha
@@ -519,12 +519,21 @@ platform, so each is built on its own machine and
 `cargo pwrs merge target/pwrs/SubEtha <folder built elsewhere>` folds
 them into one module. Every machine needs the same `cargo pwrs` version
 as well as the same checkout, because the manifest gained fields between
-releases of the tool and `merge` refuses two that differ. The managed
-half is reproducible: built on Windows, Linux and macOS from one commit,
-the manifest and the shell assembly come out byte-identical, so only the
-natives are genuinely per-platform.
+releases of the tool and `merge` refuses two that differ.
+`cargo install --list` on each host settles which version it has; the
+binary's file date does not, because the newest file can be the oldest
+version.
 
-All 181 tests pass on each of four platforms:
+Built from one commit on all four platforms, the manifest, the format
+file, the help and the Windows PowerShell shell come out byte-identical.
+The PowerShell 7 shell differs with the PowerShell that builds it, which
+also sets the oldest PowerShell 7 it loads in
+([how the binding works](../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)).
+The published folder takes the FreeBSD build, on PowerShell 7.5.5, as
+its base.
+
+All 182 tests pass on each of four platforms, each running the folder
+it built:
 
 | Platform | Host | Native |
 |---|---|---|
@@ -533,13 +542,31 @@ All 181 tests pass on each of four platforms:
 | macOS arm64 | pwsh 7.6.5 | `osx-arm64/libsubetha_pwrs.dylib` |
 | FreeBSD x64 | pwsh 7.5.5 on .NET 9 | `freebsd-x64/libsubetha_pwrs.so` |
 
+The FreeBSD-based folder, with the Windows and Linux natives folded in,
+passes the same 182 in pwsh 7.6.6 and Windows PowerShell 5.1 on Windows,
+in pwsh 7.6.5 and 7.5.11 on Linux, and in pwsh 7.5.5 on FreeBSD.
+PowerShell 7.4.20 refuses it at import.
+
 FreeBSD is the one that needs arranging, for two reasons that are not
 this module's. Building it needs `PWRS_TOOLSET=5.3.0`, because the C#
 compiler the tool fetches by default wants .NET 10 and FreeBSD packages
-nothing past 9. Running the suite needs `$IsLinux` set, because Pester
-decides the platform by testing three booleans that are all false there
-and throws rather than guessing; it reads them with `Get-Variable`,
-which resolves through the scope chain, so
-`Set-Variable -Name IsLinux -Value $true -Scope Global -Force` answers it
-without modifying Pester. The module itself needs neither: it imports on
-FreeBSD unaided and every cmdlet works.
+nothing past 9. Running the suite needs Pester's platform check
+answered: Pester decides the platform from three booleans that are all
+false there and throws rather than guessing. It reads them with
+`Get-Variable`, which resolves through the scope chain, so a global
+`$IsLinux` answers it without modifying Pester. `cargo pwrs test`
+imports whatever `PWRS_PESTER_PATH` names in place of Pester, so a
+module that sets the global and then imports Pester lets the command run
+unchanged:
+
+```powershell
+# PesterIsLinuxShim.psm1
+Set-Variable -Name IsLinux -Value $true -Scope Global -Force
+Import-Module Pester -RequiredVersion 5.7.1 -Global -ErrorAction Stop
+```
+
+```sh
+export PWRS_TOOLSET=5.3.0
+export PWRS_PESTER_PATH="$HOME/PesterIsLinuxShim.psm1"
+cargo pwrs test --release
+```

@@ -27,8 +27,9 @@ and no second implementation of the semantics that can drift from the
 first.
 
 It also explains what the module cannot do. It runs where its native
-runs, so the shipped folder serves Windows x64 and Linux x64 and
-nothing else; a new platform is a compile, not a configuration.
+runs: the shipped folder carries natives for Windows x64, Linux x64,
+macOS arm64 and FreeBSD x64, and a new platform is a compile, not a
+configuration.
 
 ## Two layers, because calls and pipelines cost different things
 
@@ -132,19 +133,31 @@ wait rather than by polling around it.
 This is the one place where the two-layer division bends, and it bends
 for a reason the host imposes.
 
-## One folder, two hosts, two platforms
+## One folder, two hosts, four platforms
 
 The module ships a shell for each host and a native for each platform:
 
 ```
-net10.0/                    PowerShell 7 on .NET 10
-netstandard2.0/             Windows PowerShell 5.1
-runtimes/win-x64/native/    subetha_pwrs.dll
-runtimes/linux-x64/native/  libsubetha_pwrs.so
+net10.0/                      PowerShell 7
+netstandard2.0/               Windows PowerShell 5.1
+runtimes/win-x64/native/      subetha_pwrs.dll
+runtimes/linux-x64/native/    libsubetha_pwrs.so
+runtimes/osx-arm64/native/    libsubetha_pwrs.dylib
+runtimes/freebsd-x64/native/  libsubetha_pwrs.so
 ```
 
 The `.psm1` selects the shell for the host it is imported into and
 loads the native beside it. Nothing is chosen by the caller.
+
+The two shells are built differently. The Windows PowerShell shell is
+compiled against .NET Standard 2.0 reference assemblies from NuGet, so
+every machine builds the same bytes. The PowerShell 7 shell is compiled
+against the assemblies of the PowerShell that builds it, so it loads on
+that PowerShell's .NET and later ones and fails on an earlier one: a
+shell built on PowerShell 7.6 references .NET 10, and PowerShell 7.4
+and 7.5 refuse it with `Unable to find type [Pwrs.Bootstrap.Loader]`.
+The published folder's is built on PowerShell 7.5.5, so it loads in
+PowerShell 7.5 and later.
 
 Only the native differs per platform, so each is built on its own
 machine and `cargo pwrs merge` folds the folders into one. The merge

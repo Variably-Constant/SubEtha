@@ -6,16 +6,9 @@ weight: 10
 # Install the module
 
 `SubEtha` is on the PowerShell Gallery. One module folder carries both
-hosts and every platform, so the same install serves PowerShell 7 and
-Windows PowerShell 5.1, on Windows x64, Linux x64 and macOS arm64.
-
-The PowerShell 7 half is not tied to a particular .NET. Its assembly is
-compiled against the reference set of the PowerShell that built it and
-declares no target framework, so it runs on the PowerShell that loads
-it. That is why the module works on FreeBSD, where PowerShell 7.5.5 runs
-on .NET 9: the module imports and all 135 cmdlets work, and only the
-test harness needs coaxing, which [the reference](../../reference/subetha-pwrs/)
-explains.
+hosts and every platform, so the same install serves PowerShell 7.5 and
+later and Windows PowerShell 5.1, on Windows x64, Linux x64, macOS arm64
+and FreeBSD x64.
 
 ## From the gallery
 
@@ -70,7 +63,7 @@ Import-Module ..\..\target\pwrs\SubEtha\SubEtha.psd1
 
 A build on one machine produces the native for that platform only.
 [Building and testing](../../../reference/subetha-pwrs/#building-and-testing)
-covers folding two platforms into one folder with `cargo pwrs merge`.
+covers folding the platforms' natives into one folder with `cargo pwrs merge`.
 
 ## What lands on disk
 
@@ -80,15 +73,21 @@ SubEtha/
   SubEtha.psm1                  loads the shell for the running host
   SubEtha.Format.ps1xml         how the objects print
   net10.0/                      the shell for PowerShell 7, and its help
-  netstandard2.0/               the shell for Windows PowerShell 5.1
+  netstandard2.0/               the shell for Windows PowerShell 5.1, and its help
   runtimes/win-x64/native/      subetha_pwrs.dll
   runtimes/linux-x64/native/    libsubetha_pwrs.so
+  runtimes/osx-arm64/native/    libsubetha_pwrs.dylib
+  runtimes/freebsd-x64/native/  libsubetha_pwrs.so
 ```
 
 The `.psm1` picks the shell matching the host it is imported into and
-loads the native beside it, so nothing has to be selected by hand. Both
-natives ship whichever platform you installed from; the unused one
-costs disk and nothing else.
+loads the native beside it, so nothing has to be selected by hand. All
+four natives ship whichever platform you installed from; the three you
+do not use cost disk and nothing else.
+
+Each shell folder holds the module's own assembly, named with a stamp
+of its build, beside the two support assemblies every PWRS module
+carries. `net10.0` is the folder's name, not the .NET it needs.
 
 ## Confirm it works
 
@@ -111,15 +110,16 @@ command count cannot.
 
 | | |
 |---|---|
-| hosts | PowerShell 7 on .NET 10, Windows PowerShell 5.1 |
-| platforms | Windows x64, Linux x64 |
+| hosts | PowerShell 7.5 or later, Windows PowerShell 5.1 |
+| platforms | Windows x64, Linux x64, macOS arm64, FreeBSD x64 |
 | needed to use | nothing else |
-| needed to build | Rust, and `cargo pwrs` from the `cargo-pwrs` crate |
+| needed to build | Rust, and `cargo pwrs` from the `cargo-pwrs` crate at 0.2.0 |
 
 The module is a binary module bound directly to Rust, so it runs where
-its native runs. There is no macOS or Arm native in the shipped folder;
-building one is a `cargo pwrs build` on that platform followed by a
-`merge`.
+its native runs. A platform outside those four, Windows or Linux on
+Arm among them, needs a `cargo pwrs build` on that platform followed by
+a `merge`. Why PowerShell 7 starts at 7.5 is in
+[how the binding works](../../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms).
 
 ## Where to go next
 
