@@ -315,12 +315,12 @@ impl ResidueCode {
 
         let mut used = [(0usize, 0u32); MAX_MODULI];
         let mut taken = 0usize;
-        for idx in 0..self.n {
+        for (idx, &residue) in residues.iter().enumerate().take(self.n) {
             if taken == self.k {
                 break;
             }
             if present & (1 << idx) != 0 {
-                used[taken] = (idx, residues[idx]);
+                used[taken] = (idx, residue);
                 taken += 1;
             }
         }
@@ -522,8 +522,8 @@ mod tests {
     /// day it ran.
     #[test]
     fn the_barrett_reduction_agrees_with_the_divide_it_replaced() {
-        for idx in 0..MAX_MODULI {
-            let m = MODULI[idx] as u64;
+        for (idx, &modulus) in MODULI.iter().enumerate() {
+            let m = modulus as u64;
             for x in 0..=(4 * m) {
                 assert_eq!(
                     reduce(x, idx) as u64,
