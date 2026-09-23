@@ -17,10 +17,35 @@ heading links to the commit that cut it.
   on a named event the waker sets. An idle waiter was charged a
   processor for as long as it waited, 0.953 to 1.008 of a core, and is
   now charged 0.000 to 0.003; a round trip with a 100 microsecond hold
-  pays 4.0 microseconds more at p50. Measured on Windows 11 / Ryzen 9 7900X. A waiter
-  re-checks its slot at least every 20 ms, so a wake whose event is
-  never set still ends the wait. The waker's tests pass on Windows 11
-  ARM64 (Azure Cobalt 100) too, with the monitor tier on and off.
+  pays 4.0 microseconds more at p50. Measured on Windows 11 / Ryzen 9
+  7900X. A waiter re-checks its slot at least every 20 ms, so a wake
+  whose event is never set still ends the wait. The waker's tests pass
+  on Windows 11 ARM64 (Azure Cobalt 100) too, with the monitor tier on
+  and off.
+
+### Changed
+
+- The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.2.0,
+  and its PowerShell 7 half on PowerShell 7.5.5, so it imports in
+  PowerShell 7.5 and later where 0.5.1 needed 7.6. That half is compiled
+  against the assemblies of the PowerShell that builds it and loads on
+  that PowerShell's .NET or a later one. In Windows PowerShell 5.1 the
+  module shares a session with another module built by cargo-pwrs 0.2.0
+  that declares classes; with one built by 0.1.8 or earlier, whichever
+  of the two is imported second fails if it declares classes or enums,
+  as the troubleshoot page describes. All 182 Pester tests pass on
+  Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, on Linux x64 and
+  macOS arm64 in pwsh 7.6.5, and on FreeBSD x64 in pwsh 7.5.5. A folder
+  built the release's way passes them in pwsh 7.6.6 and Windows
+  PowerShell 5.1 on Windows, in 7.6.5 and 7.5.11 on Linux and in 7.5.5
+  on FreeBSD; PowerShell 7.4.20 refuses it.
+
+- `Send-SubEthaItem` works out once, when the pipeline begins, whether
+  it is sending to a `BroadcastRing`, rather than asking every item's
+  target for its type name.
+
+- The workspace crates, the Python package and the PowerShell module
+  name Mark Newton as author, and the module's copyright reads the same.
 
 ### Fixed
 
@@ -42,6 +67,16 @@ heading links to the commit that cut it.
   process misses wakes on Windows. No platform's park for a file-backed
   condvar is keyed by virtual address, so it works; it costs a second
   mapping.
+
+- 0.5.1 said the PowerShell module works on FreeBSD x64. Its PowerShell
+  7 half was built on PowerShell 7.6 and references .NET 10, so it does
+  not import in FreeBSD's PowerShell 7.5.5, nor in PowerShell 7.4.20 or
+  7.5.11 on Linux; the FreeBSD figures came from a module built on
+  FreeBSD.
+
+- The install, explanation and troubleshoot pages listed the win-x64
+  and linux-x64 natives. The published folder has carried osx-arm64 and
+  freebsd-x64 as well since 0.5.1.
 
 ## [0.5.1] - 2026-09-21
 
