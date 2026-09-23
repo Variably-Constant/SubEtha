@@ -28,19 +28,19 @@ slices polling an empty / full ring.
 
 ## Constraints
 
-- **Cargo feature `tcp-bridge`** (same gate as the original
-  `TcpBridge`).
-- **`Arc<BlockingSpscRing>`** on both halves (single-producer,
-  single-consumer at each ring). Multi-producer / multi-consumer
+- It needs the `tcp-bridge` Cargo feature, the same gate as the
+  original `TcpBridge`.
+- Both halves hold an `Arc<BlockingSpscRing>`, single-producer and
+  single-consumer at each ring. Multi-producer / multi-consumer
   shapes use the
   [`BlockingMpscRing`]({{< ref "../rings/blocking-mpsc-ring" >}})
   /
   [`BlockingMpmcRing`]({{< ref "../rings/blocking-mpmc-ring" >}})
   primitives directly; bridge support for those shapes follows
   the same `spawn_blocking` pattern.
-- **Wire-side slot width matches `SPSC_PAYLOAD_BYTES`** (64
-  bytes). The wire carries whole slots back-to-back.
-- **Burst-batched data path.** The client parks for the first item
+- The wire carries whole slots back-to-back, each
+  `SPSC_PAYLOAD_BYTES` (64 bytes) wide.
+- The data path is burst-batched. The client parks for the first item
   (the zero-CPU-idle property), then drains every slot already in
   the ring via `try_pop` (up to `EGRESS_BATCH_SLOTS = 256`) and
   ships the batch in one socket write. The server's chunked reads

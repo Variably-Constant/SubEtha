@@ -30,26 +30,18 @@ across process boundaries.
 
 ## Constraints
 
-- **MAX_WAITERS slots per waker**, fixed at construction
+- A waker has `MAX_WAITERS` slots, fixed at construction
   ([`MAX_WAITERS_DEFAULT = 32`](#tuning)); `try_park` returns
   `WakerError::Full` if every slot is in use. Caller's fallback
   is to spin via the underlying primitive's non-blocking surface.
-- **Anonymous (`create_anon`)**, **file-backed (`create` / `open`)**,
-  or **shmfs-backed (`create_from_shm` / `open_from_shm`)**: same
-  byte layout, same protocol.
-- **Cross-process wake works on Linux/WSL via shared `futex`**
-  (no `FUTEX_PRIVATE_FLAG`) **and on FreeBSD via
-  `_umtx_op(UMTX_OP_WAIT_UINT / UMTX_OP_WAKE)`** - the non-private
-  umtx ops, whose sleep queues the kernel keys by physical address
-  precisely so process-shared synchronization works (per
-  `_umtx_op(2)`); proven by the cross-process waker sweep on
-  FreeBSD 15 (5/5 runs, parks observed and woken across two
-  processes sharing an MMF). **On Windows, a cross-process waiter
-  parks on a named auto-reset event** past its
-  [monitor tier](#the-monitor-wait-tier); `WaitOnAddress` is
-  intra-process only and serves anonymous wakers. macOS 14.4+
-  parks through `os_sync_wait_on_address` with its shared flag;
-  earlier macOS re-checks every millisecond.
+- Anonymous (`create_anon`), file-backed (`create` / `open`) and
+  shmfs-backed (`create_from_shm` / `open_from_shm`) wakers share
+  one byte layout and one protocol.
+- A file- or shm-backed waker wakes across processes on every
+  platform, and an anonymous one serves its own process;
+  [Park](#park-consumer-side) gives each platform's wait. On FreeBSD
+  15 the cross-process waker sweep observed parks woken across two
+  processes sharing an MMF in 5 of 5 runs.
 
 ## Storage layout
 
@@ -80,13 +72,13 @@ sleeps on the event `park_event` names instead.
 
 ## Slot states
 
-- **FREE (0)**: unused, available for `try_park`.
-- **RESERVED (1)**: caller has claimed the slot via CAS and is
+- `FREE` (0): unused, available for `try_park`.
+- `RESERVED` (1): caller has claimed the slot via CAS and is
   about to publish its target sequence.
-- **PARKED (2)**: consumer has published target + is waiting on
+- `PARKED` (2): consumer has published target + is waiting on
   the platform syscall.
-- **WOKEN (3)**: producer or another waker fired; the consumer's
-  `wait` returns and stores FREE on its way out, as `release` does
+- `WOKEN` (3): producer or another waker fired; the consumer's
+  `wait` returns and stores `FREE` on its way out, as `release` does
   for a parker that decides not to wait.
 
 ## Protocol
@@ -270,19 +262,18 @@ worked example pair: `examples/waker_xproc_producer.rs` +
 
 ## Tuning
 
-- **`MAX_WAITERS_DEFAULT`** is 32 slots per waker. Each slot is
+- `MAX_WAITERS_DEFAULT` is 32 slots per waker. Each slot is
   64 bytes (cache-line padded), so the header plus 32 slots is
   about 2 KB before mmap rounding. Bump for workloads with more
   simultaneous parkers than producers.
-- **Pre-park spin** in the blocking ring wrappers retries the
+- The blocking ring wrappers spin before they park, retrying the
   non-blocking surface 32 times before calling `try_park`, so
   imminent items skip the kernel round-trip entirely. Increase
   for very bursty producers; decrease for steady-rate producers
   that always park.
-- **Linux raw-futex feature**: the `linux-futex-raw` Cargo
-  feature exposes the direct `FUTEX_WAIT_BITSET` / `FUTEX_REQUEUE`
-  surface for callers that need primitives the portable wrapper
-  does not expose.
+- The `linux-futex-raw` Cargo feature exposes the direct
+  `FUTEX_WAIT_BITSET` / `FUTEX_REQUEUE` surface for callers that
+  need primitives the portable wrapper does not expose.
 
 ## E2E proof
 

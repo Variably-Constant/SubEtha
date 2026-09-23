@@ -1067,10 +1067,10 @@ says what the old answers were and why they were wrong.
 
 ### Changed
 
-- **The sliding-window RLC takes its coefficients from a published table
+- The sliding-window RLC takes its coefficients from a published table
   of sixty-four constants rather than from a generator that derives them
   per repair. This changes the wire and 0.3.0 does not interoperate with
-  0.2.x on the RLC repair path.** A repair names its generator in the
+  0.2.x on the RLC repair path. A repair names its generator in the
   high nibble of `dt` - free, because the density occupies 0..=15 - so a
   decoder reads the choice off the stream rather than from its own
   configuration. A repair naming generator 0, which is what 0.2.x sends,
