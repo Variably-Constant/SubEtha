@@ -50,6 +50,14 @@ pub struct ShmFile {
     handle: windows_sys::Win32::Foundation::HANDLE,
     #[cfg(windows)]
     view: *mut core::ffi::c_void,
+    /// The namespace the name was resolved in, which a waker on this
+    /// region names its park events in.
+    #[cfg(windows)]
+    namespace: ShmNamespace,
+    /// The descriptor this handle was asked to create the region with,
+    /// which a waker on this region gives its park events.
+    #[cfg(windows)]
+    sddl: Option<String>,
 }
 
 unsafe impl Send for ShmFile {}
@@ -142,7 +150,7 @@ impl ShmFile {
     ) -> io::Result<Self> {
         assert!(size > 0, "ShmFile size must be > 0");
         let safe_name = sanitize(logical_name, namespace);
-        unsafe { Self::platform_create_or_open(&safe_name, size, sddl) }
+        unsafe { Self::platform_create_or_open(&safe_name, size, namespace, sddl) }
     }
 
     /// Mutable byte slice into the mapped region. Length equals the
@@ -168,8 +176,18 @@ impl ShmFile {
     /// clippy's `len_without_is_empty`).
     pub fn is_empty(&self) -> bool { self.len == 0 }
 
-    /// Logical name (without the platform prefix).
+    /// The region's name as the platform resolves it, prefix included:
+    /// `Local\subetha_...` or `Global\subetha_...` on Windows, and a name
+    /// rooted at `/` on Unix.
     pub fn logical_name(&self) -> &str { &self.name }
+
+    /// The namespace this region's name was resolved in.
+    #[cfg(windows)]
+    pub(crate) fn namespace(&self) -> ShmNamespace { self.namespace }
+
+    /// The SDDL descriptor this handle was created or opened with, if any.
+    #[cfg(windows)]
+    pub(crate) fn sddl(&self) -> Option<&str> { self.sddl.as_deref() }
 
     // ---------------------------------------------------------------
     // Unix implementation: shm_open + ftruncate + File::from_raw_fd.
@@ -178,6 +196,7 @@ impl ShmFile {
     unsafe fn platform_create_or_open(
         safe_name: &str,
         size: usize,
+        #[cfg_attr(unix, allow(unused_variables))] namespace: ShmNamespace,
         #[cfg_attr(unix, allow(unused_variables))] sddl: Option<&str>,
     ) -> io::Result<Self> {
         let c_name = std::ffi::CString::new(safe_name)
@@ -233,6 +252,7 @@ impl ShmFile {
     unsafe fn platform_create_or_open(
         safe_name: &str,
         size: usize,
+        namespace: ShmNamespace,
         sddl: Option<&str>,
     ) -> io::Result<Self> {
         use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE};
@@ -310,6 +330,8 @@ impl ShmFile {
             len: size,
             handle,
             view: view.Value,
+            namespace,
+            sddl: sddl.map(str::to_owned),
         })
     }
 }
