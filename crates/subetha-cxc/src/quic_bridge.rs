@@ -116,8 +116,9 @@ impl QuicBridgeClient {
     /// every already-available slot (up to [`EGRESS_BATCH_SLOTS`])
     /// goes out in one stream write; a lone item ships immediately.
     ///
-    /// Returns when all `n_items` have been written + the stream is
-    /// finished (the peer has acknowledged the FIN).
+    /// Returns when all `n_items` have been written, the stream is
+    /// finished (the peer has acknowledged the FIN), and the close of
+    /// the connection has been sent.
     pub async fn run(
         &self,
         n_items: u64,
@@ -172,6 +173,13 @@ impl QuicBridgeClient {
         }
         send.finish().map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
         send.stopped().await.map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        // The server waits for this close before it closes its own side,
+        // which is what lets the acknowledgment of the finish above reach
+        // this side first. Waiting for the endpoint to go idle is what
+        // sends the close; dropped without it, the server can be left to
+        // find the connection timed out instead.
+        conn.close(0u32.into(), b"");
+        endpoint.wait_idle().await;
         Ok(())
     }
 }
@@ -208,8 +216,8 @@ impl QuicBridgeServer {
 
     /// Accept one incoming connection, read its uni stream, and
     /// push each received slot into the consumer ring. Returns
-    /// the number of items received when the client's stream has
-    /// been fully drained.
+    /// the number of items received once the client's stream has
+    /// been fully drained and the client has closed the connection.
     pub async fn accept_one(&self) -> Result<u64, QuicBridgeError> {
         let incoming = self
             .endpoint
@@ -271,6 +279,22 @@ impl QuicBridgeServer {
                 carry.extend_from_slice(data);
             }
         }
+        // The stream ends after the items its header declared.
+        let trailing = recv
+            .read(&mut buf)
+            .await
+            .map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        if trailing.is_some() {
+            return Err(QuicBridgeError::Quic(
+                "the stream carried more than its header declared".into(),
+            ));
+        }
+        // The client closes the connection once its finish is
+        // acknowledged, and this side waits for that close rather than
+        // closing first: a close from here can reach the client ahead of
+        // the acknowledgment of its last data, and the client's send then
+        // ends as a lost connection although every item arrived.
+        conn.closed().await;
         Ok(total)
     }
 }

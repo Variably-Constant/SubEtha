@@ -82,6 +82,20 @@ heading links to the commit that cut it.
   and PowerShell bridges included. It now writes nothing when it
   succeeds.
 
+- `QuicBridgeClient::run` could fail with a lost connection after the
+  server had received every item. The server closed the connection as
+  soon as it had read the items its header declared, and that close
+  could reach the client ahead of the acknowledgment of the client's
+  last data. The server now reads the stream to its end, refuses one
+  that carries more than its header declared, and waits for the client
+  to close; the client closes once its data is acknowledged. Over 200
+  rounds of the PowerShell module's round trip on Linux x86-64, 4
+  failed that way in PowerShell 7.4.20 and 3 in 7.6.5 before, and none
+  in either after. `run` now returns after QUIC's closing period, three
+  probe timeouts, which is what delivers the close when the caller's
+  runtime ends with the call, as the C API's does. The 200 rounds took
+  26 s in place of 4 s in 7.4.20 and 52 s in place of 7 s in 7.6.5.
+
 - `Sidecar::scan_now` could drain an observation ring while the node's
   own scan thread drained it too, although a ring has one consumer, so
   observations were counted twice or replayed and a slot could be read

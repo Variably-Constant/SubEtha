@@ -99,6 +99,39 @@ Describe 'SubEtha.QuicBridge' {
         $to.Dispose()
     }
 
+    It 'ends every round trip cleanly at both ends, round after round' {
+        # The server's AcceptOne returns only after the client closes, and
+        # the client's Run closes only once the server has acknowledged
+        # every item, so neither end takes the other's close for a lost
+        # connection. Which close reaches the other end first differs from
+        # one round to the next, so the exchange runs many times, each on
+        # fresh rings and a fresh server.
+        $rounds = 200
+        $cert = New-SubEthaSelfSignedCert -Name 'localhost'
+        $failed = @()
+        for ($i = 1; $i -le $rounds; $i++) {
+            $from = New-SubEthaRing -Path (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64
+            $to = New-SubEthaRing -Path (Join-Path $script:dir "quic-rounds-sink-$i") -Capacity 64
+            $p = $from.RegisterProducer()
+            $null = $to.RegisterConsumer()
+            1..3 | ForEach-Object { $null = $from.Send($p, "q-$_") }
+
+            $server = New-SubEthaQuicBridgeServer -RingPath (Join-Path $script:dir "quic-rounds-sink-$i") -Capacity 64 -LocalPort 0 -LocalHost 127.0.0.1 -Cert $cert.Cert -Key $cert.Key
+            $accepting = Start-SEBackground -Script { param($s) $s.AcceptOne() } -Argument $server
+            $client = New-SubEthaQuicBridgeClient -RingPath (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $server.LocalAddr().Port -Cert $cert.Cert -ServerName 'localhost'
+            try { $client.Run(3) } catch { $failed += "round ${i}: Run: $($_.Exception.Message)" }
+            try {
+                $arrived = Wait-SEBackground $accepting
+                if ("$arrived" -ne '3') { $failed += "round ${i}: AcceptOne answered '$arrived'" }
+            } catch { $failed += "round ${i}: AcceptOne: $($_.Exception.Message)" }
+            $client.Dispose()
+            $server.Dispose()
+            $from.Dispose()
+            $to.Dispose()
+        }
+        $failed | Should -BeNullOrEmpty
+    }
+
     It 'refuses a certificate it cannot read' {
         { New-SubEthaQuicBridgeClient -RingPath (Join-Path $script:dir 'none') -Capacity 8 -ServerHost 127.0.0.1 -ServerPort 1 -Cert ([byte[]](1, 2, 3)) -ServerName x -ErrorAction Stop } | Should -Throw
     }
