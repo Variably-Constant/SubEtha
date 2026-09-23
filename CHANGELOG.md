@@ -9,6 +9,40 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+### Added
+
+- On Windows a waiter on a file- or shm-backed `CrossProcessWaker`, and
+  so every cross-process blocking ring, channel, condvar, lock and
+  semaphore wait, sleeps in the kernel once its monitor budget runs out,
+  on a named event the waker sets. An idle waiter was charged a
+  processor for as long as it waited, 0.953 to 1.008 of a core, and is
+  now charged 0.000 to 0.003; a round trip with a 100 microsecond hold
+  pays 4.0 microseconds more at p50. Measured on Windows 11 / Ryzen 9 7900X. A waiter
+  re-checks its slot at least every 20 ms, so a wake whose event is
+  never set still ends the wait. The waker's tests pass on Windows 11
+  ARM64 (Azure Cobalt 100) too, with the monitor tier on and off.
+
+### Fixed
+
+- A blocking ring could lose a wake. A producer stores its ring's head
+  and then reads the waker's parked mask; a consumer sets its mask bit
+  and then re-checks the ring. x86 and ARM64 both let each of those
+  loads complete before the store ahead of it, so the producer could
+  find no parked bit while the consumer found no item, and the consumer
+  slept beside the item until its timeout. A wake scan now starts with a
+  SeqCst fence and a park ends with one. With two processes echoing
+  frames over a pair of file-backed `BlockingSpscRing`s, 20 runs of
+  2,000 frames each with no hold on Windows 11 / Ryzen 9 7900X, 7 runs
+  lost a wake without the fences and none with them. 0.5.1 lost a wake
+  in 5 of 15 runs of the same round trip with holds of 0, 100
+  microseconds and 1 ms. On the send path the fences cost nothing that
+  host resolves: 10.114 ns against 10.118 ns per push-and-pop pair.
+
+- The shared condvar page said a second `open` of the same file in one
+  process misses wakes on Windows. No platform's park for a file-backed
+  condvar is keyed by virtual address, so it works; it costs a second
+  mapping.
+
 ## [0.5.1] - 2026-09-21
 
 ### Added
