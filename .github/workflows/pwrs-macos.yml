@@ -48,8 +48,10 @@ jobs:
           pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
           dotnet --version
 
+      # The same version every other host builds with, or the manifests
+      # differ and `cargo pwrs merge` refuses this folder.
       - name: Install the build tool
-        run: cargo install cargo-pwrs --force
+        run: cargo install cargo-pwrs --version 0.2.0 --locked --force
 
       - name: Build the module
         shell: bash
