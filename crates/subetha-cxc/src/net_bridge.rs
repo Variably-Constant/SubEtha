@@ -266,7 +266,7 @@ mod tests {
         feeder.join().unwrap();
         client.join().unwrap();
         assert_eq!(server.join().unwrap(), N);
-        assert_eq!(sum, (0..N).sum());
+        assert_eq!(sum, (0..N).sum::<u64>());
     }
 
     #[test]
@@ -325,6 +325,6 @@ mod tests {
         feeder.join().unwrap();
         client.join().unwrap();
         assert_eq!(server.join().unwrap(), N);
-        assert_eq!(sum, (0..N).sum());
+        assert_eq!(sum, (0..N).sum::<u64>());
     }
 }

@@ -505,7 +505,7 @@ mod tests {
         });
 
         producer.join().unwrap();
-        assert_eq!(sum, (0..N).sum());
+        assert_eq!(sum, (0..N).sum::<u64>());
     }
 
     #[test]
@@ -537,6 +537,6 @@ mod tests {
             }
         }
         consumer.join().unwrap();
-        assert_eq!(got.load(Ordering::Acquire), (0..500u64).sum());
+        assert_eq!(got.load(Ordering::Acquire), (0..500u64).sum::<u64>());
     }
 }

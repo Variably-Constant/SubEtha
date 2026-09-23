@@ -4276,7 +4276,10 @@ mod tests {
                 .collect();
             let worker = first / ROUNDS;
             let ring = slots[worker].load(Ordering::Acquire);
+            #[cfg(debug_assertions)]
             let history = crate::ring_trace::recent_for(ring, usize::MAX).join("\n  ");
+            #[cfg(not(debug_assertions))]
+            let history = "not recorded; the ring trace is kept in debug builds only";
             panic!(
                 "published and never delivered: {named:?}\n  \
                  worker {worker} published from producer slot {ring}; what happened \
@@ -4463,7 +4466,9 @@ mod tests {
         // now name no process. A slot left naming one is a release that
         // cleared the bit before writing the sentinel, and the reaper
         // would then be free to take a slot whose holder is still live -
-        // which is what put two readers on one ring.
+        // which is what put two readers on one ring. The check is built
+        // into debug builds only.
+        #[cfg(debug_assertions)]
         ring.directory.assert_free_slots_name_no_process();
 
         // Whatever is still in the ring belongs to the tally too; the
