@@ -10,7 +10,7 @@ name = "subetha-ipc"
 description = "Shared memory between processes: rings, channels and shared state, bound to Rust directly."
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Markus Newton" }]
+authors = [{ name = "Mark Newton" }]
 readme = "README.md"
 classifiers = [
     "Programming Language :: Rust",
