@@ -248,6 +248,8 @@ pub mod temporal_sensor;
 pub mod tower;
 pub mod udp_bridge;
 pub mod cross_process_waker;
+#[cfg(windows)]
+mod park_event;
 pub mod shared_condvar;
 pub mod locale_adaptive_ring;
 mod mmf_attach;
