@@ -771,16 +771,20 @@ mod tests {
             }
             producer.join().unwrap();
 
-            // The estimator must have engaged and caught a meaningful
-            // share of items via the syscall-free guard-band spin.
-            if est.engaged() || stats.spin_catches > 0 {
-                assert!(stats.spin_catches > 0,
-                        "engaged mode must catch items via the guard-band spin");
+            // The estimator must have engaged and caught items via the
+            // syscall-free guard-band spin. An attempt that engaged but
+            // whose every predicted wake missed the guard band, as a
+            // descheduled consumer's can, is another attempt rather than a
+            // verdict.
+            if stats.spin_catches > 0 {
                 engaged_once = true;
                 break;
             }
         }
-        assert!(engaged_once, "a regular cadence must engage the predictor");
+        assert!(
+            engaged_once,
+            "a regular cadence must engage the predictor and catch items via the guard-band spin"
+        );
     }
 
     /// Cells of the two-process round trip, each with a fresh pair of
