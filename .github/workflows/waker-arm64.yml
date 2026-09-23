@@ -1,0 +1,53 @@
+# The Windows on ARM64 run of the cross-process waker's tests.
+#
+# No host we own is Windows on ARM64, so the waker's path there, the WFE
+# monitor tier and then the named-event park, is built and run here or
+# nowhere. It runs on dispatch only: it answers one question about one
+# module, and a push elsewhere in the tree does not change the answer.
+#
+# The image's Rust is older than the workspace's rust-version, so the
+# stable toolchain is installed first. ring, which the test build pulls
+# in through quinn and rustls, needs clang on this target; the image
+# carries LLVM.
+
+name: waker arm64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  waker:
+    name: Waker tests on Windows ARM64
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
+      - name: What the host has
+        shell: pwsh
+        run: |
+          $env:PROCESSOR_ARCHITECTURE
+          (Get-CimInstance Win32_Processor).Name
+          rustc -vV
+          clang --version
+
+      - name: The waker's tests and its consumers', monitor tier on
+        shell: pwsh
+        run: cargo test -p subetha-cxc --lib -- cross_process_waker park_event blocking_spsc_ring shared_condvar blocking_semaphore
+
+      - name: The same with the monitor tier off
+        shell: pwsh
+        env:
+          SUBETHA_NO_MONITOR_WAIT: "1"
+        run: cargo test -p subetha-cxc --lib -- cross_process_waker park_event blocking_spsc_ring shared_condvar blocking_semaphore
