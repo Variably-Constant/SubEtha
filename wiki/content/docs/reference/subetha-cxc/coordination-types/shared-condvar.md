@@ -25,20 +25,18 @@ when a notifier advances the predicate and calls `notify_*`.
 
 ## Constraints
 
-- **`Arc::clone` for intra-process sharing**. A second `open` of
-  the same file in one process works, since no platform's park is
-  keyed by virtual address, but costs a second mapping.
-- **`open` is for joiners** in other processes.
-- **Cross-process wake** rides the
-  [`CrossProcessWaker`]({{< ref "cross-process-waker" >}}) parks:
-  shared `futex` on Linux/WSL, non-private `_umtx_op` on FreeBSD,
-  `os_sync_wait_on_address` on macOS 14.4+, and on Windows the
-  monitor tier, then the waiter's named park event, for
-  file/shm-backed condvars; anon-backed Windows condvars stay
-  intra-process via `WaitOnAddress`.
-- **`wait` parks with no deadline.** A predicate only a
-  since-dead process would have satisfied is waited on forever;
-  `wait_timeout` bounds it and lets a caller detect that.
+- Threads of one process share a condvar through `Arc::clone`. A
+  second `open` of the same file in one process works, since no
+  platform's park is keyed by virtual address, but costs a second
+  mapping.
+- `open` is for joiners in other processes.
+- A wait parks through the
+  [`CrossProcessWaker`]({{< ref "cross-process-waker" >}}), whose
+  page gives each platform's park; an anon-backed condvar on Windows
+  wakes within its own process only.
+- `wait` parks with no deadline, so a predicate only a since-dead
+  process would have satisfied is waited on forever; `wait_timeout`
+  bounds it and lets a caller detect that.
 
 ## Operations
 
