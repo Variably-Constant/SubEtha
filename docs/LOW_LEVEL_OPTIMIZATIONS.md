@@ -16,7 +16,8 @@ ring workloads.
 
 | Lever | Where | Effect |
 |---|---|---|
-| MONITORX/MWAITX + WAITPKG monitor-wait tier | `monitor_wait.rs`, ahead of every kernel park in `cross_process_waker.rs` | waker wake p50 120 ns against 9,321 ns for the kernel park, Windows / Zen+; carries the Windows cross-process wake (`WaitOnAddress` is intra-process only), where a two-process pair completes in 336 ms |
+| MONITORX/MWAITX + WAITPKG monitor-wait tier | `monitor_wait.rs`, ahead of every kernel park in `cross_process_waker.rs` | waker wake p50 120 ns against 9,321 ns for the kernel park, Windows / Zen+; its wake crosses processes, since monitors key on physical addresses |
+| Windows named-event park | `park_event.rs`, past the monitor budget for a file- or shm-backed waiter in `cross_process_waker.rs` | an idle cross-process waiter is charged 0.000 of a processor, against 0.953 to 1.008 on the monitor alone; a 100 us round trip pays 4.0 us more at p50, Windows 11 / Ryzen 9 7900X |
 | AArch64 `LDAXR`+`WFE` monitor arm | `monitor_wait.rs` (`ArmWfe`) | base-ISA, always selected on aarch64; a remote store wakes via the global exclusive monitor's Exclusive->Open event, no SEV needed. Type-checked on aarch64-linux + aarch64-darwin |
 | macOS `os_sync_wait_on_address` park | `cross_process_waker.rs` platform arms | the public futex (macOS 14.4+), `OS_SYNC_WAIT_ON_ADDRESS_SHARED` for file / shm backings |
 | `PREFETCHW` before producer / consumer seq CAS | `shared_ring.rs` MPMC push / pop | contended CAS ping-pong 59 ns/round-trip with the prefetch against 186 ns without it (3.2x) on bare-metal Zen+ |

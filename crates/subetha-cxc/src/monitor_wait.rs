@@ -7,7 +7,7 @@
 //! |---|---|---|---|---|
 //! | spin | `PAUSE` loop | ns | busy | free (the store) |
 //! | **monitor (this module)** | `MONITORX`/`MWAITX` (AMD) or `UMONITOR`/`UMWAIT` (WAITPKG) | us, bounded | light sleep (C0.1) | free (the store) |
-//! | park | futex / `_umtx_op` / `WaitOnAddress` | unbounded | released to the OS | one syscall |
+//! | park | futex / `_umtx_op` / `WaitOnAddress` / a named event (Windows, cross-process) | unbounded | released to the OS | one syscall |
 //!
 //! The monitor tier's two properties the other tiers lack:
 //!
@@ -17,9 +17,10 @@
 //!   on the wake side, unlike every kernel-park mechanism.
 //! - **Monitors are physical-address based** (AMD APM / Intel SDM
 //!   `MONITOR` semantics), so a store from another process that
-//!   mapped the same MMF page wakes the waiter. On Windows - where
-//!   `WaitOnAddress` is intra-process only - this is the first
-//!   non-polling cross-process wake the substrate has.
+//!   mapped the same MMF page wakes the waiter. On Windows, where
+//!   `WaitOnAddress` is intra-process only, it is the one
+//!   cross-process wake that needs no kernel object; past the
+//!   budget a cross-process waiter parks on a named event instead.
 //!
 //! What it is not: a park. `MWAITX` / `UMWAIT` hold the core in a
 //! shallow sleep state with a hardware deadline; the OS cannot

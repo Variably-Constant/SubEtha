@@ -7,9 +7,10 @@
 //! when the local ring is empty (client side) or full (server
 //! side), this primitive uses `recv_blocking` / `send_blocking` on
 //! `BlockingSpscRing` via `tokio::task::spawn_blocking`. The
-//! blocking call parks the worker thread on a shared `futex` (or
-//! `WaitOnAddress`) and returns within microseconds of the next
-//! ring event. Result: an idle bridge consumes zero CPU; a
+//! blocking call parks the worker thread in the kernel (a shared
+//! `futex` on Linux; on Windows `WaitOnAddress`, or a named event
+//! for a file-backed ring) and returns within microseconds of the
+//! next ring event. Result: an idle bridge consumes zero CPU; a
 //! freshly-published item ships across the wire one wake +
 //! socket-write later.
 //!

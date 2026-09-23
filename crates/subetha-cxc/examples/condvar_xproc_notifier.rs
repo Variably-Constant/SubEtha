@@ -11,11 +11,9 @@
 //!   3. The waiter's `wait(predicate)` call returns and the waiter
 //!      exits rc=0.
 //!
-//! On Linux/WSL the wake call crosses the process boundary via
-//! shared `futex` and the test proves cross-process condvar
-//! wake-without-per-message-syscalls. On Windows the primitive
-//! falls back to spin (`WaitOnAddress` is intra-process only) so
-//! this binary should be run from WSL Linux.
+//! The wake crosses the process boundary through the waker's park:
+//! shared `futex` on Linux/WSL, and on Windows the named event the
+//! waiter publishes in its slot, so the pair runs on either.
 //!
 //! Usage:
 //!     condvar_xproc_notifier <base_path>

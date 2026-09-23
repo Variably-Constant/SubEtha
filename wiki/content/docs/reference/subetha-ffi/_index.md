@@ -292,9 +292,10 @@ rather than as packed pairs.
   claim cannot overwrite the winner's value.
 
 - `subetha_waker_`: parking and waking between processes, down on the
-  platform's own futex - `WaitOnAddress` and the hardware monitor on
-  Windows, `futex` on Linux, `_umtx_op` on FreeBSD - so a parked thread
-  costs nothing until it is woken. A consumer parks at the sequence
+  platform's own wait - `futex` on Linux, `_umtx_op` on FreeBSD, and on
+  Windows the hardware monitor followed by a named event the parker
+  publishes in its slot - so a parked thread costs nothing until it is
+  woken. A consumer parks at the sequence
   number it is waiting for and a producer that reaches that number wakes
   it; the sequence is the caller's own, a ring's write position or a job
   counter or anything a producer can compare against.

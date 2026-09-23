@@ -15,10 +15,11 @@
 //!   parks via the platform wait syscall. The kernel returns
 //!   within microseconds of the next `release`.
 //!
-//! Cross-process Linux uses shared `futex` so a `release` from
-//! process A wakes a parker in process B. Windows runs intra-
-//! process via `WaitOnAddress` (one process at a time, share via
-//! `Arc::clone`).
+//! A `release` from process A wakes a parker in process B wherever
+//! the waker's park crosses processes: shared `futex` on Linux,
+//! non-private `_umtx_op` on FreeBSD, `os_sync_wait_on_address`
+//! with its shared flag on macOS 14.4+, and on Windows the named
+//! event the parker publishes in its slot.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -21,9 +21,9 @@ slices polling an empty / full ring.
 > [`TcpBridge`]({{< ref "tcp-bridge" >}}) calls
 > `tokio::task::yield_now` when the local ring is empty (client
 > side) or full (server side), this primitive's worker thread
-> parks on a shared `futex` (Linux) or `WaitOnAddress` (Windows
-> intra-process) and returns within microseconds of the next ring
-> event. End-to-end latency floor drops from "polling interval +
+> parks in the kernel (a shared `futex` on Linux; on Windows
+> `WaitOnAddress`, or a named event for a file-backed ring) and
+> returns within microseconds of the next ring event. End-to-end latency floor drops from "polling interval +
 > RTT" to "wake syscall + RTT".
 
 ## Constraints

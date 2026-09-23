@@ -25,23 +25,17 @@ when a notifier advances the predicate and calls `notify_*`.
 
 ## Constraints
 
-- **`Arc::clone` for intra-process sharing**, not `create` +
-  `open`. The `open` constructor mmaps the same file a second
-  time, producing a different virtual-address range aliased to
-  the same file pages; Windows `WaitOnAddress` is keyed by
-  virtual address, so a `notify` from the second handle does not
-  reach a `wait` on the first handle. Cross-process Linux works
-  via shared `futex`, but the rule "one `Arc<SharedCondvar>` per
-  process" is cross-platform safe.
-- **`open` is for separate processes** joining a condvar the
-  creator already initialized.
+- **`Arc::clone` for intra-process sharing**. A second `open` of
+  the same file in one process works, since no platform's park is
+  keyed by virtual address, but costs a second mapping.
+- **`open` is for joiners** in other processes.
 - **Cross-process wake** rides the
   [`CrossProcessWaker`]({{< ref "cross-process-waker" >}}) parks:
   shared `futex` on Linux/WSL, non-private `_umtx_op` on FreeBSD,
-  `os_sync_wait_on_address` on macOS 14.4+, and the hardware
-  monitor tier (`MONITORX` / `UMONITOR`, physical-address keyed)
-  on Windows for file/shm-backed condvars; anon-backed Windows
-  condvars stay intra-process via `WaitOnAddress`.
+  `os_sync_wait_on_address` on macOS 14.4+, and on Windows the
+  monitor tier, then the waiter's named park event, for
+  file/shm-backed condvars; anon-backed Windows condvars stay
+  intra-process via `WaitOnAddress`.
 - **`wait` parks with no deadline.** A predicate only a
   since-dead process would have satisfied is waited on forever;
   `wait_timeout` bounds it and lets a caller detect that.
@@ -118,6 +112,10 @@ waiter.join().unwrap();
   `examples/condvar_xproc_waiter.rs`) drives a 255ms cross-process
   wait that crosses the kernel boundary via shared `futex`;
   notifier wakes 1 parked waiter; both processes exit `rc=0`.
+- The same pair on Windows 11 / Ryzen 9 7900X passed 10 of 10 runs
+  with the monitor tier on and 10 of 10 with
+  `SUBETHA_NO_MONITOR_WAIT=1`; each wait lasted 58 to 95 ms and was
+  woken through the waiter's park event.
 - 5 lib tests cover notify_one, notify_all, wait_timeout,
   immediate-true predicate, and Arc::clone file-backed
   round-trip.

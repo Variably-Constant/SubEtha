@@ -10,15 +10,14 @@ weight: 50
 ![Layout](https://img.shields.io/badge/Layout-MMF--backed-green)
 ![Pattern](https://img.shields.io/badge/pattern-userspace_futex-brightgreen)
 ![Linux](https://img.shields.io/badge/Linux-SHARED_futex-success)
-![Windows](https://img.shields.io/badge/Windows-WaitOnAddress-informational)
+![Windows](https://img.shields.io/badge/Windows-named_event_park-informational)
 
 Cross-process wake / park primitive: a fixed-size array of waiter
 slots stored inside a memory-mapped file (MMF). Each slot is the
 state atom that a parked consumer waits on and that a remote
 producer can flip via a single direct-syscall wake. The pattern
 is the userspace `futex`, ported to MMF substrate so it works
-across process boundaries on Linux (via shared `futex`) and
-across threads anywhere else.
+across process boundaries.
 
 > **The "futex slot in MMF" primitive.** Two cooperating processes
 > map the same waker file. A consumer reserves a slot, writes its
@@ -26,7 +25,8 @@ across threads anywhere else.
 > A producer in another process publishes data, then scans the
 > waker slots and calls the platform wake syscall on every slot
 > whose target it just passed. Both sides talk through one shared
-> 32-bit atom per slot; no kernel event handle is needed.
+> 32-bit atom per slot, and on Windows through the id of the event
+> a parked waiter sleeps on.
 
 ## Constraints
 
@@ -44,16 +44,12 @@ across threads anywhere else.
   precisely so process-shared synchronization works (per
   `_umtx_op(2)`); proven by the cross-process waker sweep on
   FreeBSD 15 (5/5 runs, parks observed and woken across two
-  processes sharing an MMF). **On Windows, cross-process wake
-  rides the hardware [monitor tier](#the-monitor-wait-tier)**:
-  `WaitOnAddress` is intra-process only, but MONITORX/UMONITOR
-  monitors key on physical addresses, so a store from another
-  process to the shared MMF line wakes the waiter - proven by the
-  two-process waker E2E on Windows (50,000 items, parks observed,
-  producer completing in 336 ms where the monitor-less baseline
-  deadlocks into its timeout recovery). Windows hosts without
-  MONITORX/WAITPKG, and macOS, degrade to wait-timeout +
-  re-check for cross-process callers.
+  processes sharing an MMF). **On Windows, a cross-process waiter
+  parks on a named auto-reset event** past its
+  [monitor tier](#the-monitor-wait-tier); `WaitOnAddress` is
+  intra-process only and serves anonymous wakers. macOS 14.4+
+  parks through `os_sync_wait_on_address` with its shared flag;
+  earlier macOS re-checks every millisecond.
 
 ## Storage layout
 
@@ -61,7 +57,7 @@ across threads anywhere else.
 block-beta
   columns 1
   hdr["CrossProcessWakerHeader - 64 B line: magic u64, capacity u32, parked_mask AtomicU64 (one bit per slot below 64), pad"]
-  s0["WakerSlot 0 - 64 B line: state AtomicU32 (FREE / RESERVED / PARKED / WOKEN), target_seq AtomicU64, pad"]
+  s0["WakerSlot 0 - 64 B line: state AtomicU32 (FREE / RESERVED / PARKED / WOKEN), target_seq AtomicU64, park_event AtomicU64 (Windows event id, 0 outside a kernel park), pad"]
   s1["WakerSlot 1 - same shape"]
   dots["..."]
   sn["WakerSlot MAX_WAITERS - 1"]
@@ -79,7 +75,8 @@ answer the nobody-is-parked case from a single line.
 
 Slot `state` is the wait/wake atomic. The platform wait syscall
 takes `&slot.state` plus the expected `PARKED` value; the wake
-syscall takes the same address.
+syscall takes the same address. A Windows cross-process park
+sleeps on the event `park_event` names instead.
 
 ## Slot states
 
@@ -89,8 +86,8 @@ syscall takes the same address.
 - **PARKED (2)**: consumer has published target + is waiting on
   the platform syscall.
 - **WOKEN (3)**: producer or another waker fired; the consumer's
-  `wait` returns; the slot transitions back to FREE on `release`
-  (or on the next `try_park` finding it).
+  `wait` returns and stores FREE on its way out, as `release` does
+  for a parker that decides not to wait.
 
 ## Protocol
 
@@ -98,8 +95,10 @@ syscall takes the same address.
 
 1. CAS some slot's `state` from FREE to RESERVED (linear probe
    from slot 0; the first FREE slot wins).
-2. Release-store the target sequence into `slot.target_seq`.
-3. Release-store `state = PARKED`.
+2. Store the target sequence into `slot.target_seq` (Relaxed; the
+   Release store in step 3 publishes it).
+3. Release-store `state = PARKED`, and set the slot's bit in the
+   header's `parked_mask`.
 4. Platform wait on `&slot.state` expecting `PARKED`. Every wait
    first runs the bounded MONITOR tier (below); on budget expiry:
    - Linux: `futex(FUTEX_WAIT)` shared, no `FUTEX_PRIVATE_FLAG`;
@@ -109,9 +108,15 @@ syscall takes the same address.
    - Windows, anon-backed: `WaitOnAddress(state, &PARKED,
      sizeof(u32), timeout_ms)`; intra-process only per Microsoft
      docs.
-   - Windows, file/shm-backed: stays on the monitor tier for the
-     whole wait (the only non-polling cross-process wake the
-     platform has).
+   - Windows, file/shm-backed: store the id of the slot's park
+     event in `slot.park_event` and re-check `state` (both SeqCst),
+     then sleep in `WaitForSingleObject` on the event, re-checking
+     `state` at least every 20 ms; store 0 on the way out. The
+     event is a named auto-reset event the waker instance creates
+     per slot on first use: `Local\subetha_park_<id>` beside a
+     file, the region's namespace and SDDL beside a shm region. If
+     it cannot be created, the wait stays on the monitor tier and
+     says so once on stderr.
    - macOS 14.4+: `os_sync_wait_on_address` (the public futex),
      with `OS_SYNC_WAIT_ON_ADDRESS_SHARED` selected for file /
      shm backings so the wake crosses process boundaries.
@@ -153,13 +158,21 @@ a zero mask answers the common nobody-is-parked case from one
 cache line instead of touching every slot line. For each
 candidate slot whose `state == PARKED` and `target_seq <= seq`:
 
-1. CAS `state` from PARKED to WOKEN.
+1. CAS `state` from PARKED to WOKEN (SeqCst).
 2. Platform wake syscall on `&slot.state`:
    - Linux: `futex(FUTEX_WAKE)` shared.
    - FreeBSD: `_umtx_op(UMTX_OP_WAKE)` shared.
-   - Windows: `WakeByAddressSingle(&state)`.
+   - Windows: `WakeByAddressSingle(&state)`; for a file/shm
+     backing, first a SeqCst load of `slot.park_event` and, if it
+     is not 0, `SetEvent` on the event it names.
    - macOS 14.4+: `os_sync_wake_by_address_any` (shared for
      cross-process backings).
+
+On Windows the CAS, the `park_event` load, and the waiter's store
+and re-check are all SeqCst, so either the waiter reads WOKEN before
+it sleeps or the producer reads its event id. The 20 ms re-check
+bounds a wake that sets no event, such as a producer that dies
+between its CAS and its set.
 
 Returns the count woken. Two narrower variants share this scan:
 `wake_one_up_to(seq)` wakes at most one qualifying slot (the
@@ -215,8 +228,9 @@ impl CrossProcessWaker {
 instrumentation. `WakerError` has four variants: `Full` (every slot in use -
 fall back to spinning), `Timeout` (a `wait` deadline elapsed with no wake),
 `LayoutMismatch` (an `open` / `open_from_shm` whose magic or capacity
-disagrees), and `IoError(std::io::ErrorKind)`; it implements `Display` +
-`std::error::Error`.
+disagrees), and `IoError(std::io::ErrorKind)`, which is also what `wait`
+returns when a Windows kernel park's `WaitForSingleObject` fails; it
+implements `Display` + `std::error::Error`.
 
 ## Worked example (intra-process)
 
@@ -265,25 +279,50 @@ worked example pair: `examples/waker_xproc_producer.rs` +
 
 ## E2E proof
 
-- **Intra-process (Windows + Linux):** `examples/waker_intra_process_e2e.rs`
+- Intra-process (Windows + Linux): `examples/waker_intra_process_e2e.rs`
   ships 50000 items under producer-paced cadence, verifies
   FIFO + asserts `parks > 0` so a regression on the wait path
   would fail the test (parks observed: ~3125 / 50000 calls).
-- **Cross-process (Linux/WSL):** `examples/waker_xproc_producer.rs` +
+- Cross-process (Linux/WSL): `examples/waker_xproc_producer.rs` +
   `examples/waker_xproc_consumer.rs` ship 50000 items between
   two separate binaries through a file-backed MMF; observe
   ~290 to 320 cross-process parks per run (0.6% of recvs), both
   processes exit `rc=0`.
-- **Sweep:** the intra-process e2e (Windows) and the cross-process
+- Cross-process (Windows): the same pair, and
+  `examples/condvar_xproc_waiter.rs` + `condvar_xproc_notifier.rs`,
+  pass 10 of 10 runs each with the monitor tier on and off; each
+  condvar wait (58 to 95 ms) is a kernel park woken from the other
+  process.
+- Idle cost (Windows): a thread idle 3 s on a file-backed
+  two-process link is charged 0.000 of a processor, against 0.953 to
+  1.000 on 0.5.1; whole PowerShell 7.6.6 and 5.1 processes read
+  0.000 to 0.003, against 0.994 to 1.008. A sleeping control reads
+  0.000 and a spinning one 0.995 to 1.000.
+- Wake cost (Windows): a round trip whose wait outlasts the
+  monitor budget pays one kernel wake. At a 100 us hold, p50 went
+  from 100.8 to 104.8 us and p99 from 101.0 to 110.3-111.6 us
+  against 0.5.1; with no hold, p50 stayed at 0.4 to 0.5 us.
+- Lost wakes: `a_wait_is_woken_from_another_process` parks a
+  peer process through 10,000 rounds, half woken anywhere up to
+  twice the monitor budget and half only once the peer sleeps on its
+  event, with the 20 ms re-check off, so a lost event shows as a 30 s
+  timeout. It passes on Windows with the monitor tier on and off,
+  and on Linux.
+- Sweep: the intra-process e2e (Windows) and the cross-process
   e2e (Linux) were each run N times back-to-back to rule out
   flakiness.
 
+The Windows figures are from Windows 11 / Ryzen 9 7900X, measured
+alongside other work (4.1 to 17.8 of 24 cores busy).
+
 ## See also
 
-- Source: `crates/subetha-cxc/src/cross_process_waker.rs` (1177
-  lines, 6 unit tests; the platform wait/wake ladder lives in the
-  in-file `platform_wait` module, and the monitor tier in
-  `crate::monitor_wait`).
+- Source: `crates/subetha-cxc/src/cross_process_waker.rs` (1565
+  lines, 12 unit tests, one of them Windows-only; the platform
+  wait/wake ladder lives in the in-file `platform_wait` module, and
+  the monitor tier in `crate::monitor_wait`) and
+  `crates/subetha-cxc/src/park_event.rs` (439 lines, 6 unit tests;
+  the Windows park event).
 - [`BlockingSpscRing`]({{< ref "../rings/blocking-spsc-ring" >}}):
   single-producer / single-consumer ring with cross-process
   blocking send / recv.
