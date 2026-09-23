@@ -172,16 +172,6 @@ impl QuicBridgeClient {
         }
         send.finish().map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
         send.stopped().await.map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
-        // UDP segmentation-offload diagnostic: datagrams per send
-        // io > 1 means the platform's GSO path is engaged (quinn
-        // batches multiple datagrams into one sendmsg/WSASendMsg).
-        let udp = conn.stats().udp_tx;
-        eprintln!(
-            "[quic] udp_tx datagrams={} ios={} (gso batching {:.1}x)",
-            udp.datagrams,
-            udp.ios,
-            udp.datagrams as f64 / udp.ios.max(1) as f64,
-        );
         Ok(())
     }
 }

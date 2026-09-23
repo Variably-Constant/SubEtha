@@ -78,6 +78,11 @@ heading links to the commit that cut it.
   and linux-x64 natives. The published folder has carried osx-arm64 and
   freebsd-x64 as well since 0.5.1.
 
+- `QuicBridgeClient::run` wrote a line of UDP counts to stderr each
+  time it finished, so every caller's stderr carried it, the C, Python
+  and PowerShell bridges included. It now writes nothing when it
+  succeeds.
+
 ## [0.5.1] - 2026-09-21
 
 ### Added
