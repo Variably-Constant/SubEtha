@@ -79,7 +79,7 @@ subetha-pointers = { workspace = true }
 # library. Registered under the project's own name because crates.io
 # carries an unrelated `pwrs` from 2015; the library it builds is still
 # `pwrs`, which is what the source writes.
-pwrs = { package = "PoWerRuSt", version = "0.2.0" }
+pwrs = { package = "PoWerRuSt", version = "0.2.1" }
 
 # The bridges are written against an async runtime; the module holds one
 # for all of them and starts it the first time a bridge needs it.
