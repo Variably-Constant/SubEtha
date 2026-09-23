@@ -44,10 +44,10 @@ futex slot list in MMF) on top of the non-blocking SPSC / MPSC
 / MPMC rings so consumers can park kernel-side instead of
 spinning when the ring is empty. shared `futex` on Linux and
 non-private `_umtx_op` on FreeBSD carry the wake across the
-process boundary; on Windows the hardware monitor tier
-(MONITORX/UMONITOR, physical-address based) carries the
-cross-process wake while `WaitOnAddress` serves anon-backed
-intra-process wakers. See [`cross-process-waker`]({{<
+process boundary; on Windows a cross-process waiter waits on the
+hardware monitor tier (MONITORX/UMONITOR, physical-address based)
+and then sleeps on a named park event its waker sets, while
+`WaitOnAddress` serves anon-backed intra-process wakers. See [`cross-process-waker`]({{<
 ref "../coordination-types/cross-process-waker" >}}) for the
 underlying protocol and the measured wait ladder.
 

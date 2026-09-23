@@ -23,8 +23,8 @@ Heartbeat, failover, barrier, and work-distribution primitives layered on the su
 | [Pass Registry](pass-registry/) | Cross-process closure dispatch (`Pass<F>` from one process; fires in another) |
 | [Shared Async Pointer](shared-async-pointer/) | Cross-process lazy / speculative future-like pointer |
 | [K-Tower Cascade](k-tower-cascade/) | Recursive pow2-of-pow2 cascading container for multi-resolution coordination |
-| [Cross-Process Waker](cross-process-waker/) | Userspace-`futex` slot list in MMF; cross-process wake via shared `futex` on Linux, `WaitOnAddress` on Windows; backs the `Blocking{Spsc,Mpsc,Mpmc}Ring` wrappers |
-| [Shared Condvar](shared-condvar/) | Cross-process Mesa-style condition variable; one generation counter + `CrossProcessWaker`; cross-process wake proven on WSL Linux via shared `futex` |
+| [Cross-Process Waker](cross-process-waker/) | Userspace-`futex` slot list in MMF; cross-process wake via shared `futex` on Linux and FreeBSD, and on Windows a named kernel event the waiter publishes in its slot (`WaitOnAddress` for anonymous wakers); backs the `Blocking{Spsc,Mpsc,Mpmc}Ring` wrappers |
+| [Shared Condvar](shared-condvar/) | Cross-process Mesa-style condition variable; one generation counter + `CrossProcessWaker`; cross-process wake proven on WSL Linux via shared `futex` and on Windows via the waiter's park event |
 | [Blocking Semaphore](blocking-semaphore/) | Cross-process counting semaphore with kernel-park slow path; replaces the existing `SharedSemaphore`'s sleep tail with a real futex park |
 | [Blocking RW Lock](blocking-rw-lock/) | Cross-process reader-writer lock with kernel-park slow path; both readers and writers park on the same waker |
 | [QoS Policy](qos-policy/) | DDS-inspired runtime-mutable QoS knobs (durability / history / ordering / ...); sidecar policies read them each scan to drive substrate morphs |

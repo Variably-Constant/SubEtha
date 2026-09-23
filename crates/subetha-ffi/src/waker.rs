@@ -2,9 +2,10 @@
 //!
 //! A consumer that has run out of work parks at the sequence number it is
 //! waiting for; a producer that reaches that sequence wakes it. The park
-//! goes down to the platform's own futex - `WaitOnAddress` and the
-//! hardware monitor on Windows, `futex` on Linux, `_umtx_op` on FreeBSD -
-//! so a parked thread costs nothing until it is woken.
+//! goes down to the platform's own wait - `futex` on Linux, `_umtx_op` on
+//! FreeBSD, and on Windows the hardware monitor followed by a named event
+//! across processes or `WaitOnAddress` within one - so a parked thread
+//! costs nothing until it is woken.
 //!
 //! # Parking is three calls
 //!

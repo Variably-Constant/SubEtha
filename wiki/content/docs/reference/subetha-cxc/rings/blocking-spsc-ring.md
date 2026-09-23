@@ -20,7 +20,8 @@ futex-shaped `send_blocking` / `recv_blocking`. Wraps the
 for each side). The hot path (`try_push` / `try_pop`) is
 identical to the bare SPSC ring; the blocking calls add a
 pre-park spin and a kernel park backed by shared `futex` on
-Linux, `WaitOnAddress` on Windows.
+Linux, and on Windows by `WaitOnAddress` for an anonymous ring or
+a named park event for a file- or shm-backed one.
 
 > **The "SPSC + futex slot" primitive.** Producer's `try_push`
 > wakes the consumer-side waker after every successful publish.
