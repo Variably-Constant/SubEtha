@@ -121,6 +121,30 @@ struct PendingAdmission {
 /// to reach datagrams from peers that are still alive.
 const MAX_DRAIN_RESETS: usize = 64;
 
+/// Bytes the sender reads each reverse-path control frame into. A longer
+/// frame reaches it cut short.
+const CTRL_BUF: usize = 256;
+
+/// Bytes the sealed envelope (`[17][pn u64-le][inner datagram + tag]`) adds
+/// around an inner datagram: the type byte, the packet number and the 16-byte
+/// AEAD tag.
+const SEALED_OVERHEAD: usize = 1 + 8 + 16;
+#[cfg(feature = "tls")]
+const _: () = assert!(SEALED_OVERHEAD == 1 + 8 + crate::rlc_crypto::TAG_LEN);
+
+/// The most source ids one `NAK` carries and still reaches a sender whole,
+/// sealed or not.
+const NAK_MAX_IDS: usize = (CTRL_BUF - SEALED_OVERHEAD - 1) / 4;
+
+/// How many ids below the lowest id seen a start probe names at first: the
+/// sixteen an ordinary NAK round carries. It doubles each time the whole range
+/// came back, up to what one `NAK` holds beside id 0 and the canary.
+const START_PROBE_DEPTH: u32 = 16;
+const START_PROBE_MAX_DEPTH: u32 = NAK_MAX_IDS as u32 - 2;
+
+/// Consecutive empty canary rounds before a window starts above id 0.
+const START_PROBE_ROUNDS: u32 = 2;
+
 /// TLS handshake flight (cleartext, before keys exist) + its ack, and the AEAD
 /// envelope `[17][pn u64-le][sealed inner datagram + tag]` for the data phase.
 #[cfg(feature = "tls")]
@@ -1640,7 +1664,7 @@ impl SensOMaticRlcSender {
     /// ARQ hold), and retune the coding from each FEEDBACK through the
     /// controller. The buffer holds a full 16-source-id NAK (1 + 16*4 = 65).
     pub fn pump(&mut self) -> io::Result<()> {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; CTRL_BUF];
         loop {
             match self.sock.recv_from(&mut buf) {
                 Ok((n, _)) if n >= 1 => {
@@ -1925,6 +1949,87 @@ impl SensOMaticRlcSender {
     }
 }
 
+/// Where a decode window's delivery starts.
+///
+/// Source ids count up from zero (the wire format, section 4.1), so a window
+/// that sees id 0, or a repair whose window starts at it, starts there. A
+/// window that has not seen it cannot tell a stream whose first datagrams were
+/// lost from one it joined partway through, as a restarted receiver does, and
+/// the two need different starts: the first must wait for its lost head, and
+/// the second can never have what the sender has already released. Only the
+/// sender knows which ids it still holds, so the window asks it with a
+/// [`StartProbe`], and until the answer is in it delivers nothing and
+/// acknowledges nothing.
+enum StreamStart {
+    /// Delivery runs from `delivered_through`.
+    Settled,
+    Probing(StartProbe),
+}
+
+/// A start probe. Each round is one `NAK` naming id 0, then the ids just below
+/// the lowest id seen, then that lowest id itself, last: the canary.
+///
+/// A sender resends a `NAK`'d id only while it still holds it and has not
+/// sent it within its retransmit cooldown, and it serves a `NAK` in order.
+/// Every id below the canary went out before the canary did, so by the time
+/// the canary is resent each of them the sender holds is past its cooldown
+/// too, and has gone out ahead of it. A resent canary with nothing below it is
+/// therefore a round in which the sender held nothing below it, and
+/// [`START_PROBE_ROUNDS`] such rounds in a row start the window at the canary.
+/// Nothing here waits on a clock: a sender slow to resend delays the start,
+/// and cannot move it.
+struct StartProbe {
+    /// The lowest id seen, and the send stamp of the copy that established it
+    /// or last came back as the canary. A copy stamped later is the sender
+    /// resending it.
+    lowest: Option<(u32, u32)>,
+    /// How many ids below `lowest` the next round names.
+    depth: u32,
+    /// The lowest id when `depth` was last set. Once the window holds every
+    /// id from the lowest up to it, reaching `depth` below it, the whole range
+    /// a round named has come back and the depth doubles.
+    deepened_at: u32,
+    /// When the canary's resent copy arrived in the current round.
+    canary_back_us: Option<f64>,
+    /// Consecutive rounds in which the canary came back and nothing below it
+    /// did.
+    empty_rounds: u32,
+}
+
+impl StartProbe {
+    fn new() -> Self {
+        Self {
+            lowest: None,
+            depth: START_PROBE_DEPTH,
+            deepened_at: 0,
+            canary_back_us: None,
+            empty_rounds: 0,
+        }
+    }
+
+    /// Record one arriving `DATA`. An id below the lowest is the sender
+    /// holding more than the window has seen, which restarts the count of
+    /// empty rounds; a later-stamped copy of the lowest is the canary back.
+    fn saw(&mut self, sid: u32, send_us: u32, arrival_us: f64) {
+        match self.lowest {
+            None => {
+                self.lowest = Some((sid, send_us));
+                self.deepened_at = sid;
+            }
+            Some((lowest, _)) if sid < lowest => {
+                self.lowest = Some((sid, send_us));
+                self.canary_back_us = None;
+                self.empty_rounds = 0;
+            }
+            Some((lowest, stamp)) if sid == lowest && (send_us.wrapping_sub(stamp) as i32) > 0 => {
+                self.lowest = Some((lowest, send_us));
+                self.canary_back_us.get_or_insert(arrival_us);
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 /// One peer's decode window: the state a single connection id owns, and the
 /// only place RLC decoding is implemented. A receiver holds one of these per
 /// live sender, so two peers never share a delivery frontier, a loss estimate,
@@ -2063,9 +2168,20 @@ struct RlcSession {
     /// How many times this session migrated to a new peer address - the count
     /// is the proof the connection survived a 4-tuple change.
     migrations: u64,
-    /// Whether the delivery frontier has been anchored to an observed source
-    /// id. False until the first DATA of a session arrives.
-    frontier_anchored: bool,
+    /// Where delivery starts, and while that is not yet known, the probe
+    /// finding it.
+    stream_start: StreamStart,
+    /// Test-only loss at the head of the stream: the first `head_drop` `DATA`
+    /// datagrams to arrive are dropped, first copies only so a resend passes,
+    /// and with `head_drop_repairs` so is every `REPAIR` that arrives before
+    /// they have all gone. The shape of a burst lost to a full kernel queue as
+    /// a stream starts.
+    #[cfg(test)]
+    head_drop: u32,
+    #[cfg(test)]
+    head_drop_repairs: bool,
+    #[cfg(test)]
+    head_dropped: BTreeSet<u32>,
     /// Path validation. When the session appears at a fresh address the
     /// receiver migrates optimistically (it keeps delivering - the AEAD / id
     /// already authenticate the frame) but marks the new address unvalidated and
@@ -2152,6 +2268,12 @@ pub struct SensOMaticRlcReceiver {
     ge_loss_p: u32,
     ge_loss_r: u32,
     pair_debug: bool,
+    /// Test-only head loss, stamped onto each session as it opens; see
+    /// [`set_head_loss`](Self::set_head_loss).
+    #[cfg(test)]
+    head_drop: u32,
+    #[cfg(test)]
+    head_drop_repairs: bool,
     /// The 1-RTT keys from the handshake, held until the first session opens
     /// and then moved into it. `tls_armed` outlives the move, so a second
     /// connection id can still be refused after the keys are gone.
@@ -2228,7 +2350,13 @@ impl RlcSession {
             feedback_sent: 0,
             cid,
             migrations: 0,
-            frontier_anchored: false,
+            stream_start: StreamStart::Probing(StartProbe::new()),
+            #[cfg(test)]
+            head_drop: 0,
+            #[cfg(test)]
+            head_drop_repairs: false,
+            #[cfg(test)]
+            head_dropped: BTreeSet::new(),
             peer_validated: true,
             pending_challenge: None,
             prev_peer: None,
@@ -2371,6 +2499,16 @@ impl RlcSession {
         false
     }
 
+    /// Whether the test-only head loss takes this `DATA`: a first copy while
+    /// fewer than `head_drop` have gone. A resend of a dropped id passes.
+    #[cfg(test)]
+    fn drop_head_data(&mut self, sid: u32) -> bool {
+        if self.head_dropped.contains(&sid) || self.head_dropped.len() as u32 >= self.head_drop {
+            return false;
+        }
+        self.head_dropped.insert(sid)
+    }
+
     /// Re-base this receiver's delivery to start at `base` for a cross-code
     /// resync. The unified layer calls this when the stream returns to RLC after
     /// another code carried the ids in between: the in-order frontier moves to
@@ -2378,7 +2516,10 @@ impl RlcSession {
     /// range), and the gap / NAK / loss-accounting tracking for ids below `base`
     /// is cleared so the receiver never NAKs a hole that will not be filled over
     /// RLC (the other code delivered those ids), nor replays a stale buffered tail.
+    /// The resync names where the stream stands, so it settles the window's
+    /// start as well.
     pub fn skip_to(&mut self, base: u32) {
+        self.stream_start = StreamStart::Settled;
         self.delivered_through = base;
         self.highest_seen = base;
         self.dec.rebase_to(base);
@@ -2412,19 +2553,99 @@ impl RlcSession {
         // Reorder grace (microseconds): how long to wait before declaring a gap
         // lost, scaled to the path's recent delay spread (jitter), floored 1ms.
         let grace = (2.0 * self.loss_class.recent_owd_spread_us()).clamp(1000.0, 50_000.0);
-        self.deliver(out, now_us, grace);
-        self.flush_loss_accounting(now_us);
+        let settled = self.settle_start(now_us, grace);
+        if settled {
+            self.deliver(out, now_us, grace);
+            self.flush_loss_accounting(now_us);
+        }
         // Path validation: retire a stale challenge (revert a spoofed
         // move) and (re)issue the outstanding one now that the drain has credited
         // the anti-amplification budget.
         self.expire_stale_challenge();
         self.maybe_send_challenge()?;
-        self.maybe_nak()?;
-        self.send_ack()?;
+        if settled {
+            self.maybe_nak()?;
+            self.send_ack()?;
+        } else {
+            self.send_start_probe()?;
+        }
         self.maybe_feedback()?;
         let delivered = !out.is_empty();
         tagged.extend(out.drain(..).map(|item| (self.cid, item)));
         Ok(delivered)
+    }
+
+    /// Settle the window's start once the evidence is in, and say whether it
+    /// is settled. Id 0 held, received or recovered from repairs, starts it
+    /// at 0. Otherwise a probe round closes a reorder grace after its canary
+    /// came back, and the last of [`START_PROBE_ROUNDS`] empty rounds starts
+    /// it at the canary.
+    fn settle_start(&mut self, now_us: f64, grace: f64) -> bool {
+        let StreamStart::Probing(probe) = &mut self.stream_start else {
+            return true;
+        };
+        if self.dec.has(0) {
+            self.stream_start = StreamStart::Settled;
+            return true;
+        }
+        let (Some((lowest, _)), Some(back)) = (probe.lowest, probe.canary_back_us) else {
+            return false;
+        };
+        if now_us - back < grace {
+            return false;
+        }
+        probe.canary_back_us = None;
+        probe.empty_rounds += 1;
+        if probe.empty_rounds < START_PROBE_ROUNDS {
+            return false;
+        }
+        self.settle_at(lowest);
+        true
+    }
+
+    /// Start delivery at `base`, keeping every symbol the window holds from
+    /// `base` up. The rate the next `FEEDBACK` reports counts from here, so
+    /// the ids below `base` are not reported as delivered.
+    fn settle_at(&mut self, base: u32) {
+        self.stream_start = StreamStart::Settled;
+        self.delivered_through = base;
+        self.last_fb_delivered = base;
+        self.highest_seen = self.highest_seen.max(base);
+        self.dec.forget_below(base);
+        self.data_arrived.retain(|&sid| sid >= base);
+        self.fec_recovered.retain(|&sid| sid >= base);
+    }
+
+    /// Send one start-probe round: a `NAK` naming id 0, the ids just below
+    /// the lowest id seen, and that lowest id last. Paced like an ordinary
+    /// `NAK` round, and reaching twice as deep once a whole range it named has
+    /// come back.
+    fn send_start_probe(&mut self) -> io::Result<()> {
+        if self.last_nak.elapsed() < Duration::from_millis(1) || self.peer.is_none() {
+            return Ok(());
+        }
+        let StreamStart::Probing(probe) = &mut self.stream_start else {
+            return Ok(());
+        };
+        let Some((lowest, _)) = probe.lowest else {
+            return Ok(());
+        };
+        if probe.deepened_at - lowest >= probe.depth
+            && (lowest..probe.deepened_at).all(|sid| self.dec.has(sid))
+        {
+            probe.depth = (probe.depth * 2).min(START_PROBE_MAX_DEPTH);
+            probe.deepened_at = lowest;
+        }
+        let lo = lowest.saturating_sub(probe.depth).max(1);
+        let mut pkt = Vec::with_capacity(1 + 4 * NAK_MAX_IDS);
+        pkt.push(PKT_RLC_NAK);
+        for sid in std::iter::once(0).chain(lo..=lowest) {
+            pkt.extend_from_slice(&sid.to_le_bytes());
+        }
+        self.wire_send_to_peer(&pkt)?;
+        self.naks_sent += 1;
+        self.last_nak = Instant::now();
+        Ok(())
     }
 
     /// Handle one inner frame the receiver has routed to this session. Returns
@@ -2573,6 +2794,10 @@ impl RlcSession {
             PKT_RLC_DATA if pkt.len() >= DATA_HDR + self.symbol_len => {
                 let sid = u32::from_le_bytes([pkt[9], pkt[10], pkt[11], pkt[12]]);
                 let send_us = u32::from_le_bytes([pkt[13], pkt[14], pkt[15], pkt[16]]);
+                #[cfg(test)]
+                if self.drop_head_data(sid) {
+                    return;
+                }
                 // Inject diagnostic loss. The Gilbert-Elliott path erases per the
                 // deterministic id-indexed chain (retransmits pass); the Bernoulli
                 // path draws per new arrival. Either way a retransmit always gets
@@ -2630,13 +2855,8 @@ impl RlcSession {
                         self.pair_gap_log.push(gap);
                     }
                 }
-                // Anchor the frontier to where the stream is. A no-op for a
-                // receiver that starts with its sender (first id 0); a
-                // mid-stream join starts at the id it first sees, below which
-                // nothing is recoverable by this receiver.
-                if !self.frontier_anchored {
-                    self.skip_to(sid);
-                    self.frontier_anchored = true;
+                if let StreamStart::Probing(probe) = &mut self.stream_start {
+                    probe.saw(sid, send_us, arrival_us);
                 }
                 self.last_data_sid = Some(sid);
                 self.last_arrival_us = Some(arrival_us);
@@ -2645,6 +2865,10 @@ impl RlcSession {
                 self.dec.on_source(sid, &pkt[DATA_HDR..DATA_HDR + self.symbol_len]);
             }
             PKT_RLC_REPAIR if pkt.len() >= 20 => {
+                #[cfg(test)]
+                if self.head_drop_repairs && (self.head_dropped.len() as u32) < self.head_drop {
+                    return;
+                }
                 let repair_key = u32::from_le_bytes([pkt[9], pkt[10], pkt[11], pkt[12]]);
                 let first_source_id = u32::from_le_bytes([pkt[13], pkt[14], pkt[15], pkt[16]]);
                 let window_size = u16::from_le_bytes([pkt[17], pkt[18]]);
@@ -2652,6 +2876,10 @@ impl RlcSession {
                 let payload = pkt[20..].to_vec();
                 if payload.len() != self.symbol_len {
                     return;
+                }
+                // A repair covering id 0 is the sender still holding it.
+                if first_source_id == 0 && matches!(self.stream_start, StreamStart::Probing(_)) {
+                    self.stream_start = StreamStart::Settled;
                 }
                 self.highest_seen = self
                     .highest_seen
@@ -2946,6 +3174,10 @@ impl SensOMaticRlcReceiver {
             ge_loss_p: 0,
             ge_loss_r: 0,
             pair_debug: std::env::var("SUBETHA_PAIR_DEBUG").is_ok(),
+            #[cfg(test)]
+            head_drop: 0,
+            #[cfg(test)]
+            head_drop_repairs: false,
             #[cfg(feature = "tls")]
             crypto: None,
             #[cfg(feature = "tls")]
@@ -3024,6 +3256,16 @@ impl SensOMaticRlcReceiver {
         self
     }
 
+    /// Test-only loss at the head of every session opened from here on: its
+    /// first `datagrams` `DATA` datagrams are lost, first copies only so a
+    /// resend passes, and with `repairs` so is every `REPAIR` that arrives
+    /// before they have all gone.
+    #[cfg(test)]
+    pub(crate) fn set_head_loss(&mut self, datagrams: u32, repairs: bool) {
+        self.head_drop = datagrams;
+        self.head_drop_repairs = repairs;
+    }
+
     /// Open a session for `cid`, or `None` if the id is refused: a TLS receiver
     /// holds one handshake and serves the peer those keys belong to, and a
     /// declared ceiling bounds how many peers are carried. Each refusal is
@@ -3050,6 +3292,11 @@ impl SensOMaticRlcReceiver {
             s.ge_loss_p = self.ge_loss_p;
             s.ge_loss_r = self.ge_loss_r;
             s.pair_debug = self.pair_debug;
+            #[cfg(test)]
+            {
+                s.head_drop = self.head_drop;
+                s.head_drop_repairs = self.head_drop_repairs;
+            }
             #[cfg(feature = "tls")]
             {
                 s.crypto = self.crypto.clone();
@@ -3389,12 +3636,10 @@ impl SensOMaticRlcReceiver {
         self.pending_admissions.remove(&cid);
         if let Some(s) = self.open_session(cid) {
             s.peer = Some(from);
-            // Anchor at zero rather than at the first id this window happens to
-            // see. A newly admitted connection id is a fresh sender whose ids
-            // start at the bottom, and the datagrams it sent while the
-            // challenge was in flight were dropped - anchoring here would
-            // silently skip them instead of leaving a gap ARQ recovers.
-            s.frontier_anchored = true;
+            // The datagrams this sender sent while its challenge was out were
+            // dropped, so the window finds its start like any other: a fresh
+            // sender still holds its head, and one this receiver joined
+            // partway through does not.
             self.session_admissions += 1;
             self.session_changed = true;
             return true;
@@ -3426,7 +3671,9 @@ impl SensOMaticRlcReceiver {
 
     /// One session's delivery position: `(delivered_through, highest_seen)`.
     /// `highest_seen` ahead of `delivered_through` is a window holding frames
-    /// behind a gap; the two equal and unmoving is a window with nothing to do.
+    /// behind a gap, or one still finding where its stream starts, which
+    /// holds `delivered_through` at 0; the two equal and unmoving is a window
+    /// with nothing to do.
     pub fn session_frontier(&self, cid: u64) -> Option<(u32, u32)> {
         self.sessions.get(&cid).map(|s| (s.delivered_through, s.highest_seen))
     }
@@ -3521,12 +3768,15 @@ mod tests {
         feedback_recv: u64,
     }
 
-    /// How loss is injected on the receiver: a flat Bernoulli percent, or a
-    /// Gilbert-Elliott burst chain `(p, r)` per-10000.
+    /// How loss is injected on the receiver: a flat Bernoulli percent, a
+    /// Gilbert-Elliott burst chain `(p, r)` per-10000, or the first `n` `DATA`
+    /// datagrams of the stream, with every `REPAIR` that arrives before them
+    /// when the flag is set.
     #[derive(Clone, Copy)]
     enum Loss {
         Bernoulli(u32),
         Gilbert(u32, u32),
+        Head(u32, bool),
     }
 
     /// Real loopback sockets, real UDP datagrams, with `loss` injected on the
@@ -3544,6 +3794,10 @@ mod tests {
             recv = match loss {
                 Loss::Bernoulli(pct) => recv.with_debug_loss(pct, seed),
                 Loss::Gilbert(p, r) => recv.with_gilbert_loss(p, r, seed),
+                Loss::Head(datagrams, repairs) => {
+                    recv.set_head_loss(datagrams, repairs);
+                    recv
+                }
             };
             addr_tx.send(recv.local_addr().unwrap()).unwrap();
             let mut got: Vec<u64> = Vec::new();
@@ -3888,6 +4142,254 @@ mod tests {
             rt.naks,
             rt.retransmits
         );
+    }
+
+    /// A stream whose first datagrams were lost before the receiver read
+    /// them, the burst a full kernel queue drops as a stream starts, is
+    /// delivered from its first item rather than from the first one that got
+    /// through. Its early repairs are lost with it, so nothing that arrives
+    /// names id 0.
+    #[test]
+    fn a_stream_whose_head_was_lost_is_delivered_from_its_first_item() {
+        run_loopback(100, Loss::Head(20, true), 1, true);
+    }
+
+    /// The same loss with the stream's early repairs getting through: every
+    /// item is delivered, from the first.
+    #[test]
+    fn a_stream_whose_head_was_lost_but_not_its_repairs_is_delivered_from_its_first_item() {
+        run_loopback(100, Loss::Head(10, false), 1, true);
+    }
+
+    /// One sender's items as two receivers, bound in turn on one port,
+    /// delivered them, and the send calls that failed on the sender's side
+    /// with the kind of the last, which a sender meets while no receiver is
+    /// bound.
+    struct Restart {
+        before: Vec<u64>,
+        after: Vec<u64>,
+        send_errors: (u64, Option<io::ErrorKind>),
+    }
+
+    /// Poll `recv` until it has taken `each` items from every one of `peers`
+    /// senders or `deadline` has passed, and return them by sender. The
+    /// receiver is dropped on return, which frees its port.
+    fn take_items(
+        mut recv: SensOMaticRlcReceiver,
+        peers: u64,
+        each: usize,
+        deadline: Duration,
+    ) -> Vec<Vec<u64>> {
+        let mut got: Vec<Vec<u64>> = vec![Vec::new(); peers as usize];
+        let start = Instant::now();
+        while got.iter().any(|g| g.len() < each) && start.elapsed() < deadline {
+            for item in recv.poll().expect("the receiver polls") {
+                let tagged = u64::from_le_bytes(item[..8].try_into().unwrap());
+                got[(tagged >> 56) as usize].push(tagged & 0x00FF_FFFF_FFFF_FFFF);
+            }
+        }
+        got
+    }
+
+    /// A receiver restarted under `peers` live senders. The first takes
+    /// `first` items from every sender and is dropped; the replacement binds
+    /// the same port against senders already well into their streams, with
+    /// the first `head` `DATA` datagrams of each of its windows lost along
+    /// with every `REPAIR` ahead of them, and takes `second` from each.
+    fn restarted_receiver(peers: u64, first: usize, second: usize, head: u32) -> Vec<Restart> {
+        let item_len = 32usize;
+        let symbol_len = 64usize;
+        let deadline = Duration::from_secs(10);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first_rx = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+        let addr = first_rx.local_addr().unwrap();
+
+        let mut handles = Vec::new();
+        for p in 0..peers {
+            let stop = std::sync::Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                let mut send =
+                    SensOMaticRlcSender::bind("127.0.0.1:0", addr, 16, 2, 15, symbol_len).unwrap();
+                // Each item carries its sender and its own source id, so what
+                // a receiver delivers names exactly the ids it got. A send
+                // that fails while no receiver is bound has still queued its
+                // item for retransmission, and the sender's last source id
+                // says whether this one was taken.
+                let mut errors = (0u64, None);
+                let mut next: u64 = 0;
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    let mut item = vec![0u8; item_len];
+                    item[..8].copy_from_slice(&((p << 56) | next).to_le_bytes());
+                    if let Err(e) = send.try_send_item(&item) {
+                        errors = (errors.0 + 1, Some(e.kind()));
+                    }
+                    if send.tx_probe().0 == next as u32 {
+                        next += 1;
+                    }
+                    if let Err(e) = send.pump_once() {
+                        errors = (errors.0 + 1, Some(e.kind()));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                errors
+            }));
+        }
+
+        let before = take_items(first_rx, peers, first, deadline);
+        let mut second_rx = SensOMaticRlcReceiver::bind(addr, symbol_len).unwrap();
+        second_rx.set_head_loss(head, true);
+        let after = take_items(second_rx, peers, second, deadline);
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let send_errors = handles.into_iter().map(|h| h.join().unwrap());
+        before
+            .into_iter()
+            .zip(after)
+            .zip(send_errors)
+            .map(|((before, after), send_errors)| Restart {
+                before,
+                after,
+                send_errors,
+            })
+            .collect()
+    }
+
+    /// What a restart must preserve for each sender: the first receiver
+    /// delivered from 0 in order, and the replacement delivered in order from
+    /// no later than the item after the last one the first receiver took, so
+    /// nothing was lost across the restart.
+    fn assert_resumed(restarts: &[Restart], first: usize, second: usize) {
+        for (p, r) in restarts.iter().enumerate() {
+            let errors = r.send_errors;
+            assert!(
+                r.before.len() >= first,
+                "sender {p}: the first receiver took {} of {first} items; send errors {errors:?}",
+                r.before.len()
+            );
+            assert_eq!(
+                r.before,
+                (0..r.before.len() as u64).collect::<Vec<_>>(),
+                "sender {p}: the first receiver must deliver from 0 in order"
+            );
+            assert!(
+                r.after.len() >= second,
+                "sender {p}: the replacement took {} of {second} items, after the first \
+                 receiver took {}; send errors {errors:?}",
+                r.after.len(),
+                r.before.len()
+            );
+            let from = r.after[0];
+            assert_eq!(
+                r.after,
+                (from..from + r.after.len() as u64).collect::<Vec<_>>(),
+                "sender {p}: the replacement must deliver in order"
+            );
+            assert!(
+                from <= r.before.len() as u64,
+                "sender {p}: the replacement started at item {from}, past the {} the first \
+                 receiver took, so items were lost across the restart",
+                r.before.len()
+            );
+        }
+    }
+
+    /// Poll the receiver until a `NAK` it sends to `peer` names exactly
+    /// `expected`, sending it every `DATA` in `resend` again before each poll
+    /// since a datagram can be dropped on its way. Returns whether one did
+    /// before `deadline`, and the last `NAK` it sent.
+    fn probe_names(
+        recv: &mut SensOMaticRlcReceiver,
+        peer: &UdpSocket,
+        resend: &[Vec<u8>],
+        expected: &[u32],
+        deadline: Duration,
+    ) -> (bool, Option<Vec<u32>>) {
+        let to = recv.local_addr().unwrap();
+        let start = Instant::now();
+        let mut buf = [0u8; CTRL_BUF];
+        let mut last = None;
+        while start.elapsed() < deadline {
+            for frame in resend {
+                peer.send_to(frame, to).unwrap();
+            }
+            recv.poll().expect("the receiver polls");
+            loop {
+                let n = match peer.recv_from(&mut buf) {
+                    Ok((n, _)) => n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) => panic!("the stand-in sender could not read: {e}"),
+                };
+                if n < 1 || buf[0] != PKT_RLC_NAK {
+                    continue;
+                }
+                let ids: Vec<u32> = buf[1..n]
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                if ids == expected {
+                    return (true, Some(ids));
+                }
+                last = Some(ids);
+            }
+        }
+        (false, last)
+    }
+
+    /// A window that has not seen id 0 names, in one `NAK`, id 0 first, the
+    /// ids just below the lowest id it has seen, and that lowest id last. Once
+    /// the whole range it named has come back it reaches twice as deep below
+    /// the new lowest.
+    #[test]
+    fn a_start_probe_names_zero_first_and_its_canary_last_and_deepens() {
+        let symbol_len = 64usize;
+        let mut recv = SensOMaticRlcReceiver::bind("127.0.0.1:0", symbol_len).unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let data = |sid: u32| {
+            let mut frame = vec![PKT_RLC_DATA];
+            frame.extend_from_slice(&7u64.to_le_bytes());
+            frame.extend_from_slice(&sid.to_le_bytes());
+            frame.extend_from_slice(&sid.to_le_bytes());
+            frame.extend_from_slice(&vec![0u8; symbol_len]);
+            frame
+        };
+        let deadline = Duration::from_secs(5);
+
+        let expected: Vec<u32> = std::iter::once(0).chain(84..=100).collect();
+        let (named, last) = probe_names(&mut recv, &peer, &[data(100)], &expected, deadline);
+        assert!(
+            named,
+            "a window that has seen only id 100 must name id 0, the 16 ids below it and \
+             then 100; its last NAK named {last:?}"
+        );
+
+        let range: Vec<Vec<u8>> = (84..100).map(data).collect();
+        let expected: Vec<u32> = std::iter::once(0).chain(52..=84).collect();
+        let (named, last) = probe_names(&mut recv, &peer, &range, &expected, deadline);
+        assert!(
+            named,
+            "once the whole range came back the next round must reach 32 below 84; its \
+             last NAK named {last:?}"
+        );
+    }
+
+    /// A restarted receiver joins a stream already well into its ids. Its
+    /// window must start where the sender's stream stands, the lowest id the
+    /// sender still holds, even when the first datagrams it receives are lost
+    /// and the first one that gets through is above that.
+    #[test]
+    fn a_restarted_receiver_resumes_where_the_stream_stands() {
+        let restarts = restarted_receiver(1, 40, 40, 4);
+        assert_resumed(&restarts, 40, 40);
+    }
+
+    /// A receiver restarted under two senders serves the first to reach it
+    /// outright and admits the second by challenge. The admitted window must
+    /// resume its sender's stream where it stands too, and not wait for ids
+    /// the sender released when the first receiver acknowledged them.
+    #[test]
+    fn a_restarted_receiver_resumes_an_admitted_peer_where_its_stream_stands() {
+        let restarts = restarted_receiver(2, 40, 40, 0);
+        assert_resumed(&restarts, 40, 40);
     }
 
     #[test]

@@ -184,7 +184,7 @@ displaced by one and the call is a no-op there.
 The endpoint's demux routes by wire byte, and the two path-validation
 frames sit outside the contiguous data range, so they are matched by name
 alongside it. That is what carries both address migration and the
-[replacement-session adoption](../sens-rlc/#surviving-a-peer-restart)
+[replacement-session adoption](../sens-rlc/#admitting-a-peer)
 over an endpoint whose codes share one socket.
 
 `take_session_changed()` and `session_adoption_counts()` are surfaced

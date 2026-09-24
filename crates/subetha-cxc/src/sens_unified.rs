@@ -3490,6 +3490,72 @@ mod tests {
         );
     }
 
+    /// A unified stream whose first datagrams were lost before the receiver
+    /// read them, the burst a full kernel queue drops as a stream starts, is
+    /// delivered from its first item rather than from the first one that got
+    /// through. Its early repairs are lost with it.
+    #[test]
+    fn unified_delivers_a_stream_whose_head_was_lost_from_its_first_item() {
+        use std::sync::mpsc;
+        let cfg = UnifiedConfig {
+            policy: CodePolicy::ForceRlc,
+            symbol_len: 64,
+            k: 8,
+            r: 2,
+            rlc_flow_window: 256,
+            debug_loss: 0,
+            seed: 1,
+            rlc_step: 4,
+            rlc_static: false,
+        };
+        let mut recv = UnifiedSensReceiver::bind("127.0.0.1:0", cfg).unwrap();
+        recv.rlc.set_head_loss(20, true);
+        let addr = recv.local_addr().unwrap();
+        let n: u64 = 500;
+
+        let (tx, rx) = mpsc::channel();
+        let sender_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let receiver_watches = Arc::clone(&sender_done);
+        let rh = std::thread::spawn(move || {
+            let mut recv = recv;
+            let mut got: Vec<u64> = Vec::with_capacity(n as usize);
+            let start = Instant::now();
+            while still_receiving(got.len(), n, &receiver_watches)
+                && start.elapsed() < Duration::from_secs(25)
+            {
+                let items = recv.poll().expect("the receiver polls");
+                let empty = items.is_empty();
+                for it in items {
+                    let mut s = [0u8; 8];
+                    s.copy_from_slice(&it[..8]);
+                    got.push(u64::from_le_bytes(s));
+                }
+                if empty {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+            tx.send(got).expect("the test thread is waiting for the receiver");
+        });
+
+        let mut send = UnifiedSensSender::connect("0.0.0.0:0", addr, cfg).unwrap();
+        let mut buf = vec![0u8; 8];
+        for seq in 0..n {
+            buf[..8].copy_from_slice(&seq.to_le_bytes());
+            send.send_item(&buf).unwrap();
+        }
+        let acked = finished(&mut send, 0);
+        sender_done.store(true, std::sync::atomic::Ordering::Release);
+        assert!(acked, "the sender's final drain was not acked while the receiver was still polling");
+
+        let got = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        rh.join().expect("the receiver thread finishes");
+        assert_eq!(
+            got,
+            (0..n).collect::<Vec<_>>(),
+            "every item delivered once, in order, from the first",
+        );
+    }
+
     /// A peer that leaves mid-stream must not take another peer's
     /// delivery with it.
     ///

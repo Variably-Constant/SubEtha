@@ -93,6 +93,42 @@ the receiver disables that at bind, so one peer's departure costs the
 others nothing. See
 [a peer that leaves, on Windows](../unified-code-switch/#a-peer-that-leaves-on-windows).
 
+## Where a window starts
+
+Source ids count up from zero (wire format, section 4.1), so a window
+that holds id 0, received or recovered from repairs, starts there, and
+so does one that receives a repair whose window starts at 0, since the
+sender built it from a symbol it still holds. A window that has seen
+neither cannot tell a stream whose first datagrams were lost from one it
+joined partway through, as a receiver restarted under a live sender
+does. The first has to wait for its lost head; the second can never have
+the ids the sender released when the previous receiver acknowledged
+them.
+
+So the window asks the sender. Until it knows, it delivers nothing and
+sends no ACK, so the sender releases nothing, and each NAK round names
+id 0, then the ids just below the lowest id seen, then that lowest id
+itself, last: the canary. The sender resends a NAK'd id only while it
+still holds it and has not sent it within 1.2 round trips (at least
+18 ms, and 240 ms before its first round-trip sample), and it serves a
+NAK in order. Every id below the canary was sent before it, so by the
+time the canary comes back, each of them the sender holds has come back
+ahead of it.
+
+- Id 0 back starts the window at 0.
+- A round in which the canary came back and nothing below it did is
+  empty, and two empty rounds in a row start the window at the canary.
+- Ids that came back move the lowest down. When the whole range a round
+  named came back, the next round reaches twice as deep, up to the 55
+  ids one NAK holds beside id 0 and the canary.
+
+Nothing in the probe waits on a clock: a sender slow to resend delays
+the start and cannot move it. A lost head costs the sender's resend
+delay, which recovering it costs anyway, and a join costs two resend
+intervals. The probe is ordinary NAKs, so the wire format is unchanged
+and a sender needs nothing new to answer it. At a code switch the
+unified layer names the start outright with `skip_to`.
+
 ## Admitting a peer
 
 The first id a receiver sees is admitted outright: there is no
@@ -131,11 +167,11 @@ under challenge, and `session_refusals()` counts every peer turned away
 by it, so a refused peer is never indistinguishable from one that never
 sent.
 
-A newly admitted window anchors its delivery frontier at the bottom
-rather than at the first id it happens to see. The datagrams the peer
-sent during the challenge round trip were not delivered, so anchoring
-where the stream *is* would skip them silently; anchoring at the bottom
-leaves them as a gap ARQ recovers.
+The datagrams a peer sends during its challenge round trip are not
+delivered, so an admitted window finds its start like any other
+([where a window starts](#where-a-window-starts)): a fresh sender still
+holds its head and resends it, and one a restarted receiver admits
+partway through its stream is resumed where that stream stands.
 
 | Call | Answers |
 |---|---|
@@ -145,7 +181,7 @@ leaves them as a gap ARQ recovers.
 | `peer_of(cid)` / `live_sessions()` | where one peer is bound, and which ids are live |
 | `session_refusals()` | peers turned away by a declared ceiling, or by TLS already holding its one handshake |
 | `sens_rlc::socket_buffer_refusals()` | a free function: sockets whose kernel refused the 4 MiB send or receive buffer, summed over the process; the socket keeps the kernel default, where a burst can overflow the queue and read as link loss (FreeBSD's default `kern.ipc.maxsockbuf` refuses it) |
-| `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap |
+| `session_frontier(cid)` | one window's `(delivered_through, highest_seen)`; `highest_seen` ahead of `delivered_through` is a window holding frames behind a gap, or one still finding where its stream starts, which holds `delivered_through` at 0 |
 | `session_control(cid)` | one window's `(naks_sent, acks_sent, sends_skipped, peer_validated)`; `sends_skipped` counts control frames dropped for a missing peer address or an exhausted anti-amplification budget |
 | `path_validations()` / `path_validation_failures()` | address validations completed and challenges that timed out, summed over every session |
 | `session_service_errors()` | sessions that could not be serviced; each is a peer left without the feedback that tick would have sent |

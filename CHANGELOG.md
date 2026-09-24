@@ -65,6 +65,27 @@ heading links to the commit that cut it.
 
 ### Fixed
 
+- A Sens-O-Matic RLC receiver delivered a stream from the first source id
+  it read. When a stream's first datagrams were lost before the receiver
+  read them, it started above them, its first ACK released them at the
+  sender, and they were never delivered. On FreeBSD one netisr thread
+  queues all loopback traffic in 256 packets and drops the rest, and
+  under the release gate's parallel load the test suite delivered
+  streams from items 3, 23, 45, 53 and 95 and lost a peer's first item.
+  A window now starts at item 0 once it holds it or a repair covers it.
+  Otherwise it asks the sender with NAK rounds naming 0, the ids just
+  below the lowest one seen, and that lowest id last. The sender resends
+  that last id only after every lower id it still holds, so two rounds
+  in which it came back with nothing below start the window there, which
+  is how a restarted receiver joins a stream partway through. A window
+  admitted by challenge finds its start the same way; one that a
+  restarted receiver admitted started at 0 and waited for items its
+  sender had already released. The wire format is unchanged. Six new
+  tests cover a lost head with and without its repairs and over the
+  unified endpoint, a restarted receiver with one peer and with an
+  admitted second, and the probe's own NAK; all six fail without this
+  change.
+
 - A blocking ring could lose a wake. A producer stores its ring's head
   and then reads the waker's parked mask; a consumer sets its mask bit
   and then re-checks the ring. x86 and ARM64 both let each of those
