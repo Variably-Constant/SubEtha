@@ -117,8 +117,13 @@ Describe 'SubEtha.QuicBridge' {
             1..3 | ForEach-Object { $null = $from.Send($p, "q-$_") }
 
             $server = New-SubEthaQuicBridgeServer -RingPath (Join-Path $script:dir "quic-rounds-sink-$i") -Capacity 64 -LocalPort 0 -LocalHost 127.0.0.1 -Cert $cert.Cert -Key $cert.Key
+            # The port is read before AcceptOne starts. A call that waits
+            # holds its object for as long as it waits, so a LocalAddr made
+            # after it would wait for AcceptOne, which waits for the client
+            # the port is needed to make.
+            $port = $server.LocalAddr().Port
             $accepting = Start-SEBackground -Script { param($s) $s.AcceptOne() } -Argument $server
-            $client = New-SubEthaQuicBridgeClient -RingPath (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $server.LocalAddr().Port -Cert $cert.Cert -ServerName 'localhost'
+            $client = New-SubEthaQuicBridgeClient -RingPath (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $port -Cert $cert.Cert -ServerName 'localhost'
             try { $client.Run(3) } catch { $failed += "round ${i}: Run: $($_.Exception.Message)" }
             try {
                 $arrived = Wait-SEBackground $accepting
