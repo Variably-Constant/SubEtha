@@ -152,8 +152,8 @@ heading links to the commit that cut it.
   relocation against `stderr`. subetha-cxc now selects libxdp-sys's cc
   build, which compiles them position-independent. On Linux x86-64,
   `cargo build -p subetha-ffi --features subetha-cxc/wire-locale`
-  failed before and links after, and subetha-cxc's 1,502 tests pass
-  with the feature on.
+  failed before and links after, and subetha-cxc's 1,527 tests pass
+  with every feature on, `wire-locale` among them.
 
 - `Sidecar::scan_now` could drain an observation ring while the node's
   own scan thread drained it too, although a ring has one consumer, so
