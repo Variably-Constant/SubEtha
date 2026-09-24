@@ -36,6 +36,10 @@ heading links to the commit that cut it.
   every transport. What the gate leaves off, on which host and why, is
   in [Run the release gate](https://variably-constant.github.io/SubEtha/docs/how-to/run-the-release-gate/).
 
+- `SensOMaticRlcSender::retransmits()` counts the source symbols the
+  sender sent again, whether a NAK asked, the RTO on a stalled
+  cumulative ACK, or the end-of-stream tail.
+
 ### Changed
 
 - The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.2.1,

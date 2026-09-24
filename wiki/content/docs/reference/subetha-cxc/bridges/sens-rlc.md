@@ -164,6 +164,13 @@ unmoved frontier re-acks at most once per 10 ms. The cumulative
 frontier plus the SACK bitmap carries the full receive state, so each
 ACK supersedes every prior one.
 
+A loss the coding window cannot cover is repaired by retransmission,
+and either side can start it: the receiver NAKs a hole once it has been
+missing longer than its jitter-scaled reorder grace, and the sender
+resends its lowest unacked symbols when the cumulative ACK stops
+advancing, or at the end of a stream. The sender's `retransmits()`
+counts the symbols it sent again, whichever asked.
+
 `take_session_changed()`, `session_adoption_counts()` and
 `poll_from()` are also on `UnifiedSensReceiver`, whose
 [multi-peer contract](../unified-code-switch/#one-window-per-peer)

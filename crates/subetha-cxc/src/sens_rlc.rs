@@ -607,6 +607,9 @@ pub struct SensOMaticRlcSender {
     wire_datagrams: u64,
     /// Cumulative NAK frames processed by the pump.
     naks_seen: u64,
+    /// Source symbols sent again, whatever asked for it: a NAK, the RTO on
+    /// a stalled cumulative ACK, or the end-of-stream tail.
+    retransmits: u64,
     /// Cumulative ACK frames processed by the pump.
     acks_seen: u64,
     /// Cumulative PATH_CHALLENGE frames the pump echoed.
@@ -811,6 +814,7 @@ impl SensOMaticRlcSender {
             last_sid: u32::MAX,
             wire_datagrams: 0,
             naks_seen: 0,
+            retransmits: 0,
             acks_seen: 0,
             challenges_seen: 0,
             other_seen: 0,
@@ -1569,6 +1573,14 @@ impl SensOMaticRlcSender {
         (self.challenges_seen, self.other_seen, self.last_other_byte)
     }
 
+    /// Source symbols sent again, whatever asked for it: a NAK from the
+    /// receiver, the RTO on a cumulative ACK that stopped advancing, or the
+    /// end-of-stream tail. A loss the coding window could not cover is
+    /// repaired by one of these, whichever side noticed it first.
+    pub fn retransmits(&self) -> u64 {
+        self.retransmits
+    }
+
     /// Retransmit `sid` only if it has not been (re)sent within ~1.2 RTT - the
     /// retransmit-suppression guard that stops the same still-missing symbol from
     /// being resent on every ~1ms NAK round before its previous copy can be
@@ -1584,6 +1596,7 @@ impl SensOMaticRlcSender {
         if due {
             self.send_data(sid, sym)?;
             self.last_tx.insert(sid, Instant::now());
+            self.retransmits += 1;
         }
         Ok(due)
     }
@@ -3496,12 +3509,14 @@ mod tests {
         crate::spec_doc::assert_listed("sens_rlc", &types);
     }
 
-    /// Telemetry a loopback round-trip returns: RLC recoveries and NAKs (the
-    /// receiver's ARQ floor), plus the sender's adaptation count and feedback
-    /// received.
+    /// Telemetry a loopback round-trip returns: RLC recoveries, the NAKs the
+    /// receiver sent and the symbols the sender retransmitted (the ARQ floor,
+    /// asked for by either side), plus the sender's adaptation count and
+    /// feedback received.
     struct RoundTrip {
         recovered: u64,
         naks: u64,
+        retransmits: u64,
         adapt_count: u64,
         feedback_recv: u64,
     }
@@ -3563,14 +3578,14 @@ mod tests {
             }
             send.drain_until_acked(n as u32, Duration::from_secs(15)).unwrap();
             done_rx.recv_timeout(Duration::from_secs(20)).ok();
-            (send.adapt_count(), send.feedback_recv())
+            (send.adapt_count(), send.feedback_recv(), send.retransmits())
         });
 
         let (got, recovered, naks) = rx.join().unwrap();
-        let (adapt_count, feedback_recv) = tx.join().unwrap();
+        let (adapt_count, feedback_recv, retransmits) = tx.join().unwrap();
         let expected: Vec<u64> = (0..n).collect();
         assert_eq!(got, expected, "RLC transport must deliver every item in order");
-        RoundTrip { recovered, naks, adapt_count, feedback_recv }
+        RoundTrip { recovered, naks, retransmits, adapt_count, feedback_recv }
     }
 
     /// Two independent senders, each with its own connection id, delivering to
@@ -3860,9 +3875,19 @@ mod tests {
         // channel with mean burst 25 (r=400 -> 10000/400) exceeds the window, so
         // the longest bursts cannot be FEC-recovered and must fall to the ARQ
         // floor. Deterministic erasure passes retransmits, so ARQ converges and
-        // delivery is exact (asserted inside the harness).
+        // delivery is exact (asserted inside the harness). Either side can
+        // start that repair: the receiver NAKs a hole once it has been missing
+        // longer than its jitter-scaled reorder grace, and the sender resends
+        // its lowest unacked symbols when the cumulative ACK stops advancing,
+        // so which one fires first depends on the host's timing.
         let rt = run_loopback(600, Loss::Gilbert(100, 400), 1234, true);
-        assert!(rt.naks > 0, "bursts beyond the static window must hit the ARQ floor");
+        assert!(
+            rt.naks + rt.retransmits > 0,
+            "bursts beyond the static window must be repaired by retransmission: \
+             naks={}, retransmits={}",
+            rt.naks,
+            rt.retransmits
+        );
     }
 
     #[test]
@@ -3886,8 +3911,15 @@ mod tests {
         // loss 80/(80+250) ~= 24%): adaptive coding plus the ARQ floor still
         // deliver every item in order (asserted inside the harness).
         let rt = run_loopback(800, Loss::Gilbert(80, 250), 2024, false);
-        // A bursty channel this heavy needs the ARQ floor for the longest bursts.
-        assert!(rt.naks > 0, "long bursts beyond the window must hit the ARQ floor");
+        // A bursty channel this heavy needs the ARQ floor for the longest
+        // bursts, started by the receiver's NAK or the sender's own resend.
+        assert!(
+            rt.naks + rt.retransmits > 0,
+            "long bursts beyond the window must be repaired by retransmission: \
+             naks={}, retransmits={}",
+            rt.naks,
+            rt.retransmits
+        );
     }
 
     /// The client rebinds its socket mid-stream (a NAT rebinding / interface
