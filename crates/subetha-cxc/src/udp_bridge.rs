@@ -2953,6 +2953,7 @@ impl RsSession {
     /// fd for the batched recvmmsg / WSARecvMsg path. Pop the queue and process
     /// each datagram. Returns `true` when nothing was queued (idle), the same
     /// "nothing arrived" convention the fd recv paths use.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))]
     fn recv_demux_drain(&mut self, out: &mut Vec<Vec<u8>>) -> io::Result<bool> {
         let mut buf = [0u8; RECV_BUF];
         let mut idle = true;
