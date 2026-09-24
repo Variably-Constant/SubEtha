@@ -31,6 +31,7 @@ jobs:
   module:
     name: PowerShell module on macOS arm64
     runs-on: macos-latest
+    timeout-minutes: 30
     env:
       # macos-latest is aarch64. An x86 baseline here is accepted with a
       # warning that says it is ignoring the processor, and miscompiles
@@ -56,6 +57,16 @@ jobs:
       - name: Build the module
         shell: bash
         run: cargo pwrs build --release --manifest-dir crates/subetha-pwrs
+
+      # cargo pwrs test prints a host's output only once pwsh exits, so a
+      # test that never returns names nothing. This pass runs the suite in
+      # one pwsh first and prints each test as it finishes. A suite still
+      # running after 600 s has its threads sampled and its UDP sockets
+      # listed before it is stopped, and the file it stopped in then runs
+      # again by itself.
+      - name: Run the Pester suite under a watchdog
+        shell: bash
+        run: bash .github/scripts/pester-watchdog.sh "$PWD/target/pwrs/SubEtha" "$PWD/crates/subetha-pwrs/tests" 600
 
       - name: Run the Pester suite
         shell: bash

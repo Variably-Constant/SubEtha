@@ -38,6 +38,14 @@ heading links to the commit that cut it.
   every transport. What the gate leaves off, on which host and why, is
   in [Run the release gate](https://variably-constant.github.io/SubEtha/docs/how-to/run-the-release-gate/).
 
+- The macOS module workflow runs the Pester suite under a watchdog
+  before `cargo pwrs test`, which prints a host's output only once the
+  host exits, so a test that never returned named nothing: one run sat
+  silent for 45 minutes. Each test is printed as it finishes. A suite
+  still running after 600 s has its threads sampled and its UDP sockets
+  listed before it is stopped, and the file it stopped in runs again by
+  itself. The job ends at 30 minutes.
+
 - `SensOMaticRlcSender::retransmits()` counts the source symbols the
   sender sent again, whether a NAK asked, the RTO on a stalled
   cumulative ACK, or the end-of-stream tail.
