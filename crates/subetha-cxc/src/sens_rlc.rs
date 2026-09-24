@@ -4191,6 +4191,40 @@ mod tests {
         got
     }
 
+    /// Bind a receiver to `addr` again once the one holding it has closed.
+    /// Another socket can take the port in the moment it is free, so the
+    /// bind is retried until `deadline` has passed, and how often and for
+    /// how long it was refused is printed.
+    fn bind_again(
+        addr: SocketAddr,
+        symbol_len: usize,
+        deadline: Duration,
+    ) -> SensOMaticRlcReceiver {
+        let start = Instant::now();
+        let mut refused = 0u32;
+        loop {
+            match SensOMaticRlcReceiver::bind(addr, symbol_len) {
+                Ok(rx) => {
+                    if refused > 0 {
+                        eprintln!(
+                            "the bind to {addr} was refused {refused} times over {:?}",
+                            start.elapsed()
+                        );
+                    }
+                    return rx;
+                }
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse && start.elapsed() < deadline => {
+                    refused += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => panic!(
+                    "could not bind {addr} again, refused {refused} times over {:?}: {e}",
+                    start.elapsed()
+                ),
+            }
+        }
+    }
+
     /// A receiver restarted under `peers` live senders. The first takes
     /// `first` items from every sender and is dropped; the replacement binds
     /// the same port against senders already well into their streams, with
@@ -4236,7 +4270,7 @@ mod tests {
         }
 
         let before = take_items(first_rx, peers, first, deadline);
-        let mut second_rx = SensOMaticRlcReceiver::bind(addr, symbol_len).unwrap();
+        let mut second_rx = bind_again(addr, symbol_len, deadline);
         second_rx.set_head_loss(head, true);
         let after = take_items(second_rx, peers, second, deadline);
         stop.store(true, std::sync::atomic::Ordering::Release);
