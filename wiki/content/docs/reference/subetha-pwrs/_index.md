@@ -535,7 +535,7 @@ those files matched, so any platform's build can be the folder the
 others are merged into
 ([how the binding works](../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)).
 
-All 182 tests pass on each of four platforms, each running the folder
+All 183 tests pass on each of four platforms, each running the folder
 it built:
 
 | Platform | Host | Native |
@@ -545,7 +545,7 @@ it built:
 | macOS arm64 | pwsh 7.6.5 | `osx-arm64/libsubetha_pwrs.dylib` |
 | FreeBSD x64 | pwsh 7.5.5 on .NET 9 | `freebsd-x64/libsubetha_pwrs.so` |
 
-The folder built on Linux in pwsh 7.6.5 passes the same 182 there in
+The folder built on Linux in pwsh 7.6.5 passes the same 183 there in
 pwsh 7.5.11 and 7.4.20 as well.
 
 FreeBSD is the one that needs arranging, for two reasons that are not

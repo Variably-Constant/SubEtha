@@ -205,7 +205,7 @@ handles of their own.
 
 The published module carries natives for Windows x64, Linux x64, macOS
 arm64 and FreeBSD x64, and runs on PowerShell 7.4 and later and on
-Windows PowerShell 5.1. All 182 Pester tests pass on each platform:
+Windows PowerShell 5.1. All 183 Pester tests pass on each platform:
 Windows x64 in pwsh 7.6.6 and Windows PowerShell 5.1, Linux x64 in pwsh
 7.6.5, 7.5.11 and 7.4.20, macOS arm64 in pwsh 7.6.5, and FreeBSD x64 in
 pwsh 7.5.5 on .NET 9.
@@ -218,7 +218,10 @@ covers the merge and what FreeBSD needs to build and test the module.
 ## Threads and lifetimes
 
 Every method call on one object is serialized by the object, so an
-object handed to another runspace or thread is used safely. A pin, a
+object handed to another runspace or thread is used safely. A call that
+waits holds its object until it returns, so whatever ends the wait
+arrives through another object, and a server's `LocalAddr()` is read
+before its `AcceptOne` starts. A pin, a
 hold or a claim can be released from any thread, including the
 finalizer's; every value the module holds is safe to send between
 threads, and the build refuses one that is not.

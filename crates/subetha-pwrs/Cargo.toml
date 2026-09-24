@@ -62,7 +62,10 @@ where a consumer slept beside an item until its timeout. A QUIC bridge client no
 longer writes a line of UDP counts to stderr each time it finishes, and no longer \
 fails with a lost connection after the server has received every item: over 200 \
 round trips on Linux x86-64, 4 failed that way in PowerShell 7.4.20 and 3 in 7.6.5 \
-before, and none in either after."""
+before, and none in either after. All 183 Pester tests pass on Windows x64 in \
+PowerShell 7.6.6 and Windows PowerShell 5.1, on Linux x64 in PowerShell 7.6.5, 7.5.11 \
+and 7.4.20, on macOS arm64 in PowerShell 7.6.5, and on FreeBSD x64 in PowerShell \
+7.5.5."""
 
 [lib]
 crate-type = ["cdylib"]

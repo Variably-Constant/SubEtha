@@ -53,7 +53,7 @@ heading links to the commit that cut it.
   session with another module built by cargo-pwrs 0.2.0 or later that
   declares classes; with one built by 0.1.8 or earlier, whichever of the
   two is imported second fails if it declares classes or enums, as the
-  troubleshoot page describes. All 182 Pester tests pass on Windows x64
+  troubleshoot page describes. All 183 Pester tests pass on Windows x64
   in pwsh 7.6.6 and Windows PowerShell 5.1, on Linux x64 in pwsh 7.6.5,
   7.5.11 and 7.4.20, on macOS arm64 in pwsh 7.6.5, and on FreeBSD x64
   in pwsh 7.5.5.
