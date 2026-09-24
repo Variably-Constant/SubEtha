@@ -59,6 +59,17 @@ pub const EGRESS_BATCH_SLOTS: usize = 256;
 /// Ingress stream-read buffer in bytes.
 const INGRESS_BUF_BYTES: usize = 64 * 1024;
 
+/// One line on stderr stamped with the wall-clock millisecond, so the
+/// lines of the two ends of one connection interleave in time order.
+fn diag(what: std::fmt::Arguments<'_>) {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock reads after the epoch")
+        .as_millis()
+        % 1_000_000;
+    eprintln!("[quic {ms:06}] {what}");
+}
+
 /// Errors the QUIC bridge halves can return.
 #[derive(Debug)]
 pub enum QuicBridgeError {
@@ -132,6 +143,7 @@ impl QuicBridgeClient {
             .map_err(|e| QuicBridgeError::Quic(e.to_string()))?
             .await
             .map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        diag(format_args!("client to {}: connected", self.server_addr));
         let mut send = conn
             .open_uni()
             .await
@@ -173,6 +185,7 @@ impl QuicBridgeClient {
         }
         send.finish().map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
         send.stopped().await.map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        diag(format_args!("client to {}: finish acknowledged", self.server_addr));
         // The server waits for this close before it closes its own side,
         // which is what lets the acknowledgment of the finish above reach
         // this side first. Waiting for the endpoint to go idle is what
@@ -180,6 +193,11 @@ impl QuicBridgeClient {
         // find the connection timed out instead.
         conn.close(0u32.into(), b"");
         endpoint.wait_idle().await;
+        let s = conn.stats();
+        diag(format_args!(
+            "client to {}: idle; sent {} datagrams, received {}, lost {} packets, rtt {:?}",
+            self.server_addr, s.udp_tx.datagrams, s.udp_rx.datagrams, s.path.lost_packets, s.path.rtt,
+        ));
         Ok(())
     }
 }
@@ -227,6 +245,11 @@ impl QuicBridgeServer {
         let conn = incoming
             .await
             .map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        let local = match self.endpoint.local_addr() {
+            Ok(addr) => addr.to_string(),
+            Err(e) => format!("unknown ({e})"),
+        };
+        diag(format_args!("server {local}: accepted {}", conn.remote_address()));
         let mut recv = conn
             .accept_uni()
             .await
@@ -294,7 +317,13 @@ impl QuicBridgeServer {
         // closing first: a close from here can reach the client ahead of
         // the acknowledgment of its last data, and the client's send then
         // ends as a lost connection although every item arrived.
-        conn.closed().await;
+        diag(format_args!("server {local}: stream finished after {total} items"));
+        let why = conn.closed().await;
+        let s = conn.stats();
+        diag(format_args!(
+            "server {local}: closed: {why}; sent {} datagrams, received {}, lost {} packets",
+            s.udp_tx.datagrams, s.udp_rx.datagrams, s.path.lost_packets,
+        ));
         Ok(total)
     }
 }

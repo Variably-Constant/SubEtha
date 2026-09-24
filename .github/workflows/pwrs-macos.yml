@@ -18,6 +18,13 @@ name: pwrs macos
 
 on:
   workflow_dispatch:
+    inputs:
+      pester_limit_seconds:
+        description: Seconds the Pester suite may run before its threads are sampled and it is killed
+        required: true
+      job_limit_minutes:
+        description: Minutes the whole job may run
+        required: true
   push:
     branches:
       - main
@@ -31,6 +38,7 @@ jobs:
   module:
     name: PowerShell module on macOS arm64
     runs-on: macos-latest
+    timeout-minutes: ${{ fromJSON(inputs.job_limit_minutes) }}
     env:
       # macos-latest is aarch64. An x86 baseline here is accepted with a
       # warning that says it is ignoring the processor, and miscompiles
@@ -57,9 +65,13 @@ jobs:
         shell: bash
         run: cargo pwrs build --release --manifest-dir crates/subetha-pwrs
 
-      - name: Run the Pester suite
+      # One pwsh runs the whole suite, as under `cargo pwrs test`, and
+      # prints each test as it finishes. A suite that outlasts the limit
+      # has its threads sampled and its UDP sockets listed before it is
+      # killed, and the file it stopped in then runs again by itself.
+      - name: Run the Pester suite, printing each test as it finishes
         shell: bash
-        run: cargo pwrs test --release --manifest-dir crates/subetha-pwrs
+        run: bash .github/scripts/pester-watchdog.sh "$PWD/target/pwrs/SubEtha" "$PWD/crates/subetha-pwrs/tests" "${{ inputs.pester_limit_seconds }}"
 
       # The whole folder rather than the dylib alone, so whoever merges
       # can check the manifest against the other platforms' before

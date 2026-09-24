@@ -110,6 +110,7 @@ Describe 'SubEtha.QuicBridge' {
         $cert = New-SubEthaSelfSignedCert -Name 'localhost'
         $failed = @()
         for ($i = 1; $i -le $rounds; $i++) {
+            $clock = [System.Diagnostics.Stopwatch]::StartNew()
             $from = New-SubEthaRing -Path (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64
             $to = New-SubEthaRing -Path (Join-Path $script:dir "quic-rounds-sink-$i") -Capacity 64
             $p = $from.RegisterProducer()
@@ -119,11 +120,16 @@ Describe 'SubEtha.QuicBridge' {
             $server = New-SubEthaQuicBridgeServer -RingPath (Join-Path $script:dir "quic-rounds-sink-$i") -Capacity 64 -LocalPort 0 -LocalHost 127.0.0.1 -Cert $cert.Cert -Key $cert.Key
             $accepting = Start-SEBackground -Script { param($s) $s.AcceptOne() } -Argument $server
             $client = New-SubEthaQuicBridgeClient -RingPath (Join-Path $script:dir "quic-rounds-source-$i") -Capacity 64 -ServerHost 127.0.0.1 -ServerPort $server.LocalAddr().Port -Cert $cert.Cert -ServerName 'localhost'
-            try { $client.Run(3) } catch { $failed += "round ${i}: Run: $($_.Exception.Message)" }
+            $started = $clock.ElapsedMilliseconds
+            $said = 'returned'
+            try { $client.Run(3) } catch { $said = $_.Exception.Message; $failed += "round ${i}: Run: $said" }
+            Write-Host ("round {0}: set up by {1} ms, Run ended at {2} ms: {3}" -f $i, $started, $clock.ElapsedMilliseconds, $said)
             try {
                 $arrived = Wait-SEBackground $accepting
+                $said = "answered '$arrived'"
                 if ("$arrived" -ne '3') { $failed += "round ${i}: AcceptOne answered '$arrived'" }
-            } catch { $failed += "round ${i}: AcceptOne: $($_.Exception.Message)" }
+            } catch { $said = $_.Exception.Message; $failed += "round ${i}: AcceptOne: $said" }
+            Write-Host ("round {0}: AcceptOne ended at {1} ms: {2}" -f $i, $clock.ElapsedMilliseconds, $said)
             $client.Dispose()
             $server.Dispose()
             $from.Dispose()
