@@ -53,6 +53,11 @@ $client.Run(1000)
 Receive-Job $job -Wait
 ```
 
+Ask for `LocalAddr()` before the job starts, as above. The server
+answers one call at a time and `AcceptOne` keeps it until the client
+has closed, so a `LocalAddr()` made while it waits waits too, and a
+client that needs that port is never made.
+
 Both ends name a capacity, and it has to agree with the ring already on
 disk, because capacity is part of the layout rather than a hint.
 

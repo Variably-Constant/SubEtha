@@ -17,6 +17,16 @@ anything wrapped around it. The binding's own tests rely on this: a
 bridge server's `AcceptOne` runs in a second runspace beside the
 client's `Run`.
 
+Serialized means one call at a time. A call that waits, such as
+`AcceptOne` or `RecvFor`, holds its object until it returns, and any
+other call on that object waits behind it. Whatever ends the wait has
+to arrive through another object: the client's `Run` for a server's
+`AcceptOne`, a second handle opened on the same path for a channel's
+`RecvFor`. Read what you need from an object before a call starts
+waiting on it. A server's `LocalAddr()` asked for after its
+`AcceptOne` has started waits for a client that cannot be made
+without it.
+
 ```powershell
 $ring = New-SubEthaRing -Path C:\ipc\events -Capacity 4096
 $consumer = $ring.RegisterConsumer()

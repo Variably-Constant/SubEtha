@@ -136,6 +136,19 @@ heading links to the commit that cut it.
   runtime ends with the call, as the C API's does. The 200 rounds took
   26 s in place of 4 s in 7.4.20 and 52 s in place of 7 s in 7.6.5.
 
+- The PowerShell pages said every call on a module object is serialized
+  and left out what that costs: a call that waits holds its object until
+  it returns, so a second call on the same object from another thread
+  waits behind it. A server's `LocalAddr()` asked for after its
+  `AcceptOne` has started in another runspace waits for a client that
+  cannot be made without that port. The module's QUIC round-trip test
+  did exactly that, and the macOS arm64 run of the release candidate
+  printed nothing for 45 minutes after its suite started. On Linux
+  x86-64, with `AcceptOne` given 1.5 s to start first, `LocalAddr()` was
+  still waiting 10 s later and returned 1 ms after a client made by
+  other means ended `AcceptOne`. The pages now say so, and the test
+  reads the port before `AcceptOne` starts.
+
 - The C API's QUIC bridge server could not be made:
   `subetha_quic_bridge_server` bound its endpoint with no runtime
   entered, which quinn refuses, so every call answered

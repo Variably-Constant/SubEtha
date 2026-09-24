@@ -482,9 +482,12 @@ example for any of them.
 Every method call on one object is serialized by the object, so an
 object handed to another runspace or thread is used safely, and the
 bridges' tests run a server's `AcceptOne` in a second runspace beside
-the client's `Run`. A hold, a pin or a claim can be released from any
-thread, including the finalizer's; every value the module holds is safe
-to send between threads, and the build refuses one that is not.
+the client's `Run`. A call that waits holds its object until it
+returns, so whatever ends the wait arrives through another object, and
+a server's `LocalAddr()` is read before its `AcceptOne` starts. A hold,
+a pin or a claim can be released from any thread, including the
+finalizer's; every value the module holds is safe to send between
+threads, and the build refuses one that is not.
 
 An `OrderedReceiver`, a `SlabPin`, a `MapPin`, a `LanedPin` or a
 `LaneClaim` keeps the structure it came from alive for as long as it
