@@ -4724,7 +4724,9 @@ mod tests {
         let real_peer = send.local_addr().unwrap();
         let cid = send.conn_id();
 
-        // Deliver a few items so the receiver is bound to the real peer.
+        // Deliver a few items so the receiver is bound to the real peer. The
+        // sender is pumped while they arrive, so a burst dropped whole on its
+        // way is resent.
         for i in 0u64..20 {
             let mut item = vec![0u8; 16];
             item[..8].copy_from_slice(&i.to_le_bytes());
@@ -4734,6 +4736,7 @@ mod tests {
         let mut got = 0u64;
         while got < 20 && start.elapsed() < Duration::from_secs(5) {
             got += recv.poll().unwrap().len() as u64;
+            send.pump_once().expect("the sender pumps");
         }
         assert_eq!(recv.peer(), Some(real_peer), "bound to the real peer first");
 
