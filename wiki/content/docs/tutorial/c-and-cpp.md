@@ -203,7 +203,15 @@ Destroying a handle and removing the backing are separate acts.
 removes the named backing and its wakers, and reports what it removed,
 what was already missing, and what the OS refused. A backing outlives
 every process that used it until something unlinks it, which is what lets
-one process leave and another attach to the same state.
+one process leave and another attach to the same state. The exception is
+shared memory on Windows, where a section goes with the last handle to it.
+There a ring's handles open what their peers make, a grown producer pair
+or the payload region, at their next call, and in managed mode the ring's
+sidecar opens it between calls too, so it outlives the process that made
+it. A region whose maker left before anything opened it is gone with what
+was sent into it: its producer pair is laid out again empty and the loss
+written to stderr, and a frame whose payload region went that way returns
+`SUBETHA_E_RING_IO`.
 
 `subetha_shutdown` before the library unloads: it joins the library's
 threads, and tells you if you left a handle open.

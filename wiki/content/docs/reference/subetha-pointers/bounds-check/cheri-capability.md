@@ -15,15 +15,16 @@ CHERI-shaped capability pointers in software, lifted to type-level
 read / write separation. A capability carries `(ptr, base, length,
 perms)` and every dereference checks bounds + permissions + sealed
 state. The capability semantics are encoded into the type system:
-`ReadableCapability<T>` has no `write()` method at all,
-`WritableCapability<T>` is `!Copy + !Clone` so the borrow checker
-enforces the unique-writer guarantee. `OwnedReadableCapability<T>`
-and `OwnedWritableCapability<T>` are RAII wrappers that own a
-`Box<T>` and reclaim it on drop.
+`ReadableCapability<'a, T>` has no `write()` method at all, and
+`WritableCapability<'a, T>` holds a unique borrow of its memory, so
+the borrow checker enforces the unique-writer guarantee. Both carry
+the lifetime of the memory they were made from and cannot outlive it.
+`OwnedReadableCapability<T>` and `OwnedWritableCapability<T>` own a
+`Box<T>` and lend capabilities over it.
 
 > **The "CHERI-in-software with no x86 silicon" primitive.** Real
-> CHERI capability hardware exists on ARM Morello. There is no
-> x86 / x86_64 equivalent. This module gives you the same
+> CHERI capability hardware exists on Arm's Morello board. There is
+> no x86 / x86_64 equivalent. This module gives you the same
 > capability surface (bounds + permissions + sealing) implemented
 > in plain Rust with checked-arithmetic bounds tests. The companion
 > [`RaspBatch<T>`](../rasp-pointer/) (`adaptive_rasp_batch` module)
@@ -36,25 +37,28 @@ and `OwnedWritableCapability<T>` are RAII wrappers that own a
   above the existing virtual-memory protection, not a replacement
   for it. A capability cannot prevent the OS or another process
   from accessing the same memory.
+- **A capability borrows its memory.** `from_slice` takes `&'a [T]`
+  and `from_slice_mut` takes `&'a mut [T]`, and the capability holds
+  that borrow for `'a`: the compiler refuses a capability that
+  outlives its slice, and refuses to use the slice while a writable
+  capability over it is alive.
 - **`ReadableCapability::new` and `WritableCapability::new` are
   `unsafe`.** The caller asserts the `[base, base+length)` region
-  is valid memory for the capability's lifetime and that the
-  initial `ptr` lies inside that region.
-- **Safe constructors (`from_slice`, `from_slice_mut`) carry a
-  lifetime.** The returned tuple includes a re-anchored borrow of
-  the original slice. The borrow keeps the slice alive while the
-  capability is in use; the capability does not extend the
-  slice's lifetime on its own.
-- **`ReadableCapability<T>` strips the Write bit at construction.**
+  is valid memory for `'a` (and, for a writable one, that nothing
+  else reads or writes it) and that `ptr` carries that memory's
+  provenance. `new` itself checks that `ptr` lies in the region and
+  is aligned for `T`.
+- **`ReadableCapability` strips the Write bit at construction.**
   Both `new` and `from_slice` apply `perms & !WRITE_BIT`. If you
   pass `Read | Write` to a Readable constructor, the Write bit is
   silently masked off. There is no way to construct a Readable
   that grants Write access.
-- **`WritableCapability<T>` is `!Copy + !Clone`.** Its struct
-  derives only `Debug`. You cannot duplicate a writable cap. The
-  `&mut self` receiver on `write()` plus the constructor's
-  `&mut [T]` / consuming-Box contract give the unique-writer
-  guarantee.
+- **`WritableCapability` is `!Copy + !Clone`, and reborrows.** Its
+  struct derives only `Debug`. You cannot duplicate a writable cap.
+  `narrow`, `narrow_readable` and `as_readable` borrow it, so it
+  cannot write while a capability made from it is alive.
+- **Every capability is aligned for `T`.** A `new` or `narrow` at an
+  address misaligned for `T` returns `CapabilityError::Misaligned`.
 - **Sealed capabilities cannot read or write.** `read()` and
   `write()` check `is_sealed()` first and return
   `CapabilityError::Sealed`. The `unsealed()` method restores
@@ -65,28 +69,20 @@ and `OwnedWritableCapability<T>` are RAII wrappers that own a
   instead of wrapping. Tests `readable_unsafe_new_overflow_guards`
   and `writable_unsafe_new_overflow_guards` exercise this.
 - **`length` is `u32` (4 GiB maximum region).** The `length`
-  field is a `u32`. Larger regions need multiple capabilities or
-  a different primitive.
+  field is a `u32`; a slice over `u32::MAX` bytes gives a capability
+  over its first `u32::MAX` bytes. Larger regions need multiple
+  capabilities or a different primitive.
 - **Capabilities are `!Send` and `!Sync`.** Both
   `ReadableCapability` and `WritableCapability` hold a raw pointer
-  (`*const T` / `*mut T`) plus a matching `PhantomData`, and the
-  module declares no `unsafe impl Send/Sync`, so the auto traits
-  make them neither `Send` nor `Sync`. They cannot cross a thread
-  boundary without the caller wrapping them in their own
-  `Send`-asserting type; cross-thread shared access needs explicit
-  synchronization on top.
+  (`*const T` / `*mut T`), and the module declares no
+  `unsafe impl Send/Sync`, so the auto traits make them neither
+  `Send` nor `Sync`.
 - **24 bytes per capability.** `ptr: *const T` (8) + `base: usize`
-  (8) + `length: u32` (4) + `perms: u32` (4) = 24 bytes. Three
-  times the size of a bare pointer; sized for cache-line
-  alignment.
+  (8) + `length: u32` (4) + `perms: u32` (4) = 24 bytes, three times
+  the size of a bare pointer.
 - **In-process only.** The pointer + base fields are real virtual
   addresses. Cross-process sharing needs composition with a
   region-table primitive (e.g. `KTower2`).
-- **Owned* variants take ownership of a Box.** They are not RAII
-  wrappers around an arbitrary `*mut T`; the Drop impl assumes
-  Box ownership and calls `Box::from_raw`. Using `into_box()`
-  consumes the wrapper (via `std::mem::forget`) and returns the
-  Box without firing Drop.
 
 ---
 
@@ -114,49 +110,41 @@ region, that the encoded `perms` include the requested operation,
 and that the capability is not `sealed`. The compiler enforces
 read-vs-write separation by giving Readable and Writable distinct
 types - Readable has no `write()` method, Writable's `write()`
-requires `&mut self`.
+requires `&mut self` - and keeps each capability inside the lifetime
+of the memory it came from.
 
 ```rust
 // 24-byte layout, identical for both Readable and Writable:
-ptr:    *const T   // 8 bytes - base or interior address
+ptr:    *const T   // 8 bytes - base or interior address, aligned for T
 base:   usize      // 8 bytes - lower bound (often equals ptr)
 length: u32        // 4 bytes - bytes from base
 perms:  u32        // 4 bytes - permission bitmask + sealed bit
 ```
 
 The owned variants (`OwnedReadableCapability`,
-`OwnedWritableCapability`) wrap the corresponding capability and
-own the underlying `Box<T>`, reclaiming it on `Drop`. This is the
-no-manual-cleanup shape for capability semantics over allocated
-values.
+`OwnedWritableCapability`) own a `Box<T>` and lend capabilities over
+it through `cap()` (read-only) and, for the writable one, `cap_mut()`.
+A lent capability borrows the owner, so it cannot outlive it.
 
 ---
 
 ## Read vs Write at the type level
 
-The shipped CHERI emulator chose to split read and write at the
-type level rather than the runtime permission-bit level. Two
-consequences:
+The CHERI emulator splits read and write at the type level rather
+than the runtime permission-bit level. Two consequences:
 
 1. **No accidental write through a Readable.** The compiler refuses
-   `read_cap.write(value)` because no such method exists. A bit-flip
-   that flipped the Write perm at runtime would have no effect on
-   read-only callers.
-2. **`!Copy + !Clone` for Writable is structural.** You cannot
-   duplicate a writable capability to alias the writer. The
-   compiler enforces this at the type-system level; no runtime
-   reference counting needed.
+   a `write` call on a `ReadableCapability` because no such method
+   exists. A bit-flip that set the Write perm at runtime would have
+   no effect on read-only callers.
+2. **One writer at a time is structural.** You cannot duplicate a
+   writable capability, and every capability made from one borrows
+   it. The compiler enforces this at the type-system level; no
+   runtime reference counting needed.
 
-`✶ Insight ────────────────────────────────`
-
-This is "make illegal states unrepresentable" applied to memory
-capabilities. The CHERI hardware model has a single
-`capability_t` type with a permission word; a Read perm and a
-Write perm are runtime checks. Lifting them to the type system
-turns runtime checks into compile-time guarantees and gives the
-borrow checker something to enforce (the !Clone on Writable).
-
-`──────────────────────────────────────────`
+Lifting the permissions into the type system turns runtime checks
+into compile-time guarantees and gives the borrow checker something
+to enforce.
 
 ---
 
@@ -169,7 +157,7 @@ borrow checker something to enforce (the !Clone on Writable).
 | `None` | 0 | No access. |
 | `Read` | 1 | Allows `read()`. |
 | `Write` | 2 | Allows `write()` (Writable only). |
-| `Execute` | 4 | Reserved for execute-allow semantics (not exercised today). |
+| `Execute` | 4 | Declared; no method checks it. |
 
 The `perms` field is a bitmask, so a cap can carry combinations
 (`Read | Write`).
@@ -207,10 +195,10 @@ flowchart LR
     B4 --> B4a[Read bit]
     B4 --> B4b[Write bit]
     B4 --> B4c[Sealed bit]
-    C[OwnedReadable] --> A
-    D[OwnedWritable] --> B
-    C --> Cd[Box drop on RAII]
-    D --> Dd[Box drop on RAII]
+    C[OwnedReadable] --> Cb[Box T]
+    D[OwnedWritable] --> Db[Box T]
+    C -. "cap()" .-> A
+    D -. "cap() / cap_mut()" .-> B
     classDef cap fill:#dceefb,stroke:#1f4e79,color:#000
     classDef field fill:#fff2cc,stroke:#7f6000,color:#000
     classDef perm fill:#d5e8d4,stroke:#2d5d2d,color:#000
@@ -220,7 +208,7 @@ flowchart LR
     class A1,A2,A3,A4,B1,B2,B3,B4 field
     class A4a,A4c,B4a,B4b,B4c perm
     class A4b strip
-    class C,D,Cd,Dd owned
+    class C,D,Cb,Db owned
 ```
 
 `#[repr(C)]` on both Readable and Writable. The field order is
@@ -232,16 +220,15 @@ verified by `readable_layout_is_24_bytes` and
 
 ## Constructor matrix
 
-| Type | Safe constructor | Unsafe constructor | What it owns |
+| Type | Safe constructor | Unsafe constructor | What it holds |
 |---|---|---|---|
-| `ReadableCapability<T>` | `from_slice(&[T], perms) -> (cap, &[T])` | `unsafe new(ptr, base, length, perms)` | Nothing (`Copy`). |
-| `WritableCapability<T>` | `from_slice_mut(&mut [T]) -> (cap, &mut [T])` | `unsafe new(ptr, base, length, perms)` | Nothing (`!Copy`). |
+| `ReadableCapability<'a, T>` | `from_slice(&'a [T], perms) -> (cap, &'a [T])` | `unsafe new(ptr, base, length, perms)` | A shared borrow for `'a` (`Copy` when `T` is). |
+| `WritableCapability<'a, T>` | `from_slice_mut(&'a mut [T]) -> cap` | `unsafe new(ptr, base, length, perms)` | A unique borrow for `'a` (`!Copy`). |
 | `OwnedReadableCapability<T>` | `new(value)`, `from_box(Box<T>)` | - | The `Box<T>`. |
 | `OwnedWritableCapability<T>` | `new(value)`, `from_box(Box<T>)` | - | The `Box<T>`. |
 
-The safe constructors for borrowed caps return a tuple. The
-returned borrow re-anchors the slice's lifetime so the borrow
-checker keeps the slice live for as long as the cap exists.
+`from_slice` also returns the slice beside the capability; the
+capability holds its own borrow either way.
 
 ---
 
@@ -256,32 +243,33 @@ use subetha_pointers::adaptive_cheri_pointer::{
 
 // Read-only capability over a borrowed slice.
 let storage = vec![1u64, 2, 3];
-let (read_cap, _anchor) = ReadableCapability::from_slice(
+let (read_cap, _slice) = ReadableCapability::from_slice(
     storage.as_slice(), Perm::Read as u32,
 );
 let value = read_cap.read().unwrap();  // = 1
 
 // Writable capability over a mutable slice.
 let mut buf = vec![0u64; 4];
-let (mut write_cap, _anchor) = WritableCapability::from_slice_mut(buf.as_mut_slice());
+let mut write_cap = WritableCapability::from_slice_mut(buf.as_mut_slice());
 write_cap.write(42u64).unwrap();
 let v = write_cap.read().unwrap();  // = 42
 
-// Owned RAII capability over a heap value.
-let mut owned = OwnedWritableCapability::new(0u64);
-owned.cap_mut().write(555).unwrap();
-let val = owned.read().unwrap();  // = 555
-// Box is reclaimed when `owned` is dropped.
-
-// Narrow a writable to a read-only view (Write bit stripped).
+// A read-only view of the writable one (Write bit stripped).
 let read_view = write_cap.as_readable();
 assert!(read_view.has_permission(Perm::Read));
 assert!(!read_view.has_permission(Perm::Write));
+
+// Owned capability over a heap value.
+let mut owned = OwnedWritableCapability::new(0u64);
+owned.cap_mut().write(555).unwrap();
+let val = owned.cap().read().unwrap();  // = 555
+// The Box is freed when `owned` is dropped.
 ```
 
 Every access method (`read`, `write`, `narrow`, `narrow_readable`)
-returns `Result<_, CapabilityError>`. The four error variants are
-`OutOfBounds`, `PermissionDenied`, `Sealed`, `AddressOverflow`.
+returns `Result<_, CapabilityError>`. The five error variants are
+`OutOfBounds`, `PermissionDenied`, `Sealed`, `AddressOverflow` and
+`Misaligned`.
 
 ---
 
@@ -293,7 +281,7 @@ A cap given to a child component can be sealed when the parent
 wants to suspend access temporarily, without revoking the cap:
 
 ```rust
-let (cap, _anchor) = ReadableCapability::from_slice(
+let (cap, _slice) = ReadableCapability::from_slice(
     storage.as_slice(), Perm::Read as u32,
 );
 // Pass `cap` to a child component.
@@ -314,20 +302,22 @@ sub-region to a child:
 
 ```rust
 let mut buf = vec![0u64; 16];
-let (root, _anchor) = WritableCapability::from_slice_mut(buf.as_mut_slice());
+let base = buf.as_ptr() as usize;
+let mut root = WritableCapability::from_slice_mut(buf.as_mut_slice());
 // Grant child access to bytes 16..32 only (elements 2..4).
-let base = root.ptr as usize;
-let child_cap = root.narrow(
+let mut child_cap = root.narrow(
     base + 16, 16,
     Perm::Read as u32 | Perm::Write as u32,
 ).unwrap();
-// child_cap can only read/write within its 16-byte sub-region.
+child_cap.write(7).unwrap();
+// child_cap reads and writes only its 16-byte sub-region, and `root`
+// is unusable until child_cap is dropped.
 ```
 
-### Owned wrapper round-tripping a Box
+### Taking the Box back
 
-The owned variants support `into_box()` to take back the Box
-without firing Drop on the wrapper:
+The owned variants support `into_box()` to hand the value back to
+normal ownership:
 
 ```rust
 let owned = OwnedWritableCapability::new(12345u64);
@@ -336,83 +326,69 @@ assert_eq!(*b, 12345);
 // `b` is now a normal Box, dropped on the next scope end.
 ```
 
-This is the pattern for moving a value out of capability discipline
-back into Rust's normal ownership model.
-
 ---
 
 ## Benchmark results
 
 Bench: `crates/subetha-pointers/benches/unified.rs`, groups
 `capability_validation_10k` and `owned_capability_construct_drop_1k`.
-Measured on Windows 11 / Zen+ R7 2700, criterion at
-`--measurement-time 2 --warm-up-time 1 --sample-size 30` (middle
-estimate of each [low, mid, high] triple).
+Measured on Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built
+for the x86-64 baseline, with Criterion's defaults (3 s warm-up, 100
+samples over 5 s; middle estimate of each [low, mid, high] triple),
+while other work kept 3.5 to 3.6 of the machine's 24 hardware threads
+busy.
 
 ### Read / Write hot path (10 000 elements)
 
 | Contender | Time | vs native | Notes |
 |---|---|---|---|
-| `baseline_native_slice_check` | **6.25 us** | 1.00x (floor) | Native `if !s.is_empty() { sum += s[0] }`. |
-| `readable_capability_read` | **19.2 us** | 3.08x slower | Bounds + perm + sealed + overflow-safe arithmetic. |
-| `baseline_native_slice_write_then_read` | **10.8 us** | floor (write+read) | Native `s[0] = 42; sum += s[0]`. |
-| `writable_capability_write_then_read` | **11.6 us** | 1.07x over native write+read | Capability construct + write + read. |
+| `baseline_native_slice_check` | **4.26 us** | 1.00x (floor) | Native `if !s.is_empty() { sum += s[0] }`. |
+| `readable_capability_read` | **7.45 us** | 1.75x slower | Bounds + perm + sealed + alignment + overflow-safe arithmetic. |
+| `baseline_native_slice_write_then_read` | **7.26 us** | floor (write+read) | Native `s[0] = 42; sum += s[0]`. |
+| `writable_capability_write_then_read` | **10.19 us** | 1.40x over native write+read | Capability construct + write + read. |
 
 **The benchmark pairs `writable_capability_write_then_read` against a
 `baseline_native_slice_write_then_read` floor.** A read-only
 `baseline_native_slice_check` baseline would be asymmetric - the
 capability path includes a write, that native baseline does not.
 Against the native write+read floor, the capability overhead
-isolates to ~7%, not ~70%.
+isolates to ~40%, not the ~140% the read-only floor would show.
 
 **Reading the results:**
 
-- **Readable cap is ~3x slower than the native read baseline.**
-  Each `read()` runs five checks: bounds-low, overflow-on-end,
-  bounds-high, permission, sealed. Plus the load itself. The
-  architectural claim is "memory safety for code that can't take
-  a `&mut` borrow"; the 3x slowdown is the cost of paying for
-  every check on every access.
-- **Writable cap is ~1.07x slower than native write+read.** The
-  per-iteration construct-cap + write + read is dominated by the
-  underlying memory accesses, so the capability's added checks
-  are a modest fraction relative to that workload.
-- **Per-element cost:** native read ~0.63 ns, readable cap ~1.92 ns,
-  writable cap ~1.16 ns (including construction). At a 3 GHz
-  clock, the readable cap is roughly 5-6 cycles per check group
-  (consistent with bounds + perm + sealed + checked-arith).
+- **Readable cap is ~1.75x slower than the native read baseline.**
+  Each `read()` checks bounds-low, overflow-on-end, bounds-high,
+  permission, sealed state and alignment before the load itself.
+- **Writable cap is ~1.40x slower than native write+read.** Each
+  iteration constructs the capability and runs its checks on the
+  write and on the read.
+- **Per-element cost:** native read ~0.43 ns, readable cap ~0.74 ns,
+  native write+read ~0.73 ns, writable cap ~1.02 ns (including
+  construction).
 
-### Owned RAII (1 000 construct+drop cycles)
+### Owned construct + drop (1 000 cycles)
 
 This group is **dominated by allocator free-list reuse**: each
 sub-bench allocates and frees 1 000 boxes of the same size in a
 tight loop, so the system allocator's thread cache serves every
 request from a hot free list. The per-cycle times are therefore
 sub-nanosecond and noisy (the `baseline_box_new_drop` 95% interval
-spans ~680-840 ns for the whole 1 000-cycle loop). Read these as
-"the RAII wrapper is in the same band as a plain Box", not as
+spans ~265-289 ns for the whole 1 000-cycle loop). Read these as
+"the owned wrapper is in the same band as a plain Box", not as
 stable point estimates.
 
 | Contender | Time (1 000 cycles) | Notes |
 |---|---|---|
-| `baseline_box_new_drop` | **755 ns** (noisy, ~680-840) | `let b = Box::new(i); black_box(*b);` |
-| `owned_readable_construct_then_drop` | **684 ns** | Box + capability + read + Drop. |
-| `owned_writable_construct_write_drop` | **350 ns** | Box + capability + write + read + Drop. |
+| `baseline_box_new_drop` | **277 ns** (noisy, ~265-289) | `let b = Box::new(i); black_box(*b);` |
+| `owned_readable_construct_then_drop` | **255 ns** | Box + capability + read + drop. |
+| `owned_writable_construct_write_drop` | **251 ns** | Box + capability + write + read + drop. |
 
-**Reading the results:**
-
-- **The owned wrappers land in the same band as plain `Box`.** In
-  the shipped bench both `owned_readable` (684 ns) and `owned_writable`
-  (350 ns) measured at or below the noisy `baseline_box_new_drop`
-  (755 ns). The RAII wrapper is construction (4 field writes +
-  `Box::into_raw`) plus a `Box::from_raw` on drop; against
-  allocator-free-list-served boxes that overhead is in the noise.
-- **Don't over-read the ordering.** Because the allocator cache
-  dominates, the relative order of the three sub-benches shifts
-  run to run; the honest conclusion is "the capability RAII
-  composition adds no allocation beyond the Box it wraps", not a
-  fixed multiplier. For cold-allocation cost, benchmark with a
-  non-caching allocator or randomized sizes.
+**Reading the results:** both owned wrappers measured at or below
+the noisy `baseline_box_new_drop`; because the allocator cache
+dominates, the relative order of the three sub-benches shifts run to
+run. The conclusion is "the owned wrapper adds no allocation beyond
+the Box it holds", not a fixed multiplier. For cold-allocation cost,
+benchmark with a non-caching allocator or randomized sizes.
 
 ---
 
@@ -420,13 +396,13 @@ stable point estimates.
 
 | Pattern | Use which cap | Why |
 |---|---|---|
-| **Read-only sub-view of an allocation** | `ReadableCapability::from_slice` | No write method means no accidental writes; the borrow extends through the cap. |
-| **Single-writer mutable region** | `WritableCapability::from_slice_mut` | `!Copy + !Clone` enforces unique-writer at compile time. |
-| **Heap value with RAII** | `OwnedReadable/WritableCapability::new` | Drop reclaims the Box; zero-overhead wrapper. |
+| **Read-only sub-view of an allocation** | `ReadableCapability::from_slice` | No write method means no accidental writes; the cap holds the borrow. |
+| **Single-writer mutable region** | `WritableCapability::from_slice_mut` | The cap holds the unique borrow; one writer at a time at compile time. |
+| **Heap value with owned lifetime** | `OwnedReadable/WritableCapability::new` | The Box is freed with the owner; lent caps cannot outlive it. |
 | **Suspend-resume access** | `cap.sealed()` / `cap.unsealed()` | Temporary revocation without losing the cap. |
 | **Hand a sub-region to a callee** | `cap.narrow(...)` | Returns a capability over a smaller range; downgrades perms. |
 | **Promote a writable to read-only** | `cap.as_readable()` or `cap.narrow_readable(...)` | Type-level guarantee that the callee cannot write. |
-| **Round-trip a Box out of capability discipline** | `owned.into_box()` | Reclaims the Box without firing Drop; lets the value re-enter standard ownership. |
+| **Take the value back out** | `owned.into_box()` | Returns the Box; the value re-enters standard ownership. |
 
 ---
 
@@ -443,7 +419,7 @@ All confirmed against the source or the bench:
   a `u32`. For larger regions, compose multiple capabilities or
   use a different primitive.
 - **No Execute path.** `CapabilityPermission::Execute = 4` is
-  declared but no `execute()` method exists. The bit is reserved.
+  declared but no `execute()` method exists.
 - **24-byte size is fixed.** Verified by
   `readable_layout_is_24_bytes` and `writable_layout_is_24_bytes`.
   Three times a bare pointer; significant in slot tables with
@@ -453,23 +429,15 @@ All confirmed against the source or the bench:
   base + nonzero length correctly returns `AddressOverflow`.
   Verified by `readable_unsafe_new_overflow_guards` and the
   writable equivalent.
-- **The Drop impls assume Box ownership.**
-  `OwnedReadableCapability` and `OwnedWritableCapability` call
-  `Box::from_raw` on Drop. Using these to wrap a non-Box pointer
-  would be UB. The safe constructors guarantee Box ownership; the
-  unsafe `new` constructors on the underlying Readable / Writable
-  do not promote to an Owned wrapper.
-- **`OwnedReadableCapability::into_box`** uses `std::mem::forget`
-  to suppress Drop and reclaim the raw pointer as a Box. The
-  same pattern is in `OwnedWritableCapability::into_box`. Both
-  are verified by the round-trip tests
-  (`owned_writable_into_box_suppresses_drop` /
-  `owned_writable_into_box_round_trip_value`).
+- **A capability cannot outlive its memory, and a writable one has
+  one user at a time.** Compile-fail examples in the module docs
+  are part of the doctests: a capability kept past its slice, one
+  kept past its owner, and two writable capabilities alive over one
+  region each fail to compile.
 - **Readable cap is 3x slower than direct slice access** in the
-  bench. The architectural claim of "memory safety for code that
-  can't take a borrow" justifies this in workloads where the
-  borrow checker can't see the access pattern (e.g. capability
-  tables, cross-component handoffs).
+  bench. The checks earn that in workloads where the borrow checker
+  can't see the access pattern (e.g. capability tables,
+  cross-component handoffs).
 
 ---
 
@@ -481,31 +449,23 @@ All confirmed against the source or the bench:
   of what `perms` you passed.
 - **Don't try to `Clone` a `WritableCapability`.** It's
   `!Copy + !Clone` by design (the struct derives only `Debug`).
-  To share access, use the borrow-from-slice constructor inside a
-  Rust function that re-issues caps to callees.
-- **Don't ignore the lifetime anchor returned by `from_slice`.**
-  The returned `&[T]` re-anchors the slice's lifetime; dropping
-  it before the cap is invalid use of the cap. The pattern is
-  `let (cap, _anchor) = ReadableCapability::from_slice(...)`,
-  keeping `_anchor` alive for the cap's lifetime.
-- **Don't `Box::from_raw(owned.as_raw())`.** Use `owned.into_box()`
-  instead. The former does not suppress the wrapper's Drop, which
-  will then double-free.
+  To hand out access, narrow it or lend a read-only view.
+- **Don't expect to use a writable capability while something made
+  from it is alive.** `narrow`, `narrow_readable` and `as_readable`
+  borrow it; drop the narrowed capability or view first.
 - **Don't compose a sealed cap with `narrow`.** The narrow methods
   mask the new perms with `& !SEALED_BIT`. A sealed parent yields
   an unsealed child; the seal does not propagate.
-- **Don't wrap a non-Box pointer with OwnedReadable / OwnedWritable.**
-  Their Drop impls call `Box::from_raw`. If the pointer wasn't
-  obtained from `Box::into_raw`, the Drop is UB.
+- **Don't narrow to an address that is not a multiple of `T`'s
+  alignment.** It returns `CapabilityError::Misaligned`.
 - **Don't expect cross-process portability.** The ptr + base
   fields are real virtual addresses. Cross-process sharing needs
   composition with a region-table primitive.
 - **Don't conflate ReadableCapability with `&T`.** A Rust `&T`
   borrow has lifetime tracking and no runtime check. A
-  ReadableCapability has runtime bounds + perm checks and a
-  potentially-shorter lifetime (the slice it borrowed from must
-  outlive it). Pick the right tool: `&T` for compile-time safety
-  where the borrow checker can see the access, ReadableCapability
-  for cross-component handoffs or stored capability tables.
+  ReadableCapability has the same lifetime tracking plus runtime
+  bounds + perm checks. Pick the right tool: `&T` where the borrow
+  checker can see the access, ReadableCapability for cross-component
+  handoffs or stored capability tables.
 
 ---

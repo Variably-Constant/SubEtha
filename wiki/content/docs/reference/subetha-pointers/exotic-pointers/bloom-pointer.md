@@ -8,17 +8,18 @@ weight: 30
 ![Rust](https://img.shields.io/badge/Rust-1.96+-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/Edition-2024-blue)
 ![Bloom64](https://img.shields.io/badge/Bloom64-8_keys_~3%25_FPR-informational)
-![BloomFine](https://img.shields.io/badge/BloomFine-64_keys_~5%25_FPR-informational)
+![BloomFine](https://img.shields.io/badge/BloomFine-32_keys_~2.5%25_FPR-informational)
 ![Hash](https://img.shields.io/badge/Hash-FxBloom-success)
 ![Scope](https://img.shields.io/badge/Scope-in--process-yellow)
 
 Pointers that carry a Bloom-filter summary of their target's
 membership keys, enabling `bloom.might_contain(query)` to reject
-queries in one register-compare without touching the pointed-to
-data. The architectural payoff: when a scan iterates many
-candidate pointers and the query misses most of them, the
-Bloom shortcircuit eliminates the deref + scan for ~99% of
-queries; only the rare false-positive pays the full deref cost.
+queries with one hash and a few bit tests, without touching the
+pointed-to data. When a scan iterates many candidate pointers and
+the query misses most of them, the Bloom shortcircuit skips the
+deref and scan for about 98% of absent keys at `Bloom64`'s
+suggested load of 8 keys; only a false positive pays the full
+deref cost.
 
 > **The "skip the deref when you can prove the answer is no"
 > primitive.** Same architectural shape as LSM-tree Bloom layers,
@@ -33,29 +34,27 @@ queries; only the rare false-positive pays the full deref cost.
   `Arc<T>` to the target. Cross-process Bloom pointers require
   layering this design over an MMF substrate.
 - **Right-size to the filter's capacity.** Bloom64 is designed for
-  ~8 keys at ~3% FPR; pushing to 16 keys yields ~16% FPR; pushing
-  to 32+ keys saturates the filter and `might_contain` returns
-  true for every query. BloomFine handles ~64 keys at ~5% FPR.
-  Choose the variant matching the workload's per-pointer key
-  count; for the intermediate regime (16-64 keys) use
-  `BloomCascade` (coarse + fine).
+  ~8 keys at ~2.4% FPR; at 16 keys the FPR is ~16%, at 32 ~56%,
+  and at 64 ~93%. BloomFine suggests 32 keys (~2.5%) and stays
+  under ~5% up to ~37 keys (~31% at 64). Choose the variant
+  matching the workload's per-pointer key count; for the
+  intermediate regime (16 to ~37 keys) use `BloomCascade`
+  (coarse + fine).
 - **Caller maintains filter / target consistency.** The Bloom is
   built from caller-supplied keys at construction time. Mutating
   the target's membership keys after construction without
   rebuilding the filter produces silent false negatives.
-- **Hash is `FxBloomHasher`** (FxHash-style rotate-xor-multiply).
-  Fast (~2-3 ns/u64) but **not cryptographically strong** and
-  **not stable across crate versions**. Workloads needing
-  reproducible filter bits across processes / persistence must
-  hash keys with a deterministic algorithm externally and
-  construct the filter from the resulting u64 via the public
-  tuple field (`Bloom64(bits)`; there is no `new` constructor).
-- **Wins only when the deref is non-trivial.** For tiny in-cache
-  `Vec<u64>::contains` over <8 elements, native scan is faster
-  than even the optimized Bloom path. Bloom pays off when the
-  shortcircuited operation costs more than ~5 ns of hash work:
-  string equality on uniform-length strings, HashSet/HashMap
-  lookups, remote/disk reads, large Vec/HashMap scans.
+- **Hash is `FxBloomHasher`** (FxHash-style rotate-xor-multiply,
+  finished with MurmurHash3's `fmix64`). Fast but **not
+  cryptographically strong** and **not stable across crate
+  versions**, so filter bits built by one version
+  may not answer `might_contain` correctly under another. Persist
+  the keys rather than the filter bits, and rebuild the filter
+  where it is used.
+- **Wins only when the skipped work costs more than the check.**
+  The measured cases below range from 1.21x (a saturated
+  single-level filter at 32 keys) to 4.50x (eight 32-byte strings
+  per target); a target smaller than 8 keys was not measured.
 
 ---
 
@@ -108,7 +107,7 @@ flowchart TD
     Q{How many keys does<br/>each target hold?} --> A{1 - 8?}
     Q --> B{9 - 64?}
     Q --> C{65+ ?}
-    A -->|yes| P1[BloomPointer<br/>Bloom64 at design point<br/>~3% FPR]
+    A -->|yes| P1[BloomPointer<br/>Bloom64 at design point<br/>~2.4% FPR at 8 keys]
     B -->|yes| P2[BloomCascade<br/>Bloom64 saturates here<br/>BloomFine still rejects]
     C -->|yes| P3[Cascade or partition<br/>BloomFine also saturates<br/>at 100+ keys]
 
@@ -121,11 +120,11 @@ flowchart TD
 
 | Per-target key count | Filter | FPR estimate | Pointer type |
 |---:|---|---:|---|
-| 1-4 | Bloom64 | ~0.5% | `BloomPointer<T>` |
-| 5-8 | Bloom64 | ~3% | `BloomPointer<T>` (the design point) |
-| 9-16 | Bloom64 | ~16% (saturating) | `BloomCascade<T>` (cascade saves it) |
-| 16-64 | BloomFine | ~5% at 64 | `BloomCascade<T>` |
-| 65+ | BloomFine | >10% (saturating) | Partition target into multiple pointers, or accept the FPR |
+| 1-4 | Bloom64 | 0.0013-0.24% | `BloomPointer<T>` |
+| 5-8 | Bloom64 | 0.52-2.4% | `BloomPointer<T>` (the design point) |
+| 9-16 | Bloom64 | 3.4-16% (saturating) | `BloomCascade<T>` (cascade saves it) |
+| 16-64 | BloomFine | 0.057-31% (under 5% to ~37 keys) | `BloomCascade<T>` |
+| 65+ | BloomFine | 32% and up (saturating) | Partition target into multiple pointers, or accept the FPR |
 
 ## Memory layout
 
@@ -154,31 +153,39 @@ flowchart LR
 
 ## Hash design (FxBloomHasher)
 
-The original implementation used `std::collections::hash_map::DefaultHasher`
-(SipHash-1-3, ~15-20 ns per call). For Bloom filters on small
-in-memory targets, the hash cost dominated the deref+search cost
-the filter was meant to shortcircuit: bench data showed
-`bp.might_contain(&u64)` at ~35 ns vs `Vec<u64>::contains` over
-5 elements at ~3 ns - a 10x net loss.
-
-The current implementation uses an FxHash-style rotate-xor-multiply
-hasher (`FxBloomHasher`):
+The filters hash with `FxBloomHasher`, an FxHash-style
+rotate-xor-multiply hasher, and pass its output through
+MurmurHash3's 64-bit finalizer:
 
 ```rust
 fn write_u64(&mut self, n: u64) {
     self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(FX_MULT);
 }
+
+fn fmix64(mut k: u64) -> u64 {
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    k ^= k >> 33;
+    k
+}
 ```
 
-Per-call cost: ~2-3 ns for a u64 key. The full `Bloom64::indices`
-then produces 4 bit positions from a single hash output by
-slicing the 64-bit result at positions 0, 16, 32, 48. This cuts
-the per-query cost from 2 SipHash calls to 1 FxHash call - a
-~10x speedup.
+A multiply leaves a product's low bits depending only on the key's
+low bits, and the indices are sliced from fixed bit positions, so
+the finalizer mixes every output bit from every input bit first.
+Without it, sequential keys measured up to 1.65x the estimated
+false-positive rate (Bloom64 at 16 keys: 26.4% against 16.0%).
 
-`BloomFine::indices` makes two FxHash calls (with different seeds)
-to derive 8 bit positions across the 256-bit filter, slicing each
-hash output into 4 8-bit positions.
+`Bloom64::indices` produces 4 bit positions from a single hash
+output, as 6-bit slices at bits 0, 16, 32 and 48.
+
+`BloomFine::indices` makes two hash calls with different seeds
+and takes 8-bit slices at the same offsets of each, 8 bit
+positions across the 256-bit filter. The first of the two calls
+uses `Bloom64`'s seed, so a key's fine indices extend its coarse
+ones.
 
 The hash is not cryptographic; the goal is bit-mixing for index
 distribution, not collision resistance. Adversarial inputs could
@@ -188,22 +195,26 @@ must use a stronger external hash and bypass the built-in.
 ## False-positive rate vs load
 
 `Bloom64::estimated_fpr(n)` computes the standard formula
-`(1 - exp(-k*n/m))^k` with `m = 64`, `k = 4`:
+`(1 - exp(-k*n/m))^k` with `m = 64`, `k = 4`; the BloomFine
+estimate is the same formula with `m = 256`, `k = 8`. The measured
+columns insert the keys `0..n` and query 10,000 absent keys,
+`1_000_000..1_010_000`; the hash is deterministic, so they are
+exact for that key set:
 
-| Keys inserted | Bloom64 FPR | BloomFine FPR |
-|---:|---:|---:|
-| 1 | 0.0006% | < 0.0001% |
-| 4 | 0.6% | < 0.001% |
-| 8 (Bloom64 capacity) | ~2.4% | < 0.01% |
-| 16 | ~16% | ~0.1% |
-| 32 | ~63% | ~3% |
-| 64 (BloomFine capacity) | ~95% (saturated) | ~5% |
-| 100 | ~99% (saturated) | ~14% |
+| Keys inserted | Bloom64 estimate | Bloom64 measured | BloomFine estimate | BloomFine measured |
+|---:|---:|---:|---:|---:|
+| 1 | 0.0013% | 0.01% | < 0.0001% | 0.00% |
+| 4 | 0.24% | 0.12% | < 0.001% | 0.00% |
+| 8 (Bloom64 capacity) | ~2.4% | 1.81% | < 0.001% | 0.00% |
+| 16 | ~16% | 16.94% | ~0.06% | 0.10% |
+| 32 (BloomFine capacity) | ~56% | 55.09% | ~2.5% | 2.51% |
+| 37 | ~66% | 63.14% | ~4.9% | 4.29% |
+| 64 | ~93% (saturated) | 88.05% | ~31% | 26.34% |
+| 100 | ~99% (saturated) | 93.90% | ~70% | 61.82% |
 
-Read: Bloom64 is unusable above 16 keys; BloomFine remains
-useful up to ~64 keys. The cascade structure exists precisely
-for the 16-to-64-key gap where Bloom64 fails but BloomFine
-still rejects.
+Read: Bloom64 is unusable above 16 keys; BloomFine stays under
+~5% up to ~37 keys. The cascade structure exists for the gap
+above 16 keys where Bloom64 fails but BloomFine still rejects.
 
 ## Cascade dispatch
 
@@ -211,9 +222,9 @@ still rejects.
 
 ```mermaid
 flowchart TD
-    Start([cascade_check key]) --> C{coarse.might_contain?<br/>~3 ns}
+    Start([cascade_check key]) --> C{coarse.might_contain?}
     C -->|no| RC["RejectedAtCoarse<br/>SKIP deref<br/>(saved: deref + fine)"]
-    C -->|yes| F{fine.might_contain?<br/>~6 ns}
+    C -->|yes| F{fine.might_contain?}
     F -->|no| RF["RejectedAtFine<br/>SKIP deref<br/>(saved: deref)"]
     F -->|yes| M[MightContain<br/>Caller must deref<br/>to confirm]
 
@@ -228,10 +239,10 @@ flowchart TD
 ```
 
 The coarse-then-fine ordering puts the cheaper check first: at
-32 keys per target, the coarse Bloom64 is saturated (~63% pass
-rate) but the fine 256-bit filter still rejects ~95% of randoms.
-The cascade pays the cheap check upfront and only routes to the
-fine check when coarse fails to reject.
+32 keys per target, ~56% of absent keys pass the saturated coarse
+Bloom64, while the fine 256-bit filter passes only ~2.5%. The
+cascade pays the cheap check upfront and only routes to the fine
+check when coarse fails to reject.
 
 ## API at a glance
 
@@ -241,7 +252,7 @@ fine check when coarse fails to reject.
 | Method | Signature | Notes |
 |---|---|---|
 | `ZERO` | `const Self` | Empty filter |
-| `SUGGESTED_CAPACITY` | `const usize = 8` | ~3% FPR at this load |
+| `SUGGESTED_CAPACITY` | `const usize = 8` | ~2.4% estimated FPR at this load |
 | `insert(key)` | `fn(&mut self, &K)` | Set 4 bits for key |
 | `might_contain(key)` | `fn(&self, &K) -> bool` | `false` = definitely-no, `true` = might-be-yes |
 | `from_keys(iter)` | `fn(I) -> Self` | Build from key iterator |
@@ -256,7 +267,7 @@ fine check when coarse fails to reject.
 | Method | Signature | Notes |
 |---|---|---|
 | `ZERO` | `const Self` | Empty filter |
-| `SUGGESTED_CAPACITY` | `const usize = 64` | ~5% FPR at this load |
+| `SUGGESTED_CAPACITY` | `const usize = 32` | ~2.5% estimated FPR at this load (2.51% measured); ~37 keys stay under 5% |
 | `insert(key)` | `fn(&mut self, &K)` | Set 8 bits across `[u64; 4]` |
 | `might_contain(key)` | `fn(&self, &K) -> bool` | Same contract as Bloom64 |
 | `from_keys(iter)` | `fn(I) -> Self` | Build from iterator |
@@ -271,7 +282,7 @@ fine check when coarse fails to reject.
 |---|---|---|
 | `new(target, bloom)` | `fn(Arc<T>, Bloom64) -> Self` | Caller-built filter |
 | `from_keys(target, keys)` | `fn(Arc<T>, I) -> Self` | Filter built from key iterator |
-| `bloom()` | `fn(&self) -> Bloom64` | Borrow the filter |
+| `bloom()` | `fn(&self) -> Bloom64` | A copy of the filter |
 | `target()` | `fn(&self) -> &Arc<T>` | Borrow the target Arc |
 | `might_contain(key)` | `fn(&self, &K) -> bool` | Skip-the-deref membership test |
 | `set_bloom(b)` | `fn(&mut self, Bloom64)` | Replace filter after target mutation |
@@ -286,7 +297,7 @@ fine check when coarse fails to reject.
 | `new(target, coarse, fine)` | constructor | Both filters supplied |
 | `from_keys(target, keys)` | `fn(Arc<T>, I) -> Self` | Both filters built from iterator |
 | `cascade_check(key)` | `fn(&self, &K) -> CascadeOutcome` | Three-state result |
-| `coarse()` / `fine()` / `target()` | accessors | Borrow each component |
+| `coarse()` / `fine()` / `target()` | accessors | `Bloom64` by value, `&BloomFine`, `&Arc<T>` |
 
 `CascadeOutcome::RejectedAtCoarse` / `RejectedAtFine` /
 `MightContain`. `outcome.might_contain()` collapses to bool;
@@ -298,9 +309,7 @@ fine check when coarse fails to reject.
 
 ```rust
 use std::sync::Arc;
-use subetha_pointers::bloom_pointer::{
-    Bloom64, BloomCascade, BloomFine, BloomPointer, CascadeOutcome,
-};
+use subetha_pointers::bloom_pointer::{BloomCascade, BloomPointer, CascadeOutcome};
 
 // Pattern 1: BloomPointer for a small-key target (<=8 keys).
 let target = Arc::new(vec![1u64, 2, 3, 4, 5, 6, 7, 8]);
@@ -315,7 +324,7 @@ let mut rejects = 0;
 for k in 1000..1100u64 {
     if !bp.might_contain(&k) { rejects += 1; }
 }
-assert!(rejects > 95, "Bloom64 at capacity should reject ~97% of randoms");
+assert!(rejects > 95, "Bloom64 at capacity should reject ~97.6% of absent keys");
 
 // Pattern 2: BloomCascade for medium-key target (8-64 keys).
 let big_target: Arc<Vec<u64>> = Arc::new((0..40u64).collect());
@@ -347,98 +356,92 @@ assert!(coarse_rej + fine_rej >= 90);
 ## Benchmark results
 
 Bench: `crates/subetha-pointers/benches/versioned_bloom.rs`
-(`bloom_*` groups). Measured on Windows 11 / Zen+ R7 2700,
-criterion at `--measurement-time 2 --warm-up-time 1
---sample-size 30` (middle estimate of each [low, mid, high]
-triple). Each bench scans N candidate pointers and counts queries
-that survive the shortcircuit to actually require a deref.
+(`bloom_*` groups). Measured on Windows 11 Pro 10.0.26200 on an
+AMD Ryzen 9 7900X, built for the x86-64 baseline, with Criterion's
+defaults (3 s warm-up, 100 samples over 5 s; middle estimate of each
+[low, mid, high] triple), while other work kept 3.8 of the machine's
+24 hardware threads busy. Each bench queries one absent key against
+N candidate pointers and counts the pointers that survive the
+shortcircuit to actually require a deref. The pass rates quoted
+below are estimates from each filter's fill; the bench does not
+count them.
 
 | Workload | Native | Bloom | Winner |
 |---|---:|---:|---|
-| `miss_query` (1024 ptrs x 8 u64 keys, Bloom64 at capacity) | 3.66 us | **1.55 us** | **Bloom 2.36x** |
-| `miss_large_subset` (128 ptrs x 64 u64 keys, BloomCascade) | 2.34 us | **2.13 us** | Bloom 1.10x |
-| `cascade.miss_query` (1024 ptrs x 32 u64 keys, saturated regime) | 10.83 us | 11.85 us (single) / **4.36 us (cascade)** | **Cascade 2.49x vs native, 2.72x vs saturated single** |
-| `expensive_deref` (512 ptrs x 8 same-length strings) | 19.12 us | **5.41 us** | **Bloom 3.54x** |
+| `miss_query` (1024 ptrs x 8 u64 keys, Bloom64 at capacity) | 2.36 us | **1.38 us** | **Bloom 1.71x** |
+| `miss_large_subset` (128 ptrs x 64 u64 keys, BloomCascade) | 1.53 us | **969 ns** | **Bloom 1.58x** |
+| `cascade.miss_query` (1024 ptrs x 32 u64 keys, saturated regime) | 7.56 us | 6.25 us (single) / **3.27 us (cascade)** | **Cascade 2.31x vs native, 1.91x vs saturated single** |
+| `expensive_deref` (512 ptrs x 8 same-length strings) | 9.41 us | **2.09 us** | **Bloom 4.50x** |
 
 ### Why each result lands where it does
 
 <details>
-<summary><b>miss_query (Bloom64 at capacity): Bloom wins 2.36x</b></summary>
+<summary><b>miss_query (Bloom64 at capacity): Bloom wins 1.71x</b></summary>
 
-8 keys per pointer matches `Bloom64::SUGGESTED_CAPACITY`. The
-filter holds ~32 bits set out of 64 (~50% fill); random queries
-match all 4 indices with probability `(32/64)^4 = 1/16 = ~6%`.
-The shortcircuit fires on ~94% of misses.
+8 keys per pointer matches `Bloom64::SUGGESTED_CAPACITY`. Eight
+keys set an expected 39% of the 64 bits (`1 - e^(-32/64)`), so an
+absent key passes all 4 tests with probability ~2.4%, and the
+shortcircuit fires on ~97.6% of misses.
 
-Per-query cost: 1 FxHash call (~3 ns) + 4 bit tests (~1 ns) =
-~4 ns per Bloom check. Native `Vec<u64>::contains` over 8
-elements is ~3.5 ns (auto-vectorized + length-known-small).
-Net: Bloom's per-query overhead is comparable to native, but
-Bloom skips the deref + Vec touch for 94% of queries.
-
-</details>
-
-<details>
-<summary><b>miss_large_subset (BloomCascade at BloomFine capacity): modest 1.10x win</b></summary>
-
-64 keys per pointer matches `BloomFine::SUGGESTED_CAPACITY`.
-Cascade pays coarse check (saturated, ~95% pass through) then
-fine check (~5% pass through). Total Bloom cost per query is
-~10 ns (1 coarse hash + 1 fine hash + cache-friendly bit tests).
-
-Native `Vec<u64>::contains` over 64 elements is auto-vectorized
-heavily; the compiler emits a tight SIMD scan that runs ~18 ns
-per query. At 128 subsets: ~2.34 us native vs ~2.13 us cascade
-plus rare derefs.
-
-The 1.10x margin is modest because `Vec<u64>::contains` is one
-of the workloads LLVM optimizes hardest. For non-vectorizable
-deref operations (HashMap, BTreeMap, struct equality), the win
-widens substantially - see expensive_deref below.
+Per pointer: 2.30 ns native (a `Vec<u64>::contains` over 8
+elements behind an `Arc`) against 1.35 ns for the Bloom path,
+which hashes the query, tests 4 bits, and skips the deref for
+nearly every pointer.
 
 </details>
 
 <details>
-<summary><b>cascade.miss_query (saturated regime): Cascade 2.49x vs native, 2.72x vs single Bloom64</b></summary>
+<summary><b>miss_large_subset (BloomCascade at twice BloomFine's capacity): 1.58x win</b></summary>
 
-32 keys per pointer is **above Bloom64's capacity** and **below
-BloomFine's**. The coarse Bloom64 is saturated to ~95% bits set;
-`Bloom64::might_contain` returns true for ~80% of random queries
-(near-useless rejection). The fine BloomFine still rejects ~95%
-of randoms.
+64 keys per pointer is twice `BloomFine::SUGGESTED_CAPACITY`. By
+the estimate ~93% of absent keys pass the saturated coarse check
+and ~31% the fine one, so the cascade still dereferences about three
+targets in ten. The cascade computes three hashes per check: the
+coarse one, then the fine filter's two.
+
+Per pointer: 12.0 ns native (a `Vec<u64>::contains` over 64
+elements) against 7.6 ns for the cascade, 1.53 us against
+969 ns over the 128 pointers.
+
+</details>
+
+<details>
+<summary><b>cascade.miss_query (saturated regime): Cascade 2.31x vs native, 1.91x vs single Bloom64</b></summary>
+
+32 keys per pointer is **above Bloom64's capacity** and **at
+BloomFine's**. By the estimate, thirty-two keys set 86% of the
+coarse filter's bits, so `Bloom64::might_contain` passes ~56% of
+absent keys, and the fine BloomFine passes ~2.5%.
 
 Three-way breakdown:
-- Native Vec scan: 10.83 us
-- Single Bloom64: **11.85 us** - loses to native because the
-  saturated filter fails to shortcircuit, so it pays Bloom check
-  cost and deref cost on 80% of queries.
-- BloomCascade: **4.36 us** - the cascade routes through fine,
-  which actually rejects, and the deref is avoided 95% of the
-  time.
+- Native Vec scan: 7.56 us
+- Single Bloom64: 6.25 us - 1.21x faster than native; the
+  saturated filter pays its check and still derefs for ~56% of
+  pointers by the estimate.
+- BloomCascade: **3.27 us** - the fine layer rejects, and by the
+  estimate at most ~2.5% of pointers reach a deref.
 
-This is the architectural lesson: a single-level Bloom is worse
-than nothing when saturated; the cascade structure is what makes
-mid-range key counts (16-64) tractable.
+At 32 keys the saturated single-level Bloom saves 1.21x over no
+filter; the cascade's fine layer is what rejects.
 
 </details>
 
 <details>
-<summary><b>expensive_deref (Bloom wins 3.54x): the design point</b></summary>
+<summary><b>expensive_deref (Bloom wins 4.50x): the design point</b></summary>
 
 512 pointers, 8 same-length 32-byte strings per pointer, miss
-key also 32 bytes. `String::eq` cannot fast-reject on length
-difference, so each comparison performs full byte-by-byte
-memcmp. Native path: 512 * 8 * 32-byte compares = ~131k byte
-compares for the all-miss workload = 19.12 us.
+key also 32 bytes. `String::eq` cannot reject on a length
+difference, so every comparison calls into the byte compare; the
+strings differ from the query in their first byte, so the cost is
+reaching each string's own heap buffer, eight per pointer.
+Native path: 9.41 us, 18.4 ns per pointer.
 
-Bloom path: 1 FxHash call per String (~8 ns, includes the per-
-byte hash mixing) + 4 bit tests = ~12 ns per query. 512 queries
-= ~5.4 us total. The 94% shortcircuit rate skips the expensive
-String::eq chain for almost every query.
+Bloom path: 2.09 us, 4.1 ns per pointer: hashing the 32-byte
+query and testing 4 bits, with the eight string reads skipped for
+~97.6% of pointers by the estimate.
 
-This is the workload Bloom was designed for: the deref-and-
-search is dramatically more expensive than the hash; the
-shortcircuit pays back many times over.
+The largest measured gain, 4.50x: the skipped work costs more
+than the hash.
 
 </details>
 
@@ -462,8 +465,7 @@ An LSM-tree maintains per-SSTable Bloom filters as
 `BloomCascade<SSTable>` (coarse for the most-recent levels,
 cascade for the older levels where each SSTable holds many
 keys). A point lookup walks levels newest-to-oldest; each
-SSTable's cascade rejects in 6-9 ns before the disk read
-happens.
+SSTable's cascade can reject before the disk read happens.
 
 </details>
 
@@ -508,26 +510,18 @@ cascade variant kicks in for nodes with high out-degree.
    this.
 
 5. **Capacity caps are advisory, not enforced.**
-   `Bloom64::SUGGESTED_CAPACITY = 8` and
-   `BloomFine::SUGGESTED_CAPACITY = 64` are inflection points
-   where FPR climbs sharply. Inserting beyond these values is
-   permitted but FPR approaches 100% (saturated filter).
+   `Bloom64::SUGGESTED_CAPACITY = 8` (~2.4% estimated FPR) and
+   `BloomFine::SUGGESTED_CAPACITY = 32` (~2.5%) do not stop an
+   insert; past them the FPR keeps climbing toward 100%
+   (saturated filter).
 
-6. **Wins require the deref to cost more than the hash (~5 ns).**
-   For tiny in-cache `Vec<u64>::contains` over 1-4 elements,
-   native scan is comparable or faster than even the optimized
-   Bloom path. The bench file ships explicit cases (`miss_query`,
-   `expensive_deref`) showing where Bloom wins and loses.
+6. **Wins require the skipped work to cost more than the check.**
+   The benches measured gains from 1.21x, a saturated
+   single-level filter at 32 keys (`cascade.miss_query`), to
+   4.50x; targets smaller than 8 keys were not measured.
 
 7. **`BloomPointer` is 16 bytes; `BloomCascade` is 48 bytes.**
-   Storage cost scales with the filter sophistication. For
-   high-density pointer arrays, the 32-byte Bloom + Arc combo
-   has the best size-vs-rejection tradeoff.
-
-8. **`bloom_skip_vs_deref_large` uses `BloomCascade` sized at
-   `BloomFine::SUGGESTED_CAPACITY`.** Sizing `BloomPointer` for
-   200-key targets (25x Bloom64's capacity) would measure a
-   saturated filter rather than the primitive's design point.
+   Storage cost scales with the filter sophistication.
 
 ## Common pitfalls
 
@@ -538,7 +532,7 @@ cascade variant kicks in for nodes with high out-degree.
 let mut b = Bloom64::ZERO;
 for k in 0..100u64 { b.insert(&k); }  // 100 keys >> SUGGESTED_CAPACITY (8)
 // b.popcount() will be at or near 64 - the filter is saturated.
-// Every query returns true; the filter is effectively useless.
+// Almost every query returns true (~99% by the estimate).
 ```
 
 Check `popcount()` or `estimated_fpr(n)` before relying on
@@ -551,28 +545,31 @@ shortcircuit behavior. For n keys near or above
 <summary><b>Pitfall 2: target mutation without bloom rebuild</b></summary>
 
 ```rust
-let target = Arc::new(Mutex::new(vec![1u64, 2, 3]));
-let keys: Vec<u64> = target.lock().iter().copied().collect();
-let bp = BloomPointer::from_keys(target.clone(), keys);
+use std::sync::Arc;
+use subetha_pointers::bloom_pointer::{Bloom64, BloomPointer};
 
-// Later: target gets new keys.
-target.lock().push(999);
+let mut keys = vec![1u64, 2, 3];
+let mut bp = BloomPointer::from_keys(Arc::new(keys.clone()), keys.clone());
 
-// bp.might_contain(&999) returns FALSE - the filter was built
-// before the insert and doesn't know about 999.
-assert!(!bp.might_contain(&999));  // SILENT FALSE NEGATIVE
+// Later the key set gains 999 and the target is replaced, but the
+// old filter is carried over.
+keys.push(999);
+bp = BloomPointer::new(Arc::new(keys.clone()), bp.bloom());
+
+// The filter predates 999, so might_contain(&999) is almost surely
+// false: a silent false negative.
+assert!(!bp.might_contain(&999));
 ```
 
-After mutating the target, rebuild and replace the filter:
+After changing the target, rebuild and replace the filter:
 
 ```rust
-let new_keys: Vec<u64> = target.lock().iter().copied().collect();
-bp.set_bloom(Bloom64::from_keys(new_keys.iter()));
+bp.set_bloom(Bloom64::from_keys(keys.iter()));
+assert!(bp.might_contain(&999));
 ```
 
-For mutable targets, prefer to wrap the filter in the same
-synchronization primitive as the target (e.g. `Mutex<(Bloom64,
-Vec<u64>)>`) so updates happen atomically.
+Replace the filter together with the target, so no reader sees
+one updated without the other.
 
 </details>
 
@@ -581,10 +578,10 @@ Vec<u64>)>`) so updates happen atomically.
 
 ```rust
 if !bp.might_contain(&key) {
-    // SAFE: definitely not in target. No deref needed.
+    // Definitely not in the target. No deref needed.
 } else {
-    // MAYBE: false-positive at ~3% rate for Bloom64 at capacity.
-    // Must deref and confirm with full equality test:
+    // Maybe: ~2.4% of absent keys pass Bloom64 at capacity.
+    // Deref and confirm with a full equality test:
     if bp.target().contains(&key) {
         // Confirmed match.
     } else {
@@ -605,8 +602,8 @@ correctness bug for any workload that needs definitive answers.
 ```rust
 // 50 keys per pointer, but using Bloom64 (capacity 8):
 let bp = BloomPointer::from_keys(target.clone(), keys_50);
-// might_contain returns true for ~99% of random queries.
-// The deref is NOT shortcircuited; bloom path adds cost.
+// might_contain passes ~84% of absent keys by the estimate, so
+// the deref is rarely skipped and the check only adds cost.
 ```
 
 The bench `cascade.miss_query` (32 keys per pointer)

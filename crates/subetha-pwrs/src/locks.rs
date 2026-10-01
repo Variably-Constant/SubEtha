@@ -13,6 +13,7 @@ use subetha_cxc::shared_rw_lock::RWLockError;
 use subetha_cxc::shared_semaphore::SemaphoreError;
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, seconds, LeaseValue, LEASE_VALUE_BYTES};
+use crate::sidecar::{observe, Registration};
 
 assert_send!(RWLock, Hold, Semaphore, PermitHold, OwnerLease, LeaseHold);
 
@@ -55,6 +56,12 @@ impl RWLock {
 /// The operations of a `SubEtha.RWLock`.
 #[psmethods]
 impl RWLock {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(self.parked.inner()), policy)
+    }
+
     /// How many readers hold it right now.
     pub fn readers(&self) -> PsResult<u32> {
         Ok(self.parked.inner().reader_count())
@@ -247,6 +254,12 @@ impl Semaphore {
 /// The operations of a `SubEtha.Semaphore`.
 #[psmethods]
 impl Semaphore {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(self.parked.inner()), policy)
+    }
+
     /// Permits available right now.
     pub fn available(&self) -> PsResult<u32> {
         Ok(self.parked.inner().available())
@@ -446,6 +459,12 @@ pub struct OwnerLease {
 /// takeover does.
 #[psmethods]
 impl OwnerLease {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Takes the lease, treating a holder quiet for more than
     /// `graceEpochs` epochs (zero when absent) as gone. False when a
     /// process with a lower id holds it and has beaten within the grace

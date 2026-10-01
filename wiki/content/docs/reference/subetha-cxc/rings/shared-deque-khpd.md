@@ -12,11 +12,11 @@ weight: 50
 ![Cross-Process](https://img.shields.io/badge/Cross--Process-yes-success)
 
 K-axis Hierarchical Publication Deque (single-tier variant) backed
-by a memory-mapped file. Owner stages items into a local pending
-buffer, then publishes 1-3 items per cache-line in a single
-Release-store on the publication line's state word. Thieves CAS the
-head index to claim a whole line at once, reading all three items
-in one cache-line transfer.
+by a memory-mapped file. The owner publishes 1-3 items per
+cache-line in a single Release-store on the publication line's state
+word, a batch at a time or from items staged in a `KhpdStager`.
+Thieves CAS the head index to claim a whole line at once, reading all
+three items in one cache-line transfer.
 
 > **The "publication-line + cache-line amortization" primitive.**
 > Sibling to [`SharedDeque`](shared-deque/) (Chase-Lev): same
@@ -36,11 +36,13 @@ in one cache-line transfer.
   padding).
 - **Capacity must be a power of two** (the publication-line ring
   uses `head & (capacity - 1)` for slot indexing).
-- **Single owner**: only the owner process / thread calls `stage`
-  and `publish`; the underlying `pending` buffer is `Mutex`-protected
-  but is uncontended on the hot path. Multiple threads staging
-  concurrently from the owner side is sound but adds Mutex
-  acquisition cost per stage.
+- **Single owner**: only the owner process publishes. Items staged
+  one at a time go into a `KhpdStager` from `stager()`, a buffer its
+  holder mutates through `&mut self`, so staging takes no lock and no
+  atomic. Two threads staging hold two stagers. Every publish
+  reserves its lines with one compare-and-swap on `tail`, so
+  publishers racing for the last free lines get `Full` rather than
+  overfilling.
 - **Cross-process backed by MMF.** A second process opens the same
   file via `SharedDequeKhpd::open` and steals from a remote owner
   using the identical state-atomic protocol.
@@ -52,27 +54,29 @@ in one cache-line transfer.
 | Workload | Pick | Why |
 |---|---|---|
 | Per-item dispatch (one push at a time, no batching) | `SharedDeque` (Chase-Lev) | One Relaxed store per push; no per-line batching overhead. |
-| Producer can batch N items per call (`publish_batch(&items)`) | `SharedDequeKhpd` | One Release-store on the line state publishes up to three items; one `tail.fetch_add(n_lines)` per batch. |
+| Producer can batch N items per call (`publish_batch(&items)`) | `SharedDequeKhpd` | One Release-store on the line state publishes up to three items; one compare-and-swap on `tail` per batch. |
 | Cross-process steal where cache-line coherence dominates the round-trip | `SharedDequeKhpd` | Three items per cache-line bounce instead of one. |
 
 ## Cost summary
 
-Measured on AMD Ryzen 7 2700 (Zen+) under Criterion publication-grade
-defaults (warm-up 3 s + measurement 5 s, 100 samples). Workload:
-K=64 items per iter, drain runs in the background, wait-for-drain
-catch-up happens outside the timed window via `iter_custom` so the
-bench measures pure producer-side throughput.
+Measured on Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built
+for the x86-64 baseline, under Criterion's defaults (warm-up 3 s +
+measurement 5 s, 100 samples), while other work kept 4.3 to 10.8 of
+the machine's 24 hardware threads busy. Workload: K=64 items per iter,
+drain runs in the background, wait-for-drain catch-up happens outside
+the timed window via `iter_custom` so the bench measures pure
+producer-side throughput.
 
 | Backend | K=64 wall-clock | Per-item | Throughput |
 |---|---:|---:|---:|
-| **`SharedDequeKhpd::publish_batch`** | **354 ns** | **5.5 ns/item** | **180 Melem/s** |
-| `Mutex<VecDeque>` (single lock, 64 push_backs) | 548 ns | 8.6 ns/item | 117 Melem/s |
-| `SharedDeque::push` (Chase-Lev, 64 calls) | 1010 ns | 15.8 ns/item | 63 Melem/s |
+| **`SharedDequeKhpd::publish_batch`** | **94.0 ns** | **1.47 ns/item** | **681 Melem/s** |
+| `Mutex<VecDeque>` (single lock, 64 push_backs) | 156.7 ns | 2.45 ns/item | 408 Melem/s |
+| `SharedDeque::push` (Chase-Lev, 64 calls) | 518.1 ns | 8.09 ns/item | 124 Melem/s |
 
-KHPD wins **2.85x vs Chase-Lev** on the producer-fast batch shape.
+KHPD wins **5.51x vs Chase-Lev** on the producer-fast batch shape.
 The amortization lever is exactly the architectural premise: 64
 items reach 22 publication lines via 22 Release-stores (one per
-line) plus one `tail.fetch_add(22)`, instead of Chase-Lev's 64
+line) plus one reservation of 22 lines on `tail`, instead of Chase-Lev's 64
 individual Release-stores on the `bottom` index. The per-line cost
 amortizes over `LINE_ITEMS = 3` items.
 
@@ -89,20 +93,20 @@ Bench file:
 ```rust
 use subetha_cxc::{SharedDequeKhpd, LineItem};
 
-// Owner: create + publish a batch in one call (the hot-path API,
-// one Mutex acquire per batch instead of one per staged item).
+// Owner: create + publish a batch in one call (the hot-path API).
 let owner = SharedDequeKhpd::create("/tmp/jobs.bin", 1024).unwrap();
 let batch: Vec<LineItem> = (0..64u32)
     .map(|i| LineItem::new(&i.to_le_bytes()).unwrap())
     .collect();
 let n_lines = owner.publish_batch(&batch)?;   // 22 lines from 64 items
 
-// Owner: alternative stage + publish API for callers that build
-// the batch incrementally over time.
-owner.stage(LineItem::new(&42u32.to_le_bytes())?)?;
-owner.stage(LineItem::new(&43u32.to_le_bytes())?)?;
-owner.stage(LineItem::new(&44u32.to_le_bytes())?)?;
-let n_lines = owner.publish()?;   // 1 line carrying 3 items
+// Owner: a stager for callers that build the batch incrementally
+// over time.
+let mut stager = owner.stager();
+stager.stage(LineItem::new(&42u32.to_le_bytes())?)?;
+stager.stage(LineItem::new(&43u32.to_le_bytes())?)?;
+stager.stage(LineItem::new(&44u32.to_le_bytes())?)?;
+let n_lines = stager.publish()?;   // 1 line carrying 3 items
 
 // Thief: open the same file + steal whole lines.
 let thief = SharedDequeKhpd::open("/tmp/jobs.bin")?;
@@ -120,8 +124,10 @@ match thief.steal_line() {
 
 Lifecycle + observability: `owner_pid()` reports the creating pid (0 after
 `close_owner()`, which also advances the header epoch); `snapshot_size()`
-returns `(head, tail, tail - head, pending_items)`; `flush_to_disk()` forces
-the mapped region to disk for the disk-persistent deployment.
+returns `(head, tail, tail - head)`, and a stager's `pending()` counts the
+items it holds; `flush_to_disk()` forces the mapped region to disk for the
+disk-persistent deployment. A publish refused as `Full` leaves the stager's
+items staged.
 
 The module also exports `FatLineItem` - a 64-byte slot (`n_items` + a caller
 `reserved` tag + 3 `LineItem`s + pad) with a `Marshal` impl, built via

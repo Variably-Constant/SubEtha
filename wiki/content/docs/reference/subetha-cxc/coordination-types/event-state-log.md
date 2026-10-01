@@ -334,9 +334,9 @@ latest status.
 - Bench: `crates/subetha-cxc/benches/event_state_log.rs` (emit,
   read_current, 64-event cycle vs `Mutex<VecDeque>` +
   `Mutex<State>`).
-- Underlying primitive: [SHARED_RING.md](../rings/shared-ring/) -
+- Underlying primitive: [Shared Ring](../rings/shared-ring/) -
   Vyukov MPMC bounded ring; the durable event log.
-- Underlying primitive: [SHARED_CELL.md](../cells/shared-cell/) -
+- Underlying primitive: [Shared Cell](../cells/shared-cell/) -
   per-slot SeqLock cell; the materialized state.
 - Architectural pattern reference: Kafka + materialized views,
   EventStore + projections, Akka Persistence - all the CQRS

@@ -1,14 +1,11 @@
-# Generates the complete PowerShell reference from the built module, so
-# the wiki states what the module actually exports rather than what
-# somebody remembered. Reads the module and its shipped help; writes one
-# section per run.
+# Generates the PowerShell reference pages from the built module and its
+# shipped help, one section per run.
 #
 #   pwsh -File tools/Export-Reference.ps1 -Section cmdlets -OutFile ../../wiki/content/docs/reference/subetha-pwrs/cmdlets.md
 #   pwsh -File tools/Export-Reference.ps1 -Section classes -OutFile ../../wiki/content/docs/reference/subetha-pwrs/classes.md
 #   pwsh -File tools/Export-Reference.ps1 -Section enums   -OutFile ../../wiki/content/docs/reference/subetha-pwrs/enums.md
 #
-# Run it against a merged module folder so the surface is the one that
-# ships, not one platform's half of it.
+# -Module names the module folder, the merged one that ships.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateSet('cmdlets', 'classes', 'enums')] [string] $Section,
@@ -53,18 +50,24 @@ function Format-Cell([string] $s) {
     ($s -replace '\r?\n', ' ' -replace '\|', '\|').Trim()
 }
 
+# The id Hugo and GitHub give a heading: lower case, every character but
+# a letter, digit, space, hyphen or underscore dropped, spaces as hyphens.
+function Get-HeadingId([string] $heading) {
+    ($heading.ToLower() -replace '[^a-z0-9 _-]', '') -replace ' ', '-'
+}
+
 $common = [System.Management.Automation.PSCmdlet]::CommonParameters +
           [System.Management.Automation.PSCmdlet]::OptionalCommonParameters
 
 # Which family a cmdlet belongs to, keyed by its noun with the SubEtha
-# prefix removed. The families are the ones the reference index already
-# uses, so the two pages agree. Anything unmatched lands in Other and is
-# named on stderr at the end of the run, which is how a noun added later
-# gets noticed rather than quietly filed under a heading nobody chose.
+# prefix removed. The families match the reference index's. A noun in
+# none of them lands in Other and is named in a warning at the end of
+# the run.
 $Families = [ordered]@{
     'The front door'             = 'Channel', 'WorkQueue', 'KvMap', 'AdaptiveQueue', 'QosPolicy'
     'Rings and channels'         = 'Ring', 'SpscRing', 'BroadcastRing', 'PubSub', 'MpscPool', 'MpmcGrid', 'LamportPair'
     'Rings that change themselves' = 'CapacityRing', 'LocaleRing'
+    'The sidecar'                = 'Adaptive', 'Sidecar', 'SidecarScan'
     'Order'                      = 'ReorderWindow'
     'Shared state'               = 'Atomic', 'Cell', 'Vec', 'Slab', 'HashMap', 'BTreeMap', 'LinkedList', 'Deque',
                                    'Stack', 'Arena', 'Region', 'FrameRegion', 'BitVec', 'SharedArc', 'LazyValue',
@@ -90,8 +93,7 @@ function Get-Family([string] $cmdletName) {
     return 'Other'
 }
 
-# The properties and methods of a type the surface hands back, so a
-# cmdlet entry says what you get as well as what you pass.
+# The properties and methods of a type the surface hands back.
 function Get-MemberLines([type] $t) {
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -eq $t -or $t.FullName -notlike 'SubEtha.*') { return $lines }
@@ -141,8 +143,7 @@ if ($Section -eq 'cmdlets') {
     Emit '`Get-Help <name> -Full` adds an example to any of these.'
     Emit ''
 
-    # Group before emitting, so the page has sections and a contents list
-    # rather than 135 headings in one flat run.
+    # Grouped by family, for the page's sections and its contents list.
     $grouped = [ordered]@{}
     foreach ($f in $Families.Keys) { $grouped[$f] = New-Object System.Collections.Generic.List[object] }
     $grouped['Other'] = New-Object System.Collections.Generic.List[object]
@@ -153,9 +154,9 @@ if ($Section -eq 'cmdlets') {
     foreach ($f in $grouped.Keys) {
         $members = $grouped[$f]
         if ($members.Count -eq 0) { continue }
-        $anchor = ($f.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+        $anchor = Get-HeadingId $f
         $names = ($members | ForEach-Object {
-            $a = ($_.Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+            $a = Get-HeadingId $_.Name
             "[``$($_.Name)``](#$a)"
         }) -join ', '
         Emit "**[$f](#$anchor)** ($($members.Count)) - $names"
@@ -205,8 +206,7 @@ if ($Section -eq 'cmdlets') {
             $outTxt = ($outTypes | ForEach-Object { '`' + $_ + '`' }) -join ', '
             Emit "**Writes** $outTxt."
             Emit ''
-            # What you can reach on what came back, so the entry answers
-            # both halves without sending the reader to another page.
+            # The members of each type the cmdlet writes.
             foreach ($ot in ($outTypeObjs | Sort-Object FullName -Unique)) {
                 $memberLines = Get-MemberLines $ot
                 if ($memberLines.Count -eq 0) { continue }
@@ -248,7 +248,7 @@ if ($Section -eq 'classes') {
     Emit '## Contents'
     Emit ''
     $toc = ($types | ForEach-Object {
-        $a = ($_.FullName.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+        $a = Get-HeadingId $_.FullName
         "[``$($_.FullName)``](#$a)"
     }) -join ', '
     Emit $toc

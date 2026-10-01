@@ -12,8 +12,9 @@ pub trait Policy: Send + Sync + 'static {
 }
 ```
 
-`Some(new_tag)` triggers `apply_migration(new_tag)` on the instance.
-`None` leaves the strategy alone.
+`Some(new_tag)` with a tag other than the current one triggers
+`apply_migration(new_tag)` on the instance. `None`, or the current
+tag, leaves the strategy alone.
 
 > [!NOTE]
 > **`decide` is called only after at least one new op was observed
@@ -35,10 +36,11 @@ impl Policy for NoMigrationPolicy {
 }
 ```
 
-The default for primitives whose strategy is fixed at construction.
-Every primitive in `subetha-cxc` (cross-process MMF family) defaults to
-`NoMigrationPolicy` because their strategy is the MMF byte layout,
-which is not migrable in place.
+The policy for primitives whose strategy the sidecar does not change.
+Every primitive in `subetha-cxc` (cross-process MMF family) registers
+with `NoMigrationPolicy`; the ones that change shape (`AdaptiveRing`,
+`LocaleAdaptiveRing`, `AdaptiveIpc`) drive the change themselves
+rather than through a sidecar policy.
 
 ### `FixedPolicy(pub u32)`
 
@@ -102,8 +104,8 @@ let is_mpmc = push_threads >= 2 && pop_threads >= 2;
 let is_spsc = push_threads == 1 && pop_threads == 1;
 ```
 
-A `ChannelPolicy` consults these to promote SPSC → MPMC when it
-sees the second producer thread arrive on the push side.
+A policy for a channel can promote its SPSC shape to MPMC when the
+second producer thread arrives on the push side.
 
 ### Op-mix ratio
 
@@ -116,7 +118,7 @@ let read_fraction = stats.ratio_of(
     &[hash_map::OP_INSERT, hash_map::OP_GET, hash_map::OP_REMOVE],
 );
 if read_fraction > 0.95 {
-    Some(STRATEGY_READ_OPTIMISED)
+    Some(STRATEGY_READ_OPTIMIZED)
 } else {
     None
 }
@@ -128,16 +130,16 @@ the total is zero (no observations yet). Combine with an
 
 ## Avoiding migration thrash
 
-Three patterns a custom policy should use to suppress oscillation:
+Two patterns a custom policy should use to suppress oscillation:
 
 1. **Minimum sample size**: do not decide until `ops_observed`
    crosses a threshold (e.g., 1000 ops).
-2. **Hysteresis band**: migrate Mutex → ArcSwap at contention > 0.20,
+2. **Hysteresis band**: migrate Mutex → SwapCell at contention > 0.20,
    migrate back only at contention < 0.05. The gap prevents a
    workload sitting near the threshold from flipping repeatedly.
-3. **Same-tag short-circuit**: return `None` when the candidate
-   tag equals `current_tag` so the sidecar does not bump generations
-   on no-op migrations.
+
+Returning `current_tag` needs no guard: the sidecar calls
+`apply_migration` only for a tag other than the current one.
 
 ## See also
 

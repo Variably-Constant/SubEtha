@@ -111,6 +111,8 @@ pub mod raw_deque;
 pub mod raw_graph;
 pub mod shared_array;
 pub mod raw_hash_map;
+pub mod raw_arena;
+pub mod shared_named_values;
 pub mod raw_linked_list;
 pub mod raw_k_tower;
 pub mod raw_lru_cache;
@@ -158,6 +160,11 @@ pub mod shared_rate_limiter;
 pub mod shared_region;
 pub mod shared_reservoir_sampler;
 pub mod cpu_affinity;
+mod run_state;
+mod take_slot;
+mod unbounded_queue;
+mod waker_slot;
+mod warm_slot;
 pub mod task_pool;
 pub mod waker_ring;
 pub mod ring_executor;
@@ -248,11 +255,19 @@ pub mod temporal_sensor;
 pub mod tower;
 pub mod udp_bridge;
 pub mod cross_process_waker;
+#[cfg(windows)]
+mod park_event;
 pub mod shared_condvar;
 pub mod locale_adaptive_ring;
 mod mmf_attach;
 pub mod mmf_warm;
 pub mod monitor_wait;
+pub mod host_load;
+pub mod wait_active;
+pub mod wait_calibration;
+pub mod wait_instr;
+pub mod wait_plan;
+pub mod wait_topology;
 pub mod net_tune;
 pub mod ordering;
 pub mod peer_directory;
@@ -268,6 +283,8 @@ pub mod shared_slab;
 pub mod shared_versioned_slab;
 #[cfg(test)]
 pub(crate) mod test_paths;
+#[cfg(test)]
+pub(crate) mod test_races;
 pub mod shm_file;
 pub mod virtual_endpoint;
 #[cfg(target_os = "linux")]
@@ -382,13 +399,13 @@ pub use shared_deque_khl::{
     StealResult as KhlStealResult, KHL_ITEMS_PER_SLOT, KHL_MAGIC, KHL_SLOT_SIZE,
 };
 pub use shared_deque_khpd::{
-    khpd_file_size, FatLineItem, KhpdHeader, LineItem, PublicationLine,
+    khpd_file_size, FatLineItem, KhpdHeader, KhpdStager, LineItem, PublicationLine,
     PushError as KhpdPushError, SharedDequeKhpd, Steal as KhpdSteal,
     StealResult as KhpdStealResult, KHPD_ITEM_BYTES, KHPD_LINE_SIZE, KHPD_MAGIC,
     LINE_ITEMS,
 };
 pub use shared_deque_loh::{
-    loh_file_size, LcrqJobSlot, LohHeader, PushError as LohPushError,
+    loh_file_size, LcrqJobSlot, LohHeader, LohStager, PushError as LohPushError,
     SharedDequeLoh, Steal as LohSteal, StealResult as LohStealResult,
     DEFAULT_LIFO_CAP as LOH_DEFAULT_LIFO_CAP, LOH_MAGIC, LOH_SLOT_SIZE,
 };
@@ -583,6 +600,9 @@ pub use raw_treiber_stack::{ElementLayout, RawTreiberStack};
 pub use cross_process_notifier::{Notifier, NotifierSet, NotifyError, NotifyPlace, NotifyRecord, NOTIFY_MAGIC};
 pub use raw_deque::{raw_deque_file_size, raw_slot_bytes, RawDeque};
 pub use raw_hash_map::RawHashMap;
+pub use raw_arena::{raw_arena_file_size, BlockHandle, CollectReport, RawArena, RawArenaError, BLOCK_HEADER_BYTES, RAW_ARENA_MAGIC};
+pub use shared_named_values::{name_key, NamedValuesError, NamedValuesLayout, SharedNamedValues, MAX_NAME_BYTES};
+pub use wait_calibration::cache_dir as per_user_dir;
 pub use raw_btree_map::{node_geometry, raw_btree_file_size, NodeGeometry, RawBTreeMap, RAW_BTREE_MAGIC};
 pub use raw_cell::RawCell;
 pub use raw_linked_list::{raw_node_geometry, raw_node_layout, RawLinkedList};

@@ -11,25 +11,21 @@ use subetha_pointers::kstep_pointer::KStepPointer;
 use subetha_pointers::self_desc_pointer::{LayoutShape, SelfDescPointer};
 
 // =========================================================
-// Cardinality pointer: branch-on-size, comparing against
-// realistic precomputed-tier baselines that match what a real
-// query planner would actually store. Three contenders:
+// Cardinality pointer: branch on a size tier stored with the
+// pointer, against the same tiers precomputed in plain tables.
+// Three contenders:
 //
-// 1. Padded tuple: Vec<(*const u64, u8)>. Rust pads the tuple
-//    to 16 bytes (pointer alignment). This is the "naive"
-//    metadata-table layout for callers who don't think about
-//    layout.
+// 1. Padded tuple: Vec<(*const u64, u8)>, padded to 16 bytes per
+//    entry for the pointer's alignment; four entries per cache line.
 //
-// 2. Parallel vecs: Vec<*const u64> + Vec<u8>. Two separate
-//    cache-line streams. Smaller storage but worse cache
-//    behavior on indexed lookup.
+// 2. Parallel vecs: Vec<*const u64> + Vec<u8>, two separate
+//    streams; a lookup that needs both fields reads both.
 //
-// 3. CardinalityPointer: 8 bytes per entry, top byte = tier.
-//    The architectural claim: 8 entries per cache line vs 4
-//    (padded tuple) or 2 cache lines per lookup (parallel).
+// 3. CardinalityPointer: 8 bytes per entry, the top byte holding
+//    log2 of the cardinality; eight entries per cache line.
 //
-// 10 000-entry workload chosen so the array is ~80-160 KB,
-// exercising L1 + L2 boundaries depending on layout.
+// 10,000 entries: 80 KB as CardinalityPointers, 160 KB as padded
+// tuples.
 // =========================================================
 
 fn cardinality_branch_vs_table(c: &mut Criterion) {
@@ -72,9 +68,8 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
     });
 
     // Parallel vecs: 8-byte ptr + 1-byte tier in separate arrays.
-    // The bench iterates the tier vec only since the planner branches
-    // on tier alone (the pointer is dereferenced later, post-tier).
-    // This is the fairest "no padding" baseline.
+    // Iterates the tier vec alone: a planner that branches on the
+    // tier before it touches the pointer.
     c.bench_function("bitsteal.cardinality/parallel_vecs_baseline", |b| {
         b.iter(|| {
             let (mut tiny, mut medium, mut large) = (0u32, 0u32, 0u32);
@@ -106,15 +101,12 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
         });
     });
 
-    // Dispatch bench: realistic query-planner workload that reads
-    // both the pointer and the tier per entry. The architectural
-    // win of CardinalityPointer over parallel_vecs shows up here:
-    // a single 8-byte load gives both fields; parallel_vecs must
-    // do two loads from separate cache lines per entry.
+    // Dispatch: each entry's pointer and tier are both read. A
+    // CardinalityPointer gives both fields in one 8-byte load; the
+    // parallel vecs take two loads from separate arrays.
     //
-    // The black_box on the pointer prevents LLVM from
-    // dead-code-eliminating the load; the running sum of the
-    // pointer-as-integer is the simulated "do work with the target."
+    // The pointers are summed as integers and the sum goes into
+    // black_box, so the pointer loads are not eliminated.
     c.bench_function("bitsteal.cardinality/dispatch_padded_tuple", |b| {
         b.iter(|| {
             let mut acc = 0u64;
@@ -165,16 +157,13 @@ fn cardinality_branch_vs_table(c: &mut Criterion) {
 }
 
 // =========================================================
-// KStep strided: typed primitive vs runtime-supplied stride.
-// The architectural claim: when k_step is encoded as a const
-// shift amount, the compiler emits SHL with immediate. The
-// "runtime stride: usize" alternative reads the stride from a
-// memory location the compiler cannot constant-fold, forcing
-// an IMUL per step.
+// KStep strided: KStepPointer::get with a k_step the compiler can
+// see, against a stride read at run time and a compile-time
+// constant stride.
 //
-// The runtime arm reads the stride from a Vec<usize> indexed by a
-// black_box'd value, so the compiler cannot fold it into SHL and
-// must emit IMUL.
+// The runtime arm reads the stride from a Vec<usize> at a
+// black_box'd index, so the compiler cannot fold it into a
+// constant shift.
 // =========================================================
 
 fn kstep_vs_runtime_stride(c: &mut Criterion) {
@@ -186,8 +175,6 @@ fn kstep_vs_runtime_stride(c: &mut Criterion) {
 
     c.bench_function("bitsteal.kstep/runtime_stride_usize", |b| {
         b.iter(|| {
-            // Defeat constant folding: load stride from a Vec via
-            // a black_box'd index. The compiler emits MOV+IMUL.
             let stride_idx = black_box(1usize);
             let stride = strides_table[stride_idx];
             let mut sum = 0u64;
@@ -229,30 +216,22 @@ fn kstep_vs_runtime_stride(c: &mut Criterion) {
 }
 
 // =========================================================
-// SelfDescPointer: type dispatch via byte switch vs vtable
+// SelfDescPointer: type dispatch via byte switch vs vtable.
+// The contenders:
 //
-// The Arc<dyn Handle> contender adds atomic refcount overhead
-// (Arc::deref) on top of the dispatch cost. The architectural
-// claim is "byte switch beats vtable lookup". The contenders:
-//
-// 1. Arc<dyn Handle>:  the real-world shared-ownership shape.
-// 2. Box<dyn Handle>:  the pure single-owner vtable cost.
+// 1. Arc<dyn Handle>:  the shared-ownership shape. The loop only
+//                      derefs, which touches no refcount.
+// 2. Box<dyn Handle>:  the single-owner vtable shape.
 // 3. enum Handle:      the Rust-idiomatic alternative.
 // 4. SelfDescPointer:  the inline-byte dispatch.
-//
-// The right comparison for "what does SelfDescPointer beat" is
-// whichever shape the real caller would otherwise pick. The
-// 4-way table makes that explicit.
 // =========================================================
 
 trait Handle: Send + Sync {
     fn kind(&self) -> u8;
 }
 
-// The payload field is intentionally retained (even though Handle's
-// vtable doesn't read it) to model real handle shapes that carry
-// inline / array / boxed state. Bench measures dispatch cost across
-// the three Handle shapes via the kind() vtable call.
+// The payloads give each handle the size of an inline, array or boxed
+// handle; kind() does not read them.
 #[allow(dead_code)]
 struct ScalarHandle(u64);
 #[allow(dead_code)]

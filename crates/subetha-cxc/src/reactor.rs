@@ -43,11 +43,10 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use parking_lot::Mutex;
-
 use crate::cross_process_waker::CrossProcessWaker;
 use crate::shared_ring::RingError;
 use crate::spsc_ring::{SpscRingCore, SPSC_PAYLOAD_BYTES};
+use crate::waker_slot::WakerSlot;
 
 /// Maximum the reactor sleeps per wait before re-checking the ring head,
 /// independent of the cross-process wake. The wake (the common path)
@@ -110,7 +109,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 /// Where a sender's push delivers its readiness signal.
 enum SenderSignal {
     /// Intra-process: fire the receiver's `Waker` directly.
-    Local(Arc<Mutex<Option<Waker>>>),
+    Local(Arc<WakerSlot>),
     /// Cross-process: wake the consumer's reactor through the MMF.
     Cross(Arc<CrossProcessWaker>),
 }
@@ -129,11 +128,7 @@ impl ReactiveSender {
     pub fn try_send(&self, payload: &[u8]) -> Result<(), RingError> {
         self.ring.try_push(payload)?;
         match &self.signal {
-            SenderSignal::Local(slot) => {
-                if let Some(w) = slot.lock().take() {
-                    w.wake();
-                }
-            }
+            SenderSignal::Local(slot) => slot.wake(),
             SenderSignal::Cross(xwaker) => {
                 xwaker.wake_up_to(self.ring.head());
             }
@@ -152,7 +147,7 @@ impl ReactiveSender {
 /// across threads or across processes, behind the same call.
 pub struct ReactiveReceiver {
     ring: Arc<SpscRingCore>,
-    slot: Arc<Mutex<Option<Waker>>>,
+    slot: Arc<WakerSlot>,
     /// Present only in cross-process mode; owns the reactor thread and
     /// stops it on drop.
     _reactor: Option<ReactorHandle>,
@@ -177,7 +172,7 @@ impl ReactiveReceiver {
 /// Future returned by [`ReactiveReceiver::recv`].
 pub struct ReactiveRecv {
     ring: Arc<SpscRingCore>,
-    slot: Arc<Mutex<Option<Waker>>>,
+    slot: Arc<WakerSlot>,
 }
 
 impl Future for ReactiveRecv {
@@ -192,7 +187,7 @@ impl Future for ReactiveRecv {
         }
         // Register, then re-check: an item that landed between the first
         // pop and this registration is caught here, not lost.
-        *self.slot.lock() = Some(cx.waker().clone());
+        self.slot.register(cx.waker());
         REGISTERS.fetch_add(1, Ordering::Relaxed);
         if self.ring.try_pop(&mut out).is_ok() {
             POPS.fetch_add(1, Ordering::Relaxed);
@@ -231,7 +226,7 @@ pub fn anon_pair(
     capacity: usize,
 ) -> Result<(ReactiveSender, ReactiveReceiver), RingError> {
     let ring = Arc::new(SpscRingCore::create_anon(capacity)?);
-    let slot = Arc::new(Mutex::new(None));
+    let slot = Arc::new(WakerSlot::new());
     Ok((
         ReactiveSender {
             ring: Arc::clone(&ring),
@@ -257,7 +252,7 @@ pub fn receiver_cross(
     ring: Arc<SpscRingCore>,
     xwaker: Arc<CrossProcessWaker>,
 ) -> ReactiveReceiver {
-    let slot: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
+    let slot = Arc::new(WakerSlot::new());
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let join = {
@@ -285,7 +280,7 @@ pub fn receiver_cross(
 fn reactor_loop(
     ring: Arc<SpscRingCore>,
     xwaker: Arc<CrossProcessWaker>,
-    slot: Arc<Mutex<Option<Waker>>>,
+    slot: Arc<WakerSlot>,
     shutdown: Arc<AtomicBool>,
 ) {
     let trace = wake_trace();
@@ -317,7 +312,7 @@ fn reactor_loop(
         if head != last {
             last = head;
             advances += 1;
-            if let Some(w) = slot.lock().take() {
+            if let Some(w) = slot.take() {
                 fires += 1;
                 w.wake();
             } else {
@@ -332,7 +327,7 @@ fn reactor_loop(
         // head read, the baseline above swallowed the advance. Fire
         // here regardless of head history.
         if ring.head() != ring.tail()
-            && let Some(w) = slot.lock().take()
+            && let Some(w) = slot.take()
         {
             fires += 1;
             w.wake();
@@ -409,7 +404,7 @@ impl Drop for SeqReactor {
 pub(crate) fn spawn_seq_reactor(
     published: Arc<dyn Fn() -> u64 + Send + Sync>,
     xwaker: Arc<CrossProcessWaker>,
-    slot: Arc<Mutex<Option<Waker>>>,
+    slot: Arc<WakerSlot>,
 ) -> SeqReactor {
     let shutdown = Arc::new(AtomicBool::new(false));
     let join = {
@@ -423,7 +418,7 @@ pub(crate) fn spawn_seq_reactor(
 fn seq_reactor_loop(
     published: Arc<dyn Fn() -> u64 + Send + Sync>,
     xwaker: &CrossProcessWaker,
-    slot: &Mutex<Option<Waker>>,
+    slot: &WakerSlot,
     shutdown: &AtomicBool,
 ) {
     // Sentinel baseline: the first pass always takes the advance
@@ -437,9 +432,7 @@ fn seq_reactor_loop(
         let cur = published();
         if cur != last {
             last = cur;
-            if let Some(w) = slot.lock().take() {
-                w.wake();
-            }
+            slot.wake();
             continue;
         }
         match xwaker.try_park(cur + 1) {
@@ -505,7 +498,7 @@ mod tests {
         });
 
         producer.join().unwrap();
-        assert_eq!(sum, (0..N).sum());
+        assert_eq!(sum, (0..N).sum::<u64>());
     }
 
     #[test]
@@ -537,6 +530,6 @@ mod tests {
             }
         }
         consumer.join().unwrap();
-        assert_eq!(got.load(Ordering::Acquire), (0..500u64).sum());
+        assert_eq!(got.load(Ordering::Acquire), (0..500u64).sum::<u64>());
     }
 }

@@ -43,7 +43,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use arc_swap::ArcSwap;
+use subetha_core::SwapCell;
 
 use crate::frame_ring::{FrameClass, LayoutHint};
 use crate::frame_region::FrameRegion;
@@ -214,9 +214,6 @@ pub struct AdaptiveRing {
     /// one relaxed load on the pop path and no layout.
     single_reader: AtomicU64,
 
-    /// Serializes in-process growth (file creation + array swap).
-    grow_lock: parking_lot::Mutex<()>,
-
     /// Whether the composed shape auto-morphs to the active peer counts
     /// on every register / unregister (the default). Cleared by
     /// [`pin_shape`](Self::pin_shape) or an explicit
@@ -272,6 +269,12 @@ pub struct AdaptiveRing {
     /// holder with the ring's own backings. Empty unless that layer named
     /// them, which only it can: this one does not know they exist.
     also_remove_on_last: Vec<String>,
+
+    /// Whether this handle removes the ring's shared-memory names when it
+    /// drops. Only a ring no other handle ever reaches asks for it: a
+    /// capacity ring's generation, which the capacity ring builds, drains
+    /// and prunes alone. Every other ring's names outlive its handles.
+    remove_names_on_drop: bool,
 }
 
 unsafe impl Send for AdaptiveRing {}
@@ -279,8 +282,18 @@ unsafe impl Sync for AdaptiveRing {}
 
 impl Drop for AdaptiveRing {
     fn drop(&mut self) {
-        // Only a ring the caller asked to be unlinked has anything to do
-        // here; every other ring's backings outlive it on purpose.
+        if self.remove_names_on_drop {
+            if let BackingId::Shm { prefix, ns, .. } = &self.backing_id {
+                let mut report = UnlinkReport::default();
+                let published = self.directory.published().max(self.max_producers);
+                Self::remove_shm_regions(&mut report, prefix, *ns, published);
+                name_first_refusal(&report, "the only handle", prefix);
+            }
+            return;
+        }
+        // Otherwise only a ring the caller asked to be unlinked has
+        // anything to do here; every other ring's backings outlive it on
+        // purpose.
         let Some(holders) = self.holders.as_mut() else {
             return;
         };
@@ -293,38 +306,52 @@ impl Drop for AdaptiveRing {
         // whether the ring is still held: removing it first would let
         // that process take a hold on a ring whose backings are being
         // deleted underneath it.
-        let prefix = match &self.backing_id {
-            BackingId::File { prefix, .. } => prefix.clone(),
-            // with_last_holder refuses both, so a hold cannot exist here.
-            BackingId::Anon | BackingId::Shm { .. } => return,
-        };
-        let mut report = Self::unlink(&prefix, self.max_producers);
+        //
         // Whatever the layer above keeps beside the ring goes in the same
         // pass and into the same report, so a caller reading the counts
         // sees one removal rather than the ring's half of one.
-        for suffix in &self.also_remove_on_last {
-            report.remove(with_suffix(&prefix, suffix));
-        }
-        if report.failed != 0 {
-            // A Drop has no caller to hand this to, and the files are
-            // the user's to find. Naming the first refusal is the only
-            // way the reason reaches anyone.
-            if let Some((path, kind, text)) = &report.first_failure {
-                eprintln!(
-                    "subetha: the last holder of {} could not remove {}: {kind:?} {text}",
-                    prefix.display(),
-                    path.display(),
-                );
+        let (report, prefix) = match &self.backing_id {
+            BackingId::File { prefix, .. } => {
+                let mut report = UnlinkReport::default();
+                let published = self.directory.published().max(self.max_producers);
+                Self::remove_file_regions(&mut report, prefix, published);
+                for suffix in &self.also_remove_on_last {
+                    report.remove(with_suffix(prefix, suffix));
+                }
+                (report, prefix.display().to_string())
             }
-        }
+            BackingId::Shm { prefix, ns, .. } => {
+                let mut report = UnlinkReport::default();
+                let published = self.directory.published().max(self.max_producers);
+                Self::remove_shm_regions(&mut report, prefix, *ns, published);
+                for suffix in &self.also_remove_on_last {
+                    report.remove_shm(&format!("{prefix}{suffix}"), *ns);
+                }
+                (report, prefix.clone())
+            }
+            // with_last_holder refuses an anonymous ring, so a hold
+            // cannot exist here.
+            BackingId::Anon => return,
+        };
+        name_first_refusal(&report, "the last holder", &prefix);
+        #[cfg(test)]
+        crate::test_races::pause_point();
         if let Some(holders) = self.holders.take()
             && let Err(e) = holders.unlink_self()
         {
-            eprintln!(
-                "subetha: the last holder of {} could not remove its holders region: {e}",
-                prefix.display(),
-            );
+            eprintln!("subetha: the last holder of {prefix} could not remove its holders region: {e}");
         }
+    }
+}
+
+/// Name the first removal `report` counts as refused. A Drop has no
+/// caller to hand this to, and the names are the user's to find, so this
+/// is the only way the reason reaches anyone.
+fn name_first_refusal(report: &UnlinkReport, who: &str, prefix: &str) {
+    if report.failed != 0
+        && let Some((path, kind, text)) = &report.first_failure
+    {
+        eprintln!("subetha: {who} of {prefix} could not remove {}: {kind:?} {text}", path.display());
     }
 }
 
@@ -344,12 +371,27 @@ enum BackingId {
     /// Named shm. Carries the namespace and security descriptor as well
     /// as the prefix: the ordering and payload regions are created after
     /// construction, so either held only in a constructor argument is
-    /// gone by the time they are named.
+    /// gone by the time they are named. `created` is true on the handle
+    /// that built the ring, which builds the ordering region; an
+    /// attached handle opens the one that is there.
     Shm {
         prefix: String,
         ns: crate::shm_file::ShmNamespace,
         sddl: Option<String>,
+        created: bool,
     },
+}
+
+impl BackingId {
+    /// The ring's name as a message to the user gives it: its path or
+    /// shared-memory prefix.
+    fn label(&self) -> String {
+        match self {
+            BackingId::Anon => "an anonymous ring".to_owned(),
+            BackingId::File { prefix, .. } => prefix.display().to_string(),
+            BackingId::Shm { prefix, .. } => prefix.clone(),
+        }
+    }
 }
 
 /// Ordering state attached to a stamped ring: the shared region
@@ -391,16 +433,16 @@ fn drainer_token(consumer_id: usize) -> u64 {
 }
 
 struct MpscBacking {
-    /// Per-producer rings behind an `ArcSwap` so producer growth
+    /// Per-producer rings behind a `SwapCell` so producer growth
     /// appends without stopping traffic: one guarded load per op
     /// while unpinned, and pinned handles capture the `Arc` at pin
     /// time (growth bumps the pin generation).
-    rings: ArcSwap<Vec<Arc<SpscRingCore>>>,
+    rings: SwapCell<Vec<Arc<SpscRingCore>>>,
     next_drain: AtomicUsize,
 }
 
 struct MpmcBacking {
-    rings: ArcSwap<Vec<Arc<SpscRingCore>>>,
+    rings: SwapCell<Vec<Arc<SpscRingCore>>>,
     /// Per-consumer round-robin cursors. Index by consumer_id.
     /// Each entry is cache-line aligned to keep one consumer's
     /// writes from invalidating another consumer's L1 line. Sized
@@ -477,7 +519,7 @@ impl AdaptiveRing {
             .map(|_| SpscRingCore::create_anon(capacity).map(Arc::new))
             .collect::<Result<Vec<_>, _>>()?;
         let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
+            rings: SwapCell::new(mpsc_rings),
             next_drain: AtomicUsize::new(0),
         });
 
@@ -485,7 +527,7 @@ impl AdaptiveRing {
             .map(|_| SpscRingCore::create_anon(capacity).map(Arc::new))
             .collect::<Result<Vec<_>, _>>()?;
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
@@ -515,7 +557,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -564,7 +606,7 @@ impl AdaptiveRing {
                 hugepage_region(spsc_bytes)?, capacity)?));
         }
         let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
+            rings: SwapCell::new(mpsc_rings),
             next_drain: AtomicUsize::new(0),
         });
 
@@ -574,7 +616,7 @@ impl AdaptiveRing {
                 hugepage_region(spsc_bytes)?, capacity)?));
         }
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
@@ -605,7 +647,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -643,7 +685,7 @@ impl AdaptiveRing {
             mpsc_rings.push(Arc::new(SpscRingCore::create(&p, capacity)?));
         }
         let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
+            rings: SwapCell::new(mpsc_rings),
             next_drain: AtomicUsize::new(0),
         });
 
@@ -653,7 +695,7 @@ impl AdaptiveRing {
             mpmc_rings.push(Arc::new(SpscRingCore::create(&p, capacity)?));
         }
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
@@ -686,7 +728,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -739,7 +781,7 @@ impl AdaptiveRing {
             mpsc_rings.push(Arc::new(SpscRingCore::open(&p, expected_capacity)?));
         }
         let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
+            rings: SwapCell::new(mpsc_rings),
             next_drain: AtomicUsize::new(0),
         });
 
@@ -749,7 +791,7 @@ impl AdaptiveRing {
             mpmc_rings.push(Arc::new(SpscRingCore::open(&p, expected_capacity)?));
         }
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
@@ -777,7 +819,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -798,8 +840,18 @@ impl AdaptiveRing {
     ///
     /// `name_prefix` becomes part of each backing's logical shm
     /// name: `{prefix}_spsc`, `{prefix}_mpsc_{i}`,
-    /// `{prefix}_mpmc_{i}`, `{prefix}_vyukov`. The same prefix on
-    /// another process resolves to the same shared memory.
+    /// `{prefix}_mpmc_{i}`, `{prefix}_vyukov`, and the peer directory
+    /// `{prefix}_peers`. The same prefix on another process resolves to
+    /// the same shared memory.
+    ///
+    /// The names outlive every handle, as a file-backed ring's files do,
+    /// including the ones made later by whichever handle needed them: a
+    /// per-producer pair a peer grew, the payload region the first
+    /// oversized frame made, the ordering region.
+    /// [`unlink_shmfs`](Self::unlink_shmfs) removes them, as does the last
+    /// holder of a ring that took holds with
+    /// [`with_last_holder`](Self::with_last_holder). On Windows a name
+    /// goes with the last handle to its region whatever this ring does.
     pub fn create_shmfs(
         name_prefix: &str,
         max_producers: usize,
@@ -867,48 +919,43 @@ impl AdaptiveRing {
 
         let spsc_size = crate::spsc_ring::spsc_ring_file_size(capacity);
         let vyukov_size = crate::shared_ring::ring_file_size(capacity);
+        remove_grown_pairs(name_prefix, max_producers, namespace)?;
 
         // SPSC backing.
-        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-            &format!("{name_prefix}_spsc"), spsc_size, namespace, sddl,
-        ).map_err(|_| RingError::PayloadTooLarge)?;
+        let spsc_shm = ring_region(&format!("{name_prefix}_spsc"), spsc_size, namespace, sddl)?;
         let spsc = Arc::new(SpscRingCore::create_from_shm(spsc_shm, capacity)?);
 
         // MPSC backings.
         let mut mpsc_rings = Vec::with_capacity(max_producers);
         for i in 0..max_producers {
-            let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-                &format!("{name_prefix}_mpsc_{i}"), spsc_size, namespace, sddl,
-            ).map_err(|_| RingError::PayloadTooLarge)?;
+            let shm = ring_region(&format!("{name_prefix}_mpsc_{i}"), spsc_size, namespace, sddl)?;
             mpsc_rings.push(Arc::new(SpscRingCore::create_from_shm(shm, capacity)?));
         }
         let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
+            rings: SwapCell::new(mpsc_rings),
             next_drain: AtomicUsize::new(0),
         });
 
         // MPMC backings (one ring per producer; consumers partition).
         let mut mpmc_rings = Vec::with_capacity(max_producers);
         for i in 0..max_producers {
-            let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-                &format!("{name_prefix}_mpmc_{i}"), spsc_size, namespace, sddl,
-            ).map_err(|_| RingError::PayloadTooLarge)?;
+            let shm = ring_region(&format!("{name_prefix}_mpmc_{i}"), spsc_size, namespace, sddl)?;
             mpmc_rings.push(Arc::new(SpscRingCore::create_from_shm(shm, capacity)?));
         }
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
         // Vyukov backing.
-        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-            &format!("{name_prefix}_vyukov"), vyukov_size, namespace, sddl,
-        ).map_err(|_| RingError::PayloadTooLarge)?;
+        let vyukov_shm = ring_region(&format!("{name_prefix}_vyukov"), vyukov_size, namespace, sddl)?;
         let vyukov = Arc::new(SharedRing::create_from_shm(vyukov_shm, capacity)?);
 
-        let directory = Arc::new(PeerDirectory::create_or_open_shm_secured(
+        let mut directory = PeerDirectory::create_shm_secured(
             &format!("{name_prefix}_peers"), namespace, sddl,
-        )?);
+        )?;
+        directory.keep_name();
+        let directory = Arc::new(directory);
         directory.publish_rings(max_producers);
 
         // A dump asks about one ring, so its span starts here rather
@@ -928,7 +975,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -938,6 +985,7 @@ impl AdaptiveRing {
                 prefix: name_prefix.to_owned(),
                 ns: namespace,
                 sddl: sddl.map(str::to_owned),
+                created: true,
             },
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
@@ -955,14 +1003,17 @@ impl AdaptiveRing {
     /// zeroes any data already in the region - correct for the creator,
     /// data-loss for a late attacher.) Use `create_shmfs` in the process
     /// that owns the region's lifetime and `open_shmfs` in every process
-    /// that joins it afterwards.
+    /// that joins it afterward.
     ///
     /// The peer directory is the source of truth for how many
     /// per-producer backings exist right now; `max_producers` /
-    /// `max_consumers` are pre-attach floor hints only. Returns
-    /// [`RingError::LayoutMismatch`] if a backing is absent or its
-    /// header magic / capacity does not match (e.g. the creator has not
-    /// run yet, or ran with a different capacity).
+    /// `max_consumers` are pre-attach floor hints only. The attach
+    /// creates nothing: a ring or backing that is not there is
+    /// `RingError::IoError(NotFound)` (the creator has not run yet, or ran
+    /// under another name or namespace), and one of another shape is
+    /// refused, with [`RingError::LayoutMismatch`] when its header magic
+    /// or capacity disagrees and an I/O error when it is smaller than
+    /// `expected_capacity` needs.
     pub fn open_shmfs(
         name_prefix: &str,
         max_producers: usize,
@@ -981,11 +1032,16 @@ impl AdaptiveRing {
     /// As [`open_shmfs`](Self::open_shmfs), resolving every region in
     /// `namespace`.
     ///
-    /// This must match the namespace the creator passed to
-    /// [`create_shmfs_in`](Self::create_shmfs_in). A mismatch resolves a
-    /// different set of regions, and because these are create-or-open
-    /// names the attach succeeds against empty regions of its own rather
-    /// than reporting that the creator's ring was not found.
+    /// This must name the directory the creator's regions are in. A
+    /// mismatch resolves names the creator never made, and the attach
+    /// reports the ring not found.
+    ///
+    /// A process inside an AppContainer attaches with
+    /// [`ShmNamespace::Session`](crate::shm_file::ShmNamespace::Session)
+    /// to a ring an outside process created with
+    /// [`ShmNamespace::AppContainer`](crate::shm_file::ShmNamespace::AppContainer)
+    /// naming that container, since inside it `Local\` is the container's
+    /// directory.
     pub fn open_shmfs_in(
         name_prefix: &str,
         max_producers: usize,
@@ -999,10 +1055,14 @@ impl AdaptiveRing {
     }
 
     /// As [`open_shmfs_in`](Self::open_shmfs_in), with `sddl` as the
-    /// security descriptor applied to any region this call has to
-    /// create. An attach normally finds the creator's regions already
-    /// there and uses the descriptors on them; the parameter covers a
-    /// region the attaching side reaches first.
+    /// security descriptor for what this handle makes later: a backing it
+    /// grows by registering a producer past the published count, the
+    /// payload region when its own oversized frame is the first, and the
+    /// park events of its waits. The creator's regions keep the
+    /// descriptors they were made with. The attach itself makes nothing,
+    /// but for one case on Windows: a published per-producer pair whose
+    /// every handle closed before another opened it is gone, and the
+    /// attach lays it out again empty and says so on stderr.
     pub fn open_shmfs_secured(
         name_prefix: &str,
         max_producers: usize,
@@ -1017,51 +1077,44 @@ impl AdaptiveRing {
         let spsc_size = crate::spsc_ring::spsc_ring_file_size(expected_capacity);
         let vyukov_size = crate::shared_ring::ring_file_size(expected_capacity);
 
-        // Directory first: create_or_open_shm only initializes when the
-        // magic is absent, so attaching never wipes the creator's live
-        // claims; its published count is how many per-producer rings
-        // really exist (the creator's hint may have grown since).
-        let directory = Arc::new(PeerDirectory::create_or_open_shm_secured(
+        // Directory first: its published count is how many per-producer
+        // rings really exist (the creator's hint may have grown since),
+        // and a ring that is not there stops the attach here.
+        let directory = Arc::new(PeerDirectory::open_shm_secured(
             &format!("{name_prefix}_peers"), namespace, sddl,
         )?);
         let n_rings = directory.published().max(1);
 
         // SPSC backing - attach, validate magic, no re-init.
-        let spsc_shm = crate::shm_file::ShmFile::create_or_open_named_secured(
+        let spsc_shm = crate::shm_file::ShmFile::open_named_secured(
             &format!("{name_prefix}_spsc"), spsc_size, namespace, sddl,
-        ).map_err(|_| RingError::PayloadTooLarge)?;
+        ).map_err(|e| RingError::IoError(e.kind()))?;
         let spsc = Arc::new(SpscRingCore::open_from_shm(spsc_shm, expected_capacity)?);
 
-        // MPSC backings.
+        // Per-producer pairs: MPSC backings, and MPMC backings with one
+        // ring per producer that consumers partition.
         let mut mpsc_rings = Vec::with_capacity(n_rings);
-        for i in 0..n_rings {
-            let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-                &format!("{name_prefix}_mpsc_{i}"), spsc_size, namespace, sddl,
-            ).map_err(|_| RingError::PayloadTooLarge)?;
-            mpsc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
-        }
-        let mpsc = Arc::new(MpscBacking {
-            rings: ArcSwap::from_pointee(mpsc_rings),
-            next_drain: AtomicUsize::new(0),
-        });
-
-        // MPMC backings (one ring per producer; consumers partition).
         let mut mpmc_rings = Vec::with_capacity(n_rings);
         for i in 0..n_rings {
-            let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-                &format!("{name_prefix}_mpmc_{i}"), spsc_size, namespace, sddl,
-            ).map_err(|_| RingError::PayloadTooLarge)?;
-            mpmc_rings.push(Arc::new(SpscRingCore::open_from_shm(shm, expected_capacity)?));
+            let (a, b) = open_published_pair(
+                name_prefix, i, expected_capacity, namespace, sddl, &directory,
+            )?;
+            mpsc_rings.push(a);
+            mpmc_rings.push(b);
         }
+        let mpsc = Arc::new(MpscBacking {
+            rings: SwapCell::new(mpsc_rings),
+            next_drain: AtomicUsize::new(0),
+        });
         let mpmc = Arc::new(MpmcBacking {
-            rings: ArcSwap::from_pointee(mpmc_rings),
+            rings: SwapCell::new(mpmc_rings),
             consumer_cursors: consumer_cursor_table(),
         });
 
         // Vyukov backing.
-        let vyukov_shm = crate::shm_file::ShmFile::create_or_open_named_secured(
+        let vyukov_shm = crate::shm_file::ShmFile::open_named_secured(
             &format!("{name_prefix}_vyukov"), vyukov_size, namespace, sddl,
-        ).map_err(|_| RingError::PayloadTooLarge)?;
+        ).map_err(|e| RingError::IoError(e.kind()))?;
         let vyukov = Arc::new(SharedRing::open_from_shm(vyukov_shm, expected_capacity)?);
 
         // A dump asks about one ring, so its span starts here rather
@@ -1081,7 +1134,7 @@ impl AdaptiveRing {
             single_reader: AtomicU64::new(SINGLE_READER_DEFAULT),
             holders: None,
             also_remove_on_last: Vec::new(),
-            grow_lock: parking_lot::Mutex::new(()),
+            remove_names_on_drop: false,
             morph_refusals: AtomicU64::new(0),
             mode_refusals: AtomicU64::new(0),
             contract: None,
@@ -1091,6 +1144,7 @@ impl AdaptiveRing {
                 prefix: name_prefix.to_owned(),
                 ns: namespace,
                 sddl: sddl.map(str::to_owned),
+                created: false,
             },
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
@@ -1113,8 +1167,9 @@ impl AdaptiveRing {
     /// Stamp-kind selection: invariant-TSC `rdtsc` when the CPUID
     /// probe passes, the shared counter on x86 without an invariant
     /// TSC, the monotonic clock on non-x86 hosts. Rings opened with
-    /// [`AdaptiveRing::open`] adopt the creator's stamp kind from
-    /// the region header (validated, never re-initialized).
+    /// [`AdaptiveRing::open`] or [`AdaptiveRing::open_shmfs`] adopt the
+    /// creator's stamp kind from the region header (validated, never
+    /// re-initialized).
     ///
     /// A stamped ring never morphs to [`RingShape::Vyukov`]: the
     /// stamped 64-byte slot layout does not fit Vyukov's 56-byte
@@ -1174,19 +1229,28 @@ impl AdaptiveRing {
                     region
                 }
             }
-            BackingId::Shm { prefix, ns, sddl } => {
+            BackingId::Shm { prefix, ns, sddl, created } => {
                 let size = ordering_region_size(lines);
-                let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
-                    &format!("{prefix}_ordering"),
-                    size,
-                    *ns,
-                    sddl.as_deref(),
-                ).map_err(|e| RingError::IoError(e.kind()))?;
-                OrderingRegion::create_shm(
-                    shm,
-                    lines,
-                    kind.unwrap_or_else(default_stamp_kind),
-                )?
+                let name = format!("{prefix}_ordering");
+                if *created {
+                    let shm = ring_region(&name, size, *ns, sddl.as_deref())?;
+                    OrderingRegion::create_shm(
+                        shm,
+                        lines,
+                        kind.unwrap_or_else(default_stamp_kind),
+                    )?
+                } else {
+                    let shm = crate::shm_file::ShmFile::open_named_secured(
+                        &name, size, *ns, sddl.as_deref(),
+                    ).map_err(|e| RingError::IoError(e.kind()))?;
+                    let region = OrderingRegion::open_shm(shm, lines)?;
+                    if let Some(k) = kind
+                        && region.stamp_kind() != k
+                    {
+                        return Err(RingError::LayoutMismatch);
+                    }
+                    region
+                }
             }
         };
         let seen = (0..CONSUMER_SLOT_CEILING).map(|_| SeenLine::new()).collect();
@@ -1233,7 +1297,7 @@ impl AdaptiveRing {
     /// across all sub-rings; concurrent producers writing into the
     /// active shape during the check cannot affect a stale-only
     /// caller because producers only target whichever Arc the
-    /// wrapper's ArcSwap currently points at.
+    /// wrapper's SwapCell currently holds.
     pub fn is_empty(&self) -> bool {
         if self
             .other_used_shapes(self.current_shape())
@@ -1332,12 +1396,15 @@ impl AdaptiveRing {
     }
 
     /// Take a hold on this ring's backings, so the last live process to
-    /// let go removes them.
+    /// let go removes them: a file-backed ring's files, or a shm-backed
+    /// ring's shared-memory names, whichever handle made each one.
     ///
     /// Off by default: a ring normally outlives the process that made
     /// it, which is the point of a cross-process ring. This is for the
     /// caller whose ring is scoped to a set of processes and who would
-    /// otherwise leave files behind when they all exit.
+    /// otherwise leave files, or on Unix shared-memory names, behind when
+    /// they all exit. A shm-backed ring's holders region is named in the
+    /// ring's namespace beside its other regions.
     ///
     /// "Last" means the last live process, not the last handle within
     /// one. A holder whose process died without releasing is reaped by
@@ -1362,26 +1429,33 @@ impl AdaptiveRing {
     /// takes its backings and leaves the files it never created, so a
     /// caller who asked for the prefix to be cleaned finds three of them
     /// still there. Suffixes rather than paths, because the prefix is
-    /// the ring's to know.
+    /// the ring's to know: each is appended to the path prefix of a
+    /// file-backed ring and to the name prefix of a shm-backed one.
     pub fn with_last_holder(
         mut self,
         max_holders: usize,
         on_last: crate::ring_holders::LastHolder,
         also_remove: &[&str],
     ) -> Result<Self, LastHolderError> {
-        let prefix = match &self.backing_id {
-            BackingId::File { prefix, .. } => prefix.clone(),
+        use crate::ring_holders::RingHolders;
+        let holders = match &self.backing_id {
+            BackingId::File { prefix, .. } => RingHolders::create_or_attach(
+                with_suffix(prefix, ".holders.bin"),
+                max_holders,
+                on_last,
+            ),
+            BackingId::Shm { prefix, ns, sddl, .. } => RingHolders::create_or_attach_shm(
+                &format!("{prefix}_holders"),
+                *ns,
+                sddl.as_deref(),
+                max_holders,
+                on_last,
+            ),
             BackingId::Anon => return Err(LastHolderError::NoBackingFiles),
-            BackingId::Shm { .. } => return Err(LastHolderError::ShmNotSupported),
-        };
+        }
+        .map_err(LastHolderError::Region)?;
         self.also_remove_on_last =
             also_remove.iter().map(|s| (*s).to_string()).collect();
-        let holders = crate::ring_holders::RingHolders::create_or_attach(
-            with_suffix(&prefix, ".holders.bin"),
-            max_holders,
-            on_last,
-        )
-        .map_err(LastHolderError::Region)?;
         self.holders = Some(holders);
         Ok(self)
     }
@@ -1433,7 +1507,7 @@ impl AdaptiveRing {
         }
         // The bitmaps are read before the counts, never after. A claim
         // raises the count and then takes the bit, so a bit seen at some
-        // instant was counted before it and a count read afterwards
+        // instant was counted before it and a count read afterward
         // includes it. Reading the count first lets a claim land between
         // the two and print a disagreement that says nothing about what
         // the decision was taken on.
@@ -1501,9 +1575,11 @@ impl AdaptiveRing {
     /// One relaxed load on the shared topology epoch; on change, run
     /// the sync slow path (grow local arrays, reshape). Called at the
     /// top of every adaptive-path op so cross-process registrations
-    /// propagate with no background thread.
+    /// propagate with no background thread, and by a sidecar's scan so a
+    /// handle whose caller is making no calls still holds what other
+    /// handles publish.
     #[inline]
-    fn ensure_synced(&self) {
+    pub(crate) fn ensure_synced(&self) {
         let e = self.directory.epoch();
         if e != self.synced_epoch.load(Ordering::Relaxed) {
             self.sync_topology(e);
@@ -1514,9 +1590,20 @@ impl AdaptiveRing {
     fn sync_topology(&self, epoch: u64) {
         self.directory.reap_dead_peers();
         self.designate_single_reader();
-        let arrays_ok = self.refresh_local_arrays().is_ok();
+        self.adopt_frame_region();
+        // A pair is published only once its maker has laid it out, so one
+        // this handle cannot open now does not open by asking again on
+        // every op: the failure is named once for this topology, and the
+        // pairs are looked for again when the topology next changes.
+        if let Err(e) = self.refresh_local_arrays() {
+            eprintln!(
+                "subetha: {} could not open every per-producer pair other handles published, \
+                 so what their producers send is not received through this handle: {e:?}",
+                self.backing_id.label(),
+            );
+        }
         let shape_ok = self.reshape_for_counts();
-        if arrays_ok && shape_ok {
+        if shape_ok {
             // Reaping / a racing registrant may have advanced the
             // epoch since `epoch` was read; store the older value so
             // the next op re-syncs to the newer state.
@@ -1527,29 +1614,58 @@ impl AdaptiveRing {
     /// Open (or, for the grower, create) local handles for every
     /// published per-producer backing this process has not mapped
     /// yet. Growth bumps the pin generation so outstanding pins
-    /// re-acquire and see the new backings.
+    /// re-acquire and see the new backings. A pair that fails to open
+    /// stops the walk, and the pairs before it are kept: held, a Windows
+    /// section outlives the handle that made it.
     fn refresh_local_arrays(&self) -> Result<(), RingError> {
         let published = self.directory.published();
-        if self.mpsc.rings.load().len() >= published {
+        let from = self.held_pair_count();
+        if from >= published {
             return Ok(());
         }
-        let _guard = self.grow_lock.lock();
-        let cur_mpsc = self.mpsc.rings.load_full();
-        let cur_mpmc = self.mpmc.rings.load_full();
-        if cur_mpsc.len() >= published {
-            return Ok(());
+        let mut pairs = Vec::with_capacity(published - from);
+        let mut failed = None;
+        for i in from..published {
+            match self.open_ring_backing(i) {
+                Ok(pair) => pairs.push(pair),
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
         }
-        let mut mpsc_new = (*cur_mpsc).clone();
-        let mut mpmc_new = (*cur_mpmc).clone();
-        for i in cur_mpsc.len()..published {
-            let (a, b) = self.open_ring_backing(i)?;
-            mpsc_new.push(a);
-            mpmc_new.push(b);
+        self.append_pairs(from, pairs);
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
-        self.mpsc.rings.store(Arc::new(mpsc_new));
-        self.mpmc.rings.store(Arc::new(mpmc_new));
-        self.pin_generation.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+    }
+
+    /// How many per-producer pairs this handle holds open.
+    #[cfg(test)]
+    pub(crate) fn held_pairs(&self) -> usize {
+        self.mpsc.rings.load().len()
+    }
+
+    /// The per-producer pairs both local arrays hold. The arrays grow one
+    /// after the other, so while a thread is between its two appends the
+    /// shorter one is what this handle holds in full.
+    fn held_pair_count(&self) -> usize {
+        self.mpsc.rings.load().len().min(self.mpmc.rings.load().len())
+    }
+
+    /// Append `pairs`, the backings of producer slots `from` upward, to
+    /// the local arrays. Each array takes only the slots it does not
+    /// hold yet: a slot another thread appended first keeps that
+    /// thread's backing, and the one opened here for it drops. Bumps the
+    /// pin generation when either array grew.
+    fn append_pairs(&self, from: usize, pairs: Vec<(Arc<SpscRingCore>, Arc<SpscRingCore>)>) {
+        let (mpsc, mpmc): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        let grew_mpsc = append_missing(&self.mpsc.rings, from, &mpsc);
+        let grew_mpmc = append_missing(&self.mpmc.rings, from, &mpmc);
+        if grew_mpsc || grew_mpmc {
+            self.pin_generation.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     /// Open the published backing pair for producer slot `i` created
@@ -1567,27 +1683,22 @@ impl AdaptiveRing {
                     with_suffix(prefix, &format!(".mpmc.{i}.bin")), self.capacity)?;
                 Ok((Arc::new(a), Arc::new(b)))
             }
-            BackingId::Shm { prefix, ns, sddl } => {
-                let size = crate::spsc_ring::spsc_ring_file_size(self.capacity);
-                let shm_a = crate::shm_file::ShmFile::create_or_open_named_secured(
-                    &format!("{prefix}_mpsc_{i}"), size, *ns, sddl.as_deref(),
-                ).map_err(|e| RingError::IoError(e.kind()))?;
-                let shm_b = crate::shm_file::ShmFile::create_or_open_named_secured(
-                    &format!("{prefix}_mpmc_{i}"), size, *ns, sddl.as_deref(),
-                ).map_err(|e| RingError::IoError(e.kind()))?;
-                let a = SpscRingCore::create_from_shm(shm_a, self.capacity)?;
-                let b = SpscRingCore::create_from_shm(shm_b, self.capacity)?;
-                Ok((Arc::new(a), Arc::new(b)))
-            }
+            BackingId::Shm { prefix, ns, sddl, .. } => open_published_pair(
+                prefix, i, self.capacity, *ns, sddl.as_deref(), &self.directory,
+            ),
             // Anonymous backings cannot be published by a peer: any
             // growth on this instance created them locally already.
             BackingId::Anon => Err(RingError::LayoutMismatch),
         }
     }
 
-    /// Create the backing pair for a new producer slot `i` (the
-    /// grower path; this process claimed the slot, so it is the
-    /// single creator by construction).
+    /// Make the backing pair for producer slot `i`, or attach the pair
+    /// another grower, in this process or another, made first. A file
+    /// pair is created or attached; a shared-memory pair goes through the
+    /// layout handshake, so of two growers laying one region out, one
+    /// lays it out and the other attaches it. An anonymous pair is this
+    /// handle's alone, and one built for a slot another thread appended
+    /// first drops unused.
     fn create_ring_backing(
         &self,
         i: usize,
@@ -1605,49 +1716,36 @@ impl AdaptiveRing {
                     with_suffix(prefix, &format!(".mpmc.{i}.bin")), self.capacity)?;
                 Ok((Arc::new(a), Arc::new(b)))
             }
-            BackingId::Shm { prefix, ns, sddl } => {
+            BackingId::Shm { prefix, ns, sddl, .. } => {
                 let size = crate::spsc_ring::spsc_ring_file_size(self.capacity);
-                let shm_a = crate::shm_file::ShmFile::create_or_open_named_secured(
-                    &format!("{prefix}_mpsc_{i}"), size, *ns, sddl.as_deref(),
-                ).map_err(|e| RingError::IoError(e.kind()))?;
-                let shm_b = crate::shm_file::ShmFile::create_or_open_named_secured(
-                    &format!("{prefix}_mpmc_{i}"), size, *ns, sddl.as_deref(),
-                ).map_err(|e| RingError::IoError(e.kind()))?;
-                let a = SpscRingCore::create_from_shm(shm_a, self.capacity)?;
-                let b = SpscRingCore::create_from_shm(shm_b, self.capacity)?;
+                let shm_a = ring_region(&format!("{prefix}_mpsc_{i}"), size, *ns, sddl.as_deref())?;
+                let shm_b = ring_region(&format!("{prefix}_mpmc_{i}"), size, *ns, sddl.as_deref())?;
+                let a = SpscRingCore::create_or_open_from_shm(shm_a, self.capacity)?;
+                let b = SpscRingCore::create_or_open_from_shm(shm_b, self.capacity)?;
                 Ok((Arc::new(a), Arc::new(b)))
             }
         }
     }
 
     /// Grow the per-producer backings so slots `< want` all exist:
-    /// create the missing backing pairs, append them to the local
-    /// arrays, then publish the new count (Release) so other
-    /// processes open them on their next epoch sync.
+    /// open the pairs other growers published, make the rest, append
+    /// them to the local arrays, then publish the new count (Release) so
+    /// other processes open them on their next epoch sync. Growers run
+    /// side by side, in this process and in others: each slot keeps one
+    /// layout, and each local array keeps the first backing appended for
+    /// it.
     fn grow_rings_to(&self, want: usize) -> Result<(), RingError> {
-        let _guard = self.grow_lock.lock();
         let published = self.directory.published();
-        let cur_mpsc = self.mpsc.rings.load_full();
-        let cur_mpmc = self.mpmc.rings.load_full();
-        let mut mpsc_new = (*cur_mpsc).clone();
-        let mut mpmc_new = (*cur_mpmc).clone();
-        // Open backings other processes published first, then create
-        // this grower's new ones.
-        for i in cur_mpsc.len()..published {
-            let (a, b) = self.open_ring_backing(i)?;
-            mpsc_new.push(a);
-            mpmc_new.push(b);
+        let from = self.held_pair_count();
+        let mut pairs = Vec::with_capacity(want.saturating_sub(from));
+        for i in from..want {
+            pairs.push(if i < published {
+                self.open_ring_backing(i)?
+            } else {
+                self.create_ring_backing(i)?
+            });
         }
-        for i in published..want {
-            let (a, b) = self.create_ring_backing(i)?;
-            mpsc_new.push(a);
-            mpmc_new.push(b);
-        }
-        if mpsc_new.len() > cur_mpsc.len() {
-            self.mpsc.rings.store(Arc::new(mpsc_new));
-            self.mpmc.rings.store(Arc::new(mpmc_new));
-            self.pin_generation.fetch_add(1, Ordering::AcqRel);
-        }
+        self.append_pairs(from, pairs);
         if want > published {
             self.directory.publish_rings(want);
         }
@@ -1680,15 +1778,42 @@ impl AdaptiveRing {
             return Err(AdaptiveError::GrowthFailed);
         }
         #[cfg(debug_assertions)]
-        crate::ring_trace::note(
-            crate::ring_trace::What::RegisteredProducer,
-            usize::MAX,
-            slot,
-            0,
-        );
+        crate::ring_trace::note(crate::ring_trace::What::RegisteredProducer, usize::MAX, slot, 0);
+        self.producer_admitted();
+        Ok(slot)
+    }
+
+    /// Carry the producer `producer_id`, registered on another ring, onto
+    /// this one under the same id, for a wrapper that moves its producers
+    /// from backing to backing. The id was admitted where it was
+    /// registered, so no contract ceiling applies here. Answers whether
+    /// this call claimed it: an id already held here is left as it is.
+    /// When the ring the id needs cannot be made the claim stays, so the
+    /// shape still counts the producer, and this answers `GrowthFailed`.
+    pub(crate) fn carry_producer(&self, producer_id: usize) -> Result<bool, AdaptiveError> {
+        if producer_id >= crate::peer_directory::PRODUCER_SLOT_CEILING {
+            return Err(AdaptiveError::TooManyProducers);
+        }
+        if !self.directory.claim_producer_slot_at(producer_id) {
+            return Ok(false);
+        }
+        let grew = producer_id < self.directory.published() || self.grow_rings_to(producer_id + 1).is_ok();
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(crate::ring_trace::What::RegisteredProducer, usize::MAX, producer_id, 0);
+        self.producer_admitted();
+        if grew { Ok(true) } else { Err(AdaptiveError::GrowthFailed) }
+    }
+
+    /// The producer ids registered right now, across every process.
+    pub(crate) fn producer_ids(&self) -> Vec<usize> {
+        self.directory.claimed_producer_slots()
+    }
+
+    /// What follows a producer's claim once it is admitted: the topology
+    /// sync and the shape its count calls for.
+    fn producer_admitted(&self) {
         self.ensure_synced();
         self.reshape_for_counts();
-        Ok(slot)
     }
 
     /// Unregister a producer slot. Caller passes the id returned
@@ -1726,11 +1851,40 @@ impl AdaptiveRing {
         }
         #[cfg(debug_assertions)]
         crate::ring_trace::note(crate::ring_trace::What::Registered, usize::MAX, slot, 0);
+        self.consumer_admitted();
+        Ok(slot)
+    }
+
+    /// Carry the consumer `consumer_id`, registered on another ring, onto
+    /// this one under the same id, as
+    /// [`carry_producer`](Self::carry_producer) carries a producer.
+    /// Answers whether this call claimed it.
+    pub(crate) fn carry_consumer(&self, consumer_id: usize) -> Result<bool, AdaptiveError> {
+        if consumer_id >= CONSUMER_SLOT_CEILING {
+            return Err(AdaptiveError::TooManyConsumers);
+        }
+        if !self.directory.claim_consumer_slot_at(consumer_id) {
+            return Ok(false);
+        }
+        #[cfg(debug_assertions)]
+        crate::ring_trace::note(crate::ring_trace::What::Registered, usize::MAX, consumer_id, 0);
+        self.consumer_admitted();
+        Ok(true)
+    }
+
+    /// The consumer ids registered right now, across every process.
+    pub(crate) fn consumer_ids(&self) -> Vec<usize> {
+        self.directory.claimed_consumer_slots().into_iter().map(usize::from).collect()
+    }
+
+    /// What follows a consumer's claim once it is admitted: the reader
+    /// designation, ring ownership across the new consumer set, the
+    /// topology sync and the shape the counts call for.
+    fn consumer_admitted(&self) {
         self.designate_single_reader();
         self.rebalance_ownership();
         self.ensure_synced();
         self.reshape_for_counts();
-        Ok(slot)
     }
 
     /// Unregister a consumer slot. The leaving consumer transfers
@@ -1960,7 +2114,7 @@ impl AdaptiveRing {
 
     /// Terminal producer retirement: MergeStrict consumers stop
     /// waiting on this producer slot's silence permanently. Call on
-    /// clean producer exit; the slot must not push afterwards. See
+    /// clean producer exit; the slot must not push afterward. See
     /// [`OrderingRegion::retire_producer`].
     pub fn retire_producer(&self, producer_id: usize) -> Result<(), RingError> {
         let ord = self.ordering.as_ref().ok_or(RingError::NotStamped)?;
@@ -2103,8 +2257,10 @@ impl AdaptiveRing {
     /// Pre-create and size the frame payload region. Optional: the
     /// region is otherwise created lazily at
     /// [`FRAME_DEFAULT_BLOCK_SIZE`](Self::FRAME_DEFAULT_BLOCK_SIZE)
-    /// the first time a record is too large to inline. No-op if the
-    /// region already exists. Returns the ring for chaining.
+    /// the first time a record is too large to inline. No-op if this
+    /// handle already holds the region, as it does once it has sent an
+    /// oversized frame, received one, or opened at a sync the region
+    /// another handle made. Returns the ring for chaining.
     pub fn with_frames(self, block_size: usize, block_count: usize) -> Self {
         self.frame_region
             .get_or_init(|| self.build_frame_region(block_size, block_count));
@@ -2129,21 +2285,31 @@ impl AdaptiveRing {
     /// or shm-backed ring would put the bytes somewhere the peer process
     /// cannot map, and no offset frame would cross the boundary.
     ///
-    /// The region is created lazily on the first offset frame -
-    /// the producer create-or-opens it before pushing the descriptor, so
-    /// a consumer that create-or-opens it on receipt always finds the
-    /// already-initialized region (the descriptor it popped proves the
-    /// producer got there first).
+    /// The region is created lazily on the first offset frame - the
+    /// producer create-or-opens it before pushing the descriptor. A shm
+    /// ring's maker then bumps the topology epoch, so every other handle
+    /// opens the region at its next sync, the sidecar's scan included,
+    /// and holds it from then on; a receiver only ever opens it (see
+    /// [`frame_region_to_read`](Self::frame_region_to_read)).
     fn build_frame_region(&self, block_size: usize, block_count: usize) -> Arc<FrameRegion> {
         let region = match &self.backing_id {
             BackingId::Anon => FrameRegion::create_anon(block_size, block_count),
-            BackingId::Shm { prefix, ns, sddl } => FrameRegion::create_or_open_shm_secured(
+            // Whichever handle sends the first oversized frame makes this
+            // region, a peer that attached included, and its name is kept
+            // with the ring's others rather than going when that handle
+            // drops.
+            BackingId::Shm { prefix, ns, sddl, .. } => FrameRegion::create_or_open_shm_secured(
                 &format!("{prefix}_frames"),
                 block_size,
                 block_count,
                 *ns,
                 sddl.as_deref(),
-            ),
+            )
+            .map(|mut region| {
+                region.keep_name();
+                self.directory.bump_epoch();
+                region
+            }),
             BackingId::File { prefix, .. } => FrameRegion::create_or_open_file(
                 with_suffix(prefix, ".frames.bin"),
                 block_size,
@@ -2151,6 +2317,51 @@ impl AdaptiveRing {
             ),
         };
         Arc::new(region.expect("frame region create-or-open"))
+    }
+
+    /// The payload region an offset frame's descriptor points into, for a
+    /// receiver: the one this handle holds, or the ring's own opened as it
+    /// stands. A receiver never makes one, so a region that is gone is an
+    /// error rather than an empty region of its own read as the payload.
+    fn frame_region_to_read(&self) -> Result<&FrameRegion, RingError> {
+        if let Some(region) = self.frame_region.get() {
+            return Ok(region);
+        }
+        let region = match &self.backing_id {
+            BackingId::Anon => return Ok(self.frame_region()),
+            BackingId::Shm { prefix, ns, sddl, .. } => {
+                FrameRegion::open_shm_as_found(&format!("{prefix}_frames"), *ns, sddl.as_deref())?
+            }
+            BackingId::File { prefix, .. } => {
+                FrameRegion::open_file_as_found(with_suffix(prefix, ".frames.bin"))?
+            }
+        };
+        Ok(self.frame_region.get_or_init(|| Arc::new(region)))
+    }
+
+    /// Open the ring's shm payload region once another handle has made
+    /// it, so this handle holds every region of the ring and not only the
+    /// ones it has used. On Windows a section lasts only while some handle
+    /// maps it, and the handle that made it may leave first.
+    fn adopt_frame_region(&self) {
+        if self.frame_region.get().is_some() {
+            return;
+        }
+        let BackingId::Shm { prefix, ns, sddl, .. } = &self.backing_id else {
+            return;
+        };
+        match FrameRegion::open_shm_as_found(&format!("{prefix}_frames"), *ns, sddl.as_deref()) {
+            Ok(region) => {
+                // Another thread of this handle set it first; that one stands.
+                if let Err(extra) = self.frame_region.set(Arc::new(region)) {
+                    drop(extra);
+                }
+            }
+            // Not made yet, or its maker is still laying it out: the sync
+            // after the maker's epoch bump looks again.
+            Err(RingError::IoError(std::io::ErrorKind::NotFound)) | Err(RingError::LayoutMismatch) => {}
+            Err(e) => eprintln!("subetha: the payload region of {prefix} could not be opened: {e:?}"),
+        }
     }
 
     /// Frame-path send: carries any payload size on whatever shape the
@@ -2207,11 +2418,12 @@ impl AdaptiveRing {
             }
             let idx = region.alloc().ok_or(RingError::Full)?;
             region.write_block(idx, payload);
-            // [class:u8][len:u32][block_idx:u32]
-            let mut buf = [0u8; 9];
+            // [class:u8][len:u32][block_idx:u32][region instance:u64]
+            let mut buf = [0u8; 17];
             buf[0] = FrameClass::Offset as u8;
             buf[1..5].copy_from_slice(&len.to_le_bytes());
             buf[5..9].copy_from_slice(&idx.to_le_bytes());
+            buf[9..17].copy_from_slice(&region.instance().to_le_bytes());
             match self.try_send(producer_id, &buf) {
                 Ok(()) => Ok(FrameClass::Offset),
                 Err(e) => {
@@ -2231,6 +2443,14 @@ impl AdaptiveRing {
     /// which path the record took. `consumer_id` selects the consumer
     /// partition for MPMC as [`try_recv`](Self::try_recv). Not available
     /// on stamped rings.
+    ///
+    /// An offset record whose payload region has gone is taken off the
+    /// ring and returns `IoError(NotFound)`, because its payload went with
+    /// the region. On Windows that is a region the handle that made it
+    /// took with it, leaving before any other handle opened it, whether
+    /// the name is now absent or a later sender has made a new region
+    /// under it; on Unix, a region whose name was removed while the ring
+    /// was in use and made again.
     pub fn recv_frame(&self, consumer_id: usize, out: &mut Vec<u8>)
         -> Result<FrameClass, RingError>
     {
@@ -2247,7 +2467,19 @@ impl AdaptiveRing {
             Ok(FrameClass::Inline)
         } else {
             let idx = u32::from_le_bytes([slot[5], slot[6], slot[7], slot[8]]);
-            let region = self.frame_region();
+            let mut named = [0u8; 8];
+            named.copy_from_slice(&slot[9..17]);
+            let named = u64::from_le_bytes(named);
+            let region = self.frame_region_to_read()?;
+            // The descriptor names the laying-out of the region its payload
+            // went into; zero is a sender that names none. Naming another
+            // one, it was sent into a region that has since gone and been
+            // replaced under the same name: the payload went with the old
+            // region, and the block it names is the new region's, so it is
+            // neither read nor freed.
+            if named != 0 && named != region.instance() {
+                return Err(RingError::IoError(std::io::ErrorKind::NotFound));
+            }
             region.read_block_into(idx, len, out);
             region.free(idx);
             Ok(FrameClass::Offset)
@@ -2446,7 +2678,7 @@ impl AdaptiveRing {
         mode: OrderingMode,
         out: &mut [u8],
     ) -> Result<(usize, u64), RingError> {
-        // Snapshot the composed arrays (they live behind an ArcSwap
+        // Snapshot the composed arrays (they live behind a SwapCell
         // for producer growth); the SPSC arm borrows directly.
         let mpsc_guard;
         let mpmc_guard;
@@ -2974,16 +3206,141 @@ fn with_suffix(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
-/// What [`AdaptiveRing::unlink`] found under a path prefix.
+/// Create one of a shm ring's regions as its creator, with the name kept
+/// past this handle: a ring's names go together, through
+/// [`AdaptiveRing::unlink_shmfs`] or the last holder, never with whichever
+/// handle happens to drop.
+fn ring_region(
+    name: &str,
+    size: usize,
+    namespace: crate::shm_file::ShmNamespace,
+    sddl: Option<&str>,
+) -> Result<crate::shm_file::ShmFile, RingError> {
+    let mut shm = crate::shm_file::ShmFile::create_named_secured(name, size, namespace, sddl)
+        .map_err(|e| RingError::IoError(e.kind()))?;
+    shm.keep_name();
+    Ok(shm)
+}
+
+/// Append to `rings` the entries of `built`, the backings of slots
+/// `from..from + built.len()`, that it does not hold yet; whether it
+/// grew. A slot another thread appended first keeps that thread's entry.
+fn append_missing(
+    rings: &SwapCell<Vec<Arc<SpscRingCore>>>,
+    from: usize,
+    built: &[Arc<SpscRingCore>],
+) -> bool {
+    let end = from + built.len();
+    loop {
+        let current = rings.load_full();
+        if current.len() >= end {
+            return false;
+        }
+        let mut next = Vec::clone(&current);
+        next.extend(built[current.len() - from..].iter().cloned());
+        if rings.compare_and_set(&current, Arc::new(next)).is_ok() {
+            return true;
+        }
+    }
+}
+
+/// Remove the per-producer pairs an earlier ring grew under `prefix`,
+/// slot `from` upward to the first slot with neither half left, so this
+/// ring's growth, which attaches a pair already laid out, never attaches
+/// an earlier ring's items. A Windows section goes with its last handle,
+/// so there none is left to remove.
+fn remove_grown_pairs(
+    prefix: &str,
+    from: usize,
+    namespace: crate::shm_file::ShmNamespace,
+) -> Result<(), RingError> {
+    if !cfg!(unix) {
+        return Ok(());
+    }
+    for i in from..crate::peer_directory::PRODUCER_SLOT_CEILING {
+        let mut report = UnlinkReport::default();
+        report.remove_shm(&format!("{prefix}_mpsc_{i}"), namespace);
+        report.remove_shm(&format!("{prefix}_mpmc_{i}"), namespace);
+        if let Some((_, kind, _)) = &report.first_failure {
+            name_first_refusal(&report, "a ring created over an earlier one", prefix);
+            return Err(RingError::IoError(*kind));
+        }
+        if report.missing == 2 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Open per-producer pair `i` of the shm ring at `prefix`. The peer
+/// directory publishes a pair only once its maker has laid both halves
+/// out, so each half is there unless every handle that held it has gone.
+///
+/// On Windows a section lasts only while some handle holds it, so a pair
+/// whose maker left before any other handle opened it is gone while the
+/// directory still counts it, and what was sent into it went with it. The
+/// pair is laid out again empty, so the producer slot it serves keeps
+/// working; the loss is named on stderr, and the topology epoch moves so
+/// every handle that looked for the pair meanwhile opens this one. Handles
+/// that find it gone at once lay out one pair between them.
+///
+/// On Unix a published name that is not there was removed while the ring
+/// is in use, by `unlink_shmfs`, a last holder or a locale ring's drop.
+/// The handles that mapped the old region still do, so a new one would
+/// split them from the handles that map it; that is `IoError(NotFound)`.
+fn open_published_pair(
+    prefix: &str,
+    i: usize,
+    capacity: usize,
+    namespace: crate::shm_file::ShmNamespace,
+    sddl: Option<&str>,
+    directory: &PeerDirectory,
+) -> Result<(Arc<SpscRingCore>, Arc<SpscRingCore>), RingError> {
+    let (a, a_remade) = open_published_half(&format!("{prefix}_mpsc_{i}"), capacity, namespace, sddl)?;
+    let (b, b_remade) = open_published_half(&format!("{prefix}_mpmc_{i}"), capacity, namespace, sddl)?;
+    if a_remade || b_remade {
+        eprintln!(
+            "subetha: per-producer pair {i} of {prefix} was gone, every handle to it closed \
+             before another opened it; it is laid out again empty, what was sent into it is \
+             lost, and any payload-region blocks its offset frames took stay taken"
+        );
+        directory.bump_epoch();
+    }
+    Ok((Arc::new(a), Arc::new(b)))
+}
+
+/// One half of a published pair: the region as it stands, or on Windows,
+/// where every handle to it has closed, laid out again. The flag says
+/// which.
+fn open_published_half(
+    name: &str,
+    capacity: usize,
+    namespace: crate::shm_file::ShmNamespace,
+    sddl: Option<&str>,
+) -> Result<(SpscRingCore, bool), RingError> {
+    let size = crate::spsc_ring::spsc_ring_file_size(capacity);
+    let (shm, remade) = match crate::shm_file::ShmFile::open_named_secured(name, size, namespace, sddl) {
+        Ok(shm) => (shm, false),
+        Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound => {
+            (ring_region(name, size, namespace, sddl)?, true)
+        }
+        Err(e) => return Err(RingError::IoError(e.kind())),
+    };
+    Ok((SpscRingCore::create_or_open_from_shm(shm, capacity)?, remade))
+}
+
+/// What [`AdaptiveRing::unlink`] or [`AdaptiveRing::unlink_shmfs`] found
+/// under a prefix.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnlinkReport {
-    /// Files removed.
+    /// Files or shared-memory names removed.
     pub removed: usize,
-    /// Files the prefix names that were not present.
+    /// Files or names the prefix names that were not present.
     pub missing: usize,
-    /// Files whose removal the OS refused.
+    /// Files or names whose removal the OS refused.
     pub failed: usize,
-    /// The first refusal: its path, the error's kind, and its text.
+    /// The first refusal: its path or shared-memory name, the error's
+    /// kind, and its text.
     pub first_failure: Option<(std::path::PathBuf, std::io::ErrorKind, String)>,
 }
 
@@ -3002,13 +3359,34 @@ impl UnlinkReport {
             }
         }
     }
+
+    /// Remove one shared-memory name, `logical_name` in `namespace`, into
+    /// this report's counts, as [`remove`](Self::remove) does a file.
+    /// Handles that map the region keep their mappings.
+    ///
+    /// On Windows a section has no name apart from its handles and goes
+    /// with the last one, so there is nothing to remove and nothing is
+    /// counted.
+    #[cfg_attr(windows, allow(unused_variables))]
+    pub fn remove_shm(&mut self, logical_name: &str, namespace: crate::shm_file::ShmNamespace) {
+        #[cfg(unix)]
+        match crate::shm_file::unlink_named(logical_name, namespace) {
+            Ok(()) => self.removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.missing += 1,
+            Err(e) => {
+                self.failed += 1;
+                if self.first_failure.is_none() {
+                    self.first_failure = Some((logical_name.into(), e.kind(), e.to_string()));
+                }
+            }
+        }
+    }
 }
 
 impl AdaptiveRing {
     /// Remove every file a file-backed ring at `path_prefix` names, so no
     /// later process attaches to it. Handles that are still open keep their
-    /// mappings until they drop; on Windows a mapped file cannot be removed,
-    /// and that refusal is counted.
+    /// mappings until they drop, on Windows too.
     ///
     /// The peer directory is read first for the number of per-producer
     /// backings, which registration may have grown past the creation hint;
@@ -3025,48 +3403,133 @@ impl AdaptiveRing {
             Err(e) => {
                 report.failed += 1;
                 report.first_failure = Some((
-                    peers.clone(),
+                    peers,
                     std::io::ErrorKind::Other,
                     format!("the peer directory could not be read: {e:?}"),
                 ));
                 max_producers
             }
         };
-        // The holders region goes with the rest. It is created only for
-        // a ring that opted into last-holder-unlinks, so on any other
-        // ring it counts as missing rather than failing - and leaving it
-        // behind would strand the one file that decides whether a later
-        // process may remove the ring at all.
-        for suffix in [
-            ".spsc.bin",
-            ".vyukov.bin",
-            ".frames.bin",
-            ".ordering.bin",
-            ".holders.bin",
-        ] {
+        Self::remove_file_regions(&mut report, base, published);
+        // The holders region goes last, as on shared memory: it is what a
+        // process arriving mid-teardown reads to decide whether the ring is
+        // still held, so it outlives every region it guards. It is created
+        // only for a ring that opted into last-holder-unlinks, so on any
+        // other ring it counts as missing rather than failing.
+        #[cfg(test)]
+        crate::test_races::pause_point();
+        report.remove(with_suffix(base, ".holders.bin"));
+        report
+    }
+
+    /// Remove the files of a file-backed ring's own regions, `published`
+    /// per-producer pairs among them, with the peer directory last. The
+    /// holders region is the caller's to remove after these, since it is
+    /// what a process arriving mid-teardown reads to decide whether the
+    /// ring is still held.
+    fn remove_file_regions(report: &mut UnlinkReport, base: &Path, published: usize) {
+        for suffix in [".spsc.bin", ".vyukov.bin", ".frames.bin", ".ordering.bin"] {
             report.remove(with_suffix(base, suffix));
         }
         for i in 0..published {
             report.remove(with_suffix(base, &format!(".mpsc.{i}.bin")));
             report.remove(with_suffix(base, &format!(".mpmc.{i}.bin")));
         }
-        report.remove(peers);
+        report.remove(with_suffix(base, ".peers.bin"));
+    }
+
+    /// Remove every shared-memory name a ring made with
+    /// [`create_shmfs`](Self::create_shmfs) under `name_prefix` holds, so
+    /// no later process attaches to it: the shm counterpart of
+    /// [`unlink`](Self::unlink). Handles that are still open keep their
+    /// mappings until they drop.
+    ///
+    /// A shm ring's names outlive every handle, as a file-backed ring's
+    /// files do, whichever handle made them: the creator, or a peer that
+    /// grew the ring or sent its first oversized frame. This removes them,
+    /// as does the last holder of a ring that took holds with
+    /// [`with_last_holder`](Self::with_last_holder).
+    ///
+    /// The peer directory is read first for the number of per-producer
+    /// backings, which registration may have grown past the creation hint;
+    /// `max_producers` is the floor for that scan, and the bound when the
+    /// directory is absent. A missing name is counted, not an error; a
+    /// refusal is counted and the first one is named.
+    ///
+    /// On Windows a section's name goes with the last handle to it, so
+    /// there is nothing to remove and the report counts nothing.
+    pub fn unlink_shmfs(name_prefix: &str, max_producers: usize) -> UnlinkReport {
+        Self::unlink_shmfs_in(name_prefix, crate::shm_file::ShmNamespace::Session, max_producers)
+    }
+
+    /// As [`unlink_shmfs`](Self::unlink_shmfs), for a ring made in
+    /// `namespace`.
+    pub fn unlink_shmfs_in(
+        name_prefix: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        max_producers: usize,
+    ) -> UnlinkReport {
+        let mut report = UnlinkReport::default();
+        if cfg!(windows) {
+            return report;
+        }
+        let peers = format!("{name_prefix}_peers");
+        let published = match PeerDirectory::open_shm_secured(&peers, namespace, None) {
+            Ok(directory) => directory.published().max(max_producers),
+            Err(RingError::IoError(std::io::ErrorKind::NotFound)) => max_producers,
+            Err(e) => {
+                report.failed += 1;
+                report.first_failure = Some((
+                    peers.into(),
+                    std::io::ErrorKind::Other,
+                    format!("the peer directory could not be read: {e:?}"),
+                ));
+                max_producers
+            }
+        };
+        Self::remove_shm_regions(&mut report, name_prefix, namespace, published);
+        report.remove_shm(&format!("{name_prefix}_holders"), namespace);
         report
+    }
+
+    /// Remove the names of a shm ring's own regions, `published`
+    /// per-producer pairs among them, with the peer directory last. The
+    /// holders region is the caller's to remove after these, since it is
+    /// what a process arriving mid-teardown reads to decide whether the
+    /// ring is still held.
+    fn remove_shm_regions(
+        report: &mut UnlinkReport,
+        prefix: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        published: usize,
+    ) {
+        for suffix in ["_spsc", "_vyukov", "_frames", "_ordering"] {
+            report.remove_shm(&format!("{prefix}{suffix}"), namespace);
+        }
+        for i in 0..published {
+            report.remove_shm(&format!("{prefix}_mpsc_{i}"), namespace);
+            report.remove_shm(&format!("{prefix}_mpmc_{i}"), namespace);
+        }
+        report.remove_shm(&format!("{prefix}_peers"), namespace);
+    }
+
+    /// Have this handle remove the ring's shared-memory names when it
+    /// drops, for a ring no other handle ever reaches: a capacity ring's
+    /// generation. A ring any other handle may attach to keeps its names
+    /// past every handle.
+    pub(crate) fn removing_names_on_drop(mut self) -> Self {
+        self.remove_names_on_drop = true;
+        self
     }
 }
 
 /// Why [`AdaptiveRing::with_last_holder`] refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LastHolderError {
-    /// An anonymous ring has no files, so there is nothing for a last
-    /// holder to remove and asking for the behavior is a mistake worth
-    /// reporting rather than a no-op worth hiding.
+    /// An anonymous ring has no files or names, so there is nothing for a
+    /// last holder to remove and asking for the behavior is a mistake
+    /// worth reporting rather than a no-op worth hiding.
     NoBackingFiles,
-    /// A shm-backed ring's holders region would have to live in the same
-    /// namespace as its other regions, and is not built yet. Refused
-    /// rather than silently placed on the filesystem, where the peers of
-    /// a shm ring would not find it.
-    ShmNotSupported,
     /// The holders region itself refused: see
     /// [`HoldersError`](crate::ring_holders::HoldersError).
     Region(crate::ring_holders::HoldersError),
@@ -3076,10 +3539,7 @@ impl std::fmt::Display for LastHolderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LastHolderError::NoBackingFiles => {
-                write!(f, "an anonymous ring has no backing files to unlink")
-            }
-            LastHolderError::ShmNotSupported => {
-                write!(f, "a shm-backed ring has no holders region yet")
+                write!(f, "an anonymous ring has no backing files or names to unlink")
             }
             LastHolderError::Region(e) => write!(f, "the holders region refused: {e}"),
         }
@@ -3115,7 +3575,7 @@ pub struct PinnedRing<'a> {
     pinned_generation: u64,
     shape: RingShape,
     /// Composed arrays captured at pin time: pinned ops index these
-    /// directly (native speed, no ArcSwap load per op). Producer
+    /// directly (native speed, no SwapCell load per op). Producer
     /// growth invalidates the pin, so a re-pin picks up new rings.
     mpsc_rings: Arc<Vec<Arc<SpscRingCore>>>,
     mpmc_rings: Arc<Vec<Arc<SpscRingCore>>>,
@@ -3495,13 +3955,29 @@ impl OrderingPolicy for DefaultOrderingPolicy {
     }
 }
 
+/// The shape sidecar's scan cadence when a managed ring's caller names
+/// none, in microseconds. The C ABI's `SUBETHA_SCAN_INTERVAL_DEFAULT_US`
+/// and the Python and PowerShell managed rings take this value.
+///
+/// The cadence is the added round-trip latency of a managed ring, so
+/// this is a latency budget rather than a tuned optimum: measured on
+/// Linux and FreeBSD from 250 to 10000 microseconds, a request/response
+/// round trip costs exactly one interval and a streaming caller costs
+/// nothing, with no knee anywhere in that range. A quarter of a
+/// millisecond is small against a network hop and against most
+/// process-to-process round trips, and costs a few percent of the
+/// scanning CPU that a ten-times shorter cadence would.
+pub const SCAN_INTERVAL_DEFAULT_US: u64 = 250;
+
 /// Background scanner thread that drives shape morphs on an
 /// [`AdaptiveRing`] from a [`RingShapePolicy`].
 ///
 /// `spawn` starts the thread; `shutdown` stops it. The thread
-/// scans every `scan_interval`, builds a [`PolicyObservation`],
-/// asks the policy, and calls [`AdaptiveRing::morph_to`] on
-/// `Some(new_shape)` responses.
+/// scans every `scan_interval`: it brings its handle's view of the
+/// ring up to date, opening what other handles have published since
+/// (a grown per-producer pair, the payload region), builds a
+/// [`PolicyObservation`], asks the policy, and calls
+/// [`AdaptiveRing::morph_to`] on `Some(new_shape)` responses.
 pub struct AdaptiveRingSidecar {
     handle: Option<std::thread::JoinHandle<()>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -3543,6 +4019,13 @@ impl AdaptiveRingSidecar {
             let mut last_morph = std::time::Instant::now();
             let mut gate = crate::policy_gate::ConfidenceGate::new(gate_cfg);
             while !stop_c.load(Ordering::Acquire) {
+                // Keep this handle's view of the ring current whether or
+                // not its caller is making calls: open what other handles
+                // have published since the last scan (a grown pair, the
+                // payload region), as the hot path does on its next op.
+                // Holding them is also what keeps a Windows section alive
+                // once the handle that made it has gone.
+                ring.ensure_synced();
                 // Read before the counts, and beside them rather than at
                 // the morph. Before, because a claim raises the count and
                 // then takes the bit, so a bit seen here was counted
@@ -3703,6 +4186,13 @@ impl AdaptiveRingSidecar {
             let mut last_peers = (0usize, 0usize);
             let mut first_scan = true;
             while !stop_c.load(Ordering::Acquire) {
+                // Keep this handle's view of the ring current whether or
+                // not its caller is making calls: open what other handles
+                // have published since the last scan (a grown pair, the
+                // payload region), as the hot path does on its next op.
+                // Holding them is also what keeps a Windows section alive
+                // once the handle that made it has gone.
+                ring.ensure_synced();
                 // Read before the counts, and beside them rather than at
                 // the morph. Before, because a claim raises the count and
                 // then takes the bit, so a bit seen here was counted
@@ -3859,29 +4349,25 @@ impl Drop for AdaptiveRingSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_races::{within_lost, LOST};
 
     /// Every region a shm ring names must land in the namespace the ring
     /// was built in, including the ordering and payload regions it
     /// creates after construction. One region left behind resolves for
-    /// only one side, and because these are create-or-open names both
-    /// sides succeed against separate copies rather than reporting it.
+    /// only one side: an attacher's open of the ordering region reports
+    /// it, but the payload region is made by whichever side reaches it
+    /// first, so both would succeed against separate copies.
     #[test]
     fn a_shm_ring_keeps_its_namespace_for_regions_made_later() {
-        let name = format!(
-            "arns_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
+        let name = ShmRing::named("arns");
+        let plain_name = ShmRing::named("arns_b");
         let ring =
             AdaptiveRing::create_shmfs_in(&name, 2, 2, 64, crate::shm_file::ShmNamespace::Session)
                 .expect("create in the session namespace");
 
         match &ring.backing_id {
-            BackingId::Shm { prefix, ns, sddl } => {
-                assert_eq!(prefix, &name);
+            BackingId::Shm { prefix, ns, sddl, .. } => {
+                assert_eq!(prefix.as_str(), &*name);
                 assert_eq!(
                     *sddl, None,
                     "a ring built without a descriptor retains none"
@@ -3897,7 +4383,7 @@ mod tests {
 
         // The default constructor is the session namespace, so a ring
         // built either way agrees.
-        let plain = AdaptiveRing::create_shmfs(&format!("{name}_b"), 2, 2, 64)
+        let plain = AdaptiveRing::create_shmfs(&plain_name, 2, 2, 64)
             .expect("create via the defaulting constructor");
         match (&ring.backing_id, &plain.backing_id) {
             (BackingId::Shm { ns: a, .. }, BackingId::Shm { ns: b, .. }) => assert_eq!(a, b),
@@ -3917,6 +4403,41 @@ mod tests {
         }
         names.sort();
         names
+    }
+
+    /// A shm ring's name prefix, unique to this run, whose names are
+    /// removed when the test ends however it ends, so a run leaves nothing
+    /// in the host's shared memory. Bound before the ring's handles, it
+    /// drops after them.
+    struct ShmRing(String);
+
+    impl ShmRing {
+        fn named(tag: &str) -> Self {
+            Self(format!(
+                "subetha_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("the wall clock is after the epoch")
+                    .as_nanos()
+            ))
+        }
+    }
+
+    impl std::ops::Deref for ShmRing {
+        type Target = str;
+        fn deref(&self) -> &str {
+            &self.0
+        }
+    }
+
+    impl Drop for ShmRing {
+        fn drop(&mut self) {
+            let report = AdaptiveRing::unlink_shmfs(&self.0, 1);
+            if report.failed != 0 {
+                eprintln!("the test ring {} kept names it could not remove: {:?}", self.0, report.first_failure);
+            }
+        }
     }
 
     /// An arriving consumer never takes the single-reader role off a
@@ -3985,8 +4506,8 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
         );
         let prefix = dir.join(&stem);
 
@@ -4028,8 +4549,8 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
         );
         let prefix = dir.join(&stem);
         {
@@ -4042,6 +4563,82 @@ mod tests {
             "a ring with no hold outlives its handle: {after:?}",
         );
         AdaptiveRing::unlink(&prefix, 1);
+    }
+
+    /// `unlink` removes a file ring's holders region after every region it
+    /// guards, the peer directory included, as the shared-memory path does:
+    /// the holders region is what a process arriving mid-teardown reads to
+    /// decide whether the ring is still held.
+    #[test]
+    fn unlink_removes_a_file_rings_holders_region_last() {
+        use crate::ring_holders::LastHolder;
+
+        let dir = std::env::temp_dir();
+        let stem = format!(
+            "subetha_unlinkorder_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
+        );
+        let prefix = dir.join(&stem);
+        drop(
+            AdaptiveRing::create(&prefix, 1, 1, 64)
+                .expect("create a file-backed ring")
+                .with_last_holder(4, LastHolder::Keep, &[])
+                .expect("take a hold, so the ring has a holders region"),
+        );
+        let unlinking = prefix.clone();
+        let (pause, remover) =
+            crate::test_races::stopped(move || AdaptiveRing::unlink(&unlinking, 1));
+        let at_the_holders_region = files_named_like(&dir, &stem);
+        pause.release();
+        let report = remover.join().expect("the unlink completes");
+        assert_eq!(
+            at_the_holders_region,
+            vec![format!("{stem}.holders.bin")],
+            "the holders region is the only file of the ring left when it is removed",
+        );
+        assert_eq!(report.failed, 0, "nothing was refused: {:?}", report.first_failure);
+        let after = files_named_like(&dir, &stem);
+        assert!(after.is_empty(), "unlink removes every file of the ring: {after:?}");
+    }
+
+    /// The last holder out removes the ring's regions, and what the layer
+    /// above keeps beside them, before its holders region, for the same
+    /// reason `unlink` does.
+    #[test]
+    fn the_last_holder_removes_its_holders_region_after_everything_else() {
+        use crate::ring_holders::LastHolder;
+
+        let dir = std::env::temp_dir();
+        let stem = format!(
+            "subetha_lastorder_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
+        );
+        let prefix = dir.join(&stem);
+        let ring = AdaptiveRing::create(&prefix, 1, 1, 64)
+            .expect("create a file-backed ring")
+            .with_last_holder(4, LastHolder::Unlink, &[".beside.bin"])
+            .expect("take the only hold");
+        std::fs::write(with_suffix(&prefix, ".beside.bin"), b"kept by the layer above")
+            .expect("write the file the layer above keeps beside the ring");
+        let (pause, last_out) = crate::test_races::stopped(move || drop(ring));
+        let at_the_holders_region = files_named_like(&dir, &stem);
+        pause.release();
+        last_out.join().expect("the last holder drops");
+        assert_eq!(
+            at_the_holders_region,
+            vec![format!("{stem}.holders.bin")],
+            "the holders region is the only file of the ring left when it is removed",
+        );
+        let after = files_named_like(&dir, &stem);
+        assert!(after.is_empty(), "the last holder removes every file of the ring: {after:?}");
     }
 
     /// The locales that cannot carry a hold say so by name instead of
@@ -4068,8 +4665,8 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
         );
         let prefix = dir.join(&stem);
         {
@@ -4092,6 +4689,405 @@ mod tests {
         assert_eq!(again.removed, 0);
         assert_eq!(again.failed, 0);
         assert!(again.missing > 0);
+    }
+
+    /// A handle that attached before another grew a producer backing
+    /// opens that backing as it stands when it next syncs: the item the
+    /// owner sent into the grown ring is still there to receive. Both
+    /// handles pin the per-producer shape, because a shape belongs to
+    /// each handle and no registered consumer drives it from the counts.
+    #[test]
+    fn attaching_to_a_shm_backing_grown_later_keeps_what_its_owner_sent() {
+        let name = ShmRing::named("grown_attach");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let attacher = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("attach before any growth");
+        owner.morph_to(RingShape::Mpsc).expect("the owner sends into per-producer rings");
+        attacher.morph_to(RingShape::Mpsc).expect("the attacher reads the per-producer rings");
+        owner.register_producer().expect("the first producer registers");
+        let grown = owner.register_producer().expect("registration past the hint grows the ring");
+        owner.try_send(grown, b"kept").expect("send into the grown backing");
+
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        let n = attacher
+            .try_recv(0, &mut out)
+            .expect("the attacher's sync opens the grown backing without clearing it");
+        assert_eq!(n, ADAPTIVE_SPSC_PAYLOAD_BYTES, "an unstamped pop yields the whole slot");
+        assert_eq!(&out[..4], b"kept");
+    }
+
+    /// A handle that attaches to a shm-backed ring and turns ordering
+    /// stamps on opens the creator's ordering region as it stands: it
+    /// takes the creator's stamp kind and mode, and a different stamp
+    /// kind is refused rather than written over the creator's.
+    #[test]
+    fn attaching_with_ordering_stamps_keeps_the_creators_ordering_region() {
+        use crate::ordering::{OrderingMode, StampKind};
+        let name = ShmRing::named("ordering_attach");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64)
+            .and_then(|r| r.with_ordering_stamps_kind(StampKind::SharedCounter))
+            .expect("the creator turns stamps on");
+        owner.set_ordering_mode(OrderingMode::MergeStrict).expect("the creator sets a mode");
+
+        let attacher = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .and_then(|r| r.with_ordering_stamps())
+            .expect("an attacher turns stamps on over the creator's region");
+        assert_eq!(attacher.stamp_kind(), Some(StampKind::SharedCounter), "the attacher takes the creator's kind");
+        assert_eq!(attacher.ordering_mode(), Some(OrderingMode::MergeStrict), "the attacher reads the creator's mode");
+
+        let refused = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .and_then(|r| r.with_ordering_stamps_kind(StampKind::Monotonic));
+        assert!(
+            matches!(refused, Err(RingError::LayoutMismatch)),
+            "an attacher asking for another stamp kind is refused"
+        );
+        assert_eq!(owner.ordering_mode(), Some(OrderingMode::MergeStrict), "the creator's mode survives the refusal");
+    }
+
+    /// An attached handle that leaves takes nothing with it: a process
+    /// attaching afterward still finds the creator's ring and receives
+    /// what the creator sends. On Unix the region names would otherwise
+    /// go with the first handle to drop.
+    #[test]
+    fn a_later_attacher_joins_after_another_has_left() {
+        let name = ShmRing::named("rejoin");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let first = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("the first attach");
+        drop(first);
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .expect("an attach after another attacher has left");
+        owner.try_send(0, b"kept").expect("the owner sends");
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        later.try_recv(0, &mut out).expect("the later attacher receives");
+        assert_eq!(&out[..4], b"kept");
+    }
+
+    /// An attach finds the creator's ring or reports it missing: it never
+    /// makes empty regions of its own that a peer would then take for the
+    /// ring.
+    #[test]
+    fn an_attach_to_a_ring_nobody_made_is_not_found() {
+        let name = format!(
+            "subetha_absent_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the wall clock is after the epoch")
+                .as_nanos()
+        );
+        let attach = AdaptiveRing::open_shmfs(&name, 1, 1, 64);
+        assert!(
+            matches!(&attach, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+            "an attach to a ring nobody made reported {:?}",
+            attach.as_ref().err()
+        );
+    }
+
+    /// A peer that grew the ring and then left takes nothing with it: a
+    /// process attaching afterward opens the grown per-producer pair and
+    /// receives what the peer sent into it. The owner picks the growth up
+    /// before the peer leaves, as a running ring's other handles do; on
+    /// Windows that open is what keeps the grown sections.
+    #[test]
+    fn a_later_attacher_joins_after_the_peer_that_grew_the_ring_has_left() {
+        let name = ShmRing::named("grower_left");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let grower = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        grower.morph_to(RingShape::Mpsc).expect("the peer sends into per-producer rings");
+        grower.register_producer().expect("the first producer registers");
+        let grown = grower.register_producer().expect("registration past the hint grows the ring");
+        grower.try_send(grown, b"kept").expect("send into the grown backing");
+        let _synced = owner.pin_current_shape();
+        drop(grower);
+
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .expect("an attach after the peer that grew the ring has left");
+        later.morph_to(RingShape::Mpsc).expect("the later attacher reads the per-producer rings");
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        later.try_recv(0, &mut out).expect("the later attacher receives what the peer sent");
+        assert_eq!(&out[..4], b"kept");
+    }
+
+    /// A sidecar keeps its handle holding what other handles publish while
+    /// its caller makes no calls, so a per-producer pair a peer grew
+    /// outlives the peer though nothing else had opened it: on Windows the
+    /// owner's open is what keeps the grown sections. A process attaching
+    /// later receives what the peer sent into the pair.
+    #[test]
+    fn a_sidecar_holds_a_pair_a_peer_grew_so_the_pair_outlives_the_peer() {
+        let name = ShmRing::named("sidecar_pair");
+        let owner = Arc::new(AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring"));
+        // The cadence managed mode is driven at in the workload the sidecar
+        // tests below reproduce.
+        let sidecar = AdaptiveRingSidecar::spawn(
+            Arc::clone(&owner),
+            DefaultRingShapePolicy::default(),
+            std::time::Duration::from_micros(1000),
+        );
+        let grower = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        grower.morph_to(RingShape::Mpsc).expect("the peer sends into per-producer rings");
+        grower.register_producer().expect("the first producer registers");
+        let grown = grower.register_producer().expect("registration past the hint grows the ring");
+        grower.try_send(grown, b"kept").expect("send into the grown backing");
+        assert!(
+            within_lost(|| owner.held_pairs() == 2),
+            "the owner's sidecar did not open the grown pair within {LOST:?}"
+        );
+        drop(grower);
+
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .expect("an attach after the peer that grew the ring has left");
+        later.morph_to(RingShape::Mpsc).expect("the later attacher reads the per-producer rings");
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        later.try_recv(0, &mut out).expect("the later attacher receives what the peer sent");
+        assert_eq!(&out[..4], b"kept");
+        sidecar.shutdown();
+    }
+
+    /// A sidecar opens the payload region a peer's oversized frame made, so
+    /// the region outlives the peer though nothing else had opened it, and
+    /// the owner receives the frame's payload.
+    #[test]
+    fn a_sidecar_holds_the_payload_region_a_peer_made_so_it_outlives_the_peer() {
+        let name = ShmRing::named("sidecar_frames");
+        let owner = Arc::new(AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring"));
+        let sidecar = AdaptiveRingSidecar::spawn(
+            Arc::clone(&owner),
+            DefaultRingShapePolicy::default(),
+            std::time::Duration::from_micros(1000),
+        );
+        let maker = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        let sent = vec![5u8; 3000];
+        maker.send_frame(0, &sent).expect("the peer's oversized frame makes the payload region");
+        assert!(
+            within_lost(|| owner.frame_region.get().is_some()),
+            "the owner's sidecar did not open the payload region within {LOST:?}"
+        );
+        drop(maker);
+
+        let mut out = Vec::new();
+        owner.recv_frame(0, &mut out).expect("the owner receives the peer's frame");
+        assert!(
+            out == sent,
+            "the owner read {} bytes starting {:?}, not the payload",
+            out.len(),
+            &out[..out.len().min(8)]
+        );
+        sidecar.shutdown();
+    }
+
+    /// A per-producer pair whose every handle closed before another opened
+    /// it keeps serving its producer slot. On Windows its sections went
+    /// with that handle, and what was sent into it with them: the next
+    /// handle to look lays the pair out again empty, and the producer that
+    /// takes the slot next sends through it. On Unix the pair's names
+    /// outlive every handle, and a later attach receives what was sent.
+    #[test]
+    fn a_grown_pair_every_handle_closed_keeps_serving_its_slot() {
+        let name = ShmRing::named("pair_closed");
+        let _owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let grower = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        grower.morph_to(RingShape::Mpsc).expect("the peer sends into per-producer rings");
+        grower.register_producer().expect("the first producer registers");
+        let grown = grower.register_producer().expect("registration past the hint grows the ring");
+        grower.try_send(grown, b"kept").expect("send into the grown backing");
+        drop(grower);
+
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .expect("an attach after the peer that grew the ring has left");
+        later.morph_to(RingShape::Mpsc).expect("the later attacher reads the per-producer rings");
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        if cfg!(windows) {
+            let drained = later.try_recv(0, &mut out);
+            assert!(
+                matches!(drained, Err(RingError::Empty)),
+                "the pair laid out again held something: {drained:?}"
+            );
+            // The peer's registration goes, as a process that has left has
+            // its registrations reaped, and the next producer takes its slot.
+            later.unregister_producer(grown);
+            let next = later.register_producer().expect("a producer takes the freed slot");
+            assert_eq!(next, grown, "the next producer lands on the slot the pair serves");
+            later.try_send(next, b"next").expect("send through the pair laid out again");
+            later.try_recv(0, &mut out).expect("the later attacher receives through it");
+            assert_eq!(&out[..4], b"next");
+        } else {
+            later.try_recv(0, &mut out).expect("the later attacher receives what the peer sent");
+            assert_eq!(&out[..4], b"kept");
+        }
+    }
+
+    /// A receiver never makes the payload region, so an offset frame whose
+    /// region has gone is an error rather than a region of the receiver's
+    /// own read as the payload. On Windows the region went with the peer
+    /// that made it, which left before any other handle opened it; on Unix
+    /// its name outlives every handle and the frame arrives.
+    #[test]
+    fn an_offset_frame_whose_payload_region_went_with_its_maker_is_an_error() {
+        let name = ShmRing::named("frames_gone");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let maker = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        let sent = vec![5u8; 3000];
+        maker.send_frame(0, &sent).expect("the peer's oversized frame makes the payload region");
+        drop(maker);
+
+        let mut out = Vec::new();
+        let received = owner.recv_frame(0, &mut out);
+        if cfg!(windows) {
+            assert!(
+                matches!(received, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+                "a frame whose payload region is gone reported {received:?} with {} bytes starting {:?}",
+                out.len(),
+                &out[..out.len().min(8)]
+            );
+        } else {
+            received.expect("the owner receives the peer's frame");
+            assert!(
+                out == sent,
+                "the owner read {} bytes starting {:?}, not the payload",
+                out.len(),
+                &out[..out.len().min(8)]
+            );
+        }
+    }
+
+    /// An offset frame names the laying-out of the payload region it was
+    /// sent into. Once that region has gone and a later sender has made a
+    /// new one under the same name, the frame is an error rather than a
+    /// read of whatever the new region holds at its block, and the later
+    /// sender's frame arrives. On Windows the region goes with the peer
+    /// that made it when no other handle opened it; on Unix, when its name
+    /// is removed while the ring is in use.
+    #[test]
+    fn an_offset_frame_sent_into_a_replaced_payload_region_is_not_read_from_the_new_one() {
+        let name = ShmRing::named("frames_replaced");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let second_peer = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a second peer attaches");
+        let maker = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        maker
+            .send_frame(0, &[1u8; 3000])
+            .expect("the peer's oversized frame makes the payload region");
+        drop(maker);
+        if !cfg!(windows) {
+            let report = AdaptiveRing::unlink_shmfs(&name, 1);
+            assert_eq!(report.failed, 0, "the ring's names are removed: {:?}", report.first_failure);
+        }
+        let second = vec![2u8; 3000];
+        second_peer
+            .send_frame(0, &second)
+            .expect("the second peer's oversized frame makes a new payload region");
+
+        let mut out = Vec::new();
+        let first = owner.recv_frame(0, &mut out);
+        assert!(
+            matches!(first, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+            "a frame whose payload region was replaced reported {first:?} with {} bytes starting {:?}",
+            out.len(),
+            &out[..out.len().min(8)]
+        );
+        owner.recv_frame(0, &mut out).expect("the owner receives the second peer's frame");
+        assert!(
+            out == second,
+            "the owner read {} bytes starting {:?}, not the second peer's payload",
+            out.len(),
+            &out[..out.len().min(8)]
+        );
+    }
+
+    /// The payload region belongs to the ring, not to the handle whose
+    /// oversized frame made it. Once that peer has left, a process that
+    /// attaches afterward receives an offset frame through the ring's
+    /// region; with the region's name gone it would make an empty region
+    /// of its own and read zeros where the payload was.
+    #[test]
+    fn an_offset_frame_reaches_an_attacher_after_the_peer_that_made_the_payload_region_left() {
+        let name = ShmRing::named("payload_left");
+        let owner = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+        let maker = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("a peer attaches");
+        let first = vec![1u8; 3000];
+        maker.send_frame(0, &first).expect("the peer's oversized frame makes the payload region");
+        let mut out = Vec::new();
+        owner.recv_frame(0, &mut out).expect("the owner receives through the peer's region");
+        assert!(out == first, "the owner read {} bytes that were not the payload", out.len());
+        drop(maker);
+
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64).expect("an attach after the peer has left");
+        let second = vec![2u8; 3000];
+        owner.send_frame(0, &second).expect("the owner sends an offset frame");
+        later.recv_frame(0, &mut out).expect("the later attacher receives it");
+        assert!(
+            out == second,
+            "the later attacher read {} bytes starting {:?}, not the payload",
+            out.len(),
+            &out[..out.len().min(8)]
+        );
+    }
+
+    /// A shm ring's names outlive every handle, as a file-backed ring's
+    /// files do, and `unlink_shmfs` removes every one of them, the
+    /// per-producer pair grown past the hint and the payload region
+    /// included. On Windows a name goes with its last handle, so once
+    /// every handle is gone there is nothing left to remove.
+    #[test]
+    fn a_shm_rings_names_outlive_its_handles_until_unlink_shmfs() {
+        let name = ShmRing::named("outlive");
+        {
+            let ring = AdaptiveRing::create_shmfs(&name, 1, 1, 64).expect("create a shm-backed ring");
+            ring.register_producer().expect("the first producer registers");
+            ring.register_producer().expect("registration past the hint grows the ring");
+            ring.send_frame(0, &[4u8; 3000]).expect("an oversized frame makes the payload region");
+        }
+        #[cfg(unix)]
+        {
+            let again = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+                .expect("the ring's names outlive every handle");
+            drop(again);
+            let report = AdaptiveRing::unlink_shmfs(&name, 1);
+            assert_eq!(report.failed, 0, "{:?}", report.first_failure);
+            // The spsc, vyukov and payload regions, two per-producer
+            // pairs and the directory; no ordering or holders region was
+            // ever made.
+            assert_eq!((report.removed, report.missing), (8, 2), "{report:?}");
+        }
+        #[cfg(windows)]
+        assert_eq!(AdaptiveRing::unlink_shmfs(&name, 1), UnlinkReport::default());
+        let attach = AdaptiveRing::open_shmfs(&name, 1, 1, 64);
+        assert!(
+            matches!(&attach, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+            "an attach after unlink_shmfs reported {:?}",
+            attach.as_ref().err()
+        );
+    }
+
+    /// A shm ring that takes holds stays while any holder lives, even
+    /// after its creator has left, and the last holder out removes every
+    /// name, as a file-backed ring's last holder removes its files.
+    #[test]
+    fn the_last_holder_out_of_a_shm_ring_removes_every_name() {
+        use crate::ring_holders::LastHolder;
+
+        let name = ShmRing::named("shm_last");
+        let creator = AdaptiveRing::create_shmfs(&name, 1, 1, 64)
+            .expect("create a shm-backed ring")
+            .with_last_holder(4, LastHolder::Unlink, &[])
+            .expect("a shm-backed ring takes holds");
+        let opener = AdaptiveRing::open_shmfs(&name, 1, 1, 64)
+            .expect("attach")
+            .with_last_holder(4, LastHolder::Unlink, &[])
+            .expect("the attacher takes a hold");
+        assert_eq!(creator.holders(), Some(2), "both holds are counted");
+        drop(creator);
+        assert_eq!(opener.holders(), Some(1), "the survivor sees itself alone");
+
+        let later = AdaptiveRing::open_shmfs(&name, 1, 1, 64);
+        assert!(later.is_ok(), "the ring stays while a holder lives: {:?}", later.as_ref().err());
+        drop(later);
+        drop(opener);
+        let gone = AdaptiveRing::open_shmfs(&name, 1, 1, 64);
+        assert!(
+            matches!(&gone, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+            "an attach after the last holder left reported {:?}",
+            gone.as_ref().err()
+        );
     }
 
     #[test]
@@ -4276,7 +5272,10 @@ mod tests {
                 .collect();
             let worker = first / ROUNDS;
             let ring = slots[worker].load(Ordering::Acquire);
+            #[cfg(debug_assertions)]
             let history = crate::ring_trace::recent_for(ring, usize::MAX).join("\n  ");
+            #[cfg(not(debug_assertions))]
+            let history = "not recorded; the ring trace is kept in debug builds only";
             panic!(
                 "published and never delivered: {named:?}\n  \
                  worker {worker} published from producer slot {ring}; what happened \
@@ -4460,10 +5459,9 @@ mod tests {
         producer.join().expect("the producer thread finishes");
 
         // The churn is quiesced, so every slot the workers gave up must
-        // now name no process. A slot left naming one is a release that
-        // cleared the bit before writing the sentinel, and the reaper
-        // would then be free to take a slot whose holder is still live -
-        // which is what put two readers on one ring.
+        // now name no process: a release writes the sentinel before it
+        // clears the bit. The check is built into debug builds only.
+        #[cfg(debug_assertions)]
         ring.directory.assert_free_slots_name_no_process();
 
         // Whatever is still in the ring belongs to the tally too; the
@@ -5432,7 +6430,8 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos()).unwrap_or(0),
+                .expect("the wall clock is after the epoch")
+                .as_nanos(),
         ));
 
         let creator = AdaptiveRing::create(&prefix, 2, 1, 64)
@@ -5488,7 +6487,8 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos()).unwrap_or(0),
+                .expect("the wall clock is after the epoch")
+                .as_nanos(),
         ));
 
         let creator = AdaptiveRing::create(&prefix, 1, 1, 64).unwrap();

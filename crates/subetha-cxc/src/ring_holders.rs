@@ -17,6 +17,10 @@
 //! a limit it does not have is not one to invent. A variable-size table
 //! belongs where variable sizing is free.
 //!
+//! The region is a file beside a file-backed ring and a shared-memory
+//! region beside a shm-backed one, named in the ring's namespace so every
+//! process that reaches the ring reaches its table.
+//!
 //! # Layout
 //!
 //! ```text
@@ -35,10 +39,12 @@ use std::fs::File;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use memmap2::{MmapMut, MmapOptions};
 
 use crate::holder_table::{holder_table_size, HolderTable};
+use crate::shm_file::{ShmFile, ShmNamespace};
 
 pub const HOLDERS_MAGIC: u64 = 0x5355_4245_484c_4452; // "SUBEHLDR"
 
@@ -105,14 +111,23 @@ impl std::fmt::Display for HoldersError {
 
 impl std::error::Error for HoldersError {}
 
+/// Where a holder table lives.
+enum HoldersRegion {
+    /// A file beside a file-backed ring.
+    File { _file: File, mmap: MmapMut, path: PathBuf },
+    /// A shared-memory region beside a shm-backed ring. Its name outlives
+    /// every hold, as the file does, and goes with
+    /// [`RingHolders::unlink_self`]. `None` once that has let the mapping
+    /// go.
+    Shm { shm: Option<ShmFile>, name: String, namespace: ShmNamespace },
+}
+
 /// One process's hold on a ring.
 pub struct RingHolders {
-    _file: File,
-    mmap: MmapMut,
+    region: HoldersRegion,
     holders: HolderTable,
     slot: usize,
     capacity: usize,
-    path: PathBuf,
     on_last: LastHolder,
 }
 
@@ -138,7 +153,8 @@ impl RingHolders {
             |ptr| unsafe { (*(ptr as *const HoldersHeader)).magic == HOLDERS_MAGIC },
         )
         .map_err(|e| crate::mmf_attach::attach_error(e, HoldersError::LayoutMismatch))?;
-        Self::attach(file, mmap, path, max_holders, on_last)
+        let base = mmap.as_ptr();
+        Self::attach(HoldersRegion::File { _file: file, mmap, path }, base, max_holders, on_last)
     }
 
     /// Attach to a region that must already exist.
@@ -154,7 +170,70 @@ impl RingHolders {
             return Err(HoldersError::LayoutMismatch);
         }
         let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        Self::attach(file, mmap, path, max_holders, on_last)
+        let base = mmap.as_ptr();
+        Self::attach(HoldersRegion::File { _file: file, mmap, path }, base, max_holders, on_last)
+    }
+
+    /// Create the region as shared memory named `name` in `namespace` if
+    /// it is not there, attach if it is, and take a slot either way. The
+    /// region's name outlives this hold, as a file does; the last holder
+    /// out removes it with [`unlink_self`](Self::unlink_self).
+    ///
+    /// `sddl` is applied when this call creates the region, as for the
+    /// regions of the shm-backed ring it sits beside.
+    pub fn create_or_attach_shm(
+        name: &str,
+        namespace: ShmNamespace,
+        sddl: Option<&str>,
+        max_holders: usize,
+        on_last: LastHolder,
+    ) -> Result<Self, HoldersError> {
+        assert!(max_holders >= 1, "a ring needs room for at least one holder");
+        let mut shm = ShmFile::create_or_open_named_secured(
+            name,
+            holders_region_size(max_holders),
+            namespace,
+            sddl,
+        )?;
+        shm.keep_name();
+        let base = shm.as_mut_slice().as_mut_ptr();
+        // SAFETY: the mapping holds holders_region_size(max_holders)
+        // bytes, zeroed when this call made it and laid out by this same
+        // protocol when another process did.
+        unsafe { Self::init_or_await(base, max_holders)? };
+        let region = HoldersRegion::Shm { shm: Some(shm), name: name.to_owned(), namespace };
+        Self::attach(region, base, max_holders, on_last)
+    }
+
+    /// Lay a shared-memory region out if this process reached it first,
+    /// or wait for the one that did. The `magic: 0 -> in progress` swap
+    /// decides; the winner writes the capacity and then the magic. A
+    /// layout that never finishes, such as one a process died during, is
+    /// refused after [`INIT_WAIT`](crate::mmf_attach::INIT_WAIT), the
+    /// bound a file-backed region's attach gives its builder.
+    ///
+    /// # Safety
+    /// `ptr` addresses at least `holders_region_size(capacity)` bytes,
+    /// zeroed or laid out by this protocol.
+    unsafe fn init_or_await(ptr: *mut u8, capacity: usize) -> Result<(), HoldersError> {
+        const IN_PROGRESS: u64 = 1;
+        let magic = unsafe { &*(ptr as *const AtomicU64) };
+        if magic
+            .compare_exchange(0, IN_PROGRESS, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            unsafe { (*(ptr as *mut HoldersHeader)).capacity = capacity as u64 };
+            magic.store(HOLDERS_MAGIC, Ordering::Release);
+            return Ok(());
+        }
+        let deadline = Instant::now() + crate::mmf_attach::INIT_WAIT;
+        while magic.load(Ordering::Acquire) != HOLDERS_MAGIC {
+            if Instant::now() >= deadline {
+                return Err(HoldersError::LayoutMismatch);
+            }
+            std::hint::spin_loop();
+        }
+        Ok(())
     }
 
     /// # Safety
@@ -171,19 +250,20 @@ impl RingHolders {
         }
     }
 
+    /// Take a slot in the table at `base`, the start of `region`'s
+    /// mapping, which stays where it is for as long as `region` holds it.
     fn attach(
-        file: File,
-        mmap: MmapMut,
-        path: PathBuf,
+        region: HoldersRegion,
+        base: *const u8,
         capacity: usize,
         on_last: LastHolder,
     ) -> Result<Self, HoldersError> {
-        let header = unsafe { &*(mmap.as_ptr() as *const HoldersHeader) };
+        let header = unsafe { &*(base as *const HoldersHeader) };
         if header.magic != HOLDERS_MAGIC || header.capacity != capacity as u64 {
             return Err(HoldersError::LayoutMismatch);
         }
         let holders = unsafe {
-            HolderTable::from_ptr(mmap.as_ptr().add(size_of::<HoldersHeader>()), capacity)
+            HolderTable::from_ptr(base.add(size_of::<HoldersHeader>()), capacity)
         };
         let slot = match holders.claim(HOLDER_PRESENT) {
             Some(s) => s,
@@ -194,7 +274,7 @@ impl RingHolders {
                 holders.claim(HOLDER_PRESENT).ok_or(HoldersError::Exhausted)?
             }
         };
-        Ok(Self { _file: file, mmap, holders, slot, capacity, path, on_last })
+        Ok(Self { region, holders, slot, capacity, on_last })
     }
 
     /// Processes holding this ring, this one included.
@@ -245,14 +325,18 @@ impl RingHolders {
         self.holders.live() == 0
     }
 
-    /// Drop the mapping and remove the holders region itself.
+    /// Drop the mapping and remove the holders region itself: its file,
+    /// or its shared-memory name.
     ///
-    /// Consumed, because the region is gone afterwards and the view must
+    /// Consumed, because the region is gone afterward and the view must
     /// not outlive it.
     pub fn unlink_self(mut self) -> Result<(), HoldersError> {
-        let path = std::mem::take(&mut self.path);
         self.release_mapping()?;
-        match crate::region_file::remove(&path) {
+        let removed = match &mut self.region {
+            HoldersRegion::File { path, .. } => crate::region_file::remove(&std::mem::take(path)),
+            HoldersRegion::Shm { name, namespace, .. } => remove_shm_name(name, *namespace),
+        };
+        match removed {
             Ok(()) => Ok(()),
             // Another holder removed it first, which is the same outcome.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -260,17 +344,34 @@ impl RingHolders {
         }
     }
 
-    /// Replace the live mapping with a one-page anonymous one, so the
-    /// file handle is the only thing still holding the path.
+    /// Let the live mapping go. A file's is replaced with a one-page
+    /// anonymous mapping, so the file handle is the only thing still
+    /// holding the path; a shared-memory region's is closed outright.
     ///
     /// Windows refuses to remove a file while a mapping is live, so a
     /// failure here means the removal that follows cannot succeed. It is
     /// returned rather than absorbed: an unlink that quietly left the
     /// region on disk would read as a ring that had been cleaned up.
     fn release_mapping(&mut self) -> Result<(), HoldersError> {
-        self.mmap = MmapOptions::new().len(1).map_anon()?;
+        match &mut self.region {
+            HoldersRegion::File { mmap, .. } => *mmap = MmapOptions::new().len(1).map_anon()?,
+            HoldersRegion::Shm { shm, .. } => drop(shm.take()),
+        }
         Ok(())
     }
+}
+
+/// Remove a shared-memory holders region's name.
+#[cfg(unix)]
+fn remove_shm_name(name: &str, namespace: ShmNamespace) -> std::io::Result<()> {
+    crate::shm_file::unlink_named(name, namespace)
+}
+
+/// A Windows section goes with its last handle, which `release_mapping`
+/// closed if it was the last, so there is no name left to remove.
+#[cfg(windows)]
+fn remove_shm_name(_name: &str, _namespace: ShmNamespace) -> std::io::Result<()> {
+    Ok(())
 }
 
 impl std::fmt::Debug for RingHolders {
@@ -415,6 +516,57 @@ mod tests {
         );
         drop(a);
         cleanup(&path);
+    }
+
+    /// A shared-memory table's name, unique to this run, removed when the
+    /// test ends however it ends.
+    struct ShmScratch(String);
+
+    impl ShmScratch {
+        fn named(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the wall clock is after the epoch")
+                .as_nanos();
+            Self(format!("subetha_holders_{tag}_{}_{nanos}", std::process::id()))
+        }
+    }
+
+    impl Drop for ShmScratch {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            if let Err(e) = crate::shm_file::unlink_named(&self.0, ShmNamespace::Session)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("the scratch table {} could not be removed: {e}", self.0);
+            }
+        }
+    }
+
+    /// A shared-memory table counts its holds as a file one does, outlives
+    /// the hold that made it, and goes with the last hold out.
+    #[test]
+    fn a_shm_table_outlives_its_maker_and_goes_with_the_last_hold() {
+        let name = ShmScratch::named("shm");
+        let hold = |on_last| {
+            RingHolders::create_or_attach_shm(&name.0, ShmNamespace::Session, None, 4, on_last)
+        };
+        let maker = hold(LastHolder::Unlink).expect("the first hold makes the table");
+        let mut other = hold(LastHolder::Unlink).expect("a second hold attaches");
+        assert_eq!(other.live(), 2);
+        drop(maker);
+
+        let later = hold(LastHolder::Unlink).expect("a hold after the maker has gone");
+        assert_eq!(later.live(), 2, "the later hold joins the table the maker made");
+        drop(later);
+
+        assert!(other.release(), "the only hold left is the last one out");
+        other.unlink_self().expect("the last hold removes the table");
+        match ShmFile::open_named_in(&name.0, holders_region_size(4), ShmNamespace::Session) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("the table's open failed for another reason: {e}"),
+            Ok(_) => panic!("the table is still there after its last hold removed it"),
+        }
     }
 
     #[test]

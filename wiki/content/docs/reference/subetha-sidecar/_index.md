@@ -18,23 +18,23 @@ instance's `Policy` to decide migrations.
 | `SidecarHandle` | auto-unregistering handle held inside `SidecarBox` |
 | `Policy` trait | decides whether a migration is warranted |
 | `FixedPolicy(u32)` | always returns `Some(tag)` (testing) |
-| `NoMigrationPolicy` | always returns `None` (default for primitives without a shipped policy) |
+| `NoMigrationPolicy` | always returns `None` (the policy of primitives with no adaptation rule of their own) |
 | `InstanceStats` | drain-and-fold accumulator the sidecar maintains per instance |
 | `InstanceId` | `u32` packing `(node_index: 8 bits, slot: 24 bits)` |
 | `global() -> Arc<Sidecar>` | lazy-init access to the process-global sidecar |
 | `numa_node_count() -> u32` | detected NUMA topology (clamped to ≥ 1) |
-| `current_numa_node() -> u32` | which node the current thread is bound to |
+| `current_numa_node() -> u32` | the NUMA node of the processor the calling thread is running on |
 
 ## Architecture
 
 ```mermaid
 flowchart TB
     subgraph APP["application threads"]
-        P1["prim1.op() pushes to obs_ring[tid]"]
-        P2["prim2.op() pushes to obs_ring[tid]"]
+        P1["prim1.op() pushes to prim1's ObservationRing"]
+        P2["prim2.op() pushes to prim2's ObservationRing"]
     end
     subgraph SC["subetha-sidecar-node0 thread, every 200 us"]
-        D["for each registered instance on node 0:<br/>drain its ObservationRing,<br/>fold into InstanceStats,<br/>policy.decide(stats, current_tag),<br/>if Some(new_tag): set_tag(new_tag)"]
+        D["for each registered instance on node 0:<br/>drain its ObservationRing,<br/>fold into InstanceStats,<br/>policy.decide(stats, current_tag),<br/>if a new tag: apply_migration(new_tag)"]
     end
     P1 --> D
     P2 --> D
@@ -48,8 +48,9 @@ flowchart TB
   `subetha-sidecar-node{N}` and polls every 200 µs
   (`POLL_INTERVAL = Duration::from_micros(200)`).
 - **Instance routing**: each `InstanceId` is `(node: 8 bits, slot: 24
-  bits)`. The slot lives in `NodeSidecar.instances[node]` so the
-  scan thread for node N only touches the slots bound to its node.
+  bits)`. A registration is filed at `nodes[node].instances[slot]`,
+  under the node `current_numa_node()` names at registration, so the
+  scan thread for node N only touches the slots filed under its node.
 - **Hard cap**: 10,000 simultaneously-registered instances
   (`DEFAULT_MAX_INSTANCES`). `Sidecar::set_max_instances` raises the
   cap. Crossing it from `register_raw` panics with a diagnostic.
@@ -76,13 +77,19 @@ pub trait AdaptiveInstance: Send + Sync + 'static {
     fn ring(&self) -> &ObservationRing;
     fn make_policy(&self) -> Box<dyn Policy>;
     // Optional: implement `apply_migration` for primitives that need
-    // dual-stack data swap on tag change. Default is no-op (set_tag
-    // only).
+    // dual-stack data swap on tag change. The default sets the tag.
 }
 
 pub fn global() -> Arc<Sidecar>;
 
 impl Sidecar {
+    pub unsafe fn register_raw(
+        &self,
+        header: NonNull<HandshakeHeader>,
+        ring: NonNull<ObservationRing>,
+        instance: Option<NonNull<dyn AdaptiveInstance>>,
+        policy: Box<dyn Policy>,
+    ) -> InstanceId;
     pub fn unregister(&self, id: InstanceId);
     pub fn instance_count(&self) -> usize;
     pub fn max_instances(&self) -> usize;

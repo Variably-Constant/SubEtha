@@ -116,8 +116,9 @@ impl QuicBridgeClient {
     /// every already-available slot (up to [`EGRESS_BATCH_SLOTS`])
     /// goes out in one stream write; a lone item ships immediately.
     ///
-    /// Returns when all `n_items` have been written + the stream is
-    /// finished (the peer has acknowledged the FIN).
+    /// Returns when all `n_items` have been written, the stream is
+    /// finished (the peer has acknowledged the FIN), and the close of
+    /// the connection has been sent.
     pub async fn run(
         &self,
         n_items: u64,
@@ -172,16 +173,10 @@ impl QuicBridgeClient {
         }
         send.finish().map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
         send.stopped().await.map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
-        // UDP segmentation-offload diagnostic: datagrams per send
-        // io > 1 means the platform's GSO path is engaged (quinn
-        // batches multiple datagrams into one sendmsg/WSASendMsg).
-        let udp = conn.stats().udp_tx;
-        eprintln!(
-            "[quic] udp_tx datagrams={} ios={} (gso batching {:.1}x)",
-            udp.datagrams,
-            udp.ios,
-            udp.datagrams as f64 / udp.ios.max(1) as f64,
-        );
+        // The server's side ends on this close. wait_idle returns once the
+        // connection has shut down, with the close sent.
+        conn.close(0u32.into(), b"");
+        endpoint.wait_idle().await;
         Ok(())
     }
 }
@@ -218,8 +213,8 @@ impl QuicBridgeServer {
 
     /// Accept one incoming connection, read its uni stream, and
     /// push each received slot into the consumer ring. Returns
-    /// the number of items received when the client's stream has
-    /// been fully drained.
+    /// the number of items received once the client's stream has
+    /// been fully drained and the client has closed the connection.
     pub async fn accept_one(&self) -> Result<u64, QuicBridgeError> {
         let incoming = self
             .endpoint
@@ -281,6 +276,21 @@ impl QuicBridgeServer {
                 carry.extend_from_slice(data);
             }
         }
+        // The stream ends after the items its header declared.
+        let trailing = recv
+            .read(&mut buf)
+            .await
+            .map_err(|e| QuicBridgeError::Quic(e.to_string()))?;
+        if trailing.is_some() {
+            return Err(QuicBridgeError::Quic(
+                "the stream carried more than its header declared".into(),
+            ));
+        }
+        // The client closes the connection once its finish is
+        // acknowledged, and this side waits for that close, so the
+        // acknowledgment of the client's last data reaches it before the
+        // connection ends.
+        conn.closed().await;
         Ok(total)
     }
 }
@@ -300,7 +310,7 @@ pub fn generate_self_signed_cert(
         .map_err(|e| QuicBridgeError::Tls(e.to_string()))?;
     Ok((
         cert.cert.der().to_vec(),
-        cert.key_pair.serialize_der(),
+        cert.signing_key.serialize_der(),
     ))
 }
 

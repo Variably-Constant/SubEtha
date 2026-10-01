@@ -16,7 +16,9 @@ ring workloads.
 
 | Lever | Where | Effect |
 |---|---|---|
-| MONITORX/MWAITX + WAITPKG monitor-wait tier | `monitor_wait.rs`, ahead of every kernel park in `cross_process_waker.rs` | waker wake p50 120 ns against 9,321 ns for the kernel park, Windows / Zen+; carries the Windows cross-process wake (`WaitOnAddress` is intra-process only), where a two-process pair completes in 336 ms |
+| MONITORX/MWAITX + WAITPKG monitor-wait tier | `monitor_wait.rs`, ahead of every kernel park in `cross_process_waker.rs` | waker wake p50 120 ns against 9,321 ns for the kernel park, Windows / Zen+; its wake crosses processes, since monitors key on physical addresses |
+| Calibrated wait plan | `wait_calibration.rs`, `wait_plan.rs`, `wait_active.rs`: the spin, monitor and park lengths of every blocking wait | each length from the host's measured wake costs under the ski-rental rule, per core class and load band, cached per user; held within 2x of the better of a pure spin and a pure park at every gap from 1 to 1024 us in every round, and below the spin summed: 0.78 to 1.83x the better fixed arm on the Ubuntu guest (16-vCPU Zen 3 KVM, no monitor family), 0.80 to 1.90x on the FreeBSD guest (amd64, a guest of the same host); on the Windows host (Ryzen 9 7900X, MWAITX) with 23.85 to 24.00 of 24 logical processors busy with other work, 0.42 to 1.93x in the anonymous-ring passes, three file-backed cells undecided with one round of three above 2x, and 0.47 to 0.81 of the fixed ladder summed over the gaps in all four passes |
+| Windows named-event park | `park_event.rs`, past the monitor budget for a file- or shm-backed waiter in `cross_process_waker.rs` | an idle cross-process waiter is charged 0.000 of a processor, against 0.953 to 1.008 on the monitor alone; a 100 us round trip pays 4.0 us more at p50, Windows 11 / Ryzen 9 7900X |
 | AArch64 `LDAXR`+`WFE` monitor arm | `monitor_wait.rs` (`ArmWfe`) | base-ISA, always selected on aarch64; a remote store wakes via the global exclusive monitor's Exclusive->Open event, no SEV needed. Type-checked on aarch64-linux + aarch64-darwin |
 | macOS `os_sync_wait_on_address` park | `cross_process_waker.rs` platform arms | the public futex (macOS 14.4+), `OS_SYNC_WAIT_ON_ADDRESS_SHARED` for file / shm backings |
 | `PREFETCHW` before producer / consumer seq CAS | `shared_ring.rs` MPMC push / pop | contended CAS ping-pong 59 ns/round-trip with the prefetch against 186 ns without it (3.2x) on bare-metal Zen+ |
@@ -24,7 +26,7 @@ ring workloads.
 | MMF warm-up at attach | `mmf_warm.rs`, called from `shm_file.rs` + `shared_ring::open` + `shared_region` | Linux `MADV_POPULATE_WRITE`: first full 32 MiB drain 7-13 ms with warm-up against 54-63 ms without (5-8x; the fault storm leaves the traffic path). FreeBSD `MADV_WILLNEED`: neutral (shm pages already resident) |
 | Egress staging buffer reuse | `blocking_tcp_bridge.rs` | one stream-lifetime staging buffer threaded through `spawn_blocking`, instead of an allocation per 256-slot batch |
 | Linux TCP knobs | `net_tune.rs`, all bridge sockets | `TCP_QUICKACK` and `TCP_NOTSENT_LOWAT` (16 KiB = one egress batch); advisory, no-op off Linux |
-| Waker `parked_mask` | `cross_process_waker.rs` header word | a producer wake scan reads one header line instead of `capacity` slot lines when nobody is parked (the common case); stale bits are filtered by per-slot state, missing bits covered by the parker's pre-wait double-check |
+| Waker `parked_mask` | `cross_process_waker.rs` header word | a producer wake scan reads one header line instead of `capacity` slot lines when nobody is parked (the common case); stale bits are filtered by per-slot state, missing bits covered by the parker's pre-wait double-check, which a SeqCst fence on each side orders against the scan |
 
 ## Available as caller overrides
 

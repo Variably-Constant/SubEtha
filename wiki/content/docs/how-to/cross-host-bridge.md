@@ -11,6 +11,12 @@ step per OS, the run commands, and the verification numbers you
 should expect. The driver throughout is `examples/bridge_lan.rs`,
 which is also how the project's own cross-host numbers were measured.
 
+From Python and PowerShell the bridges are classes and cmdlets rather
+than this driver: [Bridge two hosts from Python](python/bridge-two-hosts.md)
+and [from PowerShell](powershell/bridge-two-hosts.md) walk the same
+steps through them. The certificate and firewall steps below apply to
+them unchanged.
+
 ## Pick a bridge
 
 For an untrusted or lossy real-world WAN, reach for **Sens-O-Matic**: it

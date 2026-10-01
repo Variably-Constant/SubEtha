@@ -53,10 +53,12 @@ the full AdaptiveRing shape axis on top.
   propagated to the inner `AdaptiveRing` instances, which grow their
   per-producer backings on demand past them.
 - **Initial locale is `Locale::Anon`**; the cheapest backing.
-- **Registrations apply to all three backings in lockstep**:
-  `register_producer()` / `register_consumer()` register the same
-  id on Anon + File + ShmFs so a subsequent morph finds the right
-  active peer count.
+- **Registrations apply to all three backings under one id**:
+  `register_producer()` / `register_consumer()` claim the id on the
+  File backing, whose peer directory every handle on the base path
+  shares, and carry it onto Anon + ShmFs, so a subsequent morph finds
+  the right active peer count and a handle from `open` is handed an
+  id no other handle holds.
 
 ## Pin composition
 
@@ -77,8 +79,9 @@ check per axis; caller chooses cadence.
 and `locale_generation() -> u64` read the live tag + generation directly, and
 `anon_ring()` / `file_ring()` / `shmfs_ring()` return `&AdaptiveRing` for each
 backing unconditionally (the un-pinned counterpart to `as_anon` / `as_file` /
-`as_shmfs`). Dropping the ring removes the locale tag/generation MMFs and the
-file-backing ring files.
+`as_shmfs`). Dropping the ring removes the locale tag/generation MMFs, the
+file-backing ring files and the shared-memory backing's names, in every
+process that holds the ring.
 
 ## Ordering stamps (global-FIFO axis across locales)
 
@@ -134,7 +137,12 @@ scanner thread that honors application-driven locale requests
 under a hysteresis cooldown so rapid-flip requests collapse into a
 single migration. The migration cost (every in-flight item copies
 between backings) is paid once per cooldown window, not once per
-user request.
+user request. Each scan also opens what other handles have published
+into the shared-memory backing since the last one, a per-producer pair
+grown past the hint or the payload region, so this handle holds them
+while its caller makes no calls: on Windows a section goes with the
+last handle to it (see
+[AdaptiveRing's lifetime](../shared-ring-adaptive/#lifetime)).
 
 ```rust,no_run
 use std::sync::Arc;

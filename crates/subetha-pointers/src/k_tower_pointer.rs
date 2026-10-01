@@ -1,74 +1,27 @@
-//! `KTowerPointer<T>` - recursive pow2-of-pow2 address decomposition.
+//! `KTower2<T>` and `KTower3<T>` - segmented addresses in one `u64`.
 //!
-//! A tower of pow2 blocks, `Tower<T, [K_a, K_b, ...]>`, lifted to
-//! pointers. The key idea is recursion: a pointer is a pow2 block
-//! split into segments where each segment can in turn be a pow2 block
-//! split into further segments, all the way down. The hardware MMU
-//! does exactly this (x86_64 page tables are PML4 -> PDPT -> PD -> PT,
-//! four levels of 9-bit indices into nested tables). KTower lifts the
-//! same recursive-table mechanism to userspace, operating on indices
-//! rather than physical pages.
-//!
-//! # Two flat shipped variants (the base cases of the recursion)
+//! A pointer here is a set of indices rather than an address: a region
+//! number and an offset within that region, resolved through a table
+//! the caller keeps. The hardware MMU resolves addresses the same way
+//! (x86_64 page tables are PML4 -> PDPT -> PD -> PT, four levels of
+//! 9-bit indices into nested tables).
 //!
 //! - [`KTower2<T>`]: two-segment `(region_id: u32, offset: u32)`
 //!   packed into a u64. The region table is supplied by the caller
-//!   (typically a `Vec<*mut u8>` of region base pointers). Resolves
+//!   (typically a `Vec<*const u8>` of region base pointers). Resolves
 //!   via `region_table[region_id] + offset`. Equivalent to one MMU
 //!   page-table level.
 //!
 //! - [`KTower3<T>`]: three-segment `(zone: u16, region_id: u16,
-//!   offset: u32)` for hierarchical naming (zone -> region -> slot).
-//!   Useful for distributed storage where zones are racks / data
-//!   centers and regions are nodes within a zone. Equivalent to two
-//!   MMU page-table levels packed into one word.
+//!   offset: u32)` for hierarchical naming (zone -> region -> slot),
+//!   such as zones for racks or data centers and regions for the
+//!   nodes in them. It packs and unpacks the three fields; resolving
+//!   them is the caller's.
 //!
-//! Both variants are 8 bytes total - same slot size as a native
-//! pointer, but the address space is now multi-segment.
-//!
-//! # The recursive form (KTowerCascade)
-//!
-//! ```text
-//! KTower2<T>     = (region_id: u32, offset: u32)
-//!                = (KTower2<RegionTable<T>>, u32)  // recursive form
-//!                = KTower2<KTower2<KTower2<KTower2<T>>>>  // 4 levels
-//! ```
-//!
-//! Each region_id at level N indexes into a table of KTower2 pointers
-//! at level N-1. At the leaf (level 0), the offset is the actual byte
-//! offset within a physical region. The depth is a runtime / type-
-//! level choice: shallow towers for dense address spaces, deep towers
-//! for sparse ones.
-//!
-//! # The architectural win
-//!
-//! 1. **Tiered storage**: a native 64-bit pointer can only address
-//!    one tier (the OS virtual address space). With KTower the
-//!    `region_id` selects the tier (RAM / SSD / remote / archive)
-//!    and the `offset` selects within. The dispatch table for "load
-//!    from this pointer" branches on `region_id` (8-256 entries)
-//!    without touching the target.
-//!
-//! 2. **Userspace MMU**: SharedRing is "QUIC over TCP" - userspace
-//!    transport that bypasses the kernel by replicating the kernel's
-//!    mechanism. KTowerCascade is the same shape one layer down: a
-//!    userspace virtual-address translator that does what the
-//!    hardware MMU does, but on indices instead of physical pages,
-//!    and works cross-process because the indices are byte-identical
-//!    in every mapping.
-//!
-//! 3. **Adaptive depth**: hot data uses 1-level (flat index, fastest
-//!    lookup); medium data uses 2-level (recursive but small); cold
-//!    sparse data uses 4-level (deep tree, minimal storage for empty
-//!    regions). A pow2 block-count axis (`K_outer`) applied to addressing:
-//!    pick the recursion depth at runtime based on observed
-//!    sparsity, like AdaptivePointer migrating between encodings.
-//!
-//! 4. **Position independence is preserved through composition**: a
-//!    `KTower2<KTower2<T>>` is still 8 bytes total because each level's
-//!    region_id is a u32 index into the previous level's table. No
-//!    virtual addresses at any level, so the whole tower resolves
-//!    identically in any process that holds the same region tables.
+//! Both are 8 bytes, the size of a native pointer, and hold no virtual
+//! addresses, so a value resolves identically in any process that
+//! holds the same region tables. `subetha_cxc::KTowerCascade<T, DEPTH>`
+//! carries the same indices to any depth over shared regions.
 
 use std::marker::PhantomData;
 

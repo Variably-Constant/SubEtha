@@ -81,10 +81,10 @@ def test_a_wait_can_be_cancelled(scratch):
         try:
             await waiting
         except asyncio.CancelledError:
-            return "cancelled"
+            return "canceled"
         return "finished"
 
-    assert asyncio.run(main()) == "cancelled"
+    assert asyncio.run(main()) == "canceled"
 
 
 def test_work_runs_under_a_permit(scratch):

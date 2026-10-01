@@ -41,8 +41,8 @@ observations.
 
 Factory for the policy that governs this instance. Called once at
 registration time. Returning `Box<NoMigrationPolicy>` opts the
-primitive out of any migration decisions (the sidecar still drains
-the observation ring; it just never asks the policy for a tag).
+primitive out of any migration (the sidecar still drains the
+observation ring and asks the policy, which always answers `None`).
 
 ## Optional method
 
@@ -60,18 +60,19 @@ before the old layout is freed. Example shape:
 ```rust,no_run
 fn apply_migration(&self, new_tag: u32) {
     let strategy = MyStrategy::from_u32(new_tag);
-    let new_payload = self.build_payload_for(strategy);
-    // begin() bumps the generation and installs new_tag atomically
-    // (both representations are now live).
+    // Readers pick a payload by generation parity, so the new payload
+    // goes where the next generation reads before that generation starts.
+    self.install_payload_for_next_generation(self.build_payload_for(strategy));
+    // begin() stores new_tag and bumps the generation: ops entering from
+    // here read the new payload (both representations are now live).
     let guard = MigrationGuard::begin(self.header(), new_tag);
-    self.install_new_payload(new_payload);
     guard.wait_quiescent();           // drains the old generation's readers
     // after wait_quiescent returns, the old payload is safe to free.
 }
 ```
 
-`MigrationGuard::begin` does the bump-generation + tag-swap in one
-step (so the new PIC branch target is already published when it
+`MigrationGuard::begin` does the tag store and the generation bump in
+one call (so the new PIC branch target is already published when it
 returns); `wait_quiescent` blocks until in-flight readers on the old
 generation have drained, after which the coordinator owns the old
 payload exclusively and can free it. The guard does *not* auto-drain on

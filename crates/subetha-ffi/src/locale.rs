@@ -154,6 +154,19 @@ impl LocaleObject {
         })
     }
 
+    /// Move the ring to `target`. On a managed ring the target is first
+    /// what the sidecar is asked for, so the sidecar keeps the ring there
+    /// rather than moving it back to the locale it was last asked for.
+    fn migrate(&self, target: RingLocale) -> i32 {
+        if let Some(sidecar) = self.sidecar.lock().as_ref() {
+            sidecar.request_locale(target);
+        }
+        match self.ring.migrate_to(target) {
+            Ok(()) => SUBETHA_OK,
+            Err(e) => ring_code(e),
+        }
+    }
+
     fn live(&self) -> &AdaptiveRing {
         match self.ring.current_locale() {
             RingLocale::Anon => self.ring.anon_ring(),
@@ -521,7 +534,9 @@ pub unsafe extern "C" fn subetha_locale_ring_pop_wait(
 
 /// Move the ring to `locale`, one of the `SUBETHA_LOCALE_` constants,
 /// carrying the items in flight across. A migration to the live locale
-/// is a no-op.
+/// is a no-op. In managed mode the locale is also what the sidecar is
+/// asked for, as `subetha_locale_ring_request` asks, so the sidecar keeps
+/// the ring there.
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_locale_ring_migrate(handle: subetha_handle, locale: u32) -> i32 {
     with_locale(handle, |l| {
@@ -529,10 +544,7 @@ pub extern "C" fn subetha_locale_ring_migrate(handle: subetha_handle, locale: u3
             Ok(t) => t,
             Err(code) => return code,
         };
-        match l.ring.migrate_to(target) {
-            Ok(()) => SUBETHA_OK,
-            Err(e) => ring_code(e),
-        }
+        l.migrate(target)
     })
 }
 
@@ -678,5 +690,39 @@ mod tests {
         }
         assert_eq!(found.failed, 0, "{:?}", found.first_failure);
         assert!(found.removed >= 2, "the wakers at least: {found:?}");
+    }
+
+    #[test]
+    fn a_managed_ring_moved_directly_stays_where_it_was_moved() {
+        let base = std::env::temp_dir().join(format!(
+            "subetha-ffi-locale-managed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let options = subetha_ring_options {
+            mode: SUBETHA_MODE_MANAGED,
+            scan_interval_us: 1_000,
+            stamps: SUBETHA_STAMPS_NONE,
+            ..Default::default()
+        };
+        let ring = LocaleAdaptiveRing::create(&base, 1, 1, 8).unwrap();
+        let object = LocaleObject::build(ring, &base, &options, SUBETHA_MODE_MANAGED).unwrap();
+        assert_eq!(object.migrate(RingLocale::File), SUBETHA_OK);
+        // Four times the 250 ms the sidecar waits between moves: long
+        // enough for it to move the ring back, had it been left asking
+        // for anonymous memory.
+        std::thread::sleep(Duration::from_secs(1));
+        let stats = object.stats();
+        assert_eq!(stats.current_locale, SUBETHA_LOCALE_FILE, "the ring's own sidecar moved it back");
+        assert_eq!(stats.sidecar_migrations, 0);
+        drop(object);
+        let mut found = AdaptiveRing::unlink(with_suffix(&base, ".locale.file.ring"), 1);
+        for suffix in [".locale.tag.bin", ".locale.gen.bin", ".cwaker.bin", ".pwaker.bin"] {
+            found.remove(with_suffix(&base, suffix));
+        }
+        assert_eq!(found.failed, 0, "{:?}", found.first_failure);
     }
 }

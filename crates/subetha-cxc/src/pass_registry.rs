@@ -11,11 +11,16 @@
 //! startup (typically via a macro that all participating binaries
 //! call). A `Pass { id, args }` can then be dispatched by any
 //! process, including failover targets.
+//!
+//! The map is copied on write: a registration builds a new map and
+//! swaps it in, so a dispatch reads one whole map and takes nothing a
+//! registration waits on.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use once_cell::sync::Lazy;
+use subetha_core::SwapCell;
 
 /// A passable unit of work: a closure ID plus its serialized args.
 #[derive(Debug, Clone)]
@@ -35,49 +40,54 @@ pub enum PassError {
 }
 
 /// Closure handler signature. Args are raw bytes; result is raw
-/// bytes. Caller-supplied (de)serialization.
-pub type PassHandler = Box<dyn Fn(&[u8]) -> PassResult + Send + Sync + 'static>;
+/// bytes. Caller-supplied (de)serialization. Shared, since a map a
+/// registration replaces may still be read by a dispatch in flight.
+pub type PassHandler = Arc<dyn Fn(&[u8]) -> PassResult + Send + Sync + 'static>;
 
-struct Registry {
-    handlers: HashMap<u32, PassHandler>,
-}
-
-static REGISTRY: Lazy<RwLock<Registry>> = Lazy::new(|| RwLock::new(Registry {
-    handlers: HashMap::new(),
-}));
+static REGISTRY: Lazy<SwapCell<HashMap<u32, PassHandler>>> =
+    Lazy::new(|| SwapCell::new(HashMap::new()));
 
 /// Register a closure under `id`. Subsequent calls with the same id
 /// overwrite. Returns the previous handler if any.
 pub fn register<F>(id: u32, f: F) -> Option<PassHandler>
 where F: Fn(&[u8]) -> PassResult + Send + Sync + 'static,
 {
-    let mut g = REGISTRY.write().expect("registry write lock poisoned");
-    g.handlers.insert(id, Box::new(f))
+    let handler: PassHandler = Arc::new(f);
+    let replaced = REGISTRY.rcu(|map| {
+        let mut next = HashMap::clone(map);
+        next.insert(id, Arc::clone(&handler));
+        next
+    });
+    replaced.get(&id).cloned()
 }
 
 /// Unregister a closure. Returns the handler if any.
 pub fn unregister(id: u32) -> Option<PassHandler> {
-    let mut g = REGISTRY.write().expect("registry write lock poisoned");
-    g.handlers.remove(&id)
+    let replaced = REGISTRY.rcu(|map| {
+        let mut next = HashMap::clone(map);
+        next.remove(&id);
+        next
+    });
+    replaced.get(&id).cloned()
 }
 
 /// True when `id` is registered in this process.
 pub fn is_registered(id: u32) -> bool {
-    let g = REGISTRY.read().expect("registry read lock poisoned");
-    g.handlers.contains_key(&id)
+    REGISTRY.load().contains_key(&id)
 }
 
 /// Number of registered handlers in this process.
 pub fn registered_count() -> usize {
-    let g = REGISTRY.read().expect("registry read lock poisoned");
-    g.handlers.len()
+    REGISTRY.load().len()
 }
 
 /// Execute a Pass. Returns the closure's result, or
-/// `PassError::UnknownClosureId` when the id is not registered.
+/// `PassError::UnknownClosureId` when the id is not registered. The
+/// handler runs outside the registry: a registration during the call
+/// swaps in a new map and this call keeps the handler it found.
 pub fn execute(pass: &Pass) -> PassResult {
-    let g = REGISTRY.read().expect("registry read lock poisoned");
-    match g.handlers.get(&pass.closure_id) {
+    let handler = REGISTRY.load().get(&pass.closure_id).cloned();
+    match handler {
         Some(handler) => handler(&pass.args),
         None => Err(PassError::UnknownClosureId(pass.closure_id)),
     }

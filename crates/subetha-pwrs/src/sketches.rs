@@ -2,6 +2,8 @@
 //! Bloom filters, the distinct-count and frequency sketches, the
 //! histogram, the rate limiter and the cache.
 
+use std::sync::Arc;
+
 use pwrs::prelude::*;
 
 use subetha_cxc::raw_lru_cache::RawLruCache;
@@ -13,6 +15,7 @@ use subetha_cxc::shared_hyper_log_log::{SharedHyperLogLog, MAX_PRECISION as HLL_
 use subetha_cxc::shared_rate_limiter::{RateLimiterError, SharedRateLimiter};
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, size};
+use crate::sidecar::{observe, Registration};
 
 assert_send!(BloomFilter, BlockedBloomFilter, HyperLogLog, CountMinSketch, Histogram, RateLimiter, LruCache);
 
@@ -47,7 +50,7 @@ pub struct BloomFilter {
     /// How many bits each item sets.
     pub hashes: u32,
     #[psfield(skip)]
-    inner: SharedBloomFilter,
+    inner: Arc<SharedBloomFilter>,
 }
 
 impl BloomFilter {
@@ -58,13 +61,19 @@ impl BloomFilter {
         let n = size(bits, "the bit count")?;
         let inner = if open { SharedBloomFilter::open(&path, n, hashes) } else { SharedBloomFilter::create(&path, n, hashes) }
             .map_err(|e| open_err("the filter", &path, e))?;
-        Ok(Self { path, bits: inner.n_bits(), hashes: inner.n_hashes(), inner })
+        Ok(Self { path, bits: inner.n_bits(), hashes: inner.n_hashes(), inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.BloomFilter`.
 #[psmethods]
 impl BloomFilter {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// What the filter's false-positive rate has drifted to, given what
     /// has actually been put in it.
     pub fn false_positive_rate(&self) -> PsResult<f64> {
@@ -221,7 +230,7 @@ pub struct BlockedBloomFilter {
     /// How many bits each item sets.
     pub hashes: u32,
     #[psfield(skip)]
-    inner: SharedBlockedBloomFilter,
+    inner: Arc<SharedBlockedBloomFilter>,
 }
 
 impl BlockedBloomFilter {
@@ -235,13 +244,19 @@ impl BlockedBloomFilter {
             SharedBlockedBloomFilter::create(&path, n, hashes)
         }
         .map_err(|e| open_err("the filter", &path, e))?;
-        Ok(Self { path, blocks: inner.n_blocks(), hashes: inner.n_hashes(), inner })
+        Ok(Self { path, blocks: inner.n_blocks(), hashes: inner.n_hashes(), inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.BlockedBloomFilter`.
 #[psmethods]
 impl BlockedBloomFilter {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Adds `item`.
     pub fn insert(&self, item: PsObject) -> PsResult<()> {
         let item = bytes(&item)?;
@@ -357,7 +372,7 @@ pub struct HyperLogLog {
     /// How many registers the precision gives.
     pub registers: u32,
     #[psfield(skip)]
-    inner: SharedHyperLogLog,
+    inner: Arc<SharedHyperLogLog>,
 }
 
 impl HyperLogLog {
@@ -367,13 +382,19 @@ impl HyperLogLog {
         }
         let inner = if open { SharedHyperLogLog::open(&path, precision) } else { SharedHyperLogLog::create(&path, precision) }
             .map_err(|e| open_err("the counter", &path, e))?;
-        Ok(Self { path, precision: inner.precision(), registers: inner.n_registers(), inner })
+        Ok(Self { path, precision: inner.precision(), registers: inner.n_registers(), inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.HyperLogLog`.
 #[psmethods]
 impl HyperLogLog {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Counts `item`.
     pub fn insert(&self, item: PsObject) -> PsResult<()> {
         let item = bytes(&item)?;
@@ -469,7 +490,7 @@ pub struct CountMinSketch {
     /// How many counters each row has.
     pub width: u32,
     #[psfield(skip)]
-    inner: SharedCountMinSketch,
+    inner: Arc<SharedCountMinSketch>,
 }
 
 impl CountMinSketch {
@@ -479,13 +500,19 @@ impl CountMinSketch {
         }
         let inner = if open { SharedCountMinSketch::open(&path, depth, width) } else { SharedCountMinSketch::create(&path, depth, width) }
             .map_err(|e| open_err("the sketch", &path, e))?;
-        Ok(Self { path, depth: inner.d(), width: inner.w(), inner })
+        Ok(Self { path, depth: inner.d(), width: inner.w(), inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.CountMinSketch`.
 #[psmethods]
 impl CountMinSketch {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many occurrences have been counted in all.
     pub fn total_inserts(&self) -> PsResult<u64> {
         Ok(self.inner.total_inserts())
@@ -636,7 +663,7 @@ pub struct Histogram {
     /// How many buckets there are.
     pub buckets: u64,
     #[psfield(skip)]
-    inner: SharedHistogram,
+    inner: Arc<SharedHistogram>,
 }
 
 impl Histogram {
@@ -649,13 +676,19 @@ impl Histogram {
         }
         let inner = if open { SharedHistogram::open(&path, &boundaries) } else { SharedHistogram::create(&path, &boundaries) }
             .map_err(|e| open_err("the histogram", &path, e))?;
-        Ok(Self { path, boundaries: inner.boundaries_vec(), buckets: inner.n_buckets() as u64, inner })
+        Ok(Self { path, boundaries: inner.boundaries_vec(), buckets: inner.n_buckets() as u64, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.Histogram`.
 #[psmethods]
 impl Histogram {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many values have been recorded in all.
     pub fn total_count(&self) -> PsResult<u64> {
         Ok(self.inner.total_count())
@@ -755,7 +788,7 @@ pub struct RateLimiter {
     /// How many tokens come back each second.
     pub refill_per_second: u32,
     #[psfield(skip)]
-    inner: SharedRateLimiter,
+    inner: Arc<SharedRateLimiter>,
 }
 
 impl RateLimiter {
@@ -765,13 +798,19 @@ impl RateLimiter {
         }
         let inner = if open { SharedRateLimiter::open(&path, capacity, refill) } else { SharedRateLimiter::create(&path, capacity, refill) }
             .map_err(|e| open_err("the limiter", &path, e))?;
-        Ok(Self { path, capacity: inner.capacity(), refill_per_second: inner.refill_rate_per_sec(), inner })
+        Ok(Self { path, capacity: inner.capacity(), refill_per_second: inner.refill_rate_per_sec(), inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.RateLimiter`.
 #[psmethods]
 impl RateLimiter {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Tokens available right now, which the refill moves on its own.
     pub fn available(&self) -> PsResult<u32> {
         Ok(self.inner.available())

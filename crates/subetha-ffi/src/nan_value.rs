@@ -44,7 +44,7 @@ pub extern "C" fn subetha_nan_nil() -> u64 {
 /// A NaN going in comes back as the one canonical quiet NaN, so its bits
 /// can never be mistaken for a boxed value. That means a caller cannot
 /// round-trip a particular NaN payload through here: every NaN is the
-/// same NaN afterwards.
+/// same NaN afterward.
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_nan_from_f64(value: f64) -> u64 {
     SharedNaNValue::from_f64(value).raw()

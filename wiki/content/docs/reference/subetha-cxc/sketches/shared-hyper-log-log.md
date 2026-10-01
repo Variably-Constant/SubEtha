@@ -257,10 +257,10 @@ separate merge step (this type exposes no merge method).
 - Original: Flajolet, Fusy, Gandouet, Meunier, "HyperLogLog:
   the analysis of a near-optimal cardinality estimation
   algorithm", AofA 2007.
-- Sibling primitive: [SHARED_BLOOM_FILTER.md](shared-bloom-filter/) -
+- Sibling primitive: [Shared Bloom Filter](shared-bloom-filter/) -
   presence-only (no count); HLL adds distinct cardinality.
 - Sibling primitive:
-  [SHARED_COUNT_MIN_SKETCH.md](shared-count-min-sketch/) -
+  [Shared Count-Min Sketch](shared-count-min-sketch/) -
   per-key frequency; HLL is total distinct count.
-- Sibling primitive: [SHARED_HISTOGRAM.md](shared-histogram/) -
+- Sibling primitive: [Shared Histogram](shared-histogram/) -
   bucketed distribution.

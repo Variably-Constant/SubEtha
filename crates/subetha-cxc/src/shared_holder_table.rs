@@ -20,6 +20,8 @@
 use std::fs::File;
 use std::mem::size_of;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use memmap2::{MmapMut, MmapOptions};
 
@@ -28,11 +30,14 @@ use crate::holder_table::{holder_table_size, HolderSlot, HolderTable};
 /// "HOLDERS1": a header followed by the slots.
 pub const SHARED_HOLDER_MAGIC: u64 = 0x484F_4C44_4552_5331;
 
+/// The magic while one creator lays the table out.
+const LAYOUT_IN_PROGRESS: u64 = 1;
+
 /// The header ahead of the slots. One cache line, so the slots behind it
 /// keep the alignment [`HolderTable`] needs.
 #[repr(C, align(64))]
 struct SharedHolderHeader {
-    magic: u64,
+    magic: AtomicU64,
     capacity: u64,
     _pad: [u8; 48],
 }
@@ -107,35 +112,75 @@ unsafe fn view(mmap: &MmapMut, capacity: usize) -> HolderTable {
     unsafe { HolderTable::from_ptr(mmap.as_ptr().add(size_of::<SharedHolderHeader>()), capacity) }
 }
 
+/// Lay the table out if this caller reached it first, or wait for the
+/// caller that did. The `magic: 0 -> in progress` swap decides; the
+/// winner writes the capacity and the free slots, then the magic. Any
+/// magic but the in-progress one ends the wait, for `finish` to judge. A
+/// layout still in progress after
+/// [`INIT_WAIT`](crate::mmf_attach::INIT_WAIT), such as one a process
+/// died during, is refused as timed out.
+///
+/// # Safety
+/// `ptr` addresses at least `shared_holder_file_size(capacity)` bytes,
+/// zeroed or laid out by this protocol.
+unsafe fn lay_out_or_await(ptr: *mut u8, capacity: usize) -> Result<(), SharedHolderError> {
+    let hdr = ptr as *mut SharedHolderHeader;
+    let magic = unsafe { &*std::ptr::addr_of!((*hdr).magic) };
+    if magic
+        .compare_exchange(0, LAYOUT_IN_PROGRESS, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        unsafe {
+            std::ptr::addr_of_mut!((*hdr).capacity).write(capacity as u64);
+            std::ptr::addr_of_mut!((*hdr)._pad).write([0; 48]);
+            std::ptr::write_bytes(ptr.add(size_of::<SharedHolderHeader>()) as *mut HolderSlot, 0, capacity);
+        }
+        magic.store(SHARED_HOLDER_MAGIC, Ordering::Release);
+        return Ok(());
+    }
+    let deadline = Instant::now() + crate::mmf_attach::INIT_WAIT;
+    while magic.load(Ordering::Acquire) == LAYOUT_IN_PROGRESS {
+        if Instant::now() >= deadline {
+            return Err(SharedHolderError::IoError(std::io::ErrorKind::TimedOut));
+        }
+        std::thread::yield_now();
+    }
+    Ok(())
+}
+
 impl SharedHolderTable {
     /// Obtain the table at `path` with `capacity` slots: an empty one is
-    /// laid out when the file does not exist, an existing one is attached
-    /// with its claims in place, so a late joiner does not release
-    /// anyone.
+    /// laid out when the file does not exist or is empty, an existing one
+    /// is attached with its claims in place, so a late joiner does not
+    /// release anyone.
+    ///
+    /// Creators that reach an empty file together lay it out once: one
+    /// wins the layout and the rest wait for it, so no claim made on the
+    /// table is cleared by a second layout. A layout that has not finished
+    /// after the five seconds a creator waits, such as one a process died
+    /// during, is refused as `IoError(TimedOut)`, and
+    /// [`reset`](Self::reset) lays the table out again. A file holding a
+    /// table of another capacity is refused as `LayoutMismatch` and left
+    /// as it is.
     pub fn create(path: impl AsRef<Path>, capacity: usize) -> Result<Self, SharedHolderError> {
         check_capacity(capacity)?;
         let total = shared_holder_file_size(capacity);
         let file = crate::region_file::create_or_open(path.as_ref())?;
-        let fresh = (file.metadata()?.len() as usize) < total;
-        if fresh {
+        // Extending zero-fills, so creators extending an empty file to the
+        // same length leave the same bytes whatever their order. A file
+        // shorter than the table but not empty holds something else.
+        let len = file.metadata()?.len() as usize;
+        if len == 0 {
             file.set_len(total as u64)?;
+        } else if len < total {
+            return Err(SharedHolderError::LayoutMismatch);
         }
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
-        if fresh {
-            // A zeroed region is already a table of free slots, so the
-            // magic goes last: an attacher spinning on it must not see
-            // it over slots that are not yet zeroed.
-            let hdr = mmap.as_mut_ptr() as *mut SharedHolderHeader;
-            unsafe {
-                std::ptr::write(hdr, SharedHolderHeader { magic: 0, capacity: capacity as u64, _pad: [0; 48] });
-                std::ptr::write_bytes(
-                    mmap.as_mut_ptr().add(size_of::<SharedHolderHeader>()) as *mut HolderSlot,
-                    0,
-                    capacity,
-                );
-                std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr).magic), SHARED_HOLDER_MAGIC);
-            }
-        }
+        #[cfg(test)]
+        crate::test_races::pause_point();
+        // SAFETY: the mapping holds `total` bytes, zeroed by the extension
+        // or laid out by this same protocol.
+        unsafe { lay_out_or_await(mmap.as_mut_ptr(), capacity)? };
         Self::finish(file, mmap, capacity)
     }
 
@@ -150,13 +195,16 @@ impl SharedHolderTable {
         let mut mmap = unsafe { MmapOptions::new().len(total).map_mut(&file)? };
         let hdr = mmap.as_mut_ptr() as *mut SharedHolderHeader;
         unsafe {
-            std::ptr::write(hdr, SharedHolderHeader { magic: 0, capacity: capacity as u64, _pad: [0; 48] });
+            std::ptr::write(
+                hdr,
+                SharedHolderHeader { magic: AtomicU64::new(0), capacity: capacity as u64, _pad: [0; 48] },
+            );
             std::ptr::write_bytes(
                 mmap.as_mut_ptr().add(size_of::<SharedHolderHeader>()) as *mut HolderSlot,
                 0,
                 capacity,
             );
-            std::ptr::write_volatile(std::ptr::addr_of_mut!((*hdr).magic), SHARED_HOLDER_MAGIC);
+            (*hdr).magic.store(SHARED_HOLDER_MAGIC, Ordering::Release);
         }
         Self::finish(file, mmap, capacity)
     }
@@ -178,8 +226,11 @@ impl SharedHolderTable {
     }
 
     fn finish(file: File, mmap: MmapMut, capacity: usize) -> Result<Self, SharedHolderError> {
-        let header = unsafe { &*(mmap.as_ptr() as *const SharedHolderHeader) };
-        if header.magic != SHARED_HOLDER_MAGIC || header.capacity as usize != capacity {
+        let hdr = mmap.as_ptr() as *const SharedHolderHeader;
+        // The capacity is read only behind the magic, which a layout
+        // publishes after writing it.
+        let laid_out = unsafe { (*hdr).magic.load(Ordering::Acquire) } == SHARED_HOLDER_MAGIC;
+        if !laid_out || unsafe { std::ptr::addr_of!((*hdr).capacity).read() } as usize != capacity {
             return Err(SharedHolderError::LayoutMismatch);
         }
         let table = unsafe { view(&mmap, capacity) };
@@ -224,6 +275,15 @@ impl SharedHolderTable {
     /// Give a slot back.
     pub fn release(&self, slot: usize) {
         self.table.release(slot);
+    }
+
+    /// Give a slot back only while it still holds the process `pid` and
+    /// the payload `payload` the caller observed, so a claimant that has
+    /// found a claim stale (its pid now names another process, told by a
+    /// creation time in the payload) frees it without freeing a holder
+    /// that claimed the slot since. Answers whether it freed the slot.
+    pub fn release_if(&self, slot: usize, pid: u32, payload: u64) -> bool {
+        self.table.release_if(slot, pid, payload)
     }
 
     /// The payload of a slot, or `None` for one that is free or still
@@ -354,6 +414,102 @@ mod tests {
         let fresh = SharedHolderTable::reset(&path, 4).unwrap();
         assert_eq!(fresh.live(), 0, "the reset released every slot");
         drop(fresh);
+        clear(&path);
+    }
+
+    /// Two first-time creators of an empty claim file, one stopped before
+    /// it lays anything out and the other creating and claiming in that
+    /// window: the claim stands, and the stopped creator finds the slot
+    /// held.
+    #[test]
+    fn a_creator_racing_the_first_layout_keeps_the_claim_made() {
+        let path = tmp("first-layout");
+        clear(&path);
+        std::fs::File::create(&path).expect("an empty claim file, as a launcher pre-creates it");
+        let stopped_path = path.clone();
+        let (pause, first) = crate::test_races::stopped(move || {
+            let table = SharedHolderTable::create(&stopped_path, 1).expect("the stopped create");
+            table.claim(7)
+        });
+        let table = SharedHolderTable::create(&path, 1).expect("the second create");
+        assert_eq!(table.claim(9), Some(0), "the second creator claims the one slot");
+        pause.release();
+        let stopped_claim = first.join().expect("the stopped creator");
+        assert_eq!(stopped_claim, None, "the slot is held, so the stopped creator gets none");
+        assert_eq!(table.payload(0), Some(9), "the claim made stands");
+        drop(table);
+        clear(&path);
+    }
+
+    /// A file sized for the table with its magic at the in-progress value,
+    /// as a creator midway through the layout leaves it.
+    fn layout_under_way(path: &Path) -> (File, MmapMut) {
+        let total = shared_holder_file_size(1);
+        let file = crate::region_file::create_or_open(path).expect("the claim file");
+        file.set_len(total as u64).expect("the claim file takes the table's length");
+        let mmap = unsafe { MmapOptions::new().len(total).map_mut(&file).expect("the claim file maps") };
+        let magic = unsafe { &*(mmap.as_ptr() as *const std::sync::atomic::AtomicU64) };
+        magic.store(LAYOUT_IN_PROGRESS, std::sync::atomic::Ordering::Release);
+        (file, mmap)
+    }
+
+    /// A creator that reaches a table whose layout is under way waits for
+    /// it to finish and attaches, rather than refusing the table or laying
+    /// it out again.
+    #[test]
+    fn a_create_waits_out_a_layout_under_way() {
+        let path = tmp("under-way");
+        clear(&path);
+        let (file, mut mmap) = layout_under_way(&path);
+        let waiting_path = path.clone();
+        let waiter = std::thread::spawn(move || SharedHolderTable::create(&waiting_path, 1).map(|t| t.claim(3)));
+        crate::test_races::settle(&waiter);
+        assert!(!waiter.is_finished(), "the create waits while the layout is under way");
+        let hdr = mmap.as_mut_ptr() as *mut SharedHolderHeader;
+        unsafe { std::ptr::addr_of_mut!((*hdr).capacity).write(1) };
+        let magic = unsafe { &*(mmap.as_ptr() as *const std::sync::atomic::AtomicU64) };
+        magic.store(SHARED_HOLDER_MAGIC, std::sync::atomic::Ordering::Release);
+        let claimed = waiter.join().expect("the waiting creator").expect("it attaches once the layout is done");
+        assert_eq!(claimed, Some(0), "the waiting creator claims on the finished table");
+        drop(mmap);
+        drop(file);
+        clear(&path);
+    }
+
+    /// A layout that never finishes, as a creator that died during it
+    /// leaves the file, is refused as timed out rather than waited on for
+    /// ever, and a reset lays the table out again.
+    #[test]
+    fn a_layout_never_finished_is_refused_as_timed_out() {
+        let path = tmp("never-finished");
+        clear(&path);
+        let (file, mmap) = layout_under_way(&path);
+        drop(mmap);
+        drop(file);
+        match SharedHolderTable::create(&path, 1) {
+            Ok(_) => panic!("a table whose layout never finished was attached"),
+            Err(e) => assert_eq!(e, SharedHolderError::IoError(std::io::ErrorKind::TimedOut)),
+        }
+        let table = SharedHolderTable::reset(&path, 1).expect("the reset");
+        assert_eq!(table.claim(5), Some(0), "the reset table takes a claim");
+        drop(table);
+        clear(&path);
+    }
+
+    /// A create asking for more slots than the table at the path holds is
+    /// refused, and the claims already made on that table stand.
+    #[test]
+    fn a_create_asking_more_slots_than_the_table_holds_is_refused() {
+        let path = tmp("more-slots");
+        clear(&path);
+        let small = SharedHolderTable::create(&path, 2).unwrap();
+        let slot = small.claim(5).expect("a free slot");
+        match SharedHolderTable::create(&path, 4) {
+            Ok(_) => panic!("a four-slot create over a two-slot table was accepted"),
+            Err(e) => assert_eq!(e, SharedHolderError::LayoutMismatch),
+        }
+        assert_eq!(small.payload(slot), Some(5), "the claim made stands");
+        drop(small);
         clear(&path);
     }
 }

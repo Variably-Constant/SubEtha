@@ -13,6 +13,9 @@
 //! - 1p+3c full cycle (the actual pub/sub workload)
 //! - lag observer (dashboard query)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::VecDeque;
 use std::hint::black_box;
 use std::sync::Mutex;

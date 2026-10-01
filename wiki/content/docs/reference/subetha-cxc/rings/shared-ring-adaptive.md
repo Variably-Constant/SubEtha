@@ -27,11 +27,15 @@ Two execution paths through the same primitive:
 
 - **Adaptive path** (`try_send` / `try_recv`): full atomic
   dispatch. One Acquire load on the shape tag + one branch +
-  the selected backend's native op. ~3-5 ns above the
-  underlying primitive.
+  the selected backend's native op. An SPSC round trip takes
+  10.96 ns this way against 4.60 ns on the primitive itself,
+  about 6.4 ns above it (`adaptive_ring_overhead` bench, AMD
+  Ryzen 9 7900X, Windows 11 Pro 10.0.26200).
 - **Pinned path** (`pin_current_shape()` returns
   `PinnedRing<'_>`): typed handle for the current shape at
-  native speed. Hot loop matches the underlying primitive.
+  native speed. Hot loop matches the underlying primitive: 4.81 ns
+  per SPSC round trip against the primitive's 4.60 ns in the same
+  bench.
   Caller periodically calls `is_still_valid()` (one Acquire
   load) and re-pins after a morph.
 - **Peek-direct path** (`peek_spsc_slot()` returns
@@ -67,19 +71,23 @@ Two execution paths through the same primitive:
   off the backing prefix (`<prefix>.frames.bin` / `<prefix>_frames`)
   that every attached process maps. The region is created lazily on the
   first offset frame - the producer creates it before pushing the
-  descriptor, so a consumer that opens it on receipt always finds the
-  already-initialized region. (Inline frames never touch the region;
-  only records above the inline budget do.)
+  descriptor, and a shm ring's producer then moves the topology epoch,
+  so every other handle opens the region at its next op or sidecar
+  scan. A consumer only ever opens the region, never creates it, so a
+  frame whose region has gone is `IoError(NotFound)` rather than a read
+  of a region of the consumer's own (see [Lifetime](#lifetime)).
+  (Inline frames never touch the region; only records above the inline
+  budget do.)
 - **A single frame cannot exceed the region block size** (8 KB
   default), so a payload larger than ~8187 bytes returns
   `PayloadTooLarge` unless you enlarge the block. On a cross-process
-  ring, call `with_frames(block_size, block_count)` with the same
-  arguments on both the creating side (`create` / `create_shmfs`) and
-  every attaching side (`open` / `open_shmfs`) before the first
-  `send_frame` - both sides must agree on the region geometry or the
-  attaching side's `recv_frame` reports a layout mismatch. The default
-  geometry (no `with_frames`) already matches on both sides, so records
-  up to ~8 KB need no coordination.
+  ring the handle that makes the region sets its geometry, and a
+  receiver reads the geometry from the region, so it is the senders
+  that must agree: call `with_frames(block_size, block_count)` with the
+  same arguments on the creating side (`create` / `create_shmfs`) and on
+  every attaching side (`open` / `open_shmfs`) that sends, before its
+  first `send_frame`. The default geometry (no `with_frames`) already
+  matches on every side, so records up to ~8 KB need no coordination.
 - **Initial shape is `RingShape::Spsc`** (the cheapest backing).
 - **`max_producers` + `max_consumers` are sizing hints**, not
   ceilings: they set how many per-producer backings are
@@ -106,12 +114,12 @@ in where the backing memory lives.
 | `create_anon(max_producers, max_consumers, capacity)` | process-private anon mmap | in-process only; cheapest |
 | `create(path_prefix, max_producers, max_consumers, capacity)` | file-backed | cross-process + disk-persistent; one file per backing (`<prefix>.spsc.bin`, `.mpsc.{i}.bin`, `.mpmc.{i}.bin`, `.vyukov.bin`) |
 | `open(path_prefix, max_producers, max_consumers, expected_capacity)` | file-backed (attach) | opens an existing `create` set, validating each backing's magic + capacity without re-initializing; the current backing count comes from the shared peer directory (a ring that grew past the creator's hint opens fully); the shape tag + pin generation are process-local and re-track the shared peer counts on the next op |
-| `create_shmfs(name_prefix, max_producers, max_consumers, capacity)` | named RAM-resident shared memory (ShmFs) | cross-process, never touches the page cache; names `{prefix}_spsc` / `_mpsc_{i}` / `_mpmc_{i}` / `_vyukov` |
-| `open_shmfs(name_prefix, max_producers, max_consumers, expected_capacity)` | named shared memory (ShmFs, attach) | the ShmFs peer of `open`: attaches to a region a *different* process already `create_shmfs`'d, validating each backing's magic + capacity without re-initializing, so a snapshot the creator already enqueued survives. `create_shmfs` re-lays-out every backing (correct for the region's owner, data-loss for a late attacher), so any process that joins an existing region must use `open_shmfs`, not `create_shmfs`. Backing count comes from the shared peer directory |
-| `create_shmfs_in(name_prefix, max_producers, max_consumers, capacity, ns)` | named shared memory in a chosen namespace | `create_shmfs` with the namespace named explicitly; `ShmNamespace::Machine` puts every region where any Windows session resolves it, which is what a service in session 0 and its interactive clients need. The namespace is retained, so the ordering and payload regions the ring creates later land beside its backings |
-| `open_shmfs_in(name_prefix, max_producers, max_consumers, expected_capacity, ns)` | named shared memory in a chosen namespace (attach) | the attach peer of `create_shmfs_in`, and it must be passed the same namespace the creator used. These are create-or-open names, so a mismatch does not report a missing region: both sides succeed against separate regions and neither sees the other |
+| `create_shmfs(name_prefix, max_producers, max_consumers, capacity)` | named RAM-resident shared memory (ShmFs) | cross-process, never touches the page cache; names `{prefix}_spsc` / `_mpsc_{i}` / `_mpmc_{i}` / `_vyukov` / `_peers`, which outlive every handle (see [Lifetime](#lifetime)) |
+| `open_shmfs(name_prefix, max_producers, max_consumers, expected_capacity)` | named shared memory (ShmFs, attach) | the ShmFs peer of `open`: attaches to a region a *different* process already `create_shmfs`'d, validating each backing's magic + capacity without re-initializing, so a snapshot the creator already enqueued survives. `create_shmfs` re-lays-out every backing (correct for the region's owner, data-loss for a late attacher), so any process that joins an existing region must use `open_shmfs`, not `create_shmfs`. Backing count comes from the shared peer directory; a backing another handle grows later, and the ordering region, are opened the same way, as they stand. The attach makes nothing, so a ring that is not there is `IoError(NotFound)`; the one exception is a per-producer pair on Windows whose every handle closed before another opened it, which the attach lays out again (see [Lifetime](#lifetime)) |
+| `create_shmfs_in(name_prefix, max_producers, max_consumers, capacity, ns)` | named shared memory in a chosen namespace | `create_shmfs` with the namespace named explicitly; `ShmNamespace::Machine` puts every region where any Windows session resolves it, which is what a service in session 0 and its interactive clients need, and `ShmNamespace::AppContainer(sid)` puts every region in that AppContainer's named-object directory, which exists only while a process of the container runs, so the creator starts that process suspended, creates, then resumes it. The namespace is retained, so the ordering and payload regions the ring creates later land beside its backings |
+| `open_shmfs_in(name_prefix, max_producers, max_consumers, expected_capacity, ns)` | named shared memory in a chosen namespace (attach) | the attach peer of `create_shmfs_in`. It must name the directory the creator's regions are in: under another namespace the ring is not found. A process inside an AppContainer attaches with `ShmNamespace::Session` to a ring an outside process created with `ShmNamespace::AppContainer` naming that container, since inside it `Local\` is the container's directory |
 | `create_shmfs_secured(name_prefix, max_producers, max_consumers, capacity, ns, sddl)` | named shared memory with a security descriptor | `create_shmfs_in` with `sddl` as the descriptor applied to every region it creates. A `ShmNamespace::Machine` region carries the creator's default otherwise, which admits only the creator's own session, so reaching a service in session 0 from an interactive client takes both. The descriptor is retained alongside the namespace and reaches the peer directory, the ordering region and the payload region. See [Access control](../../specialized/shm-file/#access-control) |
-| `open_shmfs_secured(name_prefix, max_producers, max_consumers, expected_capacity, ns, sddl)` | named shared memory with a security descriptor (attach) | the attach peer of `create_shmfs_secured`. These are create-or-open names, so a descriptor is applied only where the call creates a region the creator has not yet made; an attach to a live region uses the descriptor already on it |
+| `open_shmfs_secured(name_prefix, max_producers, max_consumers, expected_capacity, ns, sddl)` | named shared memory with a security descriptor (attach) | the attach peer of `create_shmfs_secured`. The creator's regions keep their own descriptors, so `sddl` goes on what this handle makes: a backing it grows past the published count, the payload region when its own oversized frame is the first, a per-producer pair it lays out again on Windows (see [Lifetime](#lifetime)), and the park events of its waits |
 | `create_hugepage(max_producers, max_consumers, capacity)` | huge / large / super pages | each backing on its own 2 MB-paged region (Linux `MAP_HUGETLB`, Windows `MEM_LARGE_PAGES`, FreeBSD `MAP_ALIGNED_SUPER`, macOS x86_64 `VM_FLAGS_SUPERPAGE_SIZE_2MB`); needs a reservation/privilege on Linux/Windows, returns `Err` so the caller can fall back to `create_anon` |
 
 The builders `with_contract`, `with_ordering_stamps` /
@@ -126,6 +134,47 @@ backing count, MPMC ring ownership, and a topology epoch. Hot
 paths poll the epoch with one relaxed load; a change (a peer
 registered / unregistered / grew the ring in any process) runs the
 sync slow path - open the new backings, re-morph the shape.
+
+## Lifetime
+
+A file-backed or shm-backed ring outlives every handle: a ring is usually
+made so that something else can attach to it later. Every name a shm ring
+holds stays until something removes it, whichever handle made it: the
+creator's backings, a per-producer pair a peer grew, the payload region of
+the first oversized frame, the ordering region. A peer that attached and
+left takes none of them with it, so a process attaching later finds the
+whole ring. A handle that still maps a region keeps its mapping after the
+name goes.
+
+On Windows a section goes with the last handle to it, whatever the ring
+does, so the ring keeps its regions held. Every handle opens what another
+publishes, a per-producer pair grown past the hint or the payload region,
+at its next op, and a handle driven by an `AdaptiveRingSidecar`, or a
+`LocaleAdaptiveRingSidecar` for its shared-memory backing, opens it at the
+sidecar's next scan while its caller makes no calls. A region whose maker
+left before any other handle opened it is gone, and so is what was sent
+into it:
+
+- A per-producer pair is laid out again empty by the next handle to look
+  for it, an attach included, so the producer slot it serves keeps
+  working. The loss is named on stderr, with the payload-region blocks
+  the pair's offset frames took, which stay taken.
+- An offset frame whose payload region went that way is taken off the
+  ring, and `recv_frame` returns `IoError(NotFound)`, whether the region's
+  name is absent or a later sender has made a new region under it. Each
+  descriptor names the laying-out of the region its payload went into, so
+  a frame is never read out of a region it was not sent into.
+
+On Unix a name removed while the ring is in use, by `unlink_shmfs`, a last
+holder or a locale ring's drop, is not made again, because the handles
+that map the old region still do. A handle that cannot open a pair another
+handle published names that on stderr, once for each change of topology.
+
+| Call | Removes |
+|---|---|
+| `AdaptiveRing::unlink(path_prefix, max_producers)` | every file a file-backed ring holds, grown backings included: the peer directory names how many |
+| `AdaptiveRing::unlink_shmfs(name_prefix, max_producers)` / `unlink_shmfs_in(.., ns)` | every name a shm-backed ring holds, found the same way; on Windows nothing, since a name goes with its last handle |
+| `with_last_holder(max_holders, on_last, also_remove)` | nothing at once: each process holding the ring takes a slot in a holder table beside it (`<prefix>.holders.bin` / `{prefix}_holders`), and with `LastHolder::Unlink` the last live process to let go removes the whole ring |
 
 ## Morph protocol
 
@@ -263,12 +312,16 @@ record, so one ring carries a stream of mixed sizes at every shape.
 - `send_frame(producer_id, payload)` writes a self-describing frame: a
   one-byte class tag plus a `u32` length, then either the payload
   inline (when `payload.len() <= FRAME_INLINE_BUDGET`, 51 bytes) or a
-  4-byte block index into the shared payload region (larger records).
+  4-byte block index into the shared payload region and the 8-byte
+  value naming which laying-out of the region the block is in (larger
+  records).
 - `send_frame_as(producer_id, payload, hint)` overrides the choice
   with `LayoutHint::ForceInline` (rejects an over-budget payload) or
   `LayoutHint::ForceOffset` (always region).
 - `recv_frame(consumer_id, &mut Vec<u8>)` reads the class, fills the
-  buffer (inline slice or region block), and frees the block.
+  buffer (inline slice or region block), and frees the block. A frame
+  whose payload region has gone returns `IoError(NotFound)` (see
+  [Lifetime](#lifetime)).
 - Both send calls and `recv_frame` return the `FrameClass` the record
   took (`Inline` / `Offset`).
 
@@ -370,7 +423,13 @@ that pin the shape; `resume_auto_shape` resumes tracking;
 shape policies, QoS-declaration handling, and the stamped ring's
 ordering-mode flips from a background scan thread. With the default
 shape policy it has nothing to correct (the register path already
-tracks counts); spawn it for custom policies or the QoS axes.
+tracks counts); spawn it for custom policies or the QoS axes. Each scan
+also brings its handle's view of the ring up to date, opening what other
+handles have published since, a grown per-producer pair or the payload
+region, as the handle's own next op would. On Windows that open is what
+keeps a region once the handle that made it has gone, so a handle whose
+caller makes no calls holds another's regions only with a sidecar (see
+[Lifetime](#lifetime)).
 
 - `AdaptiveRingSidecar::spawn(ring, policy, scan_interval)` scans every
   interval, builds a `PolicyObservation` (active producer/consumer counts,
@@ -474,7 +533,8 @@ FIFO monotone on both. Run with
   bounded; the alternative is a backing forgotten while a producer
   push is still in flight to it, which nothing can rule out,
   because the push has not happened yet when the question is
-  asked.
+  asked. A morph is never deferred, `RingError::StaleBacklog` is
+  not returned, and the variant stays as a reserved code.
 - **Single-reader shapes serve one designated reader**: an SPSC or
   MPSC backing tolerates exactly one reader, so the lowest claimed
   consumer slot alone pops it, whether it is the current shape or

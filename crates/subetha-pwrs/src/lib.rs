@@ -42,6 +42,8 @@ mod pipeline;
 mod primitives;
 mod rings;
 mod sensing;
+mod shm_drive;
+mod sidecar;
 mod sketches;
 mod structures;
 mod transports;
@@ -117,6 +119,8 @@ pwrs::export_module! {
         transports::NewSubEthaSelfSignedCert, transports::NewSubEthaQuicBridgeClient, transports::NewSubEthaQuicBridgeServer,
         transports::GetSubEthaTransport,
         pipeline::SendSubEthaItem, pipeline::ReceiveSubEthaItem,
+        sidecar::NewSubEthaAdaptive, sidecar::GetSubEthaSidecar, sidecar::SetSubEthaSidecar,
+        sidecar::InvokeSubEthaSidecarScan,
     ],
     classes: [
         common::StampedItem, common::ClockReading,
@@ -149,6 +153,7 @@ pwrs::export_module! {
         sensing::Beat, sensing::Periodicity, sensing::Capacity, sensing::Forecast, sensing::PathMark, sensing::PathChanges,
         transports::TcpBridgeClient, transports::TcpBridgeServer, transports::Certificate,
         transports::QuicBridgeClient, transports::QuicBridgeServer,
+        sidecar::InstanceStats, sidecar::Registration, sidecar::Adaptive, sidecar::SidecarStatus,
     ],
     enums: [
         primitives::MemoryOrder, rings::OrderingMode, rings::Locale, rings::StampKind,
@@ -157,4 +162,5 @@ pwrs::export_module! {
         versioned::Topology, versioned::SetStrategy,
         sensing::SensCodeKind, sensing::LossClassKind,
     ],
+    providers: [shm_drive::ShmDrive],
 }

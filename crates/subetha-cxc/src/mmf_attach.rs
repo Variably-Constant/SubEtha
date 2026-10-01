@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use memmap2::{MmapMut, MmapOptions};
 
 /// How long an attacher waits for the elected creator to finish initializing
-/// before giving up. Bounded so a creator that dies mid-initialization surfaces
+/// before giving up, and how long a marker create refused as a removal in
+/// flight refuses it is retried before the refusal is reported. Bounded so
+/// a creator that dies mid-initialization, or a denial that stands, surfaces
 /// as an error rather than an unbounded spin.
 pub(crate) const INIT_WAIT: Duration = Duration::from_secs(5);
 
@@ -94,9 +96,17 @@ fn unreadable(path: &Path) -> io::Error {
 /// `Some` when the region was published and this caller attached to it,
 /// `None` when this caller holds the marker and must build it.
 ///
-/// A caller that wins the marker looks once more before building, since a
-/// builder may have published and released between its last look and its
-/// win.
+/// The region is looked at before the marker is touched: a published
+/// region is what most callers come for, and attaching to one is no
+/// election. A caller that wins the marker looks once more before
+/// building, since a builder may have published and released between its
+/// last look and its win.
+///
+/// A marker create refused the way a create racing the marker's removal
+/// is refused looks at the region and tries again, since the remover is a
+/// builder that has just published or an attacher giving the marker back.
+/// One refused for `INIT_WAIT` without a break is reported as the denial
+/// it is.
 fn elect<R>(
     path: &Path,
     marker: &Path,
@@ -106,10 +116,19 @@ fn elect<R>(
 where
     R: Fn(*const u8) -> bool,
 {
+    if let Some(pair) = try_attach(path, total, ready)? {
+        return Ok(Some(pair));
+    }
+    #[cfg(test)]
+    crate::test_races::pause_point();
     let mut deadline = Instant::now() + INIT_WAIT;
+    let mut refused_since = None;
     loop {
-        match crate::region_file::create_new(marker) {
-            Ok(_taken) => {
+        match create_marker(marker) {
+            Ok(taken) => {
+                // The handle has no use past the win and is closed before
+                // the marker is removed.
+                drop(taken);
                 if let Some(pair) = try_attach(path, total, ready)? {
                     drop_marker(marker)?;
                     return Ok(Some(pair));
@@ -117,6 +136,7 @@ where
                 return Ok(None);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                refused_since = None;
                 if let Some(pair) = try_attach(path, total, ready)? {
                     return Ok(Some(pair));
                 }
@@ -128,16 +148,45 @@ where
                 }
                 std::thread::yield_now();
             }
+            Err(e) if removal_in_flight(&e) => {
+                if let Some(pair) = try_attach(path, total, ready)? {
+                    return Ok(Some(pair));
+                }
+                let since = *refused_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= INIT_WAIT {
+                    return Err(e);
+                }
+                std::thread::yield_now();
+            }
             Err(e) => return Err(e),
         }
     }
+}
+
+/// The marker create. A test arms it to be refused the way a create
+/// racing the marker's removal is refused.
+fn create_marker(marker: &Path) -> io::Result<File> {
+    #[cfg(test)]
+    if let Some(refusal) = crate::test_races::take_create_refusal() {
+        return Err(refusal);
+    }
+    crate::region_file::create_new(marker)
+}
+
+/// Whether a refused create is one that raced the removal of the name it
+/// asked for. NTFS answers such a create with access denied, in 58 to 66
+/// of 1,600 contended rounds measured on Windows 11, although the name is
+/// gone by the time the removal returns. A denial that stands is told from
+/// one in flight only by how long it lasts.
+fn removal_in_flight(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::PermissionDenied
 }
 
 /// Build the region under a staging name and publish it as `path`.
 ///
 /// The link fails with `AlreadyExists` rather than replacing, so whoever
 /// links first wins and no one overwrites a region a peer is using. Both
-/// names address one file afterwards, so dropping the staging name leaves
+/// names address one file afterward, so dropping the staging name leaves
 /// the region and this mapping in place.
 fn publish<I>(path: &Path, total: usize, init: I) -> io::Result<(File, MmapMut)>
 where
@@ -415,6 +464,114 @@ mod tests {
         drop(_f2);
         drop(_f);
         std::fs::remove_file(&p).expect("the region file is unmapped and removable");
+    }
+
+    /// Attachers that reach one published region together all attach.
+    /// None of them contends for the election marker, so no create of it
+    /// can meet another's removal of it.
+    #[test]
+    fn attachers_reaching_one_region_together_all_attach() {
+        let p = tmp("together");
+        let (file, mapping) =
+            create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
+        let path = Arc::new(p.clone());
+        let refused = Arc::new(AtomicU32::new(0));
+        let mut hs = Vec::new();
+        for _ in 0..8 {
+            let (path, refused) = (Arc::clone(&path), Arc::clone(&refused));
+            hs.push(std::thread::spawn(move || {
+                for _ in 0..200 {
+                    match create_or_attach(&path, 64, |_| panic!("the region exists"), has_magic) {
+                        Ok((_f, m)) => assert!(has_magic(m.as_ptr()), "attached to an uninitialized region"),
+                        Err(e) => {
+                            refused.fetch_add(1, Ordering::Relaxed);
+                            eprintln!("attach refused: {e}");
+                        }
+                    }
+                }
+            }));
+        }
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(refused.load(Ordering::Relaxed), 0, "attaches refused, of 1600");
+        assert!(!marker_of(&p).exists(), "no marker is left behind");
+        drop(mapping);
+        drop(file);
+        std::fs::remove_file(&p).expect("every thread's mapping is dropped and the file removable");
+    }
+
+    /// An attacher of a published region never creates the marker: a
+    /// refusal armed against its next marker create is still armed once
+    /// it has attached.
+    #[test]
+    fn an_attacher_of_a_published_region_does_not_touch_the_marker() {
+        let p = tmp("untouched");
+        let (file, mapping) =
+            create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic).unwrap();
+        crate::test_races::refuse_next_create();
+        let (f, m) = create_or_attach(&p, 64, |_| panic!("the region exists"), has_magic)
+            .expect("a published region is attached without an election");
+        assert!(has_magic(m.as_ptr()), "attached to an uninitialized region");
+        assert!(
+            crate::test_races::take_create_refusal().is_some(),
+            "the marker was created on the way to a published region"
+        );
+        assert!(!marker_of(&p).exists(), "no marker is left behind");
+        drop(m);
+        drop(f);
+        drop(mapping);
+        drop(file);
+        std::fs::remove_file(&p).expect("every mapping is dropped and the file removable");
+    }
+
+    /// A marker create refused as a removal in flight refuses it is tried
+    /// again rather than reported: with no region to attach to, the caller
+    /// wins the marker on its next try and builds the region.
+    #[test]
+    fn a_marker_create_refused_by_a_removal_in_flight_is_retried_and_the_region_built() {
+        let p = tmp("refused_early");
+        crate::test_races::refuse_next_create();
+        let (f, m) = create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic)
+            .expect("the refused create is tried again and the region built");
+        assert!(has_magic(m.as_ptr()), "and it is initialized");
+        assert!(crate::test_races::take_create_refusal().is_none(), "the armed refusal was met");
+        assert!(!marker_of(&p).exists(), "the marker is released once the region is published");
+        drop(m);
+        drop(f);
+        std::fs::remove_file(&p).expect("the region file is unmapped and removable");
+    }
+
+    /// A caller stopped between its look at an absent region and its marker
+    /// create, whose create is then refused as a removal in flight refuses
+    /// it, finds the region a peer published meanwhile and attaches to it
+    /// rather than building a second one.
+    #[test]
+    fn a_caller_refused_after_a_peer_published_attaches_rather_than_building() {
+        let p = tmp("refused_late");
+        let path = p.clone();
+        let (pause, caller) = crate::test_races::stopped(move || {
+            crate::test_races::refuse_next_create();
+            create_or_attach(
+                &path,
+                64,
+                |_| panic!("a peer published the region while this caller was stopped"),
+                has_magic,
+            )
+        });
+        let (file, mapping) =
+            create_or_attach(&p, 64, |ptr| unsafe { write_magic(ptr) }, has_magic)
+                .expect("the peer builds the region while the caller is stopped");
+        pause.release();
+        let attached = caller.join().expect("the caller neither panicked nor built");
+        let (f, m) = attached.expect("the refused create is tried again and the region attached");
+        assert!(has_magic(m.as_ptr()), "attached to an uninitialized region");
+        assert!(!marker_of(&p).exists(), "no marker is left behind");
+        drop(m);
+        drop(f);
+        drop(mapping);
+        drop(file);
+        std::fs::remove_file(&p).expect("every mapping is dropped and the file removable");
     }
 
     /// A region that exists at a smaller size is refused at once, as a size

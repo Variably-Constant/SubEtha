@@ -326,6 +326,64 @@ impl SpscRingCore {
         })
     }
 
+    /// Lay a ring out in a named shared-memory region that several handles
+    /// may reach at once, or attach to the layout another handle has made
+    /// or is making. The `magic: 0 -> in progress` swap decides which
+    /// handle lays it out, and the others wait for the magic; a region
+    /// already laid out is attached as it stands, queued items and cursors
+    /// in place. A layout that never finishes, such as one a process died
+    /// during, is refused after [`INIT_WAIT`](crate::mmf_attach::INIT_WAIT),
+    /// the bound a file-backed ring's attach gives its builder.
+    pub(crate) fn create_or_open_from_shm(
+        mut shm: crate::shm_file::ShmFile,
+        capacity: usize,
+    ) -> Result<Self, RingError> {
+        const IN_PROGRESS: u64 = 1;
+        assert!(capacity.is_power_of_two() && capacity >= 2,
+                "capacity must be pow2 >= 2");
+        let total = spsc_ring_file_size(capacity);
+        if shm.len() < total {
+            return Err(RingError::LayoutMismatch);
+        }
+        let raw_ptr = shm.as_mut_slice().as_mut_ptr();
+        // SAFETY: the mapping holds `total` bytes, the header's first word
+        // is the magic, and the header is 64-byte aligned.
+        let magic = unsafe { &*(raw_ptr as *const AtomicU64) };
+        if magic
+            .compare_exchange(0, IN_PROGRESS, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            // SAFETY: this handle won the swap, so no other writes the
+            // layout; the magic word itself is left to the store below.
+            unsafe {
+                std::ptr::write_bytes(raw_ptr.add(size_of::<u64>()), 0, total - size_of::<u64>());
+                let header = raw_ptr as *mut SpscHeader;
+                (*header).capacity = capacity as u64;
+                (*header).slot_size = SPSC_SLOT_SIZE as u64;
+            }
+            magic.store(SPSC_MAGIC, Ordering::Release);
+        } else {
+            let deadline = std::time::Instant::now() + crate::mmf_attach::INIT_WAIT;
+            loop {
+                match magic.load(Ordering::Acquire) {
+                    SPSC_MAGIC => break,
+                    0 | IN_PROGRESS if std::time::Instant::now() < deadline => {
+                        std::hint::spin_loop();
+                    }
+                    _ => return Err(RingError::LayoutMismatch),
+                }
+            }
+        }
+        let header = unsafe { &*(raw_ptr as *const SpscHeader) };
+        if header.capacity != capacity as u64 || header.slot_size != SPSC_SLOT_SIZE as u64 {
+            return Err(RingError::LayoutMismatch);
+        }
+        Ok(Self {
+            _backing: SpscBacking::Shm(shm),
+            raw_ptr, capacity,
+        })
+    }
+
     /// Open an existing named ShmFs-backed ring. Validates magic +
     /// capacity, and leaves the layout as it found it - the layout must
     /// already be present from a prior `create_from_shm` on the same

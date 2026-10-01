@@ -265,7 +265,7 @@ pub unsafe extern "C" fn subetha_broadcast_create_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn subetha_broadcast_create_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, broadcast_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, broadcast_file_size(cap), ns, sddl, true) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -312,7 +312,7 @@ pub unsafe extern "C" fn subetha_broadcast_open_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn subetha_broadcast_open_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, broadcast_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, broadcast_file_size(cap), ns, sddl, false) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -585,7 +585,7 @@ pub unsafe extern "C" fn subetha_broadcast_lag(handle: subetha_handle, consumer:
 /// succeeds, the ring does not error, and a reader that started late is
 /// indistinguishable from one that is slow. Across processes the window
 /// is however long starting one takes. Publishing only once the readers
-/// are here is the only thing that closes it, because afterwards there
+/// are here is the only thing that closes it, because afterward there
 /// is nothing left to detect.
 ///
 /// `timeout_ms` must be a real timeout. `SUBETHA_WAIT_FOREVER` is

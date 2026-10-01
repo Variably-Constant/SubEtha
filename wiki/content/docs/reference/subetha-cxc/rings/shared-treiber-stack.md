@@ -79,6 +79,10 @@ Low-level helpers `stack_file_size(capacity, slot_size)`, `STACK_MAGIC`, and
 | push (uncontended) | 31.9 ns | 18.4 ns | 1.7x slower |
 | push_pop_cycle | 32.3 ns | 34.0 ns | tied |
 
+An earlier capture, its host not recorded, measured push at 33.34 ns
+against 25.85 ns (1.29x slower) and push_pop_cycle at 34.25 ns
+against 35.95 ns (tied).
+
 ### Reading the trade-offs
 
 1. **push 1.7x slower** than `Mutex<Vec>::push`. The
@@ -207,7 +211,7 @@ share the same history.
   no-corruption, and disk persistence).
 - Bench: `crates/subetha-cxc/benches/shared_treiber_stack.rs`
   (push, push_pop_cycle vs `Mutex<Vec>`).
-- Sibling primitive: [SHARED_RING.md](shared-ring/) -
+- Sibling primitive: [Shared Ring](shared-ring/) -
   FIFO MPMC ring; Treiber is the LIFO sibling.
 - Underlying technique: ABA-safe CAS via counter-packed
   pointer; same trick SharedRegion's free list uses.

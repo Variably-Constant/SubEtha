@@ -16,6 +16,7 @@ use subetha_cxc::shared_holder_table::SharedHolderTable;
 use subetha_cxc::shared_leader_election::SharedLeaderElection;
 
 use crate::common::{arg_err, assert_send, full_path, op_err, open_err, seconds, size, ClockReading};
+use crate::sidecar::{observe, Registration};
 
 assert_send!(NotifierSet, Notifier, LeaderElection, HolderTable, Heartbeat, EpochBarrier, Condvar, FenceClock, Epochs);
 
@@ -121,14 +122,14 @@ pub struct LeaderElection {
     /// The file the election lives in.
     pub path: String,
     #[psfield(skip)]
-    inner: SharedLeaderElection,
+    inner: Arc<SharedLeaderElection>,
 }
 
 impl LeaderElection {
     fn obtain(path: String, open: bool) -> PsResult<Self> {
         let inner = if open { SharedLeaderElection::open(&path) } else { SharedLeaderElection::create(&path) }
             .map_err(|e| open_err("the election", &path, e))?;
-        Ok(Self { path, inner })
+        Ok(Self { path, inner: Arc::new(inner) })
     }
 }
 
@@ -136,6 +137,12 @@ impl LeaderElection {
 /// names the process acting, this one when absent.
 #[psmethods]
 impl LeaderElection {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Tries to take the role, treating a holder quiet for more than
     /// `graceEpochs` epochs (three when absent) as gone. True means
     /// this process now holds it and must keep beating; false means
@@ -376,6 +383,12 @@ impl Heartbeat {
 /// The operations of a `SubEtha.Heartbeat`.
 #[psmethods]
 impl Heartbeat {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Takes a slot for `pid`, this process when absent. A full table
     /// is an error rather than `$null`: it is a configuration that
     /// cannot serve this process, not an answer to a question.
@@ -488,20 +501,26 @@ pub struct EpochBarrier {
     /// Epochs a participant may stay quiet before it stops counting.
     pub grace_epochs: u64,
     #[psfield(skip)]
-    inner: SubethaEpochBarrier,
+    inner: Arc<SubethaEpochBarrier>,
 }
 
 impl EpochBarrier {
     fn obtain(path: String, table: Arc<HeartbeatTable>, grace_epochs: u64, open: bool) -> PsResult<Self> {
         let inner = if open { SubethaEpochBarrier::open(&path, table, grace_epochs) } else { SubethaEpochBarrier::create(&path, table, grace_epochs) }
             .map_err(|e| open_err("the barrier", &path, e))?;
-        Ok(Self { path, grace_epochs, inner })
+        Ok(Self { path, grace_epochs, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.EpochBarrier`.
 #[psmethods]
 impl EpochBarrier {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many participants are still beating.
     pub fn live_peers(&self) -> PsResult<u32> {
         Ok(self.inner.live_peer_count())
@@ -782,7 +801,7 @@ pub struct FenceClock {
     /// How many participants the clock holds.
     pub capacity: u64,
     #[psfield(skip)]
-    inner: SharedFenceClock,
+    inner: Arc<SharedFenceClock>,
 }
 
 impl FenceClock {
@@ -793,7 +812,7 @@ impl FenceClock {
         let slots = size(capacity, "the capacity")?;
         let inner = if open { SharedFenceClock::open(&path, slots) } else { SharedFenceClock::create(&path, slots) }
             .map_err(|e| open_err("the clock", &path, e))?;
-        Ok(Self { path, capacity, inner })
+        Ok(Self { path, capacity, inner: Arc::new(inner) })
     }
 
     fn reading(hlc: Hlc) -> ClockReading {
@@ -804,6 +823,12 @@ impl FenceClock {
 /// The operations of a `SubEtha.FenceClock`.
 #[psmethods]
 impl FenceClock {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// The shared physical clock, in microseconds.
     pub fn shared_clock_us(&self) -> PsResult<u64> {
         Ok(self.inner.shared_clock_us())

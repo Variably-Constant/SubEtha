@@ -30,24 +30,26 @@
 //!
 //! # Consumer registration model
 //!
-//! The wrapper tracks a monotonic consumer count (`n_consumers`)
-//! and mirrors that many `register_consumer()` calls onto each
-//! new backing at morph time. Consumers register in
-//! `0..n_consumers` order and never unregister - this matches the
-//! capacity-morph use case (subscribers join, capacity grows /
-//! shrinks under load, no subscriber churn). A future iteration
-//! could carry an explicit per-slot bitmap to support
-//! unregister-and-rejoin without renumbering, but the simple
-//! grow-only model fits the in-scope tests.
+//! The wrapper hands out consumer indices itself, in order, from a
+//! count (`n_consumers`), and consumers never unregister - this
+//! matches the capacity-morph use case (subscribers join, capacity
+//! grows / shrinks under load, no subscriber churn). A registrant
+//! claims its index on the backing active when it registers, reading
+//! from that backing's producer position on. A backing a morph makes
+//! active is settled before anything is pushed into it or read from
+//! it: every index handed out so far is claimed there, at its start.
+//! A registrant that the settle's count missed registered after the
+//! backing became active, so that backing is where it starts, and
+//! each consumer reads one unbroken run of what the producer pushed.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
 
-use arc_swap::ArcSwap;
-use parking_lot::Mutex;
+use subetha_core::SwapCell;
 
-use crate::shared_broadcast_ring::{BroadcastError, SharedBroadcastRing};
+use crate::shared_broadcast_ring::{BroadcastError, SharedBroadcastRing, MAX_CONSUMERS};
+use crate::warm_slot::WarmSlot;
 
 /// Errors returned by capacity-morph operations on a broadcast
 /// ring.
@@ -84,39 +86,34 @@ impl std::error::Error for BroadcastCapacityMorphError {}
 
 /// Runtime-resizable broadcast ring. See module-level docs for
 /// the morph protocol. Hot-path `try_push` / `try_recv` perform
-/// one ArcSwap load (~5-10 ns) and delegate to the active backing
+/// one SwapCell load and delegate to the active backing
 /// (try_push) or walk the snapshot's stale list then fall through
-/// to active (try_recv). No mutex acquisition on the steady-state
-/// path; the morph swaps a fresh `BroadcastRingState` atomically.
+/// to active (try_recv). Nothing takes a lock, the morph included:
+/// it swaps a fresh `BroadcastRingState` in atomically.
 pub struct CapacityBroadcastRing {
-    /// Combined active + stale list behind a single ArcSwap. The
+    /// Combined active + stale list behind a single SwapCell. The
     /// snapshot's atomicity gives FIFO-correct combined view
     /// across a morph; producers go straight to `state.active`,
     /// subscribers walk `state.stale` then fall through.
-    state: ArcSwap<BroadcastRingState>,
+    state: SwapCell<BroadcastRingState>,
     /// Bumped on every successful morph for caller-polled pin
     /// invalidation.
     pin_generation: AtomicU64,
-    /// Cached observable capacity; tracks the active backing.
-    capacity_atom: AtomicU64,
     /// Locale source for morph-allocated backings.
     backing_source: BroadcastBackingSource,
     /// Monotonic morph counter. Used to disambiguate file paths /
     /// shm names so morphs cycling through the same capacity do
     /// not collide on the prior backing's name.
     morph_seq: AtomicU64,
-    /// Monotonic count of consumers registered against the wrapper.
-    /// The morph mirrors this many registrations onto each new
-    /// backing in order so consumer_idx assignments stay in
-    /// lockstep across morphs. Grow-only by design.
+    /// Consumer indices handed out so far; the next registrant's index.
+    /// A settle claims every index below it on the backing it settles.
+    /// Grow-only by design.
     n_consumers: AtomicU64,
-    /// Serializes concurrent `morph_capacity_to` callers.
-    morph_lock: Mutex<()>,
     /// One-slot warm cache: a fully constructed backing at a
-    /// predicted capacity, built off the morph lock by
+    /// predicted capacity, built off the morph's critical path by
     /// [`prewarm`](Self::prewarm). Same design as
     /// `CapacityAdaptiveRing`'s warm cache.
-    warm: Mutex<Option<(usize, Arc<SharedBroadcastRing>)>>,
+    warm: WarmSlot<usize, Arc<SharedBroadcastRing>>,
     /// Successful warm-cache hits consumed by `morph_capacity_to`.
     warm_hits: AtomicU64,
 }
@@ -126,12 +123,20 @@ unsafe impl Sync for CapacityBroadcastRing {}
 
 /// Atomic snapshot of the broadcast ring's active backing +
 /// stale list. Same shape as `CapacityAdaptiveRing::RingState`;
-/// the wrapper's hot path performs one ArcSwap load to capture
-/// both simultaneously, eliminating the mutex acquisition that
-/// the prior design needed for FIFO-correctness combined-snapshot.
+/// the wrapper's hot path performs one SwapCell load to capture
+/// both at once, which is what keeps a subscriber's walk
+/// FIFO-correct across a morph. A morph publishes its state with a
+/// compare-and-swap against the one it read.
 struct BroadcastRingState {
     active: Arc<SharedBroadcastRing>,
     stale: Vec<Arc<SharedBroadcastRing>>,
+    /// The active backing's capacity.
+    capacity: usize,
+    /// Whether every consumer index handed out before this state's
+    /// first push has a slot on its active backing. False from the
+    /// morph that publishes the state until the first push, read or pin
+    /// on it settles it.
+    settled: AtomicBool,
 }
 
 /// Locale source for capacity-morph-allocated broadcast backings.
@@ -142,6 +147,31 @@ enum BroadcastBackingSource {
 }
 
 impl CapacityBroadcastRing {
+    /// The wrapper around its first backing.
+    fn around(
+        ring: SharedBroadcastRing,
+        capacity: usize,
+        backing_source: BroadcastBackingSource,
+        morph_seq: u64,
+    ) -> Self {
+        Self {
+            // The first backing has no backing before it, so every
+            // registrant's own claim is its slot there.
+            state: SwapCell::from_arc(Arc::new(BroadcastRingState {
+                active: Arc::new(ring),
+                stale: Vec::new(),
+                capacity,
+                settled: AtomicBool::new(true),
+            })),
+            pin_generation: AtomicU64::new(0),
+            backing_source,
+            morph_seq: AtomicU64::new(morph_seq),
+            n_consumers: AtomicU64::new(0),
+            warm: WarmSlot::new(),
+            warm_hits: AtomicU64::new(0),
+        }
+    }
+
     /// Anon (in-process) capacity-adaptive broadcast ring.
     pub fn create_anon(
         initial_capacity: usize,
@@ -150,20 +180,7 @@ impl CapacityBroadcastRing {
             return Err(BroadcastCapacityMorphError::InvalidCapacity);
         }
         let ring = SharedBroadcastRing::create_anon(initial_capacity)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(BroadcastRingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            backing_source: BroadcastBackingSource::Anon,
-            morph_seq: AtomicU64::new(0),
-            n_consumers: AtomicU64::new(0),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-        })
+        Ok(Self::around(ring, initial_capacity, BroadcastBackingSource::Anon, 0))
     }
 
     /// File-backed capacity-adaptive broadcast ring. New backings
@@ -178,20 +195,7 @@ impl CapacityBroadcastRing {
         let base = base_path.as_ref().to_path_buf();
         let path = path_for_capacity_seq(&base, initial_capacity, 0);
         let ring = SharedBroadcastRing::create(&path, initial_capacity)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(BroadcastRingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            backing_source: BroadcastBackingSource::File(base),
-            morph_seq: AtomicU64::new(1),
-            n_consumers: AtomicU64::new(0),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-        })
+        Ok(Self::around(ring, initial_capacity, BroadcastBackingSource::File(base), 1))
     }
 
     /// ShmFs (named shared memory) capacity-adaptive broadcast
@@ -205,27 +209,22 @@ impl CapacityBroadcastRing {
         }
         let name = format!("{name_prefix}_cap_{initial_capacity}_g0");
         let total = crate::shared_broadcast_ring::broadcast_file_size(initial_capacity);
-        let shm = crate::shm_file::ShmFile::create_or_open_named(&name, total)?;
+        let shm = crate::shm_file::ShmFile::create_named_secured(
+            &name, total, crate::shm_file::ShmNamespace::Session, None,
+        )?;
         let ring = SharedBroadcastRing::create_from_shm(shm, initial_capacity)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(BroadcastRingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            backing_source: BroadcastBackingSource::Shm(name_prefix.to_owned()),
-            morph_seq: AtomicU64::new(1),
-            n_consumers: AtomicU64::new(0),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring,
+            initial_capacity,
+            BroadcastBackingSource::Shm(name_prefix.to_owned()),
+            1,
+        ))
     }
 
-    /// Current capacity of the active backing.
+    /// Current capacity of the active backing, read from the same
+    /// state the active backing is.
     pub fn current_capacity(&self) -> usize {
-        self.capacity_atom.load(Ordering::Acquire) as usize
+        self.state.load().capacity
     }
 
     /// Current pin generation.
@@ -233,32 +232,59 @@ impl CapacityBroadcastRing {
         self.pin_generation.load(Ordering::Acquire)
     }
 
-    /// Register a consumer against the active backing. Returns
-    /// the assigned consumer_idx (matches what the active backing
-    /// itself returned). The wrapper tracks the count so each
-    /// subsequent morph mirrors the same number of registrations
-    /// in order onto the new backing. Consumers join "from now"
-    /// against existing stale backings: they get no slot there,
-    /// so try_recv against those backings returns InvalidConsumer
-    /// which is treated as Empty by the wrapper's stale-walk.
+    /// Register a consumer and return its index, the next one the
+    /// wrapper hands out. The consumer reads from the active backing's
+    /// producer position on, and every backing a later morph makes
+    /// active from its first item. It has no slot on the backings
+    /// already stale, and the stale walk passes over them.
     pub fn register_consumer(&self) -> Result<usize, BroadcastError> {
-        let idx = self.state.load().active.register_consumer()?;
-        self.n_consumers.fetch_add(1, Ordering::AcqRel);
+        let idx = self.n_consumers.fetch_add(1, Ordering::SeqCst) as usize;
+        if idx >= MAX_CONSUMERS {
+            // Every index below the table's end is held and none is
+            // given back, so no later registrant can take one.
+            self.n_consumers.fetch_sub(1, Ordering::SeqCst);
+            return Err(BroadcastError::NoConsumerSlot);
+        }
+        // Pairs with the fence in `settle`: a state published after the
+        // one loaded here is settled with this index in its count.
+        fence(Ordering::SeqCst);
+        let state = self.state.load();
+        state.active.claim_consumer_slot(idx);
+        #[cfg(test)]
+        crate::test_races::pause_point();
         Ok(idx)
     }
 
-    /// Hot-path push. One ArcSwap load + the active backing's
-    /// native `try_push`.
+    /// Claim every index handed out so far on `state`'s active backing,
+    /// once, before its first push or read. A slot a registrant
+    /// already claimed there stays as it is.
+    fn settle(&self, state: &BroadcastRingState) {
+        if state.settled.load(Ordering::Acquire) {
+            return;
+        }
+        // Pairs with the fence in `register_consumer`.
+        fence(Ordering::SeqCst);
+        let handed_out = (self.n_consumers.load(Ordering::SeqCst) as usize).min(MAX_CONSUMERS);
+        for idx in 0..handed_out {
+            state.active.claim_consumer_slot(idx);
+        }
+        state.settled.store(true, Ordering::Release);
+    }
+
+    /// Hot-path push. One SwapCell load + the active backing's
+    /// native `try_push`, after the settle a new backing takes once.
     #[inline]
     pub fn try_push(&self, payload: &[u8]) -> Result<(), BroadcastError> {
-        self.state.load().active.try_push(payload)
+        let state = self.state.load();
+        self.settle(&state);
+        state.active.try_push(payload)
     }
 
     /// Hot-path recv. Walks the stale list oldest-first; falls
     /// through to active when every stale entry returns empty or
     /// the consumer has no slot in that stale.
     ///
-    /// FIFO ordering invariant: one ArcSwap load gives a
+    /// FIFO ordering invariant: one SwapCell load gives a
     /// consistent snapshot of both stale and active. A concurrent
     /// morph either fully precedes or fully follows this load -
     /// it never slips between two separate observations.
@@ -292,84 +318,85 @@ impl CapacityBroadcastRing {
                         }
                         std::hint::spin_loop();
                     }
+                    // A consumer that registered after this backing went
+                    // stale has no slot on it, and nothing there is its.
+                    Err(BroadcastError::InvalidConsumer) if consumer_idx < MAX_CONSUMERS => break,
                     Err(e) => return Err(e),
                 }
             }
         }
+        self.settle(&state);
         state.active.try_recv(consumer_idx, out)
     }
 
     /// Morph the broadcast ring's capacity to `new_capacity`.
+    /// Concurrent morphs each land in turn: a morph whose state
+    /// another replaced first decides again from the replacement.
     pub fn morph_capacity_to(
         &self,
         new_capacity: usize,
     ) -> Result<(), BroadcastCapacityMorphError> {
-        let _morph_guard = self.morph_lock.lock();
-
         if !new_capacity.is_power_of_two() || new_capacity < 2 {
             return Err(BroadcastCapacityMorphError::InvalidCapacity);
         }
-
-        let old_state = self.state.load_full();
-        let old = Arc::clone(&old_state.active);
-        let old_capacity = self.capacity_atom.load(Ordering::Acquire) as usize;
-        if old_capacity == new_capacity {
-            return Ok(());
-        }
-
-        // Warm-cache probe: a prediction matching the morph target
-        // skips allocation entirely; a mismatch stays cached and
-        // the cold path runs unchanged.
-        let warm_hit = {
-            let mut warm = self.warm.lock();
-            warm.take_if(|(cap, _)| *cap == new_capacity)
-        };
-        let new = match warm_hit {
-            Some((_, ring)) => {
-                self.warm_hits.fetch_add(1, Ordering::Relaxed);
-                ring
+        loop {
+            let old_state = self.state.load_full();
+            if old_state.capacity == new_capacity {
+                return Ok(());
             }
-            None => self.build_backing(new_capacity)?,
-        };
+            let old = Arc::clone(&old_state.active);
 
-        // Mirror n_consumers registrations onto the new backing
-        // in order so consumer_idx assignments stay in lockstep.
-        // Surfacing failures (NoConsumerSlot) loudly via ? so
-        // the morph fails fast if the new backing is undersized.
-        let n = self.n_consumers.load(Ordering::Acquire) as usize;
-        for _ in 0..n {
-            new.register_consumer()?;
+            // Warm-cache probe: a prediction matching the morph target
+            // skips allocation entirely; a mismatch stays cached and
+            // the cold path runs unchanged.
+            let (new, from_warm) = match self.warm.take(&new_capacity) {
+                Some(ring) => (ring, true),
+                None => (self.build_backing(new_capacity)?, false),
+            };
+            // The consumers' slots on the new backing are claimed by its
+            // settle, before its first push or read, with every
+            // registration up to then in the count.
+            #[cfg(test)]
+            crate::test_races::pause_point();
+
+            // Build the new state in one shot: prune the stale list,
+            // append the prior active, publish atomically. Subscribers
+            // reading via `self.state.load()` see either the pre-morph
+            // snapshot or the post-morph snapshot, never a half-state.
+            //
+            // A stale entry leaves the list only when every subscriber
+            // has drained it and this list is its last holder. The
+            // producer pushes into the active backing of the state it
+            // loaded, and that load can predate this morph and the one
+            // before it; its snapshot holds the state, which holds the
+            // backing, so a backing some snapshot can still reach has a
+            // strong count above one and stays on the list for the push
+            // that has not landed yet. With this list the sole holder,
+            // no push can arrive and the drain is final.
+            let mut new_stale: Vec<Arc<SharedBroadcastRing>> = old_state
+                .stale
+                .iter()
+                .filter(|r| !(r.is_fully_drained() && Arc::strong_count(r) == 1))
+                .cloned()
+                .collect();
+            new_stale.push(old);
+            let new_state = Arc::new(BroadcastRingState {
+                active: new,
+                stale: new_stale,
+                capacity: new_capacity,
+                settled: AtomicBool::new(false),
+            });
+            if self.state.compare_and_set(&old_state, new_state).is_ok() {
+                if from_warm {
+                    self.warm_hits.fetch_add(1, Ordering::Relaxed);
+                }
+                self.pin_generation.fetch_add(1, Ordering::AcqRel);
+                return Ok(());
+            }
+            // Another morph replaced the state first. The backing built
+            // here was registered for a state that is gone, so it drops,
+            // and the next pass decides again from the state in place.
         }
-
-        self.pin_generation.fetch_add(1, Ordering::AcqRel);
-
-        // Build the new state in one shot: prune the stale list,
-        // append the prior active, publish atomically. Subscribers
-        // reading via `self.state.load()` see either the pre-morph
-        // snapshot or the post-morph snapshot, never a half-state.
-        //
-        // A stale entry leaves the list only when every subscriber
-        // has drained it and this list is its last holder. The
-        // producer pushes into the active backing of the state it
-        // loaded, and that load can predate this morph and the one
-        // before it; its snapshot holds the state, which holds the
-        // backing, so a backing some snapshot can still reach has a
-        // strong count above one and stays on the list for the push
-        // that has not landed yet. With this list the sole holder, no
-        // push can arrive and the drain is final.
-        let mut new_stale: Vec<Arc<SharedBroadcastRing>> = old_state
-            .stale
-            .iter()
-            .filter(|r| !(r.is_fully_drained() && Arc::strong_count(r) == 1))
-            .cloned()
-            .collect();
-        new_stale.push(old);
-        let new_state = BroadcastRingState { active: new, stale: new_stale };
-        self.state.store(Arc::new(new_state));
-        self.capacity_atom
-            .store(new_capacity as u64, Ordering::Release);
-
-        Ok(())
     }
 
     /// Construct a fresh backing at `capacity`, at the wrapper's
@@ -391,7 +418,9 @@ impl CapacityBroadcastRing {
             BroadcastBackingSource::Shm(prefix) => {
                 let name = format!("{prefix}_cap_{capacity}_g{seq}");
                 let total = crate::shared_broadcast_ring::broadcast_file_size(capacity);
-                let shm = crate::shm_file::ShmFile::create_or_open_named(&name, total)?;
+                let shm = crate::shm_file::ShmFile::create_named_secured(
+                    &name, total, crate::shm_file::ShmNamespace::Session, None,
+                )?;
                 SharedBroadcastRing::create_from_shm(shm, capacity)?
             }
         };
@@ -399,7 +428,7 @@ impl CapacityBroadcastRing {
     }
 
     /// Speculatively build a backing at `capacity` into the
-    /// one-slot warm cache, off the morph lock's critical path.
+    /// one-slot warm cache, off the morph's critical path.
     /// The next `morph_capacity_to(capacity)` consumes it and
     /// skips allocation. Re-prewarming the cached capacity is a
     /// no-op; a different capacity replaces the slot.
@@ -407,17 +436,17 @@ impl CapacityBroadcastRing {
         if !capacity.is_power_of_two() || capacity < 2 {
             return Err(BroadcastCapacityMorphError::InvalidCapacity);
         }
-        if self.warm.lock().as_ref().map(|(c, _)| *c) == Some(capacity) {
+        if self.warm.holds(&capacity) {
             return Ok(());
         }
         let ring = self.build_backing(capacity)?;
-        *self.warm.lock() = Some((capacity, ring));
+        self.warm.store(capacity, ring);
         Ok(())
     }
 
     /// Capacity currently held in the warm cache, if any.
     pub fn warm_capacity(&self) -> Option<usize> {
-        self.warm.lock().as_ref().map(|(c, _)| *c)
+        self.warm.key()
     }
 
     /// Number of morphs that consumed a warm-cache prediction.
@@ -428,14 +457,17 @@ impl CapacityBroadcastRing {
     /// Drop any cached prediction, releasing its memory (and its
     /// file / shm region for non-anon locales).
     pub fn clear_warm(&self) {
-        *self.warm.lock() = None;
+        self.warm.clear();
     }
 
-    /// Pin the current capacity backing for a hot loop.
+    /// Pin the current capacity backing for a hot loop. The backing is
+    /// settled first, so a push straight into it misses no consumer.
     pub fn pin_current_capacity(&self) -> PinnedBroadcastCapacity<'_> {
         let captured_gen = self.pin_generation.load(Ordering::Acquire);
-        let ring = Arc::clone(&self.state.load().active);
-        let capacity = self.capacity_atom.load(Ordering::Acquire) as usize;
+        let state = self.state.load();
+        self.settle(&state);
+        let ring = Arc::clone(&state.active);
+        let capacity = state.capacity;
         PinnedBroadcastCapacity {
             parent: self,
             pinned_generation: captured_gen,
@@ -445,9 +477,12 @@ impl CapacityBroadcastRing {
         }
     }
 
-    /// Direct access to the active [`SharedBroadcastRing`].
+    /// Direct access to the active [`SharedBroadcastRing`], settled
+    /// first, so a push straight into it misses no consumer.
     pub fn ring_handle(&self) -> Arc<SharedBroadcastRing> {
-        Arc::clone(&self.state.load().active)
+        let state = self.state.load();
+        self.settle(&state);
+        Arc::clone(&state.active)
     }
 }
 
@@ -564,5 +599,49 @@ mod tests {
             assert_eq!(u64::from_le_bytes(out[..8].try_into().unwrap()), 7);
             assert!(ring.try_recv(idx, &mut out).is_err(), "nothing else was pushed");
         }
+    }
+
+    /// A consumer that registers while a morph has built its backing and
+    /// not yet published it keeps a slot on that backing: an item pushed
+    /// after the morph reaches it, and the next registrant is handed an
+    /// index of its own.
+    #[test]
+    fn a_registration_inside_a_morph_keeps_its_slot_on_the_new_backing() {
+        let ring = Arc::new(CapacityBroadcastRing::create_anon(4).unwrap());
+        let morphing = Arc::clone(&ring);
+        let (pause, morph) = crate::test_races::stopped(move || morphing.morph_capacity_to(8));
+        let early = ring.register_consumer().expect("a registration inside the morph");
+        pause.release();
+        morph.join().expect("the morph thread").expect("the morph");
+        assert_eq!(ring.current_capacity(), 8);
+        let late = ring.register_consumer().expect("a registration after the morph");
+        assert_ne!(late, early, "two consumers were handed one index");
+        ring.try_push(&7u64.to_le_bytes()).expect("a push after the morph");
+        let mut out = [0u8; 64];
+        for idx in [early, late] {
+            if let Err(e) = ring.try_recv(idx, &mut out) {
+                panic!("consumer {idx} missed the item pushed after the morph: {e:?}");
+            }
+            assert_eq!(u64::from_le_bytes(out[..8].try_into().unwrap()), 7);
+        }
+    }
+
+    /// A consumer stopped after it has claimed its slot on the active
+    /// backing, while a morph publishes a new one: an item pushed after
+    /// the morph reaches it.
+    #[test]
+    fn a_registration_a_morph_overtakes_reads_the_new_backing() {
+        let ring = Arc::new(CapacityBroadcastRing::create_anon(4).unwrap());
+        let registering = Arc::clone(&ring);
+        let (pause, registrant) = crate::test_races::stopped(move || registering.register_consumer());
+        ring.morph_capacity_to(8).expect("the morph");
+        pause.release();
+        let idx = registrant.join().expect("the registrant thread").expect("the registration");
+        ring.try_push(&7u64.to_le_bytes()).expect("a push after the morph");
+        let mut out = [0u8; 64];
+        if let Err(e) = ring.try_recv(idx, &mut out) {
+            panic!("the consumer the morph overtook missed the item pushed after it: {e:?}");
+        }
+        assert_eq!(u64::from_le_bytes(out[..8].try_into().unwrap()), 7);
     }
 }

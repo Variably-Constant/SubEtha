@@ -20,6 +20,9 @@
 //! - Same `iter_custom` + drain-completion pattern so per-iter
 //!   wall-clock measures pure producer throughput.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::collections::VecDeque;
@@ -84,8 +87,8 @@ fn khpd_producer_fast(c: &mut Criterion) {
                 // Canonical KHPD producer-fast shape: build the K
                 // items in a caller-side buffer, then call
                 // publish_batch() once to publish all of them into
-                // ceil(K/LINE_ITEMS) publication lines under one
-                // Mutex acquire + one `tail.fetch_add(n_lines)`. The
+                // ceil(K/LINE_ITEMS) publication lines reserved with
+                // one compare-and-swap on `tail`. The
                 // amortization lever is "one Release-store on the
                 // line state word publishes LINE_ITEMS items
                 // together"; publish_batch is the path that

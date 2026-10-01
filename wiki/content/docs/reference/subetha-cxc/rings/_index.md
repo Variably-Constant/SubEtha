@@ -22,9 +22,9 @@ Bounded, lock-free FIFO / LIFO / pub-sub structures backed by an MMF.
 | Shape unknown / morphs over runtime | `AdaptiveRing` (all 4 shapes pre-allocated; peers register / unregister at runtime, backings grow past the construction hint, shape auto-morphs to the live counts; pins to native primitive speed once stable) | none needed | [shared-ring-adaptive](shared-ring-adaptive/) |
 | Global FIFO needed sometimes / decided at runtime | `AdaptiveRing::with_ordering_stamps()` (push stamps + a shared ordering flag; the merge flip delivers global FIFO within stamp skew on the composed rings, retroactive over the backlog). For exact delivery on the SharedCounter path, `AdaptiveOrderedReceiver` (auto reorder-vs-strict). | `RingShape::Vyukov` morph for unstamped rings | [adaptive-ordering](adaptive-ordering/) |
 | Shape + locale both morph at runtime | `LocaleAdaptiveRing` (Anon / File / ShmFs locale wrapped around AdaptiveRing) | none needed | [locale-adaptive-ring](locale-adaptive-ring/) |
-| Slot count grows / shrinks at runtime under load (fan-in family) | `CapacityAdaptiveRing` (ArcSwap state-swap to a fresh backing at any pow2 capacity; stale-list draining; pinned hot path reaches native speed) | none needed | [capacity-adaptive-ring](capacity-adaptive-ring/) |
-| Slot count grows / shrinks at runtime under load (broadcast fan-out) | `CapacityBroadcastRing` (same ArcSwap state-swap pattern; per-subscriber positions baked into the underlying broadcast ring header) | none needed | [capacity-broadcast-ring](capacity-broadcast-ring/) |
-| Slot count grows / shrinks at runtime under load (pub/sub fan-out) | `CapacityPubSubRing` (chain-of-backings model; subscribers carry `(backing_idx, position)` and advance through the chain) | none needed | [capacity-pubsub-ring](capacity-pubsub-ring/) |
+| Slot count grows / shrinks at runtime under load (fan-in family) | `CapacityAdaptiveRing` (SwapCell state-swap to a fresh backing at any pow2 capacity; stale-list draining; pinned hot path reaches native speed) | none needed | [capacity-adaptive-ring](capacity-adaptive-ring/) |
+| Slot count grows / shrinks at runtime under load (broadcast fan-out) | `CapacityBroadcastRing` (same SwapCell state-swap pattern; per-subscriber positions baked into the underlying broadcast ring header) | none needed | [capacity-broadcast-ring](capacity-broadcast-ring/) |
+| Slot count grows / shrinks at runtime under load (pub/sub fan-out) | `CapacityPubSubRing` (chain-of-backings model; subscribers hold their backing and position and advance through the chain) | none needed | [capacity-pubsub-ring](capacity-pubsub-ring/) |
 | 1P / NC pub-sub with per-subscriber positions | `PubSubRing` + `PubSubSubscriber` | none needed | [pubsub-ring](pubsub-ring/) |
 | 1P / 1C blocking send / recv (cross-process futex) | `BlockingSpscRing` | none needed | [blocking-spsc-ring](blocking-spsc-ring/) |
 | NP / 1C blocking send / recv (cross-process futex) | `BlockingMpscRing` | none needed | [blocking-mpsc-ring](blocking-mpsc-ring/) |
@@ -44,10 +44,10 @@ futex slot list in MMF) on top of the non-blocking SPSC / MPSC
 / MPMC rings so consumers can park kernel-side instead of
 spinning when the ring is empty. shared `futex` on Linux and
 non-private `_umtx_op` on FreeBSD carry the wake across the
-process boundary; on Windows the hardware monitor tier
-(MONITORX/UMONITOR, physical-address based) carries the
-cross-process wake while `WaitOnAddress` serves anon-backed
-intra-process wakers. See [`cross-process-waker`]({{<
+process boundary; on Windows a cross-process waiter waits on the
+hardware monitor tier (MONITORX/UMONITOR, physical-address based)
+and then sleeps on a named park event its waker sets, while
+`WaitOnAddress` serves anon-backed intra-process wakers. See [`cross-process-waker`]({{<
 ref "../coordination-types/cross-process-waker" >}}) for the
 underlying protocol and the measured wait ladder.
 
@@ -63,9 +63,9 @@ underlying protocol and the measured wait ladder.
 | [Shared Ring Adaptive](shared-ring-adaptive/) | Shape-morphing ring with all 4 shapes pre-allocated; per-producer backings grow on demand as peers register | Any shape; peers join / leave at runtime across processes; shape auto-morphs to the live counts; PinnedRing handoff to native primitive speed |
 | [Adaptive Ordering](adaptive-ordering/) | Ordering axis on stamped AdaptiveRings: TSC / counter / monotonic push stamps, inversion metric, MMF-resident merge flag, strict watermark gate, single-drainer lease | Composed shapes with runtime-switchable global FIFO; `try_recv_with_stamp` / pinned `ordered_try_pop` |
 | [Locale Adaptive Ring](locale-adaptive-ring/) | Three-locale wrapper (Anon / File / ShmFs) around AdaptiveRing; ships with `LocaleAdaptiveRingSidecar` + `DefaultLocalePolicy` for hysteresis-gated migrations | Any shape across any locale; PinnedLocale handoff chains into PinnedRing |
-| [Capacity Adaptive Ring](capacity-adaptive-ring/) | Runtime-resizable AdaptiveRing wrapper; ArcSwap state-swap + stale-list; ships with `CapacityAdaptiveRingSidecar` + `DefaultCapacityPolicy` for hysteresis-gated grow/shrink | Any shape; capacity morphs at runtime; PinnedCapacity -> PinnedRing chain |
-| [Capacity Broadcast Ring](capacity-broadcast-ring/) | Capacity-morph wrapper around `SharedBroadcastRing`; same ArcSwap state-swap pattern with `lag(idx) == 0` spin discipline | 1 producer, N subscribers, capacity morphs at runtime |
-| [Capacity PubSub Ring](capacity-pubsub-ring/) | Capacity-morph wrapper around `PubSubRing`; chain-of-backings model; subscribers walk `(backing_idx, position)` across the chain | 1 producer, N subscribers, capacity morphs at runtime |
+| [Capacity Adaptive Ring](capacity-adaptive-ring/) | Runtime-resizable AdaptiveRing wrapper; SwapCell state-swap + stale-list; ships with `CapacityAdaptiveRingSidecar` + `DefaultCapacityPolicy` for hysteresis-gated grow/shrink | Any shape; capacity morphs at runtime; PinnedCapacity -> PinnedRing chain |
+| [Capacity Broadcast Ring](capacity-broadcast-ring/) | Capacity-morph wrapper around `SharedBroadcastRing`; same SwapCell state-swap pattern with `lag(idx) == 0` spin discipline | 1 producer, N subscribers, capacity morphs at runtime |
+| [Capacity PubSub Ring](capacity-pubsub-ring/) | Capacity-morph wrapper around `PubSubRing`; chain-of-backings model; subscribers walk the chain holding their backing and position | Any number of producers, N subscribers, capacity morphs at runtime |
 | [PubSub Ring](pubsub-ring/) | One-producer many-subscriber broadcast with per-slot sequence numbers | 1 publisher + N subscribers, each tracks its own absolute position via SubscriberPosition |
 | [Shared Broadcast Ring](shared-broadcast-ring/) | Pub/sub ring (KeepLastN; producer never blocks) | Single producer, multiple consumers (each sees full stream); `MAX_CONSUMERS = 16` |
 | [Shared Treiber Stack](shared-treiber-stack/) | LIFO stack | Lock-free CAS-based push/pop |

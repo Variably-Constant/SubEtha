@@ -3569,7 +3569,7 @@ int subetha_workload_memory_verify(const char *base, uint32_t mode, uint32_t wri
 /* The receiver is the only thing that acknowledges, and it acknowledges
  * only while it polls, so it stays past the last stream for as long as a
  * sender is allowed to wait on one. A shorter stay ends the only source
- * of acknowledgement while a sender is still owed one, which reaches
+ * of acknowledgment while a sender is still owed one, which reaches
  * that sender as a peer that stopped responding rather than as the
  * drain it actually is. */
 #define STREAM_LINGER_MS STREAM_FINISH_MS

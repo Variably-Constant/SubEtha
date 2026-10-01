@@ -132,7 +132,10 @@ Two bounded executors drive awaiting tasks without a thread per task.
 
 ### `TaskPool`
 
-A fixed pool of worker threads with a shared ready queue.
+A fixed pool of worker threads with a shared lock-free ready queue. A
+worker with nothing to run parks until a wake queues a task, and a task
+woken while a worker polls it is queued again when that poll returns,
+so no task is polled by two workers at once.
 
 | Method | Purpose |
 |---|---|

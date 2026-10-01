@@ -232,7 +232,9 @@ Two harnesses on the same Zen+ R7 2700 / Windows 11 box:
 
 SharedRing leads crossbeam by ~1.3x on round-trip latency
 (Vyukov MPMC has lower per-op overhead than crossbeam's
-SPMC-optimized channel) and edges `sync_channel`.
+SPMC-optimized channel) and edges `sync_channel`. An earlier capture
+on the same host measured `SharedRing` at 21.72 ns, `sync_channel` at
+25.60 ns and crossbeam at 33.71 ns, a 1.55x lead over crossbeam.
 
 **SPSC sustained throughput (1M items, best-of-5; same captured
 run as the [Lamport SPSC page](../shared-ring-spsc/)):**
@@ -254,6 +256,16 @@ leading the MPMC paths (they skip the `compare_exchange_weak` on
 sequence atomic entirely and led the same captured run at
 **37.79 M items/s, 3.25x crossbeam**.
 
+An earlier capture on the same host:
+
+| Variant | Throughput | vs crossbeam |
+|---|---:|---:|
+| `SharedRing::create_anon` + `try_push_spsc` / `try_pop_spsc` | 38.42 M items/s | 3.59x |
+| `SharedRing::create_anon` + `try_push` / `try_pop` (MPMC) | 23.95 M items/s | 2.24x |
+| `SharedRing::create` (file) + `try_push_spsc` / `try_pop_spsc` | 23.12 M items/s | 2.16x |
+| `SharedRing::create` (file) + `try_push` / `try_pop` (MPMC) | 21.82 M items/s | 2.04x |
+| `crossbeam_channel::bounded(4096)` | 10.71 M items/s | baseline |
+
 **MPMC 4 producers + 4 consumers (varying message counts):**
 
 | Variant | Time |
@@ -262,7 +274,8 @@ sequence atomic entirely and led the same captured run at
 | `crossbeam_channel` | 1.77 ms |
 
 The 4x4 contended workload is a coin flip within run noise:
-captured runs land each contender ahead by single-digit percent.
+captured runs land each contender ahead by single-digit percent
+(an earlier capture: `SharedRing` 1.47 ms, crossbeam 1.58 ms).
 Treat them as parity. The dedicated composed
 [`SharedRingMpmc`](../shared-ring-mpmc/) grid (N x M Lamport
 rings) is the decisive winner for callers who do not need global
@@ -298,10 +311,13 @@ harness is different:
   `crates/subetha-cxc/examples/cross_process_compare.rs` against
   iceoryx2, named-pipe, ipc-channel, stdio-pipe, TCP loopback,
   and UDP loopback contenders; full tables in
-  `docs/CROSS_PROCESS_IPC_PERFORMANCE.md`.
+  `docs/CROSS_PROCESS_IPC_PERFORMANCE.md`, the raw figures in
+  `docs/cross_process_ipc_results.json`, and a rendered comparison
+  in `docs/platform_ipc_dotplot.png`.
 - **Cross-host through QUIC bridge**: 100,000 items shipped
   end-to-end across a real quinn-based QUIC connection on
-  127.0.0.1 with integrity asserted. Demonstrated by
+  127.0.0.1 with integrity asserted (every item arrives exactly
+  once), at 0.47 M items/s in one captured run. Demonstrated by
   `crates/subetha-cxc/examples/quic_bridge_e2e.rs`.
 
 ### Durability cost excluded by design
@@ -321,7 +337,7 @@ tables above.
 Vyukov MPMC has one narrow crash window: a producer that CASes `producer_seq`
 forward (claiming a slot) but dies before the Release-store that publishes
 `slot.sequence`. That leaves a permanent hole - the consumer never advances
-past it. `SharedRing` exposes the sidecar-driven repair for it:
+past it. `SharedRing` exposes the repair for it:
 
 - `next_stuck_slot(from) -> Option<u64>` scans the claimed-but-undrained
   window `[consumer_seq, producer_seq)` and returns the first position whose
@@ -334,9 +350,25 @@ past it. `SharedRing` exposes the sidecar-driven repair for it:
   a live producer's publish is a no-op CAS (`Ok(false)`) but still hands the
   consumer a slot the producer never finished writing.
 
-The canonical dead-producer signal is `HeartbeatTable` + `FailoverWatchdog`:
-register each producer, and on a stale heartbeat the watchdog walks that
-producer's rings, calling `heal_stuck_slot` for every `next_stuck_slot`.
+[`FailoverWatchdog`](../coordination-types/failover/) runs the repair on
+the rings handed to its `watch_ring`: each `scan` heals a position
+`next_stuck_slot` also returned on the previous scan, once any process
+registered in its `HeartbeatTable` is more than the watchdog's grace behind,
+and `ReclaimReport::healed_slots` lists what it healed. A publish takes
+nanoseconds, so a live producer is not caught mid-publish across a whole
+scan interval. A caller with a dead-producer signal of its own (an expired
+`OwnerLease`, an application-level timeout) calls `heal_stuck_slot` directly
+for each position `next_stuck_slot` returns. A healed slot's payload is
+whatever the slot held when the producer died. `heal_stuck_slot` returns
+`Ok(true)` when it healed the slot and `Ok(false)` when the slot was not
+stuck: already published, or outside the `[consumer_seq, producer_seq)`
+window.
+
+`crates/subetha-cxc/examples/stuck_slot_recovery.rs` runs the failure and
+the repair end to end: it wedges a consumer on a claimed-but-unpublished
+slot (9.99 million Empty results during the wedge in one captured run),
+runs the scan and the heal by hand, then watches the consumer drain past
+the healed slot.
 
 ## Deferred setup: LazySharedRing
 
@@ -528,10 +560,13 @@ on disk and can be drained on restart.
 - Source: `crates/subetha-cxc/src/shared_ring.rs`.
 - Bench: `crates/subetha-cxc/benches/shared_ring.rs` (SPSC round-trip,
   SPSC throughput, MPMC 4x4 workloads vs crossbeam_channel and
-  std::sync::mpsc baselines).
-- Sibling primitive: [SHARED_BROADCAST_RING.md](shared-broadcast-ring/) -
+  std::sync::mpsc baselines), plus
+  `crates/subetha-cxc/examples/spsc_shootout.rs` and
+  `crates/subetha-cxc/examples/mpmc_shootout.rs` for the composed
+  family's head-to-heads.
+- Sibling primitive: [Shared Broadcast Ring](shared-broadcast-ring/) -
   multi-consumer broadcast variant.
-- Sibling primitive: [SHARED_TREIBER_STACK.md](shared-treiber-stack/) -
+- Sibling primitive: [Shared Treiber Stack](shared-treiber-stack/) -
   LIFO counterpart (stack instead of queue).
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) - the
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) - the
   underlying atomic primitive the Vyukov protocol builds on.

@@ -264,11 +264,7 @@ pub(crate) fn last_holder_code(e: subetha_cxc::adaptive_ring::LastHolderError) -
     match e {
         LastHolderError::NoBackingFiles => fail(
             SUBETHA_E_INVALID_ARGUMENT,
-            "an anonymous ring has no backing files for a last holder to remove",
-        ),
-        LastHolderError::ShmNotSupported => fail(
-            SUBETHA_E_INVALID_ARGUMENT,
-            "a shared-memory ring does not carry a holder table",
+            "an anonymous ring has no backing files or names for a last holder to remove",
         ),
         LastHolderError::Region(HoldersError::Exhausted) => fail(
             SUBETHA_E_RING_FULL,

@@ -111,7 +111,8 @@ impl HandshakeHeader {
         self.strategy_tag.store(new_tag, Ordering::Release);
     }
 
-    /// Bump generation and atomically swap the strategy tag.
+    /// Store the new strategy tag, then bump the generation with a Release
+    /// store, so an op that sees the new generation also sees the new tag.
     ///
     /// After this returns, new ops will read the new tag; in-flight ops
     /// on the old generation continue to completion. Returns the old

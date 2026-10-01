@@ -40,7 +40,14 @@ the next read.
 
 Each connection carries one uni-directional stream. The stream
 starts with an 8-byte big-endian item count `N`, followed by
-`N * ADAPTIVE_SPSC_PAYLOAD_BYTES` (64-byte) slot payloads.
+`N * ADAPTIVE_SPSC_PAYLOAD_BYTES` (64-byte) slot payloads, and ends
+there.
+
+The client closes the connection once the server has acknowledged
+the whole stream, and the server waits for that close rather than
+closing first. A close from the server could otherwise reach the
+client ahead of the acknowledgment of its last data, and the
+client would report a lost connection for a transfer that arrived.
 
 ## API
 
@@ -49,7 +56,7 @@ starts with an 8-byte big-endian item count `N`, followed by
 | Call | Behavior |
 |---|---|
 | `QuicBridgeClient::new(producer_ring, server_addr, client_config, bind_addr)` | Construct. `producer_ring: Arc<AdaptiveRing>`. |
-| `client.run(n_items, server_name) -> Result<(), QuicBridgeError>` | Connect, ship `n_items` slots, finish the stream. |
+| `client.run(n_items, server_name) -> Result<(), QuicBridgeError>` | Connect, ship `n_items` slots, finish the stream, and close once the server has acknowledged it. Returns after QUIC's closing period, three probe timeouts, which is what carries the close to the server when the caller's runtime ends with the call. |
 
 ### QuicBridgeServer
 
@@ -57,7 +64,7 @@ starts with an 8-byte big-endian item count `N`, followed by
 |---|---|
 | `QuicBridgeServer::bind(consumer_ring, addr, server_config)` | Bind. `consumer_ring: Arc<AdaptiveRing>`. |
 | `server.local_addr() -> Result<SocketAddr, std::io::Error>` | Bound address (useful when `0.0.0.0:0` was passed). |
-| `server.accept_one() -> Result<u64, QuicBridgeError>` | Accept one connection, drain its uni stream, return item count. |
+| `server.accept_one() -> Result<u64, QuicBridgeError>` | Accept one connection, drain its uni stream to its end, and return the item count once the client has closed the connection. A stream carrying more than its header declared is an error. |
 
 ### Helpers
 

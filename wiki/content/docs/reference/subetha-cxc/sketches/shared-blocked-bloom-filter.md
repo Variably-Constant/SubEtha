@@ -87,6 +87,10 @@ suggested config (same FPR target).
 | contains, 16M items (>L3), hit-heavy | 95.11 ns | 161.40 ns | **1.70x faster** |
 | bit budget (n=4M, FPR 0.01) | 5.51 MB | 4.79 MB | 1.15x the bits |
 
+An earlier capture on the same host (2026-06-20) measured insert at
+61.07 ns against 57.49 ns (1.07x slower) and the hit-heavy 16M-item
+`contains` at 107.88 ns against 201.84 ns (1.87x faster).
+
 The two timing rows move a little between runs; the bit-budget row does
 not, because it is computed rather than measured - 5 511 409 against
 4 792 530 bytes, printed by the bench itself.

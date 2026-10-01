@@ -46,6 +46,21 @@ atomic), one Acquire load + one Release store per push or pop.
   reinitializes, and on Windows succeeds only once every mapping
   handle is gone.
 
+## What it is
+
+`SharedRingSpsc` is a factory; the handles you use are `Producer` and
+`Consumer`, each owning one half of the contract. Cloning `producer`
+is a compile error, and so is sharing `&producer` across threads: the
+SPSC contract that the no-CAS hot path rests on is enforced by the
+type system rather than by caller discipline.
+
+The two halves share one `subetha_cxc::spsc_ring::SpscRingCore`
+through an `Arc`. The pair is the ergonomic interface; the core is
+exposed so the composed `SharedRingMpsc` and `SharedRingMpmc` build
+their MPSC and MPMC shapes out of several SPSC rings without
+duplicating the storage layout. The ring stays alive as long as
+either half does.
+
 ## Lamport 1983 protocol
 
 ```mermaid
@@ -75,7 +90,13 @@ block-beta
 4. Memcpy payload into slot at `head & (capacity - 1)`.
 5. `self.head.store(head + 1, Release)` - publish to the consumer.
 
-**Pop** (in `Consumer::try_pop`): mirrors with `tail` Relaxed / `head` Acquire / Release on `tail`.
+**Pop** (in `Consumer::try_pop`):
+
+1. `tail = self.tail.load(Relaxed)` - owner-private.
+2. `head = self.head.load(Acquire)` - read the peer's position to check empty.
+3. If `tail == head`, return `Err(Empty)`.
+4. Memcpy payload out of slot at `tail & (capacity - 1)`.
+5. `self.tail.store(tail + 1, Release)` - free the slot.
 
 Two cross-thread atomics per op (Acquire load + Release store)
 plus one owner-private Relaxed load. The Vyukov MPMC ring needs
@@ -83,7 +104,8 @@ four cross-thread atomics for the same op.
 
 `head` and `tail` live on separate cache lines so the producer's
 publish does not invalidate the consumer's `tail` cache line on
-every push (and vice versa).
+every push (and vice versa). The header is three cache lines, 192
+bytes, where one would hold its fields.
 
 ## Worked example
 
@@ -129,6 +151,40 @@ on the producer side and `open_pair("/tmp/spsc.bin", 64)` on the
 consumer side; both return the (Producer, Consumer) pair and each
 side drops the half it doesn't use.
 
+Process A (producer side):
+
+```rust
+use subetha_cxc::SharedRingSpsc;
+let (producer, _consumer) = SharedRingSpsc::create_pair("/tmp/spsc.bin", 64)?;
+// _consumer drops; another process attaches via open_pair.
+for i in 0..1_000_000u64 {
+    while producer.try_push(&i.to_le_bytes()).is_err() {
+        std::hint::spin_loop();
+    }
+}
+```
+
+Process B (consumer side):
+
+```rust
+use subetha_cxc::SharedRingSpsc;
+let (_producer, consumer) = SharedRingSpsc::open_pair("/tmp/spsc.bin", 64)?;
+let mut out = [0u8; 64];
+loop {
+    if consumer.try_pop(&mut out).is_ok() {
+        // handle item
+    } else {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+```
+
+Cross-process visibility relies on the OS page cache aliasing the
+file between the two processes' address spaces. The SPSC contract
+holds across processes the way it does across threads: one process
+produces, one process consumes. A second producer or a second
+consumer on the same file breaks the contract and corrupts the ring.
+
 ## Bench evidence
 
 `crates/subetha-cxc/examples/spsc_shootout.rs`, 1,000,000 items
@@ -155,6 +211,27 @@ the 2-3x class of the lead. The Lamport pair leads the Vyukov-based SPSC fast pa
 because the Vyukov path still pays the per-slot sequence atomic;
 dedicated Lamport storage drops it and halves the per-op atomic
 budget.
+
+An earlier capture of the same shootout on the same host measured the
+Lamport pair at 62.96 M items/s (5.95x crossbeam), the `SharedRing`
+MPMC anon path at 26.76 M items/s (2.53x), the anon SPSC fast path at
+23.27 M items/s (2.20x), the file MPMC path at 19.05 M items/s
+(1.80x), the file SPSC fast path at 18.78 M items/s (1.78x) and
+`crossbeam_channel::bounded(4096)` at 10.71 M items/s, the Lamport
+pair 2.71x ahead of the anon SPSC fast path.
+
+The comparison is held to:
+
+- **Fair contenders**: `crossbeam_channel::bounded` is the standard
+  in-process bounded channel. Every variant moves the same 16-byte
+  payload at the same capacity (4096) through the same busy-spin loop
+  on Full / Empty.
+- **Single-trial variance is high** on Windows from scheduler noise;
+  best-of-5 with a warmup pass is what steadies the comparison.
+- **Cross-thread, in-process**: both sides run in one process.
+  Cross-process one-way latencies are in
+  `docs/cross_process_ipc_results.json`, which records 80.2 ns for the
+  pinned SPSC ring over an MMF on a Windows x86_64 host.
 
 ## Known limitations
 

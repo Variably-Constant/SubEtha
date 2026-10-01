@@ -10,7 +10,7 @@
 //! both plugged into the same switch) so a unicast frame addressed to the
 //! RX NIC's MAC is delivered there. A queue-0 XSK only sees queue-0
 //! traffic, so the example temporarily forces the RX NIC to a single RSS
-//! queue for the run and restores RSS afterwards (the self-contained
+//! queue for the run and restores RSS afterward (the self-contained
 //! setup/teardown, mirroring the Linux side's ephemeral veth pair).
 //!
 //! Needs the XDP runtime driver installed and admin (binding + attaching

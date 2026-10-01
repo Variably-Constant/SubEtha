@@ -19,10 +19,8 @@ making it possible to branch on the **size** of a target before
 deciding whether to scan / sort-merge / hash-join over it.
 
 > **The "branch on size before dereferencing" primitive.** Same
-> architectural shape as JVM compressed-oops storing a klass id
-> in the low bits of a pointer, Hotspot's narrow-klass technique,
-> or Apple Silicon's Top-Byte-Ignored hardware that uses the
-> high byte for pointer tagging. Here the high byte carries
+> architectural shape as Arm's Top-Byte-Ignored hardware, which
+> leaves the high byte free for pointer tagging. Here the high byte carries
 > `log2(cardinality)` so query planners can dispatch over a
 > 64-byte cache line of pointers without indirection.
 
@@ -37,15 +35,14 @@ deciding whether to scan / sort-merge / hash-join over it.
   caller has verified the envelope, use `from_raw_unchecked`
   (which silently masks the address - a real correctness hazard
   if the caller's assertion is wrong).
-- **Address envelope is 56 bits.** x86-64 4-level paging
-  (canonical user-space) uses 48 bits with bits 48..63 = 0, well
-  within the envelope. **5-level paging environments** (Linux
-  `CONFIG_X86_5LEVEL`, certain user-space hardening schemes) can
-  produce addresses with bit 56+ set; calling `from_raw` panics
-  in that case, calling `from_raw_unchecked` silently corrupts
-  the cardinality byte.
-- **Cardinality is stored as `log2`** (1 byte = 256 distinct
-  values, encoding cardinalities up to 2^255). The encoding is
+- **Address envelope is 56 bits.** x86-64 user-space addresses
+  have a zero high byte with 4-level paging (48 bits) and with
+  5-level paging (below 2^56). **Tagged pointers** (Intel LAM, Arm
+  TBI / MTE) can carry metadata in the high byte; calling
+  `from_raw` panics on such an address, calling
+  `from_raw_unchecked` silently drops the tag.
+- **Cardinality is stored as `log2`** (1 byte; a `u64` cardinality
+  gives a log2 of 0..=64). The encoding is
   `ceil(log2(cardinality_hint))` - conservative bucketing that
   rounds up to the next power of two.
 - **Cardinality is caller-supplied at construction.** The crate
@@ -97,7 +94,7 @@ pub const CARD_SHIFT: u32 = 56;                    // log2 lives at top byte
 ```
 
 The 8-byte slot encodes:
-- High byte (`raw >> 56`): `log2(cardinality)` in 0..=255
+- High byte (`raw >> 56`): `log2(cardinality)` in 0..=64
 - Low 7 bytes (`raw & ADDR_MASK`): 56-bit virtual address
 
 A `CardinalityPointer<u64>` is exactly the same size as a raw
@@ -111,7 +108,7 @@ Query planners, ECS world walkers, graph databases, and stream
 processors all want to know **how big is this collection** before
 deciding which algorithm to dispatch:
 
-| Cardinality | Optimal algorithm | Per-element cost |
+| Cardinality | Typical algorithm | Per-element cost |
 |---:|---|---|
 | 1 - 8 | Linear scan | O(N), small constant |
 | 9 - 1024 | Sort-merge or quicksort | O(N log N), branch-friendly |
@@ -131,7 +128,7 @@ itself, the planner gets:
 - **Single-load dispatch**: one `mov` reads both the pointer
   and the tier; no second cache-line touch.
 - **Branch-friendly inspection**: `size_tier()` is a top-byte
-  shift + match, ~1 ns.
+  shift + match, 0.80 ns per entry in the tier-only scan below.
 
 ## Bit layout
 
@@ -139,7 +136,7 @@ itself, the planner gets:
 flowchart LR
     subgraph CP["CardinalityPointer (8 bytes, u64)"]
       direction LR
-      C["byte 7<br/>log2(cardinality)<br/>0..=255"]
+      C["byte 7<br/>log2(cardinality)<br/>0..=64"]
       A["bytes 0..7<br/>56-bit virtual address<br/>canonical x86-64 user space"]
     end
 
@@ -185,7 +182,7 @@ flowchart TD
     Start([read top byte]) --> K{k = log2_cardinality}
     K -->|"0..=3 (k≤3, n≤8)"| Tiny[SizeTier::Tiny<br/>linear scan]
     K -->|"4..=10 (16..=1024)"| Medium[SizeTier::Medium<br/>sort-merge]
-    K -->|"11..=255 (>1024)"| Large[SizeTier::Large<br/>hash join]
+    K -->|"11..=64 (>1024)"| Large[SizeTier::Large<br/>hash join]
 
     classDef startend fill:#0e7490,stroke:#0e7490,color:#ffffff
     classDef decision fill:#fbbf24,stroke:#92400e,color:#1f2937
@@ -197,8 +194,8 @@ flowchart TD
 
 The 3-tier bucketing matches the three algorithmic regimes
 above. Callers with finer needs read `log2_cardinality()`
-directly (returns `u8`, so a `match k { 0 => ..., 1 => ..., ...
-}` distinguishes 256 buckets).
+directly (a `u8` of 0..=64, so a `match k { 0 => ..., 1 => ...,
+... }` distinguishes 65 buckets).
 
 ## API at a glance
 
@@ -218,9 +215,9 @@ directly (returns `u8`, so a `match k { 0 => ..., 1 => ..., ...
 | Method | Returns | Notes |
 |---|---|---|
 | `as_raw()` | `*const T` | Address with the cardinality byte masked off. **Use this** for any deref or pointer comparison. |
-| `log2_cardinality()` | `u8` | Top byte, 0..=255 |
+| `log2_cardinality()` | `u8` | Top byte, 0..=64 |
 | `cardinality()` | `u64` | Reconstructed `1 << k`; saturates at `u64::MAX` for `k >= 63` |
-| `raw()` | `u64` | Raw packed representation; cross-process-stable encoding |
+| `raw()` | `u64` | Raw packed representation, for serialization or compare within the process (it holds a machine address) |
 | `size_tier()` | `SizeTier` | 3-way bucket: Tiny / Medium / Large |
 
 </details>
@@ -235,7 +232,7 @@ directly (returns `u8`, so a `match k { 0 => ..., 1 => ..., ...
 </details>
 
 <details>
-<summary><b>Derived traits</b></summary>
+<summary><b>Traits</b></summary>
 
 `Copy + Clone + PartialEq + Eq + Hash + Debug`. Equality and hash
 are on the packed `u64`, so two pointers with the same address
@@ -299,9 +296,9 @@ criterion at `--measurement-time 2 --warm-up-time 1
 --sample-size 30` (middle estimate of each [low, mid, high]
 triple).
 
-### Bench fairness
+### Bench design
 
-Two design choices keep the comparison honest:
+Two design choices:
 
 1. Both native paths use **pre-computed tier bytes**, so the bench
    measures lookup cost, not pre-computation: computing `log2(card)`
@@ -335,24 +332,21 @@ tier into the pointer gives a single-stream, single-load dispatch
 that should beat the two-array `parallel_vecs` layout. **On this
 host (Zen+ R7 2700, N=10 000) that claim does not hold for the
 dispatch case**: `parallel_vecs` is the fastest dispatch path at
-6.28 us, ~1.5x faster than `inline` (9.50 us). The two separate
-streams (a `Vec<*const u64>` and a `Vec<u8>`) are both small enough
-to sit in cache and the hardware prefetcher tracks them
-independently with no penalty, while the inline path pays for
-shift+mask on every entry.
+6.28 us, ~1.5x faster than `inline` (9.50 us). At this size
+`parallel_vecs`' two arrays (80 KB of pointers and 10 KB of tiers)
+and the 80 KB of `CardinalityPointer`s all fit in the L2 cache,
+and the inline path masks and shifts on every entry; which of
+these accounts for the gap was not measured.
 
 In the tier-only scan the inline path is fastest (7.96 us vs
 ~9.2 us), so the packed layout helps when only the tier byte is
 read but not when both fields are consumed per entry at this size.
 
-The single-stream advantage is expected to grow at larger N (where
-`parallel_vecs`' two arrays stop co-residing in cache) and on
-microarchitectures with fewer independent prefetch streams; it is
-not realized at N=10 000 on this CPU. Treat the packed layout as a
-storage-density win (8 B vs the padded tuple's 16 B) whose latency
-benefit is hardware- and size-dependent, not a guaranteed dispatch
-speedup. Re-run `cargo bench -p subetha-pointers --bench
-bitsteal_pointers` on the target hardware before relying on it.
+Treat the packed layout as a storage-density win (8 B vs the
+padded tuple's 16 B) whose dispatch speed was not better at
+N=10 000 on this CPU. Run `cargo bench -p subetha-pointers
+--bench bitsteal_pointers` on the target hardware and at the
+target size before relying on it.
 
 ## Use case patterns
 
@@ -376,7 +370,7 @@ fn plan_join(plans: &[CardinalityPointer<TableSubset>]) -> JoinPlan {
         }
     }
     // Decide on hash join, sort-merge, or nested loop based on
-    // the tier distribution, WITHOUT touching the underlying
+    // the tier distribution, without touching the underlying
     // table data.
     pick_strategy(tiny_count, medium_count, large_count)
 }
@@ -465,10 +459,10 @@ whether to spill to disk (Large), buffer in memory
    9..=1024, Large > 1024. Workloads needing more granularity
    use `log2_cardinality()` directly.
 
-8. **5-level paging incompatibility.** On Linux with
-   `CONFIG_X86_5LEVEL`, addresses can have bit 56+ set
-   legitimately. `from_raw` panics on such addresses;
-   `from_raw_unchecked` corrupts the cardinality byte.
+8. **Tagged-pointer incompatibility.** With Intel LAM or Arm
+   TBI / MTE tags in the high byte, an address has bits 56+ set.
+   `from_raw` panics on such addresses; `from_raw_unchecked`
+   drops the tag.
 
 9. **AArch64 Top-Byte-Ignored not exercised.** On Apple Silicon
    and modern ARM Linux, TBI masks the top byte at hardware
@@ -487,12 +481,12 @@ whether to spill to disk (Large), buffer in memory
 <summary><b>Pitfall 1: dereferencing without masking</b></summary>
 
 ```rust
-// WRONG: top byte (cardinality) is still in the bit pattern.
+// Wrong: the top byte (cardinality) is still in the bit pattern.
 let p: CardinalityPointer<u64> = unsafe {
     CardinalityPointer::from_raw(0x1000 as *const u64, 100)
 };
-let raw_with_card = p.raw() as *const u64;  // includes top byte!
-// unsafe { *raw_with_card }  // would dereference 0x0700_0000_0000_1000, NOT 0x1000
+let raw_with_card = p.raw() as *const u64;  // includes the top byte
+// unsafe { *raw_with_card }  // would dereference 0x0700_0000_0000_1000, not 0x1000
 ```
 
 Use `as_raw()` which masks off the cardinality byte:
@@ -515,12 +509,15 @@ assert_eq!(p.size_tier(), SizeTier::Tiny);
 
 target.extend(0..1_000_000);  // cardinality now 1_000_003
 // p.size_tier() still reports Tiny -> dispatcher picks linear scan
-// over a million-element target.
+// over a million-element target. The extend also reallocated the
+// Vec, so p's address now dangles.
 ```
 
 Either:
 1. Don't mutate the target after constructing the pointer, or
-2. Call `set_cardinality` on the pointer after every mutation.
+2. Call `set_cardinality` on the pointer after every mutation,
+   and rebuild the pointer after any mutation that can move the
+   target.
 
 </details>
 
@@ -532,7 +529,7 @@ let p = unsafe {
     CardinalityPointer::<u64>::from_raw(0x1000 as *const u64, 100)
 };
 // log2(100) ceiling = 7, so cardinality = 128
-assert_eq!(p.cardinality(), 128);  // NOT 100
+assert_eq!(p.cardinality(), 128);  // not 100
 ```
 
 The encoding is `ceil(log2(hint))`; the reconstructed value is
@@ -543,23 +540,21 @@ to bucket consistently across writes and reads.
 </details>
 
 <details>
-<summary><b>Pitfall 4: out-of-envelope address on 5-level paging</b></summary>
+<summary><b>Pitfall 4: a tagged address</b></summary>
 
 ```rust
-// On Linux with CONFIG_X86_5LEVEL, user-space mappings can land
-// at addresses with bit 56+ set.
-let high_addr: *const u64 = 0x0100_0000_0000_0000_u64 as *const u64;
+// An address carrying a tag in its high byte (Intel LAM, Arm TBI / MTE).
+let tagged: *const u64 = 0x2A00_0000_0000_1000_u64 as *const u64;
 let p = unsafe {
-    CardinalityPointer::<u64>::from_raw(high_addr, 100)  // PANICS
+    CardinalityPointer::<u64>::from_raw(tagged, 100)  // panics
 };
 // from_raw_unchecked silently masks instead - the resulting
-// pointer dereferences to the wrong address.
+// pointer loses its tag.
 ```
 
-For 5-level paging environments, use a different pointer-tagging
-scheme that reserves bits compatible with the wider address
-envelope, or enforce a custom allocator that returns addresses
-in the 56-bit envelope.
+A tagged pointer's high byte is already in use; strip the tag
+before building a `CardinalityPointer`, or use a tagging scheme
+of its own for those pointers.
 
 </details>
 

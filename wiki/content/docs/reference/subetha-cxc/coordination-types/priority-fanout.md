@@ -382,10 +382,10 @@ at other priorities.
   capacity boundary, and disk persistence).
 - Bench: `crates/subetha-cxc/benches/priority_fanout.rs` (submit,
   drain, cycle vs `Mutex<BinaryHeap<(u8, u32)>>`).
-- Underlying primitive: [SHARED_RING.md](../rings/shared-ring/) -
+- Underlying primitive: [Shared Ring](../rings/shared-ring/) -
   the Vyukov MPMC ring per-priority.
-- Underlying primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Underlying primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the AtomicU64 bitmap.
 - Sibling primitive:
-  [SHARED_BROADCAST_RING.md](../rings/shared-broadcast-ring/) -
+  [Shared Broadcast Ring](../rings/shared-broadcast-ring/) -
   fanout-by-subscriber instead of fanout-by-priority.

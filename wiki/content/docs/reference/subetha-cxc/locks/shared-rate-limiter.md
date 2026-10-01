@@ -177,7 +177,7 @@ refill at the design point of the consuming downstream.
 - Bench: `crates/subetha-cxc/benches/shared_rate_limiter.rs`
   (try_acquire full, try_acquire empty, available vs
   `Mutex<TokenBucket>`).
-- Sibling primitive: [SHARED_SEMAPHORE.md](shared-semaphore/) -
+- Sibling primitive: [Shared Semaphore](shared-semaphore/) -
   permit-counting variant (no refill).
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the packed AtomicU64 state primitive.

@@ -14,6 +14,9 @@
 //! - submit+drain cycle (hot round trip)
 //! - 4 producers + 1 drainer (contended)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::BinaryHeap;
 use std::hint::black_box;
 use std::sync::Mutex;

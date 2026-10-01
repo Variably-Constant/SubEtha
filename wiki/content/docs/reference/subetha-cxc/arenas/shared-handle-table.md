@@ -255,9 +255,9 @@ a fresh handle to a new value.
   disk persistence, NULL handle, packing, struct payload).
 - Bench: `crates/subetha-cxc/benches/shared_handle_table.rs`
   (insert, get live, get stale vs RwLock<HashMap> baseline).
-- Sibling primitive: [OFFSET_PTR.md](../pointers/offset-ptr/) - the
+- Sibling primitive: [Offset Pointer](../pointers/offset-ptr/) - the
   underlying MMF-backed pointer.
-- Sibling primitive: [SHARED_HASH_MAP.md](../maps/shared-hash-map/) -
+- Sibling primitive: [Shared Hash Map](../maps/shared-hash-map/) -
   cross-process hash map (uses keys instead of handles).
-- Sibling primitive: [TAGGED_OFFSET_PTR.md](../pointers/tagged-offset-ptr/) -
+- Sibling primitive: [Tagged Offset Pointer](../pointers/tagged-offset-ptr/) -
   offset pointer with extra tag bits for state.

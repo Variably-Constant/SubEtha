@@ -9,6 +9,10 @@
 //! `SUBETHA_E_INVALID_HANDLE`. Anything else, or a crash, is the failure
 //! this test is for.
 
+// clippy::disallowed_types is allowed here: the tests take turns at the
+// library's process-wide init and shutdown under a lock.
+#![allow(clippy::disallowed_types)]
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

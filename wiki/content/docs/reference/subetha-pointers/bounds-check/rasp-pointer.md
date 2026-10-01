@@ -22,11 +22,11 @@ GPR-to-SIMD domain crossings. The packed-quadword compare
 (`vpcmpgtq`) then validates all 4 lanes in parallel.
 
 > **The full bounds + permission + sealed + region-end check runs
-> at ~0.65 ns per pointer** on AVX2 hardware (Zen+ R7 2700) -
-> roughly the cost of a plain native bounds-checked slice read
-> (~0.63 ns on the same host) and ~2.7x faster than the
-> auto-vectorized scalar path (~1.78 ns). Full capability
-> validation at about the price of an ordinary checked read.
+> at ~0.17 ns per pointer with AVX-512 and ~0.26 ns with AVX2** on
+> an AMD Ryzen 9 7900X - 2.46x and 1.63x faster than a plain native
+> bounds-checked slice read (~0.43 ns on the same host), and 5.7x
+> and 3.8x faster than the auto-vectorized scalar path (~0.98 ns).
+> Full capability validation for less than an ordinary checked read.
 
 **Constraints (read first):**
 
@@ -35,10 +35,11 @@ GPR-to-SIMD domain crossings. The packed-quadword compare
   over a process-local mapping and use
   [`OffsetPtr`](../../subetha-cxc/pointers/offset-ptr/) for the
   cross-process leg.
-- **`push_from_slice` requires a lifetime anchor.** The returned
-  slice borrow is what proves the batch entry's target stays
-  alive. Drop the anchor and any subsequent `read_at` is
-  undefined behavior.
+- **The batch holds addresses, not borrows.** `read_at` is
+  `unsafe`: reading an entry whose region has been freed is
+  undefined behavior. Holding the slice `push_from_slice` returns
+  keeps the storage borrowed, and so alive, while you hold it; the
+  batch itself keeps nothing alive.
 - **Cooperative sealing, not hardware enforcement.** Setting the
   sealed bit (bit 31 of `perms`) causes `check_*` methods to
   return `Err(Sealed)`, but a caller who calls `raw_ptr(idx)` and
@@ -54,10 +55,8 @@ GPR-to-SIMD domain crossings. The packed-quadword compare
   detect the widest available ISA at runtime: they prefer the
   AVX-512 path (`count_valid_avx512` / `check_read_all_avx512`)
   when `avx512f` is present, then AVX2, then the scalar fallback.
-  The primary benchmark table below was taken on a Zen+ host (AVX2,
-  no AVX-512); the AVX-512 path is measured separately on an EPYC
-  Genoa VM (see the "On AVX-512 silicon" table), where it runs at
-  ~0.22 ns/pointer.
+  The benchmark table below measures all three paths on one
+  AVX-512 host.
 - **`read_at` is `unsafe`.** The bounds + permission check
   enforces the perms recorded at push time; it does not prove the
   underlying allocation is still live. Caller is responsible for
@@ -131,8 +130,8 @@ layout loads 4 ptrs / bases / lengths / perms via single
 `vmovdqu` instructions per chunk: zero GPR-to-SIMD crossings, and
 the `vpcmpgtq` packed-quadword compares run at design speed. The
 reproducible in-repo comparison is the SoA scalar-vs-AVX2 result
-in [Benchmark results](#benchmark-results) (1.78 ns scalar vs
-0.65 ns AVX2); the removed AoS variants have no bench in the
+in [Benchmark results](#benchmark-results) (0.98 ns scalar vs
+0.26 ns AVX2); the removed AoS variants have no bench in the
 crate.
 
 ## Memory layout
@@ -313,91 +312,65 @@ Bench: `crates/subetha-pointers/benches/unified.rs`, group
 `capability_validation_10k` (`rasp_soa_count_valid_*` plus the
 native baselines).
 
-10 000 u64 storages, each 8 bytes. Measured on Windows 11 / Zen+
-R7 2700 (AVX2, no AVX-512), criterion at `--measurement-time 2
---warm-up-time 1 --sample-size 30` (middle estimate of each
-[low, mid, high] triple). The native floor is the
-`baseline_native_slice_check` bench from the same `unified` run -
-a per-element `if !s.is_empty() { sum += s[0] }` native bounds-
-checked read.
-
-| Workload | Time | Per-pointer | Notes |
-|---|---:|---:|---|
-| `baseline_native_slice_check` (native checked read) | 6.25 us | 0.63 ns | Plain `if !s.is_empty() { sum += s[0] }` floor |
-| `RaspBatch::count_valid_scalar` | 17.8 us | 1.78 ns | Compiler-auto-vectorized scalar |
-| **`RaspBatch::count_valid_avx2`** | **6.48 us** | **0.65 ns** | Hand-rolled AVX2 |
-
-On the Zen+ R7 2700 the AVX2 capability validation (~0.65 ns/pointer) is
-**at parity with a plain native bounds-checked read** (~0.63 ns)
-and **~2.7x faster than the auto-vectorized scalar path**
-(1.78 ns). The full bounds + permission + sealed + region-end
-check therefore costs about the same as an ordinary checked slice
-read on this CPU. The AVX-512 path adds the eight-lane regime that
-Zen+ cannot run - see the Genoa table below.
-
-### On AVX-512 silicon (EPYC Genoa)
-
-Same `unified` bench, re-run on an AMD EPYC 9B14 (Genoa) Colab VM
-(`avx512f` present), criterion `--measurement-time 2 --warm-up-time
-1 --sample-size 30`. The `count_valid_avx512` row processes eight
-u64 lanes per `vpcmpgtq`-class compare instead of AVX2's four.
+10 000 u64 storages, each 8 bytes. Measured on Windows 11 Pro
+10.0.26200 on an AMD Ryzen 9 7900X (`avx512f` present), built for
+the x86-64 baseline, with Criterion's defaults (3 s warm-up, 100
+samples over 5 s; middle estimate of each [low, mid, high] triple),
+while other work kept 3.5 to 3.6 of the machine's 24 hardware
+threads busy. The native floor is the `baseline_native_slice_check`
+bench from the same `unified` run - a per-element
+`if !s.is_empty() { sum += s[0] }` native bounds-checked read over
+10 000 separate `Vec` allocations. The `count_valid_avx512` row
+processes eight u64 lanes per unsigned compare instead of AVX2's
+four.
 
 | Workload | Time | Per-pointer | vs native check |
 |---|---:|---:|---:|
-| `baseline_native_slice_check` (native checked read) | 10.37 us | 1.04 ns | 1.00x (floor) |
-| `RaspBatch::count_valid_scalar` | 13.46 us | 1.35 ns | 0.77x |
-| `RaspBatch::count_valid_avx2` | 3.37 us | 0.34 ns | 3.08x faster |
-| **`RaspBatch::count_valid_avx512`** | **2.22 us** | **0.22 ns** | **4.67x faster** |
+| `baseline_native_slice_check` (native checked read) | 4.26 us | 0.43 ns | 1.00x (floor) |
+| `RaspBatch::count_valid_scalar` | 9.82 us | 0.98 ns | 0.43x |
+| `RaspBatch::count_valid_avx2` | 2.60 us | 0.26 ns | 1.63x faster |
+| **`RaspBatch::count_valid_avx512`** | **1.73 us** | **0.17 ns** | **2.46x faster** |
 
-On AVX-512 silicon the eight-lane validator runs at **0.22
-ns/pointer**, **~1.5x faster than the AVX2 path** and **~4.7x
-faster than the native bounds-checked read** on the same host. So
-the architectural claim that the SoA RASP validator beats an
-ordinary checked access *does* hold here - it just needs the
-AVX-512 lanes that Zen+/Zen2/Zen3 lack. (The Genoa Colab VM's
-`baseline_native_slice_check` is slower in absolute terms than the
-Zen+ box's - that scalar baseline touches 10 000 separate Vec
-allocations and is memory-subsystem-bound on the shared VM - but
-the SoA SIMD paths, walking one contiguous buffer, are faster on
-Genoa as expected.)
+The eight-lane validator runs at **0.17 ns/pointer**, **~1.5x
+faster than the AVX2 path** and **~2.5x faster than the native
+bounds-checked read** on the same host; the AVX2 path is ~1.6x
+faster than the native read. The SoA paths walk one contiguous
+buffer where the native floor reaches 10 000 separate allocations.
+The scalar path, which the compiler auto-vectorizes, is ~2.3x
+slower than the native read.
 
 ### Why each result lands where it does
 
 <details>
-<summary><b>count_valid_avx2 at ~0.65 ns: where the time goes</b></summary>
+<summary><b>count_valid_avx2 at ~0.26 ns: where the time goes</b></summary>
 
 The SoA path validates 10 000 pointers via 2 500 SIMD chunks.
 Each chunk loads 4 ptrs (32 B), 4 bases (32 B), 4 lengths
 (16 B), 4 perms (16 B) - **96 contiguous bytes**, which is 1.5
 cache lines. The prefetcher recognizes the sequential pattern
 and pre-fetches the next chunk while the current one validates,
-so most loads hit L1 already-resident memory. About 2 500 chunks
-of ~12 SIMD instructions each is around 30 000 instructions =
-roughly 9 000 cycles on a 3-issue-wide modern x86 = ~3 us of
-execution; the rest of the measured 6.48 us is cache traffic +
-result-counting arithmetic.
+so most loads hit L1 already-resident memory.
 
 The SoA layout's win over the scalar path comes from
 **storage density + lane parallelism**: 24 bytes per RASP entry
 (8 ptr + 8 base + 4 length + 4 perms) packed contiguously, four
-lanes validated per `vpcmpgtq`. At 24 bytes per entry, 10 000
+lanes validated per compare. At 24 bytes per entry, 10 000
 entries fit in ~240 KB (about an L2 cache). Against the plain
-native checked read (~0.63 ns) the AVX2 path lands at parity
-here, not ahead - the native read is already a single in-cache
-load per element, so SIMD validation matches rather than beats
-it on this CPU.
+native checked read (~0.43 ns), which reaches each of its 10 000
+elements through its own allocation, the AVX2 path is 1.63x
+faster on this CPU.
 
 </details>
 
 <details>
-<summary><b>count_valid_scalar at 1.81 ns: compiler auto-vectorization is genuinely good</b></summary>
+<summary><b>count_valid_scalar at 0.98 ns: compiler auto-vectorization is genuinely good</b></summary>
 
 The scalar path is a tight `for i in 0..n` loop over the four
 `Vec`s. LLVM unrolls 4-wide and auto-vectorizes the bounds
 arithmetic into the same `vpcmpgtq` instructions the hand-rolled
 AVX2 path uses, but with simpler mask handling and no
-`#[target_feature]` ABI boundary. The gap from the 1.78 ns scalar
-path to the 0.65 ns AVX2 path comes from:
+`#[target_feature]` ABI boundary. The gap from the 0.98 ns scalar
+path to the 0.26 ns AVX2 path comes from:
 
 - The auto-vectorizer must respect every IR-level abstraction
   (Vec indexing bounds checks, Option unwrap, Result construction)
@@ -414,22 +387,15 @@ the cheapest answer is "the smallest answer the caller needs".
 </details>
 
 <details>
-<summary><b>Why an AoS RaspPointer is not part of the API</b></summary>
+<summary><b>Why a structure-of-arrays layout</b></summary>
 
-The obvious-looking design is a per-pointer struct: a 16-byte or
-32-byte AoS record, one pointer per XMM/YMM register, loaded
-whole in one instruction. The hidden cost is that batch
-validation has to pack 4 pointers' fields into SIMD lanes via
-`_mm256_set_epi64x`, which compiles to 12+ GPR-to-SIMD `vmovq`
-instructions per chunk - each paying domain-crossing latency.
-During the design exploration the AVX2 "fast path" of that layout
-measured slower than its own scalar loop (the packing dominated),
-so the AoS `RaspPointer` / `RaspWidePointer` types were removed.
-They are not in the crate and have no bench, so their figures are
-not reproducible here; only the SoA `RaspBatch<T>` /
-`RaspBatchIndex<T>` ship, which is why they are the only RASP
-types documented. The reproducible evidence for the SoA layout is
-the scalar-vs-AVX2 comparison in
+A per-pointer record (array-of-structures) puts one pointer's
+fields together, so batch validation has to pack 4 pointers' fields
+into SIMD lanes via `_mm256_set_epi64x`, which compiles to 12+
+GPR-to-SIMD `vmovq` instructions per chunk - each paying
+domain-crossing latency. The SoA layout loads each field for 4
+pointers with one `vmovdqu`. The reproducible evidence for the SoA
+layout is the scalar-vs-AVX2 comparison in
 [Benchmark results](#benchmark-results).
 
 </details>
@@ -472,9 +438,9 @@ fn read_session(
 
 A garbage collector or compaction phase validates every entry
 in a batch via `count_valid_avx2`. For 10 000 entries the AVX2
-path runs at ~6.48 us total - ~650 ns per 1000-pointer subbatch,
-making bounds-checked iteration about as cheap as a plain checked
-read.
+path runs at ~2.60 us total - ~260 ns per 1000-pointer subbatch,
+making bounds-checked iteration cheaper than a plain checked read
+on the benchmark host.
 
 </details>
 
@@ -498,10 +464,9 @@ byte ranges. The consumer:
 1. **In-process only.** Raw machine addresses in `ptrs` / `bases`
    are not portable across processes.
 
-2. **`push_from_slice`'s borrow anchor is the returned slice.**
-   The batch's pointer is valid only as long as the slice borrow
-   is held. Dropping the slice while retaining the batch yields
-   undefined behavior on subsequent `read_at` calls.
+2. **The batch holds addresses, not borrows.** An entry is
+   readable through `read_at` only while its region's memory is
+   alive; the batch does not keep it alive.
 
 3. **`push_raw` skips borrow checking entirely.** Caller manages
    target lifetime.
@@ -522,17 +487,16 @@ byte ranges. The consumer:
 8. **SIMD path is runtime-dispatched (AVX-512 -> AVX2 -> scalar).**
    `count_valid()` / `check_read_all()` prefer the AVX-512 path
    (`count_valid_avx512` / `check_read_all_avx512`) when `avx512f`
-   is present, then AVX2, then the scalar fallback. The primary
-   table ran on a Zen+ host (AVX2 + scalar only); the AVX-512 row
-   was measured on an EPYC Genoa VM and runs ~1.5x faster than AVX2
-   (0.22 vs 0.34 ns/pointer) - see the "On AVX-512 silicon" table.
+   is present, then AVX2, then the scalar fallback. On the AVX-512
+   host of the benchmark table the AVX-512 path runs ~1.5x faster
+   than AVX2 (0.17 vs 0.26 ns/pointer).
 
-9. **The AVX2 path assumes ptr addresses are in the canonical
-   x86-64 user-space half** (bit 63 = 0). `VPCMPGTQ` is a signed
-   comparison; for user-space addresses bit 63 is always 0 and
-   signed compare agrees with unsigned. Kernel-space addresses
-   (bit 63 = 1) would compare incorrectly under the SIMD path;
-   the scalar path handles full u64 via `usize` arithmetic.
+9. **Every path compares addresses unsigned.** The AVX2 path flips
+   the sign bit of both operands before `VPCMPGTQ`, and the AVX-512
+   path uses the unsigned `VPCMPUQ`, so scalar, AVX2 and AVX-512 give
+   the same answer for every entry the batch accepts, bit 63 set or
+   not. `tests/soundness.rs` checks entries whose base and pointer
+   straddle 2^63.
 
 10. **No remove / free operation.** Entries pushed remain in the
     batch until the batch is dropped. For workloads with high
@@ -592,19 +556,6 @@ Two distinct error variants:
 
 `check_read_scalar` reports `Sealed` first; a caller looking only
 for "is this valid?" should check `result.is_ok()`.
-
-</details>
-
-<details>
-<summary><b>Pitfall 4: AVX2 batch path on cross-process addresses</b></summary>
-
-If a workload encodes addresses with bit 63 set (kernel-space
-mappings, or some user-space hardening schemes), the AVX2 path's
-signed `VPCMPGTQ` will compare incorrectly. The scalar path
-handles full u64 via `usize` and is correct in all cases.
-
-Use `count_valid_scalar` (or `check_read_all_scalar`) for
-workloads that include high-bit-set addresses.
 
 </details>
 

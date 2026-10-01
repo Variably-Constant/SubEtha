@@ -32,7 +32,7 @@ that resolve in any process holding the same region - use the
 | `k_tower_pointer` | `KTower2<T>` / `KTower3<T>` | multi-segment zone/region/offset address |
 | `self_desc_pointer` | `SelfDescPointer<T>` | type discriminant; heterogeneous channels |
 | `versioned_pointer` | `VersionedPointer<T>` / `HlcVersionedPointer<T>` | version metadata; MVCC + HLC ordering |
-| `adaptive_cheri_pointer` | `ReadableCapability<T>` / `WritableCapability<T>` | runtime bounds (CHERI-style, ARM Morello silicon) |
+| `adaptive_cheri_pointer` | `ReadableCapability<'a, T>` / `WritableCapability<'a, T>` | runtime bounds + permissions (CHERI-style, checked in software) |
 | `adaptive_rasp_batch` | `RaspBatch<T>` / `RaspBatchIndex<T>` | SoA-stored (base, length, perms); AVX2 / AVX-512F batch validation on x86 |
 
 The structure of the crate mirrors that:
@@ -60,10 +60,10 @@ declaring which `Axis` it engages. The actual axes are
 `ContentPrefix` (Umbra,
 Bloom, Cardinality), `Stride` (KStep), `Segmented` (KTower2 /
 KTower3), `TypeTag` (SelfDesc), `Version` (Versioned / HLC), and
-`Bounds` (the CHERI capabilities). A dispatcher can match a
-workload's requested axes against these signatures by containment
-(not equality), so a workload asking for a subset of a pointer's
-axes still matches.
+`Bounds` (the CHERI capabilities). `AxisMask::satisfies` tests one
+signature against another by containment (not equality), so a
+signature asking for a subset of a pointer's axes matches it;
+nothing in the crates routes on these constants.
 
 ## Subsections
 
@@ -71,10 +71,10 @@ axes still matches.
   kstep, ktower, self-desc, versioned. The seven content-prefix /
   metadata-carrying types.
 - [Bounds-check pointers](bounds-check/) - the CHERI-style
-  `ReadableCapability` / `WritableCapability` pair for
-  capability-secured cross-process channels on ARM Morello, plus
-  the `RaspBatch<T>` SIMD-batched validator that delivers the same
-  (base, length, perms) checks on x86 silicon via AVX2 / AVX-512F.
+  `ReadableCapability` / `WritableCapability` pair, checked in
+  software, plus the `RaspBatch<T>` SIMD-batched validator that
+  runs the same (base, length, perms) checks on x86 silicon via
+  AVX2 / AVX-512F.
 
 ## Stable-Rust portable
 

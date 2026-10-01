@@ -5,7 +5,7 @@ weight: 20
 
 # Every object, in full
 
-Every one of the 117 object types a cmdlet or a method
+Every one of the 121 object types a cmdlet or a method
 can write, with each property and each method signature. Generated
 from the built module by
 `crates/subetha-pwrs/tools/Export-Reference.ps1`.
@@ -15,7 +15,16 @@ uses for an ordinary absent answer rather than a fault.
 
 ## Contents
 
-[`SubEtha.AdaptiveQueue`](#subetha-adaptivequeue), [`SubEtha.Arena`](#subetha-arena), [`SubEtha.Atomic`](#subetha-atomic), [`SubEtha.Beat`](#subetha-beat), [`SubEtha.BitVec`](#subetha-bitvec), [`SubEtha.BlockedBloomFilter`](#subetha-blockedbloomfilter), [`SubEtha.BloomFilter`](#subetha-bloomfilter), [`SubEtha.BloomSize`](#subetha-bloomsize), [`SubEtha.BroadcastRing`](#subetha-broadcastring), [`SubEtha.BTreeMap`](#subetha-btreemap), [`SubEtha.BurstRates`](#subetha-burstrates), [`SubEtha.Capacity`](#subetha-capacity), [`SubEtha.CapacityRing`](#subetha-capacityring), [`SubEtha.CausalClock`](#subetha-causalclock), [`SubEtha.Cell`](#subetha-cell), [`SubEtha.Certificate`](#subetha-certificate), [`SubEtha.Channel`](#subetha-channel), [`SubEtha.Clock`](#subetha-clock), [`SubEtha.ClockReading`](#subetha-clockreading), [`SubEtha.Condvar`](#subetha-condvar), [`SubEtha.CountMinSketch`](#subetha-countminsketch), [`SubEtha.Deque`](#subetha-deque), [`SubEtha.Endpoint`](#subetha-endpoint), [`SubEtha.Entry`](#subetha-entry), [`SubEtha.EpochBarrier`](#subetha-epochbarrier), [`SubEtha.Epochs`](#subetha-epochs), [`SubEtha.EpochTicket`](#subetha-epochticket), [`SubEtha.Exchange`](#subetha-exchange), [`SubEtha.FanCount`](#subetha-fancount), [`SubEtha.FenceClock`](#subetha-fenceclock), [`SubEtha.FineBloom`](#subetha-finebloom), [`SubEtha.Forecast`](#subetha-forecast), [`SubEtha.FrameRegion`](#subetha-frameregion), [`SubEtha.Graph`](#subetha-graph), [`SubEtha.HandleTable`](#subetha-handletable), [`SubEtha.HashMap`](#subetha-hashmap), [`SubEtha.Heartbeat`](#subetha-heartbeat), [`SubEtha.HeartbeatSlot`](#subetha-heartbeatslot), [`SubEtha.Histogram`](#subetha-histogram), [`SubEtha.Hold`](#subetha-hold), [`SubEtha.HolderTable`](#subetha-holdertable), [`SubEtha.HyperLogLog`](#subetha-hyperloglog), [`SubEtha.KvMap`](#subetha-kvmap), [`SubEtha.LamportConsumer`](#subetha-lamportconsumer), [`SubEtha.LamportProducer`](#subetha-lamportproducer), [`SubEtha.LaneClaim`](#subetha-laneclaim), [`SubEtha.LanedMap`](#subetha-lanedmap), [`SubEtha.LanedPin`](#subetha-lanedpin), [`SubEtha.LazyValue`](#subetha-lazyvalue), [`SubEtha.LeaderElection`](#subetha-leaderelection), [`SubEtha.LeaseHold`](#subetha-leasehold), [`SubEtha.LinkedList`](#subetha-linkedlist), [`SubEtha.LocaleRing`](#subetha-localering), [`SubEtha.LossBursts`](#subetha-lossbursts), [`SubEtha.LossKind`](#subetha-losskind), [`SubEtha.LruCache`](#subetha-lrucache), [`SubEtha.MapPin`](#subetha-mappin), [`SubEtha.MpmcConsumer`](#subetha-mpmcconsumer), [`SubEtha.MpmcGrid`](#subetha-mpmcgrid), [`SubEtha.MpmcProducer`](#subetha-mpmcproducer), [`SubEtha.MpscConsumer`](#subetha-mpscconsumer), [`SubEtha.MpscPool`](#subetha-mpscpool), [`SubEtha.MpscProducer`](#subetha-mpscproducer), [`SubEtha.Neighbor`](#subetha-neighbor), [`SubEtha.Notifier`](#subetha-notifier), [`SubEtha.NotifierSet`](#subetha-notifierset), [`SubEtha.OpCounts`](#subetha-opcounts), [`SubEtha.OrderedReceiver`](#subetha-orderedreceiver), [`SubEtha.OwnerLease`](#subetha-ownerlease), [`SubEtha.PackedItems`](#subetha-packeditems), [`SubEtha.Pair`](#subetha-pair), [`SubEtha.PathChanges`](#subetha-pathchanges), [`SubEtha.PathMark`](#subetha-pathmark), [`SubEtha.Periodicity`](#subetha-periodicity), [`SubEtha.PermitHold`](#subetha-permithold), [`SubEtha.PubSub`](#subetha-pubsub), [`SubEtha.QosPolicy`](#subetha-qospolicy), [`SubEtha.QosSnapshot`](#subetha-qossnapshot), [`SubEtha.QuicBridgeClient`](#subetha-quicbridgeclient), [`SubEtha.QuicBridgeServer`](#subetha-quicbridgeserver), [`SubEtha.RateLimiter`](#subetha-ratelimiter), [`SubEtha.Region`](#subetha-region), [`SubEtha.ReorderWindow`](#subetha-reorderwindow), [`SubEtha.Reservoir`](#subetha-reservoir), [`SubEtha.Ring`](#subetha-ring), [`SubEtha.RoundTripShape`](#subetha-roundtripshape), [`SubEtha.RWLock`](#subetha-rwlock), [`SubEtha.Scan`](#subetha-scan), [`SubEtha.Semaphore`](#subetha-semaphore), [`SubEtha.SensReceiver`](#subetha-sensreceiver), [`SubEtha.SensSender`](#subetha-senssender), [`SubEtha.SharedArc`](#subetha-sharedarc), [`SubEtha.SketchSize`](#subetha-sketchsize), [`SubEtha.Slab`](#subetha-slab), [`SubEtha.SlabPin`](#subetha-slabpin), [`SubEtha.SlotVersion`](#subetha-slotversion), [`SubEtha.SourcedItem`](#subetha-sourceditem), [`SubEtha.SpscRing`](#subetha-spscring), [`SubEtha.Stack`](#subetha-stack), [`SubEtha.StampedItem`](#subetha-stampeditem), [`SubEtha.Subscriber`](#subetha-subscriber), [`SubEtha.TcpBridgeClient`](#subetha-tcpbridgeclient), [`SubEtha.TcpBridgeServer`](#subetha-tcpbridgeserver), [`SubEtha.TileEntry`](#subetha-tileentry), [`SubEtha.TimePointTile`](#subetha-timepointtile), [`SubEtha.Timing`](#subetha-timing), [`SubEtha.TinyBloom`](#subetha-tinybloom), [`SubEtha.TopologyMap`](#subetha-topologymap), [`SubEtha.Tower`](#subetha-tower), [`SubEtha.Traffic`](#subetha-traffic), [`SubEtha.Universal`](#subetha-universal), [`SubEtha.Vec`](#subetha-vec), [`SubEtha.VersionChain`](#subetha-versionchain), [`SubEtha.Versioned`](#subetha-versioned), [`SubEtha.VersionedMap`](#subetha-versionedmap), [`SubEtha.VersionedSlab`](#subetha-versionedslab), [`SubEtha.WorkQueue`](#subetha-workqueue)
+[`SubEtha.Adaptive`](#subethaadaptive), [`SubEtha.AdaptiveQueue`](#subethaadaptivequeue), [`SubEtha.Arena`](#subethaarena), [`SubEtha.Atomic`](#subethaatomic), [`SubEtha.Beat`](#subethabeat), [`SubEtha.BitVec`](#subethabitvec), [`SubEtha.BlockedBloomFilter`](#subethablockedbloomfilter), [`SubEtha.BloomFilter`](#subethabloomfilter), [`SubEtha.BloomSize`](#subethabloomsize), [`SubEtha.BroadcastRing`](#subethabroadcastring), [`SubEtha.BTreeMap`](#subethabtreemap), [`SubEtha.BurstRates`](#subethaburstrates), [`SubEtha.Capacity`](#subethacapacity), [`SubEtha.CapacityRing`](#subethacapacityring), [`SubEtha.CausalClock`](#subethacausalclock), [`SubEtha.Cell`](#subethacell), [`SubEtha.Certificate`](#subethacertificate), [`SubEtha.Channel`](#subethachannel), [`SubEtha.Clock`](#subethaclock), [`SubEtha.ClockReading`](#subethaclockreading), [`SubEtha.Condvar`](#subethacondvar), [`SubEtha.CountMinSketch`](#subethacountminsketch), [`SubEtha.Deque`](#subethadeque), [`SubEtha.Endpoint`](#subethaendpoint), [`SubEtha.Entry`](#subethaentry), [`SubEtha.EpochBarrier`](#subethaepochbarrier), [`SubEtha.Epochs`](#subethaepochs), [`SubEtha.EpochTicket`](#subethaepochticket), [`SubEtha.Exchange`](#subethaexchange), [`SubEtha.FanCount`](#subethafancount), [`SubEtha.FenceClock`](#subethafenceclock), [`SubEtha.FineBloom`](#subethafinebloom), [`SubEtha.Forecast`](#subethaforecast), [`SubEtha.FrameRegion`](#subethaframeregion), [`SubEtha.Graph`](#subethagraph), [`SubEtha.HandleTable`](#subethahandletable), [`SubEtha.HashMap`](#subethahashmap), [`SubEtha.Heartbeat`](#subethaheartbeat), [`SubEtha.HeartbeatSlot`](#subethaheartbeatslot), [`SubEtha.Histogram`](#subethahistogram), [`SubEtha.Hold`](#subethahold), [`SubEtha.HolderTable`](#subethaholdertable), [`SubEtha.HyperLogLog`](#subethahyperloglog), [`SubEtha.InstanceStats`](#subethainstancestats), [`SubEtha.KvMap`](#subethakvmap), [`SubEtha.LamportConsumer`](#subethalamportconsumer), [`SubEtha.LamportProducer`](#subethalamportproducer), [`SubEtha.LaneClaim`](#subethalaneclaim), [`SubEtha.LanedMap`](#subethalanedmap), [`SubEtha.LanedPin`](#subethalanedpin), [`SubEtha.LazyValue`](#subethalazyvalue), [`SubEtha.LeaderElection`](#subethaleaderelection), [`SubEtha.LeaseHold`](#subethaleasehold), [`SubEtha.LinkedList`](#subethalinkedlist), [`SubEtha.LocaleRing`](#subethalocalering), [`SubEtha.LossBursts`](#subethalossbursts), [`SubEtha.LossKind`](#subethalosskind), [`SubEtha.LruCache`](#subethalrucache), [`SubEtha.MapPin`](#subethamappin), [`SubEtha.MpmcConsumer`](#subethampmcconsumer), [`SubEtha.MpmcGrid`](#subethampmcgrid), [`SubEtha.MpmcProducer`](#subethampmcproducer), [`SubEtha.MpscConsumer`](#subethampscconsumer), [`SubEtha.MpscPool`](#subethampscpool), [`SubEtha.MpscProducer`](#subethampscproducer), [`SubEtha.Neighbor`](#subethaneighbor), [`SubEtha.Notifier`](#subethanotifier), [`SubEtha.NotifierSet`](#subethanotifierset), [`SubEtha.OpCounts`](#subethaopcounts), [`SubEtha.OrderedReceiver`](#subethaorderedreceiver), [`SubEtha.OwnerLease`](#subethaownerlease), [`SubEtha.PackedItems`](#subethapackeditems), [`SubEtha.Pair`](#subethapair), [`SubEtha.PathChanges`](#subethapathchanges), [`SubEtha.PathMark`](#subethapathmark), [`SubEtha.Periodicity`](#subethaperiodicity), [`SubEtha.PermitHold`](#subethapermithold), [`SubEtha.PubSub`](#subethapubsub), [`SubEtha.QosPolicy`](#subethaqospolicy), [`SubEtha.QosSnapshot`](#subethaqossnapshot), [`SubEtha.QuicBridgeClient`](#subethaquicbridgeclient), [`SubEtha.QuicBridgeServer`](#subethaquicbridgeserver), [`SubEtha.RateLimiter`](#subetharatelimiter), [`SubEtha.Region`](#subetharegion), [`SubEtha.Registration`](#subetharegistration), [`SubEtha.ReorderWindow`](#subethareorderwindow), [`SubEtha.Reservoir`](#subethareservoir), [`SubEtha.Ring`](#subetharing), [`SubEtha.RoundTripShape`](#subetharoundtripshape), [`SubEtha.RWLock`](#subetharwlock), [`SubEtha.Scan`](#subethascan), [`SubEtha.Semaphore`](#subethasemaphore), [`SubEtha.SensReceiver`](#subethasensreceiver), [`SubEtha.SensSender`](#subethasenssender), [`SubEtha.SharedArc`](#subethasharedarc), [`SubEtha.SidecarStatus`](#subethasidecarstatus), [`SubEtha.SketchSize`](#subethasketchsize), [`SubEtha.Slab`](#subethaslab), [`SubEtha.SlabPin`](#subethaslabpin), [`SubEtha.SlotVersion`](#subethaslotversion), [`SubEtha.SourcedItem`](#subethasourceditem), [`SubEtha.SpscRing`](#subethaspscring), [`SubEtha.Stack`](#subethastack), [`SubEtha.StampedItem`](#subethastampeditem), [`SubEtha.Subscriber`](#subethasubscriber), [`SubEtha.TcpBridgeClient`](#subethatcpbridgeclient), [`SubEtha.TcpBridgeServer`](#subethatcpbridgeserver), [`SubEtha.TileEntry`](#subethatileentry), [`SubEtha.TimePointTile`](#subethatimepointtile), [`SubEtha.Timing`](#subethatiming), [`SubEtha.TinyBloom`](#subethatinybloom), [`SubEtha.TopologyMap`](#subethatopologymap), [`SubEtha.Tower`](#subethatower), [`SubEtha.Traffic`](#subethatraffic), [`SubEtha.Universal`](#subethauniversal), [`SubEtha.Vec`](#subethavec), [`SubEtha.VersionChain`](#subethaversionchain), [`SubEtha.Versioned`](#subethaversioned), [`SubEtha.VersionedMap`](#subethaversionedmap), [`SubEtha.VersionedSlab`](#subethaversionedslab), [`SubEtha.WorkQueue`](#subethaworkqueue)
+
+## SubEtha.Adaptive
+
+| Method | Answers |
+|---|---|
+| `Observe(object policy)` | `SubEtha.Registration` |
+| `Record(uint opKind, ulong? latencyTicks, bool? contended, bool? empty)` | `bool` |
+| `SetTag(uint tag)` | `void` |
+| `Tag()` | `uint` |
 
 ## SubEtha.AdaptiveQueue
 
@@ -57,6 +66,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Intern(string value)` | `ulong?` |
 | `InternBytes(object value)` | `ulong?` |
 | `InternMany(string[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `RemainingBytes()` | `ulong` |
 | `UsedBytes()` | `ulong` |
 
@@ -76,6 +86,7 @@ uses for an ordinary absent answer rather than a fault.
 | `FetchSub(ulong? value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `FetchXor(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `Load(SubEtha.MemoryOrder? order)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Store(ulong value, SubEtha.MemoryOrder? order)` | `void` |
 | `Swap(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 
@@ -97,6 +108,7 @@ uses for an ordinary absent answer rather than a fault.
 |---|---|
 | `Clear(ulong index)` | `bool` |
 | `Get(ulong index)` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Set(ulong index)` | `bool` |
 | `SetRange(ulong lo, ulong hi)` | `void` |
 | `Toggle(ulong index)` | `bool` |
@@ -117,6 +129,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ## SubEtha.BloomFilter
 
@@ -134,6 +147,7 @@ uses for an ordinary absent answer rather than a fault.
 | `FalsePositiveRate()` | `double` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ## SubEtha.BloomSize
 
@@ -154,6 +168,7 @@ uses for an ordinary absent answer rather than a fault.
 |---|---|
 | `ActiveConsumers()` | `ulong` |
 | `Lag(ulong consumer)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `ProducerPosition()` | `ulong` |
 | `Push(object item)` | `bool` |
 | `PushMany(object[] items)` | `ulong` |
@@ -214,6 +229,7 @@ uses for an ordinary absent answer rather than a fault.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -235,6 +251,8 @@ uses for an ordinary absent answer rather than a fault.
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMorphs()` | `ulong` |
+| `SidecarPrewarms()` | `ulong` |
 | `StalePops()` | `ulong` |
 | `WarmCapacity()` | `ulong?` |
 | `WarmHits()` | `ulong` |
@@ -343,6 +361,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
 | `InsertN(object item, ulong count)` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TotalInserts()` | `ulong` |
 
@@ -391,6 +410,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Arrived()` | `uint` |
 | `CurrentEpoch()` | `uint` |
 | `LivePeers()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Wait(uint epoch, double? timeout, uint? quorum)` | `bool` |
 
 ## SubEtha.Epochs
@@ -443,6 +463,7 @@ uses for an ordinary absent answer rather than a fault.
 | `GetLocal(ulong slot)` | `SubEtha.ClockReading` |
 | `GlobalFence()` | `SubEtha.ClockReading` |
 | `Merge(ulong slot, ulong physicalUs, ulong logical)` | `SubEtha.ClockReading` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `SharedClockUs()` | `ulong` |
 | `Tick(ulong slot)` | `SubEtha.ClockReading` |
@@ -507,6 +528,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Neighbors(uint source)` | `SubEtha.Neighbor[]` |
 | `NodeCount()` | `ulong` |
 | `NodeValue(uint node)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OutDegree(uint source)` | `uint?` |
 | `RemoveEdge(uint source, uint edge)` | `ulong?` |
 
@@ -528,6 +550,7 @@ uses for an ordinary absent answer rather than a fault.
 | `GetMany(ulong[] handles)` | `object[]` |
 | `Insert(object value)` | `ulong` |
 | `InsertMany(object[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(ulong handle)` | `object` |
 
 ## SubEtha.HashMap
@@ -549,6 +572,7 @@ uses for an ordinary absent answer rather than a fault.
 | `GetMany(object[] keys)` | `object[]` |
 | `Insert(object key, object value)` | `SubEtha.InsertOutcome` |
 | `InsertMany(object[] keys, object[] values)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(object key)` | `object` |
 | `Tombstones()` | `ulong` |
 
@@ -564,6 +588,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Barrier(string path, ulong? graceEpochs, bool? open)` | `SubEtha.EpochBarrier` |
 | `Beat(ulong slot)` | `void` |
 | `GlobalEpoch()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `Snapshot(ulong slot)` | `SubEtha.HeartbeatSlot` |
 | `TickGlobalEpoch()` | `ulong` |
@@ -590,6 +615,7 @@ uses for an ordinary absent answer rather than a fault.
 |---|---|
 | `Count(ulong bucket)` | `ulong` |
 | `Counts()` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Percentile(double p)` | `ulong` |
 | `Record(ulong value)` | `ulong` |
 | `RecordMany(ulong[] values)` | `ulong` |
@@ -636,7 +662,32 @@ uses for an ordinary absent answer rather than a fault.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
+
+## SubEtha.InstanceStats
+
+| Property | Type |
+|---|---|
+| `ContentionOps` | `ulong` |
+| `LastDrainUs` | `ulong` |
+| `MigrationsTriggered` | `ulong` |
+| `OpsObserved` | `ulong` |
+| `TotalLatencyTicks` | `ulong` |
+
+| Method | Answers |
+|---|---|
+| `AverageLatencyTicks()` | `ulong` |
+| `ContentionRate()` | `double` |
+| `DistinctThreadsFor(uint kind)` | `uint` |
+| `IsMultiThreadFor(uint kind)` | `bool` |
+| `MaxTrackedThreadsPerKind()` | `uint` |
+| `NOpKinds()` | `uint` |
+| `OpKindCounts()` | `ulong[]` |
+| `OpKindTotal()` | `ulong` |
+| `PerOpKindDistinctCount()` | `uint[]` |
+| `PerOpKindDistinctThreads()` | `object[]` |
+| `RatioOf(uint kind, uint[] totalKinds)` | `double` |
 
 ## SubEtha.KvMap
 
@@ -755,6 +806,7 @@ uses for an ordinary absent answer rather than a fault.
 | `GlobalEpoch()` | `ulong` |
 | `IsLeader(uint? pid)` | `bool` |
 | `Leader()` | `uint?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `StepDown(uint? pid)` | `bool` |
 | `Term()` | `uint` |
 | `TickEpoch()` | `ulong` |
@@ -798,6 +850,7 @@ uses for an ordinary absent answer rather than a fault.
 | Property | Type |
 |---|---|
 | `Capacity` | `ulong` |
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -814,9 +867,11 @@ uses for an ordinary absent answer rather than a fault.
 | `RecvMany(ulong consumer, ulong maxItems)` | `object[]` |
 | `RegisterConsumer()` | `ulong` |
 | `RegisterProducer()` | `ulong` |
+| `RequestLocale(SubEtha.Locale locale)` | `void` |
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMigrations()` | `ulong` |
 
 ## SubEtha.LossBursts
 
@@ -1001,6 +1056,7 @@ uses for an ordinary absent answer rather than a fault.
 | `FlushAsync()` | `void` |
 | `HeldBy(uint? pid)` | `bool` |
 | `Hold(ulong? graceEpochs, uint? pid)` | `SubEtha.LeaseHold` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Owner()` | `uint?` |
 | `Read(uint? pid)` | `object` |
 | `Release(uint? pid)` | `bool` |
@@ -1141,6 +1197,7 @@ uses for an ordinary absent answer rather than a fault.
 |---|---|
 | `Available()` | `uint` |
 | `Flush()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TryAcquire(uint? n)` | `bool` |
 
@@ -1159,6 +1216,21 @@ uses for an ordinary absent answer rather than a fault.
 | `Get(uint index)` | `object` |
 | `Set(uint index, object value)` | `void` |
 | `Snapshot()` | `object` |
+
+## SubEtha.Registration
+
+| Property | Type |
+|---|---|
+| `Id` | `uint` |
+
+| Method | Answers |
+|---|---|
+| `Close()` | `void` |
+| `Closed()` | `bool` |
+| `LastPolicyError()` | `object` |
+| `PolicyErrors()` | `ulong` |
+| `Stats()` | `SubEtha.InstanceStats` |
+| `Tag()` | `uint` |
 
 ## SubEtha.ReorderWindow
 
@@ -1192,6 +1264,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Count()` | `ulong` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Record(object value)` | `ulong?` |
 | `RecordMany(object[] values)` | `ulong` |
 | `Reset()` | `void` |
@@ -1202,6 +1275,7 @@ uses for an ordinary absent answer rather than a fault.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -1213,6 +1287,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Capacity()` | `ulong` |
 | `IsEmpty()` | `bool` |
 | `MorphRefusals()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OrderedReceiver(ulong consumer)` | `SubEtha.OrderedReceiver` |
 | `Recv(ulong consumer)` | `object` |
 | `RecvFrame(ulong consumer)` | `object` |
@@ -1224,6 +1299,7 @@ uses for an ordinary absent answer rather than a fault.
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SendPacked(ulong producer, object data, ulong itemLen)` | `ulong` |
 | `Shape()` | `string` |
+| `SidecarMorphs()` | `ulong` |
 | `Stamped()` | `bool` |
 | `TotalCapacity()` | `ulong` |
 
@@ -1245,6 +1321,7 @@ uses for an ordinary absent answer rather than a fault.
 
 | Method | Answers |
 |---|---|
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Read()` | `SubEtha.Hold` |
 | `Readers()` | `uint` |
 | `ReadFor(double timeout)` | `SubEtha.Hold` |
@@ -1272,6 +1349,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Acquire()` | `SubEtha.PermitHold` |
 | `AcquireFor(double timeout)` | `SubEtha.PermitHold` |
 | `Available()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `TryAcquire()` | `SubEtha.PermitHold` |
 | `Waiters()` | `uint` |
 
@@ -1323,6 +1401,14 @@ uses for an ordinary absent answer rather than a fault.
 | `Holders()` | `ulong` |
 | `ReadAt(ulong offset, ulong length)` | `object` |
 | `WriteAt(ulong offset, object value)` | `void` |
+
+## SubEtha.SidecarStatus
+
+| Property | Type |
+|---|---|
+| `InstanceCount` | `ulong` |
+| `MaxInstances` | `ulong` |
+| `NodeCount` | `ulong` |
 
 ## SubEtha.SketchSize
 
@@ -1472,6 +1558,7 @@ uses for an ordinary absent answer rather than a fault.
 | `FlushAsync()` | `void` |
 | `Insert(ulong version, object value)` | `uint` |
 | `IsFull()` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(uint lane)` | `void` |
 | `Visible(ulong version)` | `SubEtha.TileEntry[]` |
 | `VisibleCount(ulong version)` | `uint` |
@@ -1523,6 +1610,7 @@ uses for an ordinary absent answer rather than a fault.
 | `BusiestSender()` | `SubEtha.FanCount` |
 | `FanIn(uint receiver)` | `uint` |
 | `FanOut(uint sender)` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `PublishedRecommendation()` | `SubEtha.Topology` |
 | `PublishRecommendation()` | `SubEtha.Topology` |
 | `Recommend()` | `SubEtha.Topology` |
@@ -1574,6 +1662,7 @@ uses for an ordinary absent answer rather than a fault.
 | `InsertMany(ulong[] values)` | `ulong` |
 | `MigrateTo(SubEtha.SetStrategy strategy)` | `void` |
 | `Migrations()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OpCounts()` | `SubEtha.OpCounts` |
 | `Snapshot()` | `ulong[]` |
 | `Strategy()` | `SubEtha.SetStrategy` |
@@ -1615,6 +1704,7 @@ uses for an ordinary absent answer rather than a fault.
 | `Current()` | `SubEtha.Versioned` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Push(ulong version, object value)` | `void` |
 | `ReadAt(ulong version)` | `object` |
 

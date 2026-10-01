@@ -25,25 +25,37 @@
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::time::Duration;
 /// The range bound of the standard library, named apart from PyO3's own
 /// `Bound`, which is a handle on a Python object and is what every other
 /// mention of that word here means.
 use std::ops::Bound as RangeEnd;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use pyo3::exceptions::{PyOSError, PyValueError};
+use pyo3::exceptions::{PyBaseException, PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::{ffi, PyResult};
 
+use subetha_core::{HandshakeHeader, Observation, ObservationRing, SwapCell, SwapCellOption};
+use subetha_sidecar::{
+    global as sidecar_global, AdaptiveInstance, InstanceId, InstanceStats as SidecarStats,
+    NoMigrationPolicy, Policy,
+};
 use subetha_cxc::raw_region::RawRegion;
 use subetha_cxc::raw_treiber_stack::ElementLayout;
 use subetha_cxc::shared_atomic::SharedAtomicU64;
-use subetha_cxc::adaptive_ring::AdaptiveRing;
-use subetha_cxc::capacity_adaptive_ring::CapacityAdaptiveRing;
+use subetha_cxc::adaptive_ring::{
+    AdaptiveRing, AdaptiveRingSidecar, DefaultRingShapePolicy, SCAN_INTERVAL_DEFAULT_US,
+};
+use subetha_cxc::capacity_adaptive_ring::{
+    CapacityAdaptiveRing, CapacityAdaptiveRingSidecar, DefaultCapacityPolicy,
+};
 use subetha_cxc::ordering::OrderingMode;
-use subetha_cxc::locale_adaptive_ring::{Locale, LocaleAdaptiveRing};
+use subetha_cxc::locale_adaptive_ring::{
+    DefaultLocalePolicy, Locale, LocaleAdaptiveRing, LocaleAdaptiveRingSidecar,
+};
 use subetha_cxc::ordering::{StampKind, STAMPED_PAYLOAD_BYTES};
 use subetha_cxc::owner_lease::{LeaseError, OwnerLease as SubethaOwnerLease};
 use subetha_cxc::shared_blocked_bloom_filter::SharedBlockedBloomFilter;
@@ -178,6 +190,14 @@ struct Atomic {
 
 #[pymethods]
 impl Atomic {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the atomic at `path`, creating it holding `init` when the
     /// file does not exist and attaching to its live value when it does.
     #[new]
@@ -627,6 +647,14 @@ struct BroadcastRing {
 
 #[pymethods]
 impl BroadcastRing {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the broadcast ring at `path` holding `capacity` slots,
     /// creating it when the file does not exist and attaching to what is
     /// already there when it does.
@@ -716,7 +744,7 @@ impl BroadcastRing {
     /// the window is however long starting a worker takes. Publishing
     /// only once the readers are here closes it.
     ///
-    /// It promises nothing about afterwards. A consumer counted here can
+    /// It promises nothing about afterward. A consumer counted here can
     /// unregister, or its process can die, the moment this returns. It
     /// is a starting gun, not a register of attendance.
     ///
@@ -1367,6 +1395,14 @@ struct LeaderElection {
 
 #[pymethods]
 impl LeaderElection {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the election at `path`, creating it when the file does not
     /// exist. Creating one claims nothing: `try_claim` is what takes the
     /// role.
@@ -1546,6 +1582,14 @@ struct Heartbeat {
 
 #[pymethods]
 impl Heartbeat {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the heartbeat table at `path` with `capacity` slots,
     /// creating it when the file does not exist. A capacity of zero is a
     /// `ValueError`.
@@ -1656,6 +1700,14 @@ struct EpochBarrier {
 
 #[pymethods]
 impl EpochBarrier {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the barrier at `path`, creating it when the file does not
     /// exist.
     ///
@@ -1803,19 +1855,19 @@ impl Condvar {
         // its failure is recorded and the check answers true to end the
         // wait; the error is raised below rather than reported as a
         // satisfied condition.
-        let failure: std::sync::Mutex<Option<PyErr>> = std::sync::Mutex::new(None);
+        let failure = FirstError::new();
         let condition: &SharedCondvar = &self.inner;
         let check = || {
             Python::attach(|inner_py| match predicate.call0(inner_py) {
                 Ok(value) => match value.bind(inner_py).is_truthy() {
                     Ok(truth) => truth,
                     Err(e) => {
-                        Self::record(&failure, e);
+                        failure.record(e);
                         true
                     }
                 },
                 Err(e) => {
-                    Self::record(&failure, e);
+                    failure.record(e);
                     true
                 }
             })
@@ -1824,7 +1876,7 @@ impl Condvar {
             Some(t) => condition.wait_timeout(check, std::time::Duration::from_secs_f64(t)),
             None => condition.wait(check),
         });
-        if let Some(e) = Self::take(&failure) {
+        if let Some(e) = failure.take() {
             return Err(e);
         }
         match outcome {
@@ -1851,22 +1903,38 @@ impl Condvar {
     }
 }
 
-impl Condvar {
-    /// Keep the first failure: a later one is a consequence of the wait
-    /// already ending, and the first is the one that explains it.
-    fn record(slot: &std::sync::Mutex<Option<PyErr>>, e: PyErr) {
-        let mut held = slot
-            .lock()
-            .expect("the predicate's failure slot is never held across a panic");
-        if held.is_none() {
-            *held = Some(e);
+/// The first error a wait's predicate raised, kept for the waiter to
+/// raise. A later one is a consequence of the wait already ending and is
+/// dropped; the first is the one that explains it.
+struct FirstError(std::sync::atomic::AtomicPtr<PyErr>);
+
+impl FirstError {
+    fn new() -> Self {
+        Self(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()))
+    }
+
+    fn record(&self, e: PyErr) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let fresh = Box::into_raw(Box::new(e));
+        if self.0.compare_exchange(std::ptr::null_mut(), fresh, AcqRel, Acquire).is_err() {
+            // SAFETY: `fresh` came from Box::into_raw above and was not
+            // installed, so this is its only owner.
+            drop(unsafe { Box::from_raw(fresh) });
         }
     }
 
-    fn take(slot: &std::sync::Mutex<Option<PyErr>>) -> Option<PyErr> {
-        slot.lock()
-            .expect("the predicate's failure slot is never held across a panic")
-            .take()
+    fn take(&self) -> Option<PyErr> {
+        let held = self.0.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+        // SAFETY: a non-null value was installed by `record` from
+        // Box::into_raw, and the swap took it out, so this is its only
+        // owner.
+        (!held.is_null()).then(|| *unsafe { Box::from_raw(held) })
+    }
+}
+
+impl Drop for FirstError {
+    fn drop(&mut self) {
+        drop(self.take());
     }
 }
 
@@ -1993,6 +2061,14 @@ struct FenceClock {
 
 #[pymethods]
 impl FenceClock {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the clock at `path` with room for `capacity` participants,
     /// creating it when the file does not exist. A capacity of zero is a
     /// `ValueError`.
@@ -2089,6 +2165,14 @@ struct BloomFilter {
 
 #[pymethods]
 impl BloomFilter {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the filter at `path` with `n_bits` bits and `n_hashes` hash
     /// functions, creating it when the file does not exist. Either being
     /// zero is a `ValueError`.
@@ -2226,9 +2310,41 @@ impl BloomFilter {
 /// drained, so nothing in flight is lost; the consumer reads the stale
 /// backings oldest first and only then the new one. That is why a resize
 /// is a call rather than a rebuild.
+///
+/// A managed ring runs a capacity sidecar of its own, which scans every
+/// `scan_interval_us` and resizes the ring from how full it is: it
+/// doubles a ring 85 percent full and halves one 10 percent full, within
+/// 64 to 65536 slots and no sooner than 100 ms after its last resize. A
+/// strict ring changes size only through `morph_to`.
 #[pyclass(module = "subetha")]
 struct CapacityRing {
-    inner: Box<CapacityAdaptiveRing>,
+    inner: Arc<CapacityAdaptiveRing>,
+    /// The capacity sidecar of a managed ring; none on a strict one.
+    sidecar: Option<CapacityAdaptiveRingSidecar>,
+}
+
+impl CapacityRing {
+    /// Hold `ring`, with a capacity sidecar scanning it every `cadence`
+    /// when there is one.
+    fn run(ring: CapacityAdaptiveRing, cadence: Option<Duration>) -> Self {
+        let inner = Arc::new(ring);
+        let sidecar = cadence.map(|every| {
+            CapacityAdaptiveRingSidecar::spawn(
+                Arc::clone(&inner),
+                DefaultCapacityPolicy::default(),
+                every,
+            )
+        });
+        Self { inner, sidecar }
+    }
+}
+
+impl Drop for CapacityRing {
+    fn drop(&mut self) {
+        if let Some(sidecar) = self.sidecar.take() {
+            stop_ring_sidecar(sidecar);
+        }
+    }
 }
 
 #[pymethods]
@@ -2239,14 +2355,19 @@ impl CapacityRing {
     /// `stamped` builds a ring whose items carry ordering stamps, which
     /// is what `ordering_mode` and `inversions` read. Stamps cost space
     /// and a write per item, so they are off by default.
+    ///
+    /// `managed` starts the capacity sidecar, which needs
+    /// `scan_interval_us`: the library names no default for this ring.
     #[new]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false, managed = false, scan_interval_us = None))]
     fn new(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamped: bool,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if !capacity.is_power_of_two() || capacity < 2 {
             return Err(PyValueError::new_err(
@@ -2258,36 +2379,60 @@ impl CapacityRing {
                 "a ring needs at least one producer and one consumer",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "capacity ring")?;
         let built = if stamped {
             CapacityAdaptiveRing::create_stamped(path, max_producers, max_consumers, capacity)
         } else {
             CapacityAdaptiveRing::create(path, max_producers, max_consumers, capacity)
         };
         built
-            .map(|inner| Self { inner: Box::new(inner) })
+            .map(|ring| Self::run(ring, cadence))
             .map_err(|e| os_err("opening the ring", e))
     }
 
     /// `stamped` must match how the ring was created: a stamped ring
     /// carries ordering stamps and attaching to one as unstamped reads
-    /// the wrong shape.
+    /// the wrong shape. `managed` and `scan_interval_us` are this
+    /// handle's own, as on the constructor.
     #[staticmethod]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false, managed = false, scan_interval_us = None))]
     fn open(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamped: bool,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if !capacity.is_power_of_two() || capacity < 2 {
             return Err(PyValueError::new_err(
                 "capacity must be a power of two and at least two",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "capacity ring")?;
         CapacityAdaptiveRing::open(path, max_producers, max_consumers, capacity, stamped)
-            .map(|inner| Self { inner: Box::new(inner) })
+            .map(|ring| Self::run(ring, cadence))
             .map_err(|e| os_err("attaching to the ring", e))
+    }
+
+    /// Whether this handle runs a capacity sidecar, set by `managed`.
+    #[getter]
+    fn managed(&self) -> bool {
+        self.sidecar.is_some()
+    }
+
+    /// Resizes this handle's sidecar has made; zero on a strict ring.
+    #[getter]
+    fn sidecar_morphs(&self) -> u64 {
+        self.sidecar.as_ref().map_or(0, CapacityAdaptiveRingSidecar::morphs_triggered)
+    }
+
+    /// Backings this handle's sidecar built ahead of a resize it saw
+    /// coming; zero on a strict ring.
+    #[getter]
+    fn sidecar_prewarms(&self) -> u64 {
+        self.sidecar.as_ref().map_or(0, CapacityAdaptiveRingSidecar::prewarms_issued)
     }
 
     /// The capacity right now, which a morph changes.
@@ -2471,7 +2616,7 @@ impl CapacityRing {
     }
 
     /// Leave the block without closing anything, and let an exception
-    /// through. A prewarmed backing is still held afterwards, and a
+    /// through. A prewarmed backing is still held afterward, and a
     /// producer or consumer position taken inside is still registered:
     /// `clear_warm` gives back the first, and nothing gives back the
     /// second.
@@ -2516,9 +2661,36 @@ fn ordering_mode_from_name(name: &str) -> PyResult<OrderingMode> {
 /// memory that other processes can reach but which never goes to disk.
 /// A ring starts at `anon`; `migrate_to` moves it, carrying whatever is
 /// already in it.
+///
+/// A managed ring runs a locale sidecar of its own, which scans every
+/// `scan_interval_us` and moves the ring to the locale `request_locale`
+/// last asked for, no sooner than 250 ms after its last move, since each
+/// move copies the items in flight.
 #[pyclass(module = "subetha")]
 struct LocaleRing {
-    inner: Box<LocaleAdaptiveRing>,
+    inner: Arc<LocaleAdaptiveRing>,
+    /// The locale sidecar of a managed ring; none on a strict one.
+    sidecar: Option<LocaleAdaptiveRingSidecar>,
+}
+
+impl LocaleRing {
+    /// Hold `ring`, with a locale sidecar scanning it every `cadence`
+    /// when there is one.
+    fn run(ring: LocaleAdaptiveRing, cadence: Option<Duration>) -> Self {
+        let inner = Arc::new(ring);
+        let sidecar = cadence.map(|every| {
+            LocaleAdaptiveRingSidecar::spawn(Arc::clone(&inner), DefaultLocalePolicy::default(), every)
+        });
+        Self { inner, sidecar }
+    }
+}
+
+impl Drop for LocaleRing {
+    fn drop(&mut self) {
+        if let Some(sidecar) = self.sidecar.take() {
+            stop_ring_sidecar(sidecar);
+        }
+    }
 }
 
 #[pymethods]
@@ -2530,14 +2702,19 @@ impl LocaleRing {
     /// `stamped` builds a ring whose items carry ordering stamps, which
     /// is what `ordering_mode` and `inversions` read, and which is what
     /// lets a migration preserve order across every sender.
+    ///
+    /// `managed` starts the locale sidecar, which needs
+    /// `scan_interval_us`: the library names no default for this ring.
     #[new]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false, managed = false, scan_interval_us = None))]
     fn new(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamped: bool,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if !capacity.is_power_of_two() || capacity < 2 {
             return Err(PyValueError::new_err(
@@ -2549,6 +2726,7 @@ impl LocaleRing {
                 "a ring needs at least one producer and one consumer",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "locale ring")?;
         let built = if stamped {
             LocaleAdaptiveRing::create_with_ordering_stamps(
                 path,
@@ -2560,29 +2738,63 @@ impl LocaleRing {
             LocaleAdaptiveRing::create(path, max_producers, max_consumers, capacity)
         };
         built
-            .map(|inner| Self { inner: Box::new(inner) })
+            .map(|ring| Self::run(ring, cadence))
             .map_err(|e| os_err("opening the ring", e))
     }
 
     /// Attach to a ring another holder created. The counts, the
-    /// capacity and `stamped` must all be the ones it was created with.
+    /// capacity and `stamped` must all be the ones it was created with;
+    /// `managed` and `scan_interval_us` are this handle's own, as on the
+    /// constructor.
     #[staticmethod]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamped = false, managed = false, scan_interval_us = None))]
     fn open(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamped: bool,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if !capacity.is_power_of_two() || capacity < 2 {
             return Err(PyValueError::new_err(
                 "capacity must be a power of two and at least two",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "locale ring")?;
         LocaleAdaptiveRing::open(path, max_producers, max_consumers, capacity, stamped)
-            .map(|inner| Self { inner: Box::new(inner) })
+            .map(|ring| Self::run(ring, cadence))
             .map_err(|e| os_err("attaching to the ring", e))
+    }
+
+    /// Whether this handle runs a locale sidecar, set by `managed`.
+    #[getter]
+    fn managed(&self) -> bool {
+        self.sidecar.is_some()
+    }
+
+    /// Moves this handle's sidecar has made; zero on a strict ring.
+    #[getter]
+    fn sidecar_migrations(&self) -> u64 {
+        self.sidecar.as_ref().map_or(0, LocaleAdaptiveRingSidecar::migrations_triggered)
+    }
+
+    /// Ask a managed ring's sidecar to move the ring to `locale`, one of
+    /// `anon`, `file` or `shmfs`. The sidecar moves it on a later scan,
+    /// once 250 ms have passed since its last move. A strict ring has no
+    /// sidecar to ask and raises; `migrate_to` moves it.
+    fn request_locale(&self, locale: &str) -> PyResult<()> {
+        let target = locale_from_name(locale)?;
+        match &self.sidecar {
+            Some(sidecar) => {
+                sidecar.request_locale(target);
+                Ok(())
+            }
+            None => Err(PyValueError::new_err(
+                "request_locale asks a managed ring's sidecar; a strict ring moves with migrate_to",
+            )),
+        }
     }
 
     /// Where the bytes are right now, one of `anon`, `file` or `shmfs`.
@@ -2683,9 +2895,13 @@ impl LocaleRing {
     /// Move the ring to another locale, carrying what is already in it.
     /// On a stamped ring the transfer keeps the order every sender saw;
     /// on an unstamped one the drain can interleave senders, as a shape
-    /// change can.
+    /// change can. On a managed ring the move is also what its sidecar
+    /// is asked to keep, so the sidecar holds the ring there.
     fn migrate_to(&self, locale: &str) -> PyResult<()> {
         let target = locale_from_name(locale)?;
+        if let Some(sidecar) = &self.sidecar {
+            sidecar.request_locale(target);
+        }
         self.inner
             .migrate_to(target)
             .map_err(|e| os_err("migrating", e))
@@ -3051,6 +3267,14 @@ struct HyperLogLog {
 
 #[pymethods]
 impl HyperLogLog {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// `precision` sets the trade between memory and accuracy: 4 is the
     /// smallest the format allows and 16 the largest.
     #[new]
@@ -3144,6 +3368,14 @@ struct CountMinSketch {
 
 #[pymethods]
 impl CountMinSketch {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the sketch at `path` with `depth` rows of `width` cells,
     /// creating it when the file does not exist. Either being zero is a
     /// `ValueError`.
@@ -3264,6 +3496,14 @@ struct BitVec {
 
 #[pymethods]
 impl BitVec {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// The constructor asserts a capacity of at least one bit, so that
     /// is refused here first.
     #[new]
@@ -3354,6 +3594,14 @@ struct Histogram {
 
 #[pymethods]
 impl Histogram {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// `boundaries` must rise and must not be empty, which is checked
     /// here so a bad one names itself.
     #[new]
@@ -3452,6 +3700,14 @@ struct RateLimiter {
 
 #[pymethods]
 impl RateLimiter {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the limiter at `path` holding at most `capacity` tokens and
     /// refilling `refill_per_second` of them each second, creating it
     /// when the file does not exist. Either being zero is a `ValueError`.
@@ -3546,9 +3802,37 @@ impl RateLimiter {
 /// The ring is held by a shared handle rather than a box because a
 /// network bridge takes one of its own, and both then name the same
 /// ring rather than two copies of it.
+///
+/// The ring morphs on its own as peers register and as it is read. A
+/// managed ring also runs a shape sidecar of its own, which scans every
+/// `scan_interval_us` and morphs the ring to the cheapest shape its
+/// registered producers and consumers fit, no sooner than 100 ms after
+/// its last morph.
 #[pyclass(module = "subetha")]
 struct Ring {
     inner: Arc<AdaptiveRing>,
+    /// The shape sidecar of a managed ring; none on a strict one.
+    sidecar: Option<AdaptiveRingSidecar>,
+}
+
+impl Ring {
+    /// Hold `ring`, with a shape sidecar scanning it every `cadence`
+    /// when there is one.
+    fn run(ring: AdaptiveRing, cadence: Option<Duration>) -> Self {
+        let inner = Arc::new(ring);
+        let sidecar = cadence.map(|every| {
+            AdaptiveRingSidecar::spawn(Arc::clone(&inner), DefaultRingShapePolicy::default(), every)
+        });
+        Self { inner, sidecar }
+    }
+}
+
+impl Drop for Ring {
+    fn drop(&mut self) {
+        if let Some(sidecar) = self.sidecar.take() {
+            stop_ring_sidecar(sidecar);
+        }
+    }
 }
 
 #[pymethods]
@@ -3562,46 +3846,76 @@ impl Ring {
     /// `counter` for a count shared between the senders, which is the
     /// only one that gives a total order at any speed. None, the
     /// default, leaves the items unmarked and costs nothing.
+    ///
+    /// `managed` starts the shape sidecar, scanning every
+    /// `scan_interval_us`, 250 when it is not given.
     #[new]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamps = None))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamps = None, managed = false, scan_interval_us = None))]
     fn new(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamps: Option<&str>,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if max_producers < 1 || max_consumers < 1 {
             return Err(PyValueError::new_err(
                 "a ring needs at least one producer and one consumer",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, Some(SCAN_INTERVAL_DEFAULT_US), "ring")?;
         let ring = AdaptiveRing::create(path, max_producers, max_consumers, capacity)
             .map_err(|e| os_err("opening the ring", e))?;
         let ring = apply_stamps(ring, stamps)?;
-        Ok(Self { inner: Arc::new(ring) })
+        Ok(Self::run(ring, cadence))
     }
 
     /// Attach to a ring another holder created. `stamps` must be the
-    /// kind it was created with.
+    /// kind it was created with; `managed` and `scan_interval_us` are
+    /// this handle's own, as on the constructor.
     #[staticmethod]
-    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamps = None))]
+    #[pyo3(signature = (path, capacity, max_producers = 1, max_consumers = 1, stamps = None, managed = false, scan_interval_us = None))]
     fn open(
         path: &str,
         capacity: usize,
         max_producers: usize,
         max_consumers: usize,
         stamps: Option<&str>,
+        managed: bool,
+        scan_interval_us: Option<u64>,
     ) -> PyResult<Self> {
         if max_producers < 1 || max_consumers < 1 {
             return Err(PyValueError::new_err(
                 "a ring needs at least one producer and one consumer",
             ));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, Some(SCAN_INTERVAL_DEFAULT_US), "ring")?;
         let ring = AdaptiveRing::open(path, max_producers, max_consumers, capacity)
             .map_err(|e| os_err("attaching to the ring", e))?;
         let ring = apply_stamps(ring, stamps)?;
-        Ok(Self { inner: Arc::new(ring) })
+        Ok(Self::run(ring, cadence))
+    }
+
+    /// Whether this handle runs a shape sidecar, set by `managed`.
+    #[getter]
+    fn managed(&self) -> bool {
+        self.sidecar.is_some()
+    }
+
+    /// Shape morphs this handle's sidecar has made; zero on a strict
+    /// ring. Morphs the ring makes on its own are not counted here.
+    #[getter]
+    fn sidecar_morphs(&self) -> u64 {
+        self.sidecar.as_ref().map_or(0, AdaptiveRingSidecar::morphs_triggered)
+    }
+
+    /// Register this ring with the process's sidecar; see `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
     }
 
     /// Whether this ring marks its items with the order their senders
@@ -4897,6 +5211,14 @@ impl RWLock {
 
 #[pymethods]
 impl RWLock {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &**held.parked.inner(), policy)
+    }
+
     /// Obtain the lock at `path`, creating it when the file does not
     /// exist and attaching to the live one when it does.
     ///
@@ -5261,6 +5583,14 @@ struct OwnerLease {
 
 #[pymethods]
 impl OwnerLease {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Take the lease at `path`, creating it with `value` when it is not
     /// there yet. Attaching to one that exists leaves its owner, its
     /// term and its value alone, and `value` is then unused.
@@ -5546,6 +5876,14 @@ struct Reservoir {
 
 #[pymethods]
 impl Reservoir {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// How many items the sample holds at most. A value is at most 52
     /// bytes.
     #[new]
@@ -5682,6 +6020,14 @@ struct BlockedBloomFilter {
 
 #[pymethods]
 impl BlockedBloomFilter {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// `bits` is the size of the filter and `hashes` how many bits each
     /// item sets. `suggest` works both out from the number of items and
     /// the rate of wrong yeses that can be lived with.
@@ -5828,6 +6174,14 @@ struct HandleTable {
 
 #[pymethods]
 impl HandleTable {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// How many values the table holds at most. A value is at most 44
     /// bytes.
     #[new]
@@ -5992,6 +6346,14 @@ struct TimePointTile {
 
 #[pymethods]
 impl TimePointTile {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// A value is at most 52 bytes.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
@@ -6150,6 +6512,14 @@ struct VersionChain {
 
 #[pymethods]
 impl VersionChain {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// How many versions the chain holds at most. A value is at most 44
     /// bytes.
     #[new]
@@ -7298,6 +7668,14 @@ struct TopologyMap {
 
 #[pymethods]
 impl TopologyMap {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// `participants` is how many there are, numbered from zero.
     ///
     /// The thresholds are how many different places a participant has to
@@ -7488,6 +7866,14 @@ struct Graph {
 
 #[pymethods]
 impl Graph {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// The graph lives in two files beside the path given, one for the
     /// nodes and one for the edges.
     #[new]
@@ -7656,6 +8042,14 @@ struct Universal {
 
 #[pymethods]
 impl Universal {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// The set lives in files beside the path given, one per way of
     /// storing it.
     #[new]
@@ -7809,7 +8203,7 @@ impl Universal {
 
     /// Leave the block without closing anything, and let an exception
     /// through. Whatever strategy it migrated to inside the block is the
-    /// one it is still in afterwards.
+    /// one it is still in afterward.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -9265,7 +9659,7 @@ impl AdaptiveQueue {
 
     /// Leave the block without closing anything, and let an exception
     /// through. Whatever shape it changed into inside the block is the
-    /// one it is still in afterwards, and anything queued stays queued.
+    /// one it is still in afterward, and anything queued stays queued.
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
         false
@@ -10227,7 +10621,7 @@ impl RoundTripShape {
 /// due.
 ///
 /// Some interference is periodic: a radio that scans on a schedule, a
-/// neighbour's traffic that arrives in a rhythm. Finding the beat means
+/// neighbor's traffic that arrives in a rhythm. Finding the beat means
 /// a sender can raise redundancy just before the next spike rather than
 /// reacting after it.
 #[pyclass(module = "subetha")]
@@ -10490,6 +10884,14 @@ impl Semaphore {
 
 #[pymethods]
 impl Semaphore {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &**held.parked.inner(), policy)
+    }
+
     /// The constructor asserts that the initial count fits the maximum,
     /// so that is refused here first rather than reaching Python as a
     /// panic.
@@ -10680,6 +11082,14 @@ struct Arena {
 
 #[pymethods]
 impl Arena {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the arena at `path` holding `capacity_bytes` of interned
     /// text, creating it when the file does not exist.
     ///
@@ -11338,6 +11748,14 @@ struct HashMap_ {
 
 #[pymethods]
 impl HashMap_ {
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        let held = slf.borrow();
+        observe_instance(slf.as_any(), &*held.inner, policy)
+    }
+
     /// Obtain the map at `path` holding `capacity` entries of `key_size`
     /// and `value_size` bytes, creating it when the file does not exist.
     ///
@@ -11853,6 +12271,634 @@ fn is_broadcast_empty(e: &subetha_cxc::shared_broadcast_ring::BroadcastError) ->
     matches!(e, subetha_cxc::shared_broadcast_ring::BroadcastError::Empty)
 }
 
+// ===================================================================
+// The process's sidecar, and the sidecars of managed rings.
+// ===================================================================
+
+/// The cadence a ring's own sidecar scans at: none for a strict ring,
+/// and for a managed one the caller's interval, else `default_us`. A
+/// strict ring given an interval is refused, since its caller most
+/// likely meant a managed one, and so is a managed ring with neither an
+/// interval nor a default.
+fn scan_cadence(
+    managed: bool,
+    scan_interval_us: Option<u64>,
+    default_us: Option<u64>,
+    ring: &str,
+) -> PyResult<Option<Duration>> {
+    if !managed {
+        return match scan_interval_us {
+            Some(_) => Err(PyValueError::new_err(
+                "scan_interval_us is a managed ring's cadence; pass managed=True with it",
+            )),
+            None => Ok(None),
+        };
+    }
+    match scan_interval_us.or(default_us) {
+        None => Err(PyValueError::new_err(format!(
+            "a managed {ring} needs scan_interval_us; the library names no default"
+        ))),
+        Some(0) => Err(PyValueError::new_err(
+            "scan_interval_us must be at least one microsecond",
+        )),
+        Some(us) => Ok(Some(Duration::from_micros(us))),
+    }
+}
+
+/// Stop a ring's own sidecar and wait for its thread. The wait can last
+/// one scan interval and the thread never enters Python, so it runs with
+/// the interpreter released. A thread that cannot attach holds nothing
+/// to release, and the closure that owns the sidecar drops it unrun.
+fn stop_ring_sidecar<S: Send>(sidecar: S) {
+    Python::try_attach(move |py| py.detach(move || drop(sidecar)));
+}
+
+/// Observed rings by address, each with its registration's id once it has
+/// one.
+type ObservedRings = SwapCell<Vec<(usize, Option<InstanceId>)>>;
+
+/// The observation rings a live `Registration` holds. The sidecar drains
+/// a ring from one thread, so `observe` refuses a ring already here.
+fn observed_rings() -> &'static ObservedRings {
+    static RINGS: OnceLock<ObservedRings> = OnceLock::new();
+    RINGS.get_or_init(|| SwapCell::new(Vec::new()))
+}
+
+/// Take `ring` for a registration being made. `Err` carries the id of
+/// the live registration holding it, or `None` while another `observe`
+/// is still making one.
+fn claim_ring(ring: usize) -> Result<(), Option<InstanceId>> {
+    let rings = observed_rings();
+    loop {
+        let held = rings.load_full();
+        if let Some(&(_, id)) = held.iter().find(|(address, _)| *address == ring) {
+            return Err(id);
+        }
+        let mut next = Vec::with_capacity(held.len() + 1);
+        next.extend_from_slice(&held);
+        next.push((ring, None));
+        if rings.compare_and_set(&held, Arc::new(next)).is_ok() {
+            return Ok(());
+        }
+    }
+}
+
+/// Record the id the registration holding `ring` was given.
+fn settle_ring(ring: usize, id: InstanceId) {
+    observed_rings().rcu(|held| {
+        held.iter()
+            .map(|&(address, held_id)| (address, if address == ring { Some(id) } else { held_id }))
+            .collect()
+    });
+}
+
+/// Give `ring` back once its registration has left the sidecar.
+fn release_ring(ring: usize) {
+    observed_rings().rcu(|held| held.iter().copied().filter(|&(address, _)| address != ring).collect());
+}
+
+/// A ring claimed for a registration, given back on drop unless the
+/// registration was made.
+struct RingClaim {
+    ring: usize,
+    made: bool,
+}
+
+impl Drop for RingClaim {
+    fn drop(&mut self) {
+        if !self.made {
+            release_ring(self.ring);
+        }
+    }
+}
+
+/// Policy calls into Python under way on the sidecar's threads.
+static PYTHON_POLICY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Set as the interpreter begins to exit; no policy call enters Python
+/// after it.
+static PYTHON_POLICIES_STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// Counts a policy call out as it returns.
+struct PolicyCallCounted;
+
+impl Drop for PolicyCallCounted {
+    fn drop(&mut self) {
+        PYTHON_POLICY_CALLS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Stops policy calls into Python as the interpreter begins to exit and
+/// waits out the calls under way, with the interpreter released so they
+/// can finish. `atexit` runs it before the interpreter is finalizing,
+/// which is when a sidecar thread could no longer attach safely.
+#[pyfunction]
+fn stop_python_policies(py: Python<'_>) {
+    PYTHON_POLICIES_STOPPED.store(true, Ordering::SeqCst);
+    py.detach(|| {
+        while PYTHON_POLICY_CALLS.load(Ordering::SeqCst) != 0 {
+            std::thread::yield_now();
+        }
+    });
+}
+
+/// What a registration keeps of its policy's failures.
+struct PolicyFailures {
+    count: AtomicU64,
+    last: SwapCellOption<PyErr>,
+}
+
+/// A Python callable standing as a registration's `Policy`. The sidecar
+/// calls it on its own thread after every scan that drained something
+/// new, with the registration's stats and current tag; it answers the
+/// tag to move to, or None to stay.
+struct PythonPolicy {
+    decide: Py<PyAny>,
+    failures: Arc<PolicyFailures>,
+}
+
+impl PythonPolicy {
+    /// The callable's answer, or `None` with the failure kept when it
+    /// raised or answered something other than a tag or None.
+    fn ask(&self, py: Python<'_>, stats: &SidecarStats, current_tag: u32) -> Option<u32> {
+        let answered = Py::new(py, InstanceStats_ { inner: *stats })
+            .and_then(|stats| self.decide.call1(py, (stats, current_tag)));
+        let failure = match answered {
+            Ok(answer) if answer.is_none(py) => return None,
+            Ok(answer) => match answer.bind(py).extract::<u32>() {
+                Ok(tag) => return Some(tag),
+                Err(cause) => not_a_tag(py, &answer, cause),
+            },
+            Err(raised) => raised,
+        };
+        self.failures.count.fetch_add(1, Ordering::AcqRel);
+        self.failures.last.store(Some(Arc::new(failure)));
+        None
+    }
+}
+
+/// The TypeError a policy's answer earns when it is neither a tag nor
+/// None: it names what came back and carries the conversion's own error
+/// as its cause.
+fn not_a_tag(py: Python<'_>, answer: &Py<PyAny>, cause: PyErr) -> PyErr {
+    let shown = match answer.bind(py).repr() {
+        Ok(text) => text.to_string(),
+        Err(unshowable) => format!("an object whose repr raised {unshowable}"),
+    };
+    let err = PyTypeError::new_err(format!(
+        "a policy answers a tag, an int from 0 to {}, or None; it answered {shown}",
+        u32::MAX
+    ));
+    err.set_cause(py, Some(cause));
+    err
+}
+
+impl Policy for PythonPolicy {
+    fn decide(&self, stats: &SidecarStats, current_tag: u32) -> Option<u32> {
+        // Counted before the switch is read, and the exit hook sets the
+        // switch before it waits the count out, both sequentially
+        // consistent: a call either sees the switch or is waited for.
+        PYTHON_POLICY_CALLS.fetch_add(1, Ordering::SeqCst);
+        let _counted = PolicyCallCounted;
+        if PYTHON_POLICIES_STOPPED.load(Ordering::SeqCst) {
+            return None;
+        }
+        Python::try_attach(|py| self.ask(py, stats, current_tag)).flatten()
+    }
+}
+
+/// What the process's sidecar has drained from one registered object, as
+/// its last scan left it. `Registration.stats` takes one, and a policy is
+/// handed one after every scan that drained something new.
+#[pyclass(module = "subetha", name = "InstanceStats", frozen)]
+struct InstanceStats_ {
+    inner: SidecarStats,
+}
+
+#[pymethods]
+impl InstanceStats_ {
+    /// Op kinds the per-kind counts hold: kinds 1 to 6 are counted
+    /// apart, 7 and above share the last count, and 0 is unspecified.
+    #[classattr]
+    const N_OP_KINDS: usize = subetha_sidecar::N_OP_KINDS;
+
+    /// Producer threads remembered per op kind; a count one past this
+    /// means more threads than that.
+    #[classattr]
+    const MAX_TRACKED_THREADS_PER_KIND: usize = subetha_sidecar::MAX_TRACKED_THREADS_PER_KIND;
+
+    /// Observations drained from the object's ring.
+    #[getter]
+    fn ops_observed(&self) -> u64 {
+        self.inner.ops_observed
+    }
+
+    /// The latencies those observations carried, summed.
+    #[getter]
+    fn total_latency_ticks(&self) -> u64 {
+        self.inner.total_latency_ticks
+    }
+
+    /// Observations that reported contention.
+    #[getter]
+    fn contention_ops(&self) -> u64 {
+        self.inner.contention_ops
+    }
+
+    /// Observations per op kind, indexed by kind.
+    #[getter]
+    fn op_kind_counts(&self) -> Vec<u64> {
+        self.inner.op_kind_counts.to_vec()
+    }
+
+    /// Microseconds from registration to the last scan that drained an
+    /// observation.
+    #[getter]
+    fn last_drain_us(&self) -> u64 {
+        self.inner.last_drain_us
+    }
+
+    /// Scans whose policy answered a tag other than the current one.
+    #[getter]
+    fn migrations_triggered(&self) -> u64 {
+        self.inner.migrations_triggered
+    }
+
+    /// Per op kind, the ids of the first producer threads seen for it,
+    /// in arrival order; 0 marks a slot no thread has filled.
+    #[getter]
+    fn per_op_kind_distinct_threads(&self) -> Vec<Vec<u32>> {
+        self.inner.per_op_kind_distinct_threads.iter().map(|slots| slots.to_vec()).collect()
+    }
+
+    /// Per op kind, how many distinct producer threads were seen, up to
+    /// `MAX_TRACKED_THREADS_PER_KIND` plus one.
+    #[getter]
+    fn per_op_kind_distinct_count(&self) -> Vec<u8> {
+        self.inner.per_op_kind_distinct_count.to_vec()
+    }
+
+    /// `total_latency_ticks` over `ops_observed`, and 0 before any
+    /// observation.
+    fn average_latency_ticks(&self) -> u64 {
+        self.inner.average_latency_ticks()
+    }
+
+    /// `contention_ops` over `ops_observed`, and 0.0 before any
+    /// observation.
+    fn contention_rate(&self) -> f64 {
+        self.inner.contention_rate()
+    }
+
+    /// The per-kind counts summed.
+    fn op_kind_total(&self) -> u64 {
+        self.inner.op_kind_total()
+    }
+
+    /// The count of `kind` over the counts of `total_kinds` summed, and
+    /// 0.0 while those are all zero.
+    fn ratio_of(&self, kind: u16, total_kinds: Vec<u16>) -> f64 {
+        self.inner.ratio_of(kind, &total_kinds)
+    }
+
+    /// Distinct producer threads seen for `kind`.
+    fn distinct_threads_for(&self, kind: u16) -> u8 {
+        self.inner.distinct_threads_for(kind)
+    }
+
+    /// Whether `kind` was seen from two producer threads or more.
+    fn is_multi_thread_for(&self, kind: u16) -> bool {
+        self.inner.is_multi_thread_for(kind)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.InstanceStats ops_observed={} contention_rate={:.3} migrations_triggered={}>",
+            self.inner.ops_observed,
+            self.inner.contention_rate(),
+            self.inner.migrations_triggered
+        )
+    }
+}
+
+/// The registered object's handshake header, reached by its address. A
+/// registration holds its object, so the header lives as long as the
+/// registration, and the header is read only through its atomics.
+struct HeaderAt(NonNull<HandshakeHeader>);
+
+// SAFETY: as the type's doc says, the address stays valid while the
+// registration holding it lives, and the header behind it is atomics.
+unsafe impl Send for HeaderAt {}
+// SAFETY: as for `Send`.
+unsafe impl Sync for HeaderAt {}
+
+/// One object registered with the process's sidecar. The sidecar drains
+/// what the object records into its stats, and when `observe` was given a
+/// policy it asks that policy after every scan that drained something new
+/// which tag the object should run at.
+///
+/// `close`, the end of a `with` block, or collection unregisters it, and
+/// the object can then be observed again. An object has one registration
+/// at a time, because the sidecar drains its ring from one thread.
+///
+/// A policy runs on the sidecar's own thread with the interpreter taken,
+/// so a policy that never returns stalls the sidecar, and the interpreter
+/// waits for the policies under way as it exits.
+#[pyclass(module = "subetha", frozen)]
+struct Registration {
+    id: InstanceId,
+    ring: usize,
+    header: HeaderAt,
+    closed: AtomicBool,
+    failures: Arc<PolicyFailures>,
+    /// The registered object, held so its header and ring outlive the
+    /// registration. `Drop` unregisters before the fields drop.
+    _owner: Py<PyAny>,
+}
+
+impl Registration {
+    /// Unregister, once. The sidecar waits out a scan inside this
+    /// registration, which may be running a Python policy, so the wait
+    /// runs with the interpreter released.
+    fn close_now(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let id = self.id;
+        match Python::try_attach(|py| py.detach(move || sidecar_global().unregister(id))) {
+            Some(()) => {}
+            None => sidecar_global().unregister(id),
+        }
+        release_ring(self.ring);
+    }
+
+    fn live(&self) -> PyResult<()> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(PyValueError::new_err("the registration is closed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.close_now();
+    }
+}
+
+#[pymethods]
+impl Registration {
+    /// The sidecar's id for this registration.
+    #[getter]
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Whether `close` has run.
+    #[getter]
+    fn closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// The strategy tag the object runs at, which a policy's answer sets.
+    #[getter]
+    fn tag(&self) -> PyResult<u32> {
+        self.live()?;
+        // SAFETY: see `HeaderAt`.
+        Ok(unsafe { self.header.0.as_ref() }.tag())
+    }
+
+    /// What the sidecar has drained from the object so far, as its last
+    /// scan left it. `subetha.sidecar.scan_now()` drains what is waiting.
+    fn stats(&self) -> PyResult<InstanceStats_> {
+        self.live()?;
+        match sidecar_global().stats(self.id) {
+            Some(inner) => Ok(InstanceStats_ { inner }),
+            None => Err(PyRuntimeError::new_err(format!(
+                "the sidecar holds no registration {}",
+                self.id
+            ))),
+        }
+    }
+
+    /// Times the policy raised, or answered something other than a tag
+    /// or None. Each such scan left the tag where it was.
+    #[getter]
+    fn policy_errors(&self) -> u64 {
+        self.failures.count.load(Ordering::Acquire)
+    }
+
+    /// The last such failure as the exception itself, traceback
+    /// included; an answer of the wrong type is a TypeError naming it.
+    /// None before the first. `into_value` sets the stored traceback on
+    /// the exception, which Python before 3.12 keeps beside it.
+    #[getter]
+    fn last_policy_error<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBaseException>> {
+        self.failures.last.load_full().map(|failure| failure.clone_ref(py).into_value(py).into_bound(py))
+    }
+
+    /// Unregister from the sidecar. Returns once no scan is inside the
+    /// registration, and the object can then be observed again.
+    fn close(&self) {
+        self.close_now();
+    }
+
+    /// Answer the same object, so a `with` block can give it a name.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Unregister as the block ends, and let an exception through.
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, pyo3::types::PyTuple>) -> bool {
+        self.close_now();
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<subetha.Registration id={}{}>",
+            self.id,
+            if self.closed.load(Ordering::Acquire) { " closed" } else { "" }
+        )
+    }
+}
+
+/// Register `instance`, which `owner` holds, with the process's sidecar,
+/// under `policy` or, without one, the instance's own.
+fn observe_instance<T: AdaptiveInstance>(
+    owner: &Bound<'_, PyAny>,
+    instance: &T,
+    policy: Option<Bound<'_, PyAny>>,
+) -> PyResult<Registration> {
+    let failures = Arc::new(PolicyFailures { count: AtomicU64::new(0), last: SwapCellOption::empty() });
+    let policy: Box<dyn Policy> = match policy {
+        None => instance.make_policy(),
+        Some(decide) if decide.is_callable() => {
+            Box::new(PythonPolicy { decide: decide.unbind(), failures: Arc::clone(&failures) })
+        }
+        Some(other) => {
+            return Err(PyTypeError::new_err(format!(
+                "a policy is a callable taking (stats, tag); got {}",
+                other.get_type().name()?
+            )))
+        }
+    };
+    let ring = instance.ring() as *const ObservationRing as usize;
+    let mut claim = match claim_ring(ring) {
+        Ok(()) => RingClaim { ring, made: false },
+        Err(Some(id)) => {
+            return Err(PyValueError::new_err(format!(
+                "this object is already observed by registration {id}; close that one first"
+            )))
+        }
+        Err(None) => {
+            return Err(PyValueError::new_err(
+                "this object is being observed by another call right now",
+            ))
+        }
+    };
+    let sidecar = sidecar_global();
+    let cap = sidecar.max_instances();
+    if sidecar.instance_count() >= cap {
+        return Err(PyRuntimeError::new_err(format!(
+            "subetha-sidecar: instance cap ({cap}) exceeded. Likely cause: observe() is being \
+             called inside a loop, registering an object on every pass. Register once and \
+             reuse the registration, or call subetha.sidecar.set_max_instances() if the load \
+             is intentional."
+        )));
+    }
+    let header = NonNull::from(instance.header());
+    let instance_ref: &(dyn AdaptiveInstance + 'static) = instance;
+    // SAFETY: the registration returned holds `owner`, which holds
+    // `instance` at a fixed address for as long as it lives, and it
+    // unregisters before it lets `owner` go. The claim above means the
+    // ring has no other registration, so the sidecar is its one consumer.
+    let id = unsafe {
+        sidecar.register_raw(header, NonNull::from(instance.ring()), Some(NonNull::from(instance_ref)), policy)
+    };
+    settle_ring(ring, id);
+    claim.made = true;
+    Ok(Registration {
+        id,
+        ring,
+        header: HeaderAt(header),
+        closed: AtomicBool::new(false),
+        failures,
+        _owner: owner.clone().unbind(),
+    })
+}
+
+/// The strategy tag and observation ring an `Adaptive` carries, boxed by
+/// its holder because the header is cache-line aligned.
+struct OwnInstance {
+    header: HandshakeHeader,
+    ring: ObservationRing,
+}
+
+impl AdaptiveInstance for OwnInstance {
+    fn header(&self) -> &HandshakeHeader {
+        &self.header
+    }
+
+    fn ring(&self) -> &ObservationRing {
+        &self.ring
+    }
+
+    fn make_policy(&self) -> Box<dyn Policy> {
+        Box::new(NoMigrationPolicy)
+    }
+}
+
+/// An adaptive object of the caller's own: a strategy tag, and a ring the
+/// caller records its operations into. Observed with a policy, it has the
+/// process's sidecar drain the ring into stats after each scan and move
+/// the tag to whatever the policy answers, and the caller's code reads
+/// `tag` to choose how it works. It is what a Rust type implementing
+/// `AdaptiveInstance` is, and like the sidecar it lives in this process.
+#[pyclass(module = "subetha", frozen)]
+struct Adaptive {
+    inner: Box<OwnInstance>,
+}
+
+#[pymethods]
+impl Adaptive {
+    /// A fresh object at tag 0. It records nothing until it is observed.
+    #[new]
+    fn new() -> Self {
+        Self { inner: Box::new(OwnInstance { header: HandshakeHeader::new(), ring: ObservationRing::new() }) }
+    }
+
+    /// Record one operation of kind `op_kind` that took `latency_ticks`,
+    /// in whatever unit the policy reads. Kinds 1 to 6 are counted apart,
+    /// 7 and above share one count, and 0 is unspecified. `contended`
+    /// marks an operation that took a slow path, which is what
+    /// `contention_rate` counts, and `empty` one that found nothing.
+    /// False when the ring did not take it: before the object is
+    /// observed, or while the ring is full.
+    #[pyo3(signature = (op_kind, latency_ticks = 0, contended = false, empty = false))]
+    fn record(&self, op_kind: u16, latency_ticks: u64, contended: bool, empty: bool) -> bool {
+        let flags = u16::from(contended) | (u16::from(empty) << 1);
+        self.inner.ring.push(Observation { op_kind, flags, latency_ticks, ..Observation::ZERO })
+    }
+
+    /// The strategy tag, which a policy's answer moves.
+    #[getter]
+    fn tag(&self) -> u32 {
+        self.inner.header.tag()
+    }
+
+    /// Move the tag from the caller's own code.
+    fn set_tag(&self, tag: u32) {
+        self.inner.header.set_tag(tag);
+    }
+
+    /// Register this object with the process's sidecar; see
+    /// `Registration`.
+    #[pyo3(signature = (policy = None))]
+    fn observe(slf: &Bound<'_, Self>, policy: Option<Bound<'_, PyAny>>) -> PyResult<Registration> {
+        observe_instance(slf.as_any(), &*slf.get().inner, policy)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<subetha.Adaptive tag={}>", self.inner.header.tag())
+    }
+}
+
+/// Have every node of the process's sidecar scan now, and wait for it: an
+/// observation recorded before the call has been drained, and its policy
+/// asked, when it returns. The interpreter is released while it waits,
+/// since the scan may be running a Python policy.
+#[pyfunction]
+fn sidecar_scan_now(py: Python<'_>) {
+    py.detach(|| sidecar_global().scan_now());
+}
+
+/// Objects registered with the process's sidecar now.
+#[pyfunction]
+fn sidecar_instance_count() -> usize {
+    sidecar_global().instance_count()
+}
+
+/// The most objects the sidecar holds at once; `observe` past it raises.
+#[pyfunction]
+fn sidecar_max_instances() -> usize {
+    sidecar_global().max_instances()
+}
+
+/// Raise or lower that cap.
+#[pyfunction]
+fn sidecar_set_max_instances(cap: usize) {
+    sidecar_global().set_max_instances(cap);
+}
+
+/// The sidecar's scan threads, one per NUMA node.
+#[pyfunction]
+fn sidecar_node_count() -> usize {
+    sidecar_global().node_count()
+}
+
 /// What Python's object allocator guarantees. A `#[pyclass]` whose
 /// alignment exceeds this is placed at an address that does not satisfy
 /// it, and a release build faults on the first aligned store.
@@ -11957,6 +13003,9 @@ classes_fit_python_allocation!(
     Forecast,
     PathChanges,
     ReorderWindow,
+    InstanceStats_,
+    Registration,
+    Adaptive,
 );
 
 /// What this binding costs, reported by the binding itself so a caller
@@ -12068,6 +13117,19 @@ fn _subetha(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PathChanges>()?;
     m.add_class::<SensSender>()?;
     m.add_class::<SensReceiver>()?;
+    m.add_class::<InstanceStats_>()?;
+    m.add_class::<Registration>()?;
+    m.add_class::<Adaptive>()?;
+    m.add_function(wrap_pyfunction!(sidecar_scan_now, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecar_instance_count, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecar_max_instances, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecar_set_max_instances, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecar_node_count, m)?)?;
+    // A Python policy runs on a sidecar thread, which must not attach to
+    // an interpreter that is finalizing. atexit runs before that begins.
+    m.py()
+        .import("atexit")?
+        .call_method1("register", (wrap_pyfunction!(stop_python_policies, m)?,))?;
     #[cfg(feature = "tcp-bridge")]
     {
         m.add_class::<TcpBridgeClient>()?;

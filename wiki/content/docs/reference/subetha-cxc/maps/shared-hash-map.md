@@ -47,7 +47,7 @@ makes keys irreproducible).
 ## Table of contents
 
 - [What it is](#what-it-is)
-- [Insert / Get protocol](#insert-get-protocol)
+- [Insert / Get protocol](#insert--get-protocol)
 - [Bench evidence](#bench-evidence)
 - [Worked examples](#worked-examples)
 - [Use case patterns](#use-case-patterns)
@@ -87,25 +87,34 @@ hash + payload (K + V serialized in 48 bytes).
 
 1. Hash key (FNV-1a; a hash of 0 becomes 1, since 0 marks a slot
    whose contents are not yet published).
-2. Probe linearly from `hash % capacity`.
+2. Read the header's removal count, then probe linearly from
+   `hash % capacity`.
 3. At each slot:
-   - **Empty**: CAS state Empty -> Occupied; SeqLock-write (K, V),
-     then store the hash as the publish; bump count. Return Inserted.
+   - **Empty**: the key is absent. CAS the first tombstone passed,
+     else this Empty, to Occupied. If the removal count has moved since
+     step 2, give the slot back as a tombstone and start again;
+     otherwise SeqLock-write (K, V), then store the hash as the
+     publish; bump count. Return Inserted.
    - **Occupied + hash 0**: a writer holds the slot and has not
-     published it. Wait for the hash, then compare.
-   - **Occupied + hash matches + key matches**: SeqLock-update V.
-     Return Updated.
+     published it. Wait for the hash, then compare; a claim given back
+     is a tombstone.
+   - **Occupied + hash matches + key matches**: take the slot's lock,
+     confirm it is still the key's published entry, write V, release.
+     Return Updated. An entry removed in between sends the probe back
+     to step 2.
    - **Occupied + no match**: probe next slot.
-   - **Tombstone**: track the first one and keep probing; a probe
-     ending at an Empty claims the tracked tombstone in preference to
-     the Empty. A tombstone claim another writer wins restarts the
-     probe, because what that writer placed may be this key.
+   - **Tombstone**: track the first one and keep probing. A tombstone
+     claim another writer wins restarts the probe, because what that
+     writer placed may be this key.
 
 `insert_if_absent` runs the same probe and, on a present key, returns
-the value found without writing. `compare_exchange` finds the key's
-slot, takes its SeqLock, compares the stored value byte for byte with
-`expected`, and writes `new` only on a match; a differing value comes
-back as `Err(current)` and an absent key as `MapError::KeyAbsent`.
+the value found without writing. `swap` runs it too and returns the
+value it replaced, read and overwritten under the slot's lock.
+`compare_exchange` finds the key's slot, takes its lock, confirms it is
+still the key's published entry, compares the stored value byte for
+byte with `expected`, and writes `new` only on a match; a differing
+value comes back as `Err(current)` and an absent key as
+`MapError::KeyAbsent`.
 
 ### Get
 
@@ -120,13 +129,16 @@ back as `Err(current)` and an absent key as `MapError::KeyAbsent`.
 
 ### Remove
 
-Find the key, CAS state Occupied -> Tombstone, clear the hash to 0 so
-a later claim of the slot reads as forming from its first instant.
+Find the key, take its slot's lock and confirm it is still the key's
+published entry, bump the removal count, CAS state Occupied ->
+Tombstone, and clear the hash to 0 so a later claim of the slot reads
+as forming from its first instant. The value returned is the one the
+entry held when it went.
 
 ### Why the hash is the publish
 
 A slot is claimed by one CAS on its state byte, and its contents land
-afterwards. A prober that read the hash before the payload landed
+afterward. A prober that read the hash before the payload landed
 would conclude a different key lived there, probe on, and plant the
 same key in a second slot - two writers racing `insert_if_absent` on
 one absent key would do exactly that. Publishing the hash last, and
@@ -140,6 +152,26 @@ A walk is held to the same rule. `SharedHashMap::snapshot`, and
 and not yet published, rather than handing back its zeroed payload -
 which is what a lookup for that key already does by waiting on a hash
 of 0.
+
+### Why a remove is counted
+
+Two inserts of one new key meet at the first Empty or first tombstone
+of the key's chain, where one CAS decides between them. A remove during
+their walks breaks that: it can open a slot one insert has already
+passed, the other insert claims it, and the first claims further on, so
+the key lands twice and a later remove brings the other copy back. A
+remove therefore bumps the header's removal count before its tombstone
+lands, and an insert whose claim finds the count moved since its walk
+began gives the claim back and walks again, which brings it to the
+other insert's entry.
+
+Every write to a published entry (an update, `swap`,
+`compare_exchange`, `remove`) takes the slot's lock and confirms the
+state, hash and key under it. Between a hash matching and the lock, a
+remove and another key's claim can take the slot; a write that checked
+first and locked second would land on that other key's entry. Under
+the lock it acts on the entry it matched or on nothing, so a value
+leaves the map exactly once.
 
 ---
 
@@ -275,7 +307,7 @@ The 16.78 ns get latency is competitive with in-process maps.
 - Source: `crates/subetha-cxc/src/shared_hash_map.rs`.
 - Bench: `crates/subetha-cxc/benches/shared_hash_map.rs` (insert, get,
   len vs Mutex<HashMap> and RwLock<HashMap> baselines).
-- Sibling primitive: [SHARED_HANDLE_TABLE.md](../arenas/shared-handle-table/) -
+- Sibling primitive: [Shared Handle Table](../arenas/shared-handle-table/) -
   handle-keyed counterpart with generation-parity safe-after-free.
-- Sibling primitive: [SHARED_CELL.md](../cells/shared-cell/) - the
+- Sibling primitive: [Shared Cell](../cells/shared-cell/) - the
   underlying per-slot SeqLock primitive.

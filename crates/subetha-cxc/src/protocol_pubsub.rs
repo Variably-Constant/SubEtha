@@ -1,20 +1,23 @@
-//! `PubSubRing`: one-producer many-subscriber broadcast primitive
+//! `PubSubRing`: many-producer many-subscriber broadcast primitive
 //! with per-subscriber positions.
 //!
 //! Where a regular ring (SpscRingCore) has one consumer position
-//! (the tail), PubSubRing exposes the producer's monotonic head
-//! as the absolute position and lets each subscriber walk
-//! positions independently. Subscriber positions are tracked
-//! externally via [`SubscriberPosition`], so they can survive a
-//! subscriber restart.
+//! (the tail), PubSubRing exposes the monotonic head as the absolute
+//! position and lets each subscriber walk positions independently.
+//! Subscriber positions are tracked externally via
+//! [`SubscriberPosition`], so they can survive a subscriber restart.
 //!
 //! # Slot layout
 //!
 //! Each slot carries a `sequence: AtomicU64` + 56-byte payload.
-//! On a successful `publish(payload)`, the producer:
-//! 1. Writes the payload into slot[head % capacity].
-//! 2. Releases the new sequence = head + 1.
-//! 3. Releases head + 1 into the header.
+//! Any number of threads or processes publish at once. On
+//! `publish(payload)`, a producer:
+//! 1. Claims its position with one atomic add on the header's head.
+//! 2. When the slot's previous item, one lap earlier, has not landed
+//!    yet, waits for that write, as a Vyukov ring does. One producer
+//!    never waits here.
+//! 3. Writes the payload into slot[position % capacity].
+//! 4. Releases the slot's sequence = position + 1.
 //!
 //! On `read_at(position)`, a subscriber:
 //! 1. Reads the slot's sequence with Acquire.
@@ -27,7 +30,7 @@
 //!
 //! # KeepAll vs KeepLastN policy
 //!
-//! The primitive itself is KeepLastN-shaped: producer never blocks
+//! The primitive itself is KeepLastN-shaped: producers never block
 //! on subscribers; wraparound happens at capacity. Callers that
 //! want KeepAll semantics check the minimum subscriber position
 //! before publishing and back off when the ring is about to wrap
@@ -67,7 +70,7 @@ struct PubSubSlot {
     payload: UnsafeCell<[u8; PUBSUB_PAYLOAD_BYTES]>,
 }
 
-/// One-producer many-subscriber broadcast ring with per-subscriber
+/// Many-producer many-subscriber broadcast ring with per-subscriber
 /// positions.
 pub struct PubSubRing {
     _backing: PubSubBacking,
@@ -268,8 +271,9 @@ impl PubSubRing {
         unsafe { &*(slots_base.add(masked * PUBSUB_SLOT_SIZE) as *const PubSubSlot) }
     }
 
-    /// Producer's published head. Equals the next position that
-    /// will be assigned to a `publish` call.
+    /// The next position a `publish` will claim. A position below it
+    /// may still be mid-write; [`read_at`](Self::read_at) reports it
+    /// `Pending` until its write lands.
     pub fn head(&self) -> u64 {
         self.header().head.load(Ordering::Acquire)
     }
@@ -278,13 +282,21 @@ impl PubSubRing {
     pub fn capacity(&self) -> usize { self.capacity }
 
     /// Publish one payload. Returns the absolute position assigned
-    /// to this item. Caller must be the single producer.
+    /// to this item. Any number of threads or processes may publish
+    /// at once.
     pub fn publish(&self, payload: &[u8]) -> u64 {
         assert!(payload.len() <= PUBSUB_PAYLOAD_BYTES);
-        let header = self.header();
-        let head = header.head.load(Ordering::Relaxed);
-        let slot = self.slot(head as usize);
-        // Write payload first.
+        let position = self.header().head.fetch_add(1, Ordering::AcqRel);
+        #[cfg(test)]
+        crate::test_races::pause_point();
+        let slot = self.slot(position as usize);
+        // The slot's previous item is the one a lap earlier. A publisher
+        // that has come round to the slot before that item's write
+        // landed waits for it, so two writes never share the slot.
+        let previous_landed = (position + 1).saturating_sub(self.capacity as u64);
+        while slot.sequence.load(Ordering::Acquire) < previous_landed {
+            std::thread::yield_now();
+        }
         unsafe {
             let dst = (*slot.payload.get()).as_mut_ptr();
             std::ptr::copy_nonoverlapping(payload.as_ptr(), dst, payload.len());
@@ -297,11 +309,8 @@ impl PubSubRing {
         }
         // Release-store the slot sequence so subscribers see the
         // payload before the sequence advances.
-        slot.sequence.store(head + 1, Ordering::Release);
-        // Advance the header head; subscribers walking the head
-        // pointer see the new item.
-        header.head.store(head + 1, Ordering::Release);
-        head
+        slot.sequence.store(position + 1, Ordering::Release);
+        position
     }
 
     /// Read the payload at absolute `position`. The subscriber
@@ -451,6 +460,29 @@ mod tests {
                    "reset kept a published slot");
         drop(fresh);
         std::fs::remove_file(&p).ok();
+    }
+
+    /// A publish stops once it has taken its position and before its write
+    /// lands, and a second publish runs in that window: each takes a
+    /// position of its own and both items are read back.
+    #[test]
+    fn publishes_racing_for_one_position_both_land() {
+        let ring = Arc::new(PubSubRing::create_anon(8).expect("create"));
+        let stopped = Arc::clone(&ring);
+        let (pause, first) = crate::test_races::stopped(move || stopped.publish(&[1]));
+        let second = ring.publish(&[2]);
+        pause.release();
+        let first = first.join().expect("the stopped publish");
+        assert_ne!(first, second, "two publishes take two positions");
+        assert_eq!(ring.head(), 2, "the head counts both publishes");
+        let mut seen = Vec::new();
+        let mut out = [0u8; PUBSUB_PAYLOAD_BYTES];
+        for position in 0..2 {
+            ring.read_at(position, &mut out).expect("both positions are published");
+            seen.push(out[0]);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, vec![1, 2], "both items are there");
     }
 
     #[test]

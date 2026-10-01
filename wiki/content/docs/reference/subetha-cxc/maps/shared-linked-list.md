@@ -324,11 +324,11 @@ remove the handle from the list and the hash entry. Both O(1).
 - Bench: `crates/subetha-cxc/benches/shared_linked_list.rs`
   (push_back, pop_front, iter_100, remove_middle vs
   `Mutex<VecDeque>` and `Mutex<LinkedList>`).
-- Underlying primitive: [SHARED_REGION.md](../arenas/shared-region/) -
+- Underlying primitive: [Shared Region](../arenas/shared-region/) -
   the slot allocator with generation-parity safe-after-free.
-- Sibling primitive: [SHARED_GRAPH.md](../specialized/shared-graph/) -
+- Sibling primitive: [Shared Graph](../specialized/shared-graph/) -
   per-node linked lists of edges; SharedLinkedList is the
   flat-list variant.
 - Sibling primitive:
-  [SHARED_LRU_CACHE.md](../caches/shared-lru-cache/) - layered on
+  [Shared LRU Cache](../caches/shared-lru-cache/) - layered on
   top of SharedLinkedList for the keyed-LRU shape.

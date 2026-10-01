@@ -38,18 +38,20 @@
 //! ## Hot path API: [`publish_batch`](SharedDequeLoh::publish_batch)
 //!
 //! The canonical producer-fast API takes a slice of [`LineItem`] and
-//! migrates the whole batch in one shot. It bypasses the local LIFO
-//! entirely, paying exactly one Mutex acquire + one
-//! `tail.fetch_add(items.len())` + `items.len()` Release-stores for
-//! the call. This is the path that exercises the amortization lever
-//! and is the shape benchmarks measure.
+//! migrates the whole batch in one shot, paying one reservation on
+//! `tail` plus `items.len()` Release-stores for the call. This is the
+//! path that exercises the amortization lever and is the shape
+//! benchmarks measure.
 //!
-//! The [`push`](SharedDequeLoh::push) /
-//! [`flush`](SharedDequeLoh::flush) pair is still exposed for callers
-//! that want to stage items incrementally and migrate later
-//! (autoflushes at a configurable threshold). Per-item `push` does
-//! leave the amortization lever unexercised; it pays the same Mutex on
-//! every staged item.
+//! Items staged one at a time go through a [`LohStager`], the owner's
+//! LIFO: [`push`](LohStager::push) is a plain `Vec::push` that
+//! auto-flushes at a configurable threshold, and
+//! [`flush`](LohStager::flush) migrates the staged items in one batch.
+//! The stager is its holder's own buffer, mutated through `&mut self`,
+//! so staging takes no lock and no atomic. Every migration, staged or
+//! batched, reserves its slots with one compare-and-swap on `tail`, so
+//! publishers racing for the last free slots see `Full` rather than
+//! overfill.
 //!
 //! ## Layout
 //!
@@ -97,7 +99,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering, fence};
 
 use memmap2::{MmapMut, MmapOptions};
-use parking_lot::Mutex;
 
 use crate::shared_deque_khpd::LineItem;
 
@@ -197,7 +198,7 @@ pub const fn loh_file_size(capacity: usize) -> usize {
     std::mem::size_of::<LohHeader>() + capacity * LOH_SLOT_SIZE
 }
 
-/// Outcome of [`SharedDequeLoh::push`] / [`SharedDequeLoh::flush`] /
+/// Outcome of [`LohStager::push`] / [`LohStager::flush`] /
 /// [`SharedDequeLoh::publish_batch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushError {
@@ -236,25 +237,17 @@ pub struct SharedDequeLoh {
     mmap: MmapMut,
     capacity: usize,
     capacity_mask: i64,
+    /// LIFO length at which a [`LohStager::push`] flushes.
     flush_threshold: usize,
+    /// Most items a [`LohStager`] holds before `push` refuses.
     lifo_cap: usize,
-    /// Owner-side LIFO. `parking_lot::Mutex` is uncontended on the
-    /// hot path because, by protocol, only the originator thread
-    /// pushes; the Mutex exists so [`SharedDequeLoh`] can be shared
-    /// as `Arc<SharedDequeLoh>` between the originator and a
-    /// flush-trigger thread without losing `Sync`. The
-    /// [`Self::publish_batch`] hot path bypasses this Mutex entirely
-    /// (it does not touch the LIFO), so the batched-publish
-    /// throughput is set by `tail.fetch_add` cost only.
-    local_lifo: Mutex<Vec<LineItem>>,
 }
 
 // SAFETY: All fields are Send. Mmap handle is Send + Sync per
 // memmap2; every ring access goes through the LCRQ sequence-number
 // protocol (per-slot Acquire / Release pair) so concurrent producers
-// and consumers see a consistent view. The Mutex around the LIFO
-// linearizes owner-side accesses across any thread the originator
-// happens to schedule the push on.
+// and consumers see a consistent view, and producers reserve disjoint
+// slots through the compare-and-swap on `tail`.
 unsafe impl Send for SharedDequeLoh {}
 // SAFETY: Same justification as the `Send` impl directly above.
 unsafe impl Sync for SharedDequeLoh {}
@@ -262,7 +255,7 @@ unsafe impl Sync for SharedDequeLoh {}
 impl SharedDequeLoh {
     /// Create a fresh LOH file. `capacity` rounds up to the next
     /// power of two (min 2). `flush_threshold` is the LIFO length at
-    /// which an automatic [`Self::flush`] fires on the next push.
+    /// which an automatic [`LohStager::flush`] fires on the next push.
     pub fn create<P: AsRef<Path>>(
         path: P,
         capacity: usize,
@@ -330,7 +323,6 @@ impl SharedDequeLoh {
             capacity_mask: (capacity as i64) - 1,
             flush_threshold,
             lifo_cap: DEFAULT_LIFO_CAP,
-            local_lifo: Mutex::new(Vec::with_capacity(DEFAULT_LIFO_CAP)),
         })
     }
 
@@ -384,7 +376,6 @@ impl SharedDequeLoh {
             capacity_mask: (capacity as i64) - 1,
             flush_threshold,
             lifo_cap: DEFAULT_LIFO_CAP,
-            local_lifo: Mutex::new(Vec::with_capacity(DEFAULT_LIFO_CAP)),
         })
     }
 
@@ -423,62 +414,56 @@ impl SharedDequeLoh {
         unsafe { self.mmap.as_ptr().add(off) as *mut LcrqJobSlot }
     }
 
-    /// Snapshot the current `(head, tail, ring_size, lifo_len)`.
-    /// Loads are independent; the tuple is not a linearizable
-    /// snapshot - useful for debug / introspection only.
-    pub fn snapshot_size(&self) -> (i64, i64, i64, usize) {
+    /// Snapshot the current `(head, tail, ring_size)`. Loads are
+    /// independent; the tuple is not a linearizable snapshot - useful
+    /// for debug / introspection only. Staged items live in their
+    /// [`LohStager`] and are not counted here.
+    pub fn snapshot_size(&self) -> (i64, i64, i64) {
         let h = self.header();
         let head = h.head.load(Ordering::Acquire);
         let tail = h.tail.load(Ordering::Acquire);
-        let lifo_len = self.local_lifo.try_lock().map(|g| g.len()).unwrap_or(0);
-        (head, tail, tail - head, lifo_len)
+        (head, tail, tail - head)
     }
 
-    /// Owner-side push. Stages the item in the local LIFO; when the
-    /// LIFO reaches `flush_threshold` an automatic [`Self::flush`]
-    /// fires that drains the LIFO into the ring tail.
-    ///
-    /// **Only the owner process may call this.**
-    pub fn push(&self, item: LineItem) -> Result<(), PushError> {
-        let mut lifo = self.local_lifo.lock();
-        if lifo.len() >= self.lifo_cap {
-            return Err(PushError::LifoFull);
-        }
-        lifo.push(item);
-        if lifo.len() >= self.flush_threshold {
-            // Flush from inside the lock to keep the LIFO consistent
-            // with the migration count. If the flush fails (ring at
-            // capacity), undo the push so the caller can retry with
-            // a clean LIFO state.
-            if let Err(e) = self.flush_locked(&mut lifo) {
-                lifo.pop();
-                return Err(e);
+    /// The owner-side LIFO: items [`push`](LohStager::push)ed into it
+    /// reach the ring on [`flush`](LohStager::flush), or on the push
+    /// that brings it to [`flush_threshold`](Self::flush_threshold).
+    /// **Only the owner process may stage.**
+    pub fn stager(&self) -> LohStager<'_> {
+        LohStager { deque: self, lifo: Vec::with_capacity(self.lifo_cap) }
+    }
+
+    /// Reserve `n` slots at the tail and return the first one's index,
+    /// or `Full` when they would pass the capacity left unclaimed. The
+    /// reservation is a compare-and-swap on `tail`, so of two producers
+    /// racing for the last free slots only one has them, and the other
+    /// checks again against the winner's tail.
+    fn reserve_slots(&self, n: usize) -> Result<i64, PushError> {
+        let h = self.header();
+        let n = n as i64;
+        let mut tail = h.tail.load(Ordering::Relaxed);
+        loop {
+            let head = h.head.load(Ordering::Acquire);
+            if tail - head + n > self.capacity as i64 {
+                return Err(PushError::Full);
+            }
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            match h.tail.compare_exchange_weak(tail, tail + n, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return Ok(tail),
+                Err(now) => tail = now,
             }
         }
-        Ok(())
     }
 
-    /// Owner-side explicit flush. Drains the local LIFO into the
-    /// ring's tail in one batch (one `tail.fetch_add(N)` + N
-    /// Release-stores). Returns the number of items migrated.
-    pub fn flush(&self) -> Result<usize, PushError> {
-        let mut lifo = self.local_lifo.lock();
-        self.flush_locked(&mut lifo)
-    }
-
-    /// Owner-side single-call batch publish. **Holds zero locks.**
-    /// The LIFO-bypass property is the SubEtha-native lever: the
-    /// upstream LCRQ-on-LIFO design held a Mutex during batch
-    /// publish to satisfy a separate dispatch-backend `&self`
-    /// contract; SubEtha's owner-only protocol makes that Mutex
-    /// gratuitous on the batch path. `tail.fetch_add(N)` atomically
-    /// reserves a disjoint slot range; the per-slot sequence-number
-    /// protocol gates the writes. A sibling `flush()` or `push()`
-    /// touching the LIFO is independent: it competes only on
-    /// `tail.fetch_add`, not on the LIFO Vec.
+    /// Owner-side single-call batch publish. It bypasses the LIFO:
+    /// one compare-and-swap on `tail` reserves a disjoint slot range,
+    /// and the per-slot sequence-number protocol gates the writes. A
+    /// [`LohStager`] flushing at the same time competes only on that
+    /// reservation.
     ///
-    /// Cost per call: one `tail.fetch_add(items.len())` plus
-    /// `items.len()` per-slot Release-stores on the sequence number.
+    /// Cost per call: one reservation on `tail` plus `items.len()`
+    /// per-slot Release-stores on the sequence number.
     ///
     /// Returns the number of items migrated.
     pub fn publish_batch(&self, items: &[LineItem]) -> Result<usize, PushError> {
@@ -486,13 +471,7 @@ impl SharedDequeLoh {
             return Ok(0);
         }
         let n = items.len();
-        let h = self.header();
-        let head_snapshot = h.head.load(Ordering::Acquire);
-        let tail_snapshot = h.tail.load(Ordering::Relaxed);
-        if (tail_snapshot - head_snapshot + n as i64) > self.capacity as i64 {
-            return Err(PushError::Full);
-        }
-        let base = h.tail.fetch_add(n as i64, Ordering::AcqRel);
+        let base = self.reserve_slots(n)?;
 
         // Prefetch the first slot before entering the publish loop so
         // the producer's sequence Acquire-load hits a warm line.
@@ -514,43 +493,14 @@ impl SharedDequeLoh {
         Ok(n)
     }
 
-    fn flush_locked(&self, lifo: &mut Vec<LineItem>) -> Result<usize, PushError> {
-        let n = lifo.len();
-        if n == 0 {
-            return Ok(0);
-        }
-        let h = self.header();
-        let head_snapshot = h.head.load(Ordering::Acquire);
-        let tail_snapshot = h.tail.load(Ordering::Relaxed);
-        if (tail_snapshot - head_snapshot + n as i64) > self.capacity as i64 {
-            // Ring would overflow; report Full so caller can back
-            // off. Items remain in the LIFO for the next flush
-            // attempt.
-            return Err(PushError::Full);
-        }
-        let base = h.tail.fetch_add(n as i64, Ordering::AcqRel);
-
-        // Drain LIFO in FIFO order (oldest first) so the ring sees
-        // items in their original push order. `drain()` avoids the
-        // O(N) shift cost of pop()-into-reverse.
-        for (i, item) in lifo.drain(..).enumerate() {
-            let idx = base + i as i64;
-            // SAFETY: slot_ptr returns an in-bounds aligned pointer.
-            unsafe {
-                self.publish_at(idx, item);
-            }
-        }
-        Ok(n)
-    }
-
     /// Migrate one item into the slot at ring index `idx` under the
     /// Vyukov sequence-number protocol.
     ///
     /// # Safety
     ///
-    /// Caller must have reserved the slot by holding the producer
-    /// lock and having `idx` in `[base, base + N)` of a successful
-    /// `tail.fetch_add(N)`.
+    /// Caller must have reserved the slot: `idx` lies in
+    /// `[base, base + N)` of a successful `reserve_slots(N)` that
+    /// returned `base`.
     unsafe fn publish_at(&self, idx: i64, item: LineItem) {
         let slot = self.slot_ptr(idx);
         // Spin-wait until the slot is publishable (sequence == idx).
@@ -560,9 +510,9 @@ impl SharedDequeLoh {
         loop {
             // SAFETY: `slot` is the in-bounds aligned pointer returned
             // by `slot_ptr`; the LCRQ sequence-number protocol ensures
-            // no other writer touches this slot between our reservation
-            // (caller-held `tail.fetch_add`) and the Release-store at
-            // the bottom of this function.
+            // no other writer touches this slot between the caller's
+            // reservation and the Release-store at the bottom of this
+            // function.
             let seq = unsafe { (*slot).sequence.load(Ordering::Acquire) };
             let diff = seq - idx;
             if diff == 0 {
@@ -577,9 +527,9 @@ impl SharedDequeLoh {
                 continue;
             }
             // diff > 0: the slot's sequence is for a future round.
-            // With a single producer and the capacity-check guard
-            // this is unreachable; loud panic so the cause can be
-            // diagnosed instead of silently overwriting a slot.
+            // Reservations never pass the capacity, so this is
+            // unreachable; loud panic so the cause can be diagnosed
+            // instead of silently overwriting a slot.
             panic!(
                 "LOH producer protocol violation: slot[{}] seq={} ahead of idx={}",
                 idx & self.capacity_mask,
@@ -588,19 +538,11 @@ impl SharedDequeLoh {
             );
         }
         // SAFETY: same as the Acquire-load above; we own the slot for
-        // this round per the caller's reservation in `tail.fetch_add`.
+        // this round per the caller's reservation.
         unsafe {
             (*slot).item = item;
             (*slot).sequence.store(idx + 1, Ordering::Release);
         }
-    }
-
-    /// Owner-side pop from the local LIFO. Items still in the LIFO
-    /// (unmigrated) may be retrieved locally without round-tripping
-    /// through the ring.
-    pub fn pop_local(&self) -> Option<LineItem> {
-        let mut lifo = self.local_lifo.lock();
-        lifo.pop()
     }
 
     /// Thief-side steal. Race-free CAS-on-head with sequence-number
@@ -669,6 +611,60 @@ impl SharedDequeLoh {
     }
 }
 
+/// The owner's LIFO for a [`SharedDequeLoh`], from
+/// [`SharedDequeLoh::stager`]. Its holder mutates it through
+/// `&mut self`, so a push is a plain `Vec::push`.
+pub struct LohStager<'a> {
+    deque: &'a SharedDequeLoh,
+    lifo: Vec<LineItem>,
+}
+
+impl LohStager<'_> {
+    /// Stage the item in the LIFO. When the LIFO reaches the deque's
+    /// [`flush_threshold`](SharedDequeLoh::flush_threshold) an automatic
+    /// [`flush`](Self::flush) drains it into the ring tail; if that
+    /// flush finds the ring full, the push is undone and `Full`
+    /// returned, so the caller retries with the LIFO as it was.
+    pub fn push(&mut self, item: LineItem) -> Result<(), PushError> {
+        if self.lifo.len() >= self.deque.lifo_cap {
+            return Err(PushError::LifoFull);
+        }
+        self.lifo.push(item);
+        if self.lifo.len() >= self.deque.flush_threshold
+            && let Err(e) = self.flush()
+        {
+            self.lifo.pop();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Drain the LIFO into the ring's tail in one batch, oldest first,
+    /// through [`SharedDequeLoh::publish_batch`]. Returns the number of
+    /// items migrated; on `Full` the items stay staged.
+    pub fn flush(&mut self) -> Result<usize, PushError> {
+        let n = self.deque.publish_batch(&self.lifo)?;
+        self.lifo.clear();
+        Ok(n)
+    }
+
+    /// Pop the newest staged item. Items not yet migrated may be
+    /// retrieved locally without round-tripping through the ring.
+    pub fn pop_local(&mut self) -> Option<LineItem> {
+        self.lifo.pop()
+    }
+
+    /// Items staged and not yet migrated.
+    pub fn len(&self) -> usize {
+        self.lifo.len()
+    }
+
+    /// Whether nothing is staged.
+    pub fn is_empty(&self) -> bool {
+        self.lifo.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,36 +713,38 @@ mod tests {
         // flush_threshold = usize::MAX so auto-flush never fires;
         // the explicit `flush()` is the only path to the ring.
         let d = SharedDequeLoh::create(&path, 8, usize::MAX).expect("create");
+        let mut s = d.stager();
         for i in 0..3u32 {
-            d.push(u32_item(i)).expect("push");
+            s.push(u32_item(i)).expect("push");
         }
         // Ring is still empty before flush.
-        let (head, tail, sz, lifo_len) = d.snapshot_size();
+        let (head, tail, sz) = d.snapshot_size();
         assert_eq!(head, 0);
         assert_eq!(tail, 0);
         assert_eq!(sz, 0);
-        assert_eq!(lifo_len, 3);
+        assert_eq!(s.len(), 3);
         // Flush: 3 items migrate.
-        let n = d.flush().expect("flush");
+        let n = s.flush().expect("flush");
         assert_eq!(n, 3);
-        let (_, tail, sz, lifo_len) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 3);
         assert_eq!(sz, 3);
-        assert_eq!(lifo_len, 0);
+        assert!(s.is_empty());
     }
 
     #[test]
     fn push_auto_flushes_at_threshold() {
         let path = temp_path("autoflush");
         let d = SharedDequeLoh::create(&path, 8, 4).expect("create");
+        let mut s = d.stager();
         for i in 0..4u32 {
-            d.push(u32_item(i)).expect("push");
+            s.push(u32_item(i)).expect("push");
         }
         // The 4th push triggers auto-flush.
-        let (_, tail, sz, lifo_len) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 4);
         assert_eq!(sz, 4);
-        assert_eq!(lifo_len, 0);
+        assert!(s.is_empty());
     }
 
     #[test]
@@ -756,11 +754,9 @@ mod tests {
         let items: Vec<LineItem> = (1..=5u32).map(u32_item).collect();
         let n = d.publish_batch(&items).expect("publish_batch");
         assert_eq!(n, 5);
-        let (_, tail, sz, lifo_len) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 5);
         assert_eq!(sz, 5);
-        // publish_batch bypasses the LIFO entirely.
-        assert_eq!(lifo_len, 0);
         for expected in 1..=5u32 {
             loop {
                 match d.steal() {
@@ -781,7 +777,7 @@ mod tests {
         let d = SharedDequeLoh::create(&path, 4, usize::MAX).expect("create");
         let n = d.publish_batch(&[]).expect("publish_batch empty");
         assert_eq!(n, 0);
-        let (_, tail, sz, _) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 0);
         assert_eq!(sz, 0);
     }
@@ -800,13 +796,42 @@ mod tests {
     }
 
     #[test]
+    fn publishers_racing_for_the_last_slot_do_not_both_take_it() {
+        let path = temp_path("race_last_slot");
+        let d = Arc::new(SharedDequeLoh::create(&path, 2, usize::MAX).expect("create"));
+        d.publish_batch(&[u32_item(1)]).expect("the first slot");
+
+        // One slot is left. A batch stops after its capacity check and
+        // before it reserves, and another batch takes the last slot in
+        // that window.
+        let stopped = Arc::clone(&d);
+        let (pause, first) =
+            crate::test_races::stopped(move || stopped.publish_batch(&[u32_item(2)]));
+        let second = d.publish_batch(&[u32_item(3)]).expect("the second batch takes the last slot");
+        assert_eq!(second, 1);
+        pause.release();
+        assert!(
+            crate::test_races::within_lost(|| first.is_finished()),
+            "the stopped batch returns"
+        );
+        let refused = first
+            .join()
+            .expect("the stopped batch")
+            .expect_err("the stopped batch finds the deque full");
+        assert_eq!(refused, PushError::Full);
+        let (head, tail, _) = d.snapshot_size();
+        assert_eq!(tail - head, 2, "no more slots are claimed than the deque holds");
+    }
+
+    #[test]
     fn steal_drains_in_fifo_order_after_flush() {
         let path = temp_path("fifo");
         let d = SharedDequeLoh::create(&path, 8, usize::MAX).expect("create");
+        let mut s = d.stager();
         for i in 1..=3u32 {
-            d.push(u32_item(i)).expect("push");
+            s.push(u32_item(i)).expect("push");
         }
-        d.flush().expect("flush");
+        s.flush().expect("flush");
         for expected in 1..=3u32 {
             loop {
                 match d.steal() {
@@ -825,29 +850,32 @@ mod tests {
     fn pop_local_drains_lifo_in_lifo_order() {
         let path = temp_path("pop_local_lifo");
         let d = SharedDequeLoh::create(&path, 4, usize::MAX).expect("create");
+        let mut s = d.stager();
         for i in 1..=3u32 {
-            d.push(u32_item(i)).expect("push");
+            s.push(u32_item(i)).expect("push");
         }
         // Owner pops in LIFO order (newest first).
         for expected in (1..=3u32).rev() {
-            let e = d.pop_local().expect("pop_local");
+            let e = s.pop_local().expect("pop_local");
             assert_eq!(item_id(&e), expected);
         }
-        assert!(d.pop_local().is_none());
+        assert!(s.pop_local().is_none());
     }
 
     #[test]
     fn ring_full_at_capacity() {
         let path = temp_path("full");
         let d = SharedDequeLoh::create(&path, 2, usize::MAX).expect("create");
-        d.push(u32_item(1)).expect("push");
-        d.push(u32_item(2)).expect("push");
-        let n = d.flush().expect("flush");
+        let mut s = d.stager();
+        s.push(u32_item(1)).expect("push");
+        s.push(u32_item(2)).expect("push");
+        let n = s.flush().expect("flush");
         assert_eq!(n, 2);
         // Ring is at capacity; pushing more + flushing reports Full.
-        d.push(u32_item(3)).expect("push to lifo");
-        let err = d.flush().expect_err("flush past capacity");
+        s.push(u32_item(3)).expect("push to lifo");
+        let err = s.flush().expect_err("flush past capacity");
         assert_eq!(err, PushError::Full);
+        assert_eq!(s.len(), 1, "a flush refused as full leaves its items staged");
     }
 
     #[test]
@@ -891,16 +919,17 @@ mod tests {
             }));
         }
 
+        let mut s = d.stager();
         for i in 0..n {
             loop {
-                match d.push(u32_item(i as u32)) {
+                match s.push(u32_item(i as u32)) {
                     Ok(()) => break,
                     Err(PushError::LifoFull) | Err(PushError::Full) => {
                         std::thread::yield_now();
                         // Opportunistic: a Full flush here just means
                         // the ring is congested; the outer loop keeps
                         // retrying the push. Anything else is a defect.
-                        match d.flush() {
+                        match s.flush() {
                             Ok(_) | Err(PushError::Full) => {}
                             Err(e) => panic!("opportunistic flush: {e:?}"),
                         }
@@ -910,12 +939,11 @@ mod tests {
         }
         // The terminal flush must succeed or the tail of the run
         // (up to flush_threshold - 1 items) stays stranded in the
-        // process-local LIFO and the thieves spin on `consumed < n`
-        // forever - flush() returning Full leaves items staged by
-        // contract ("items remain in the LIFO for the next flush
-        // attempt"). Retry until the thieves free ring space.
+        // stager and the thieves spin on `consumed < n` forever: a
+        // flush that returns Full leaves its items staged. Retry until
+        // the thieves free ring space.
         loop {
-            match d.flush() {
+            match s.flush() {
                 Ok(_) => break,
                 Err(PushError::Full) => std::thread::yield_now(),
                 Err(e) => panic!("terminal flush: {e:?}"),

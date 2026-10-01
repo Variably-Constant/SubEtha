@@ -23,6 +23,7 @@ use subetha_cxc::shared_versioned_slab::SharedVersionedSlab;
 use subetha_cxc::versioned_btree_map::{VersionedBTreeMap, VersionedError};
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, size, LeaseValue, SlotValue, LEASE_VALUE_BYTES, SLOT_VALUE_BYTES};
+use crate::sidecar::{observe, Registration};
 
 assert_send!(
     Reservoir, HandleTable, TimePointTile, VersionChain, VersionedSlab, SlabPin, VersionedMap, MapPin, LanedMap, LaneClaim, LanedPin,
@@ -46,7 +47,7 @@ pub struct Reservoir {
     /// The most a value may be, in bytes.
     pub max_value_bytes: u64,
     #[psfield(skip)]
-    inner: SharedReservoirSampler<SlotValue>,
+    inner: Arc<SharedReservoirSampler<SlotValue>>,
 }
 
 impl Reservoir {
@@ -57,13 +58,19 @@ impl Reservoir {
         let cap = size(capacity, "the capacity")?;
         let inner = if open { SharedReservoirSampler::open(&path, cap) } else { SharedReservoirSampler::create(&path, cap) }
             .map_err(|e| open_err("the reservoir", &path, e))?;
-        Ok(Self { path, capacity, max_value_bytes: SLOT_VALUE_BYTES as u64, inner })
+        Ok(Self { path, capacity, max_value_bytes: SLOT_VALUE_BYTES as u64, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.Reservoir`.
 #[psmethods]
 impl Reservoir {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Offers one value. Answers the place it was kept in, or `$null`
     /// when the sample kept what it already had there instead. Neither
     /// answer is a failure: refusing is how the sample stays unbiased.
@@ -189,7 +196,7 @@ pub struct HandleTable {
     /// The most a value may be, in bytes.
     pub max_value_bytes: u64,
     #[psfield(skip)]
-    inner: SharedHandleTable<LeaseValue>,
+    inner: Arc<SharedHandleTable<LeaseValue>>,
 }
 
 impl HandleTable {
@@ -206,13 +213,19 @@ impl HandleTable {
             SharedHandleTable::create(&path, cap)
         }
         .map_err(|e| open_err("the table", &path, e))?;
-        Ok(Self { path, capacity, max_value_bytes: LEASE_VALUE_BYTES as u64, inner })
+        Ok(Self { path, capacity, max_value_bytes: LEASE_VALUE_BYTES as u64, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.HandleTable`.
 #[psmethods]
 impl HandleTable {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many values the table holds.
     pub fn count(&self) -> PsResult<u64> {
         Ok(self.inner.len() as u64)
@@ -370,7 +383,7 @@ pub struct TimePointTile {
     /// The most a value may be, in bytes.
     pub max_value_bytes: u64,
     #[psfield(skip)]
-    inner: SharedTimePointTile<SlotValue>,
+    inner: Arc<SharedTimePointTile<SlotValue>>,
 }
 
 impl TimePointTile {
@@ -383,7 +396,7 @@ impl TimePointTile {
             SharedTimePointTile::create(&path)
         }
         .map_err(|e| open_err("the tile", &path, e))?;
-        Ok(Self { path, lanes: TILE_CAP as u64, max_value_bytes: SLOT_VALUE_BYTES as u64, inner })
+        Ok(Self { path, lanes: TILE_CAP as u64, max_value_bytes: SLOT_VALUE_BYTES as u64, inner: Arc::new(inner) })
     }
 
     fn lane(lane: u32) -> PsResult<usize> {
@@ -398,6 +411,12 @@ impl TimePointTile {
 /// The operations of a `SubEtha.TimePointTile`.
 #[psmethods]
 impl TimePointTile {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many places are taken.
     pub fn count(&self) -> PsResult<u64> {
         Ok(self.inner.len() as u64)
@@ -538,7 +557,7 @@ pub struct VersionChain {
     /// The most a value may be, in bytes.
     pub max_value_bytes: u64,
     #[psfield(skip)]
-    inner: SharedVersionedChain<LeaseValue>,
+    inner: Arc<SharedVersionedChain<LeaseValue>>,
 }
 
 impl VersionChain {
@@ -555,13 +574,19 @@ impl VersionChain {
             SharedVersionedChain::create(&path, cap)
         }
         .map_err(|e| open_err("the chain", &path, e))?;
-        Ok(Self { path, capacity, max_value_bytes: LEASE_VALUE_BYTES as u64, inner })
+        Ok(Self { path, capacity, max_value_bytes: LEASE_VALUE_BYTES as u64, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.VersionChain`.
 #[psmethods]
 impl VersionChain {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many versions the chain holds.
     pub fn count(&self) -> PsResult<u64> {
         Ok(self.inner.len() as u64)
@@ -1650,7 +1675,7 @@ pub struct TopologyMap {
     /// How many participants there are, numbered from zero.
     pub participants: u64,
     #[psfield(skip)]
-    inner: SharedTopologyMap,
+    inner: Arc<SharedTopologyMap>,
 }
 
 impl TopologyMap {
@@ -1671,13 +1696,19 @@ impl TopologyMap {
             SharedTopologyMap::create_with_thresholds(&path, n, out, in_)
         }
         .map_err(|e| open_err("the topology", &path, e))?;
-        Ok(Self { path, participants, inner })
+        Ok(Self { path, participants, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.TopologyMap`.
 #[psmethods]
 impl TopologyMap {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Records one send and returns how many have gone that way.
     pub fn record_send(&self, sender: u32, receiver: u32) -> PsResult<u64> {
         self.inner.record_send(sender, receiver).map_err(|e| op_err("recording a send", e))
@@ -1846,7 +1877,7 @@ pub struct Graph {
     /// How many edges it can hold.
     pub max_edges: u64,
     #[psfield(skip)]
-    inner: SharedGraph<u64, u64>,
+    inner: Arc<SharedGraph<u64, u64>>,
 }
 
 impl Graph {
@@ -1857,13 +1888,19 @@ impl Graph {
         let n = size(max_nodes, "the node count")?;
         let e = size(max_edges, "the edge count")?;
         let inner = if open { SharedGraph::open(&path, n, e) } else { SharedGraph::create(&path, n, e) }.map_err(|e| open_err("the graph", &path, e))?;
-        Ok(Self { path, max_nodes, max_edges, inner })
+        Ok(Self { path, max_nodes, max_edges, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.Graph`.
 #[psmethods]
 impl Graph {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Adds a node carrying `value` and returns its index.
     pub fn add_node(&self, value: u64) -> PsResult<u32> {
         self.inner.add_node(value).map(|node| node.index).map_err(|e| op_err("adding a node", e))
@@ -2051,7 +2088,7 @@ pub struct Universal {
     /// How many values it holds at most.
     pub capacity: u64,
     #[psfield(skip)]
-    inner: SharedUniversal<u64>,
+    inner: Arc<SharedUniversal<u64>>,
 }
 
 impl Universal {
@@ -2068,13 +2105,19 @@ impl Universal {
             SharedUniversal::create(&path, cap)
         }
         .map_err(|e| open_err("the set", &path, e))?;
-        Ok(Self { path, capacity, inner })
+        Ok(Self { path, capacity, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.Universal`.
 #[psmethods]
 impl Universal {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Adds `value`.
     pub fn insert(&self, value: u64) -> PsResult<()> {
         self.inner.insert(value).map_err(|e| op_err("inserting", e))

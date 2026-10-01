@@ -358,15 +358,15 @@ so the barrier releases without it.
 - Bench: `crates/subetha-cxc/benches/heartbeat.rs` (beat, snapshot,
   mark_in_flight, register+unregister cycle vs
   `Mutex<table>` and `Vec<Mutex<slot>>`).
-- Consumer: [FAILOVER.md](failover/) - watchdog scans
+- Consumer: [Failover Watchdog](failover/) - watchdog scans
   heartbeat slots for stale entries and reclaims their in-flight
   bitmaps.
-- Consumer: [EPOCH_BARRIER.md](epoch-barrier/) - counts live
+- Consumer: [Epoch Barrier](epoch-barrier/) - counts live
   peers from the heartbeat to release the barrier without dead
   peers.
-- Consumer: [SHARED_LEADER_ELECTION.md](../ownership-types/shared-leader-election/) -
+- Consumer: [Shared Leader Election](../ownership-types/shared-leader-election/) -
   scans heartbeat slots to find the lowest-live-PID for
   leadership claims.
 - Underlying primitive:
-  [SHARED_ATOMIC.md](../atomics/shared-atomic/) - the atomic-counter
+  [Shared Atomic](../atomics/shared-atomic/) - the atomic-counter
   building block the global_epoch field uses.

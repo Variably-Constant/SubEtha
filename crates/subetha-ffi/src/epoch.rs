@@ -23,8 +23,8 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 
-use arc_swap::ArcSwap;
 use parking_lot::Mutex;
+use subetha_core::SwapCell;
 
 use crate::error::{fail, SUBETHA_E_NOT_SUPPORTED};
 
@@ -96,10 +96,10 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry { all: Vec::new(), free: 
 /// it was before: it published its word after the walk's barrier, so its
 /// epoch is already at or past the target and the walk would not have
 /// waited for it.
-static PUBLISHED: LazyLock<ArcSwap<Vec<Arc<ThreadEpoch>>>> =
-    LazyLock::new(|| ArcSwap::from_pointee(Vec::new()));
+static PUBLISHED: LazyLock<SwapCell<Vec<Arc<ThreadEpoch>>>> =
+    LazyLock::new(|| SwapCell::new(Vec::new()));
 
-/// Bumped by every destroy, so a call that publishes afterwards is
+/// Bumped by every destroy, so a call that publishes afterward is
 /// recognizable as one that cannot have read the object as live. It wraps,
 /// and is only ever compared as a difference, so a wrap costs nothing.
 static GLOBAL: AtomicU32 = AtomicU32::new(1);

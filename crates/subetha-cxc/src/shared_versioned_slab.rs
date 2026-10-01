@@ -499,28 +499,38 @@ mod tests {
 
     #[test]
     fn a_reader_never_sees_a_half_written_chain() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use crate::test_races::LOST;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::Arc;
         let dir = fresh_dir("torn");
         let slab: Arc<SharedVersionedSlab<u64, 4>> = Arc::new(
             SharedVersionedSlab::create(dir.join("slab.bin"), 4, dir.join("epochs.bin"), 16).unwrap(),
         );
         let stop = Arc::new(AtomicBool::new(false));
+        let written = Arc::new(AtomicU64::new(0));
         let writer = {
             let slab = Arc::clone(&slab);
             let stop = Arc::clone(&stop);
+            let written = Arc::clone(&written);
             std::thread::spawn(move || {
                 let mut n = 0u64;
                 while !stop.load(Ordering::Relaxed) {
                     slab.set(0, n).unwrap();
                     n += 1;
+                    written.store(n, Ordering::Relaxed);
                 }
                 n
             })
         };
+        // The reader reads for 200 ms, and on past that until it has read
+        // while the writer was writing: a loaded host can leave the writer
+        // unrun for the whole window, and a read with no writer beside it
+        // tests nothing. That wait is bounded as a lost wake is.
         let start = std::time::Instant::now();
-        let mut reads = 0u64;
-        while start.elapsed() < std::time::Duration::from_millis(200) {
+        let mut reads_while_writing = 0u64;
+        while start.elapsed() < std::time::Duration::from_millis(200) || reads_while_writing == 0 {
+            assert!(start.elapsed() < LOST, "the writer never ran beside the reader within {LOST:?}");
+            let writing = written.load(Ordering::Relaxed) > 0;
             let chain = slab.chain(0).unwrap();
             // Newest first, values strictly descending, each superseded
             // exactly at its successor's birth.
@@ -528,11 +538,16 @@ mod tests {
                 assert!(w[0].value > w[1].value, "chain out of order: {chain:?}");
                 assert_eq!(w[1].died, w[0].born, "a version is superseded at its successor's birth");
             }
-            reads += 1;
+            if writing {
+                reads_while_writing += 1;
+            }
         }
         stop.store(true, Ordering::Relaxed);
         let writes = writer.join().unwrap();
-        assert!(reads > 0 && writes > 0);
+        assert!(
+            writes > 0 && reads_while_writing > 0,
+            "{writes} writes and {reads_while_writing} reads beside them"
+        );
         drop(slab);
         std::fs::remove_dir_all(&dir).expect("the slab is unmapped and its directory removable");
     }

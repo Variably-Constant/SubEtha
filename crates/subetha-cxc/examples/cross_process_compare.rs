@@ -449,6 +449,15 @@ fn bench_adaptive_pinned(shape: RingShape) -> Result<Duration, Box<dyn std::erro
     drop(p2c); drop(c2p);
     cleanup_adaptive_files(&p2c_prefix);
     cleanup_adaptive_files(&c2p_prefix);
+    // A shm ring's names outlive every handle, as the files do.
+    if use_shm_backing() {
+        for name in [shm_name(&p2c_prefix), shm_name(&c2p_prefix)] {
+            let removed = AdaptiveRing::unlink_shmfs(&name, 1);
+            if removed.failed != 0 {
+                eprintln!("shmfs ring '{name}' not fully removed: {:?}", removed.first_failure);
+            }
+        }
+    }
     Ok(total)
 }
 
@@ -788,10 +797,9 @@ fn run_child_ipcchan(server_a_name: &str) -> Result<(), Box<dyn std::error::Erro
 ))]
 fn run_child_iceoryx2(service_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     use iceoryx2::prelude::*;
-    // iceoryx2 0.9 on Windows requires POSIX user-database lookup
-    // (`/etc/passwd`) that does not exist; the node create fails. Exit
-    // 0 silently so the parent's child.wait() does not surface the
-    // child's stderr noise as a benchmark failure.
+    // A child that cannot create its node exits 0 at once, so the
+    // parent's child.wait() does not surface the child's stderr as a
+    // benchmark failure; the parent reports its own failed create.
     let node = match NodeBuilder::new().create::<ipc::Service>() {
         Ok(n) => n,
         Err(_) => return Ok(()),

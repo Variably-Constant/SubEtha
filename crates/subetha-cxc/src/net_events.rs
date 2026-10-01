@@ -608,7 +608,7 @@ mod windows_watch {
     use std::ffi::c_void;
     use std::ptr;
     use std::sync::Arc;
-    use windows_sys::Win32::Foundation::{BOOLEAN, HANDLE};
+    use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         CancelMibChangeNotify2, FreeMibTable, GetIfTable2, NotifyIpInterfaceChange,
         NotifyRouteChange2, MIB_IF_TABLE2, MIB_IPFORWARD_ROW2, MIB_IPINTERFACE_ROW,
@@ -724,22 +724,22 @@ mod windows_watch {
             let mut route_handle: HANDLE = ptr::null_mut();
             let mut iface_handle: HANDLE = ptr::null_mut();
             // SAFETY: valid callback pointers and a stable context; the output
-            // handles are owned by this Watcher and canceled in Drop. The
-            // `FALSE` initial-notification flag means no callback fires before
+            // handles are owned by this Watcher and canceled in Drop. With
+            // the initial-notification flag false, no callback fires before
             // a real change.
             unsafe {
                 NotifyRouteChange2(
                     AF_UNSPEC,
                     Some(route_cb),
                     ctx,
-                    0 as BOOLEAN,
+                    false,
                     &mut route_handle,
                 );
                 NotifyIpInterfaceChange(
                     AF_UNSPEC,
                     Some(iface_cb),
                     ctx,
-                    0 as BOOLEAN,
+                    false,
                     &mut iface_handle,
                 );
             }

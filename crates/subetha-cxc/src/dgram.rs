@@ -31,6 +31,8 @@
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 
+use crate::unbounded_queue::UnboundedQueue;
+
 /// Which datagram backend a [`DgramSock`] resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DgramBackend {
@@ -68,12 +70,53 @@ enum Inner {
 /// endpoint's demux reader classifies each datagram by its first wire byte and
 /// pushes `(bytes, from, kernel_ts)` onto the matching code's queue; that
 /// code's receiver pops it through the normal `recv_*` surface, unmodified.
-pub type DemuxQueue =
-    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(Vec<u8>, SocketAddr, Option<i128>)>>>;
+/// The queue is lock-free: the demux reader pushes and the receiver pops
+/// without either waiting on the other. Clones share one queue.
+#[derive(Clone, Default)]
+pub struct DemuxQueue(std::sync::Arc<UnboundedQueue<QueuedDatagram>>);
+
+/// One queued datagram: its bytes, its sender, and its kernel receive time
+/// where the platform reports one.
+type QueuedDatagram = (Vec<u8>, SocketAddr, Option<i128>);
+
+impl DemuxQueue {
+    /// Queue one datagram: its bytes, its sender, and its kernel receive
+    /// time where the platform reports one.
+    pub fn push(&self, datagram: (Vec<u8>, SocketAddr, Option<i128>)) {
+        self.0.push(datagram);
+    }
+
+    /// Take the oldest queued datagram, or `None` when none is queued.
+    pub fn pop(&self) -> Option<(Vec<u8>, SocketAddr, Option<i128>)> {
+        self.0.pop()
+    }
+
+    /// How many datagrams are queued.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no datagram is queued.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The queue's address, the same for every clone: tells handles on one
+    /// queue from handles on two.
+    pub(crate) fn identity(&self) -> u64 {
+        std::sync::Arc::as_ptr(&self.0) as usize as u64
+    }
+}
+
+impl std::fmt::Debug for DemuxQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DemuxQueue").field("len", &self.len()).finish()
+    }
+}
 
 /// A fresh, empty [`DemuxQueue`].
 pub fn new_demux_queue() -> DemuxQueue {
-    std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()))
+    DemuxQueue::default()
 }
 
 /// Datagram backend whose inbound stream is an in-process [`DemuxQueue`] and
@@ -86,7 +129,7 @@ struct DemuxDgram {
     queue: DemuxQueue,
     /// Peer set by `connect`; the connected `send` carries it, since the shared
     /// real socket is not itself connected to one peer.
-    peer: std::sync::Mutex<Option<SocketAddr>>,
+    peer: subetha_core::SwapCellOption<SocketAddr>,
     /// Optional shared counter of datagrams sent through this socket, the
     /// unified endpoint's raw-channel-loss numerator (sent vs received).
     sent: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
@@ -98,7 +141,7 @@ struct DemuxDgram {
 impl DemuxDgram {
     fn recv_with_kts(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
         self.pop_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match self.queue.lock().unwrap().pop_front() {
+        match self.queue.pop() {
             Some((data, from, kts)) => {
                 self.pop_yields.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let n = data.len().min(buf.len());
@@ -112,7 +155,7 @@ impl DemuxDgram {
     }
 
     fn connect(&self, addr: SocketAddr) {
-        *self.peer.lock().unwrap() = Some(addr);
+        self.peer.store(Some(std::sync::Arc::new(addr)));
     }
 
     fn count_fwd(&self, buf: &[u8]) {
@@ -133,8 +176,8 @@ impl DemuxDgram {
 
     fn send(&self, buf: &[u8]) -> io::Result<usize> {
         self.count_fwd(buf);
-        match *self.peer.lock().unwrap() {
-            Some(p) => self.real.send_to(buf, p),
+        match self.peer.load().as_deref() {
+            Some(p) => self.real.send_to(buf, *p),
             None => Err(io::Error::new(io::ErrorKind::NotConnected, "demux send before connect")),
         }
     }
@@ -330,7 +373,7 @@ impl DgramSock {
         Self::of(Inner::Demux(DemuxDgram {
             real,
             queue,
-            peer: std::sync::Mutex::new(None),
+            peer: subetha_core::SwapCellOption::empty(),
             sent,
             pop_attempts: std::sync::atomic::AtomicU64::new(0),
             pop_yields: std::sync::atomic::AtomicU64::new(0),
@@ -346,8 +389,8 @@ impl DgramSock {
             Inner::Demux(d) => Some((
                 d.pop_attempts.load(std::sync::atomic::Ordering::Relaxed),
                 d.pop_yields.load(std::sync::atomic::Ordering::Relaxed),
-                std::sync::Arc::as_ptr(&d.queue) as usize as u64,
-                d.queue.lock().unwrap().len() as u64,
+                d.queue.identity(),
+                d.queue.len() as u64,
             )),
             _ => None,
         }
@@ -860,16 +903,16 @@ mod linux_iou {
     use std::io;
     use std::net::{SocketAddr, UdpSocket};
     use std::os::fd::AsRawFd;
-
-    use parking_lot::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use io_uring::{opcode, types, IoUring};
+
+    use crate::take_slot::TakeSlot;
 
     const RECV_DEPTH: usize = 32;
     const SEND_DEPTH: usize = 32;
     const FRAME_CAP: usize = 2048;
     const CONTROL_CAP: usize = 64;
-    const SEND_TAG: u64 = 1 << 32; // user_data >= SEND_TAG marks send completions
 
     /// A self-referential `recvmsg` context: the `msghdr` points at the addr
     /// / iov / control / buf fields of the same heap box, so the box must
@@ -908,7 +951,8 @@ mod linux_iou {
         buf: [u8; FRAME_CAP],
     }
 
-    struct State {
+    /// The receive ring and the contexts its operations point into.
+    struct RecvState {
         ring: IoUring,
         // Box per element is load-bearing, not redundant: each ctx's msghdr
         // points at its own addr/iov/control fields, so every element needs a
@@ -916,55 +960,107 @@ mod linux_iou {
         // vec_box lint assumes the boxing is unnecessary - it is not here).
         #[allow(clippy::vec_box)]
         recv: Vec<Box<RecvCtx>>,
-        #[allow(clippy::vec_box)]
-        send: Vec<Box<SendCtx>>,
         ready: VecDeque<usize>,
         ready_len: Vec<usize>,
+    }
+
+    /// The send ring and the contexts its operations point into.
+    struct SendState {
+        ring: IoUring,
+        // Boxed for the same stable-address reason as `RecvState::recv`.
+        #[allow(clippy::vec_box)]
+        send: Vec<Box<SendCtx>>,
         free_send: Vec<usize>,
+    }
+
+    // SAFETY: every raw pointer in a state targets fields of one of that
+    // state's own boxed contexts, whose heap addresses do not change when
+    // the state moves to another thread, and a ring set up without
+    // single-issuer mode may be driven from any thread.
+    unsafe impl Send for RecvState {}
+    unsafe impl Send for SendState {}
+
+    /// Receives and sends go through separate rings, each held by one caller
+    /// at a time, so a receive never waits on a send or the reverse.
+    pub struct IoUringDgram {
+        sock: UdpSocket,
+        fd: i32,
+        recv: TakeSlot<RecvState>,
+        send: TakeSlot<SendState>,
         /// Receives that completed with an error and could not be
         /// re-armed because the submission queue was full. Each one is
         /// a receive slot the ring no longer fills, so a count that
         /// reaches `RECV_DEPTH` is a socket that has stopped receiving.
-        rearm_failures: u64,
+        rearm_failures: AtomicU64,
     }
 
-    pub struct IoUringDgram {
-        sock: UdpSocket,
-        fd: i32,
-        st: Mutex<State>,
+    impl RecvState {
+        /// Queue a receive into context `idx`.
+        fn push(&mut self, fd: i32, idx: usize) -> io::Result<()> {
+            self.recv[idx].refresh();
+            let msg: *mut libc::msghdr = std::ptr::addr_of_mut!(self.recv[idx].msghdr);
+            let e = opcode::RecvMsg::new(types::Fd(fd), msg)
+                .build()
+                .user_data(idx as u64);
+            // SAFETY: the msghdr + buffers live in the boxed ctx for the
+            // socket's lifetime; the ctx is not reused until this op completes.
+            if unsafe { self.ring.submission().push(&e) }.is_err() {
+                return Err(io::Error::other("io_uring SQ full (recv)"));
+            }
+            Ok(())
+        }
+
+        /// Queue a receive into every context and submit them.
+        fn arm_all(&mut self, fd: i32) -> io::Result<()> {
+            for idx in 0..self.recv.len() {
+                self.push(fd, idx)?;
+            }
+            self.ring.submit()?;
+            Ok(())
+        }
     }
 
-    // SAFETY: every raw pointer in `State` targets fields of its own
-    // boxed ctx (stable heap addresses owned by `State`), and all
-    // access to `State` is serialized by the mutex.
-    unsafe impl Send for IoUringDgram {}
-    unsafe impl Sync for IoUringDgram {}
+    impl SendState {
+        /// Return every completed send's context to the free list.
+        fn reap(&mut self) {
+            for cqe in self.ring.completion() {
+                self.free_send.push(cqe.user_data() as usize);
+            }
+        }
+    }
 
     impl IoUringDgram {
         pub fn new(sock: UdpSocket) -> Result<Self, (UdpSocket, io::Error)> {
-            let entries = ((RECV_DEPTH + SEND_DEPTH) * 2).next_power_of_two() as u32;
-            let ring = match IoUring::new(entries) {
+            let fd = sock.as_raw_fd();
+            let recv_ring = match IoUring::new((RECV_DEPTH * 2).next_power_of_two() as u32) {
                 Ok(r) => r,
                 Err(e) => return Err((sock, e)),
             };
-            let fd = sock.as_raw_fd();
-            let recv: Vec<Box<RecvCtx>> = (0..RECV_DEPTH).map(|_| RecvCtx::boxed()).collect();
-            let send: Vec<Box<SendCtx>> =
-                (0..SEND_DEPTH).map(|_| Box::new(unsafe { std::mem::zeroed() })).collect();
-            let st = State {
-                ring,
-                recv,
-                send,
+            let send_ring = match IoUring::new((SEND_DEPTH * 2).next_power_of_two() as u32) {
+                Ok(r) => r,
+                Err(e) => return Err((sock, e)),
+            };
+            let mut recv = RecvState {
+                ring: recv_ring,
+                recv: (0..RECV_DEPTH).map(|_| RecvCtx::boxed()).collect(),
                 ready: VecDeque::new(),
                 ready_len: vec![0usize; RECV_DEPTH],
-                free_send: (0..SEND_DEPTH).collect(),
-                rearm_failures: 0,
             };
-            let me = Self { sock, fd, st: Mutex::new(st) };
-            if let Err(e) = me.submit_all_recv() {
-                return Err((me.sock, e));
+            if let Err(e) = recv.arm_all(fd) {
+                return Err((sock, e));
             }
-            Ok(me)
+            let send = SendState {
+                ring: send_ring,
+                send: (0..SEND_DEPTH).map(|_| Box::new(unsafe { std::mem::zeroed() })).collect(),
+                free_send: (0..SEND_DEPTH).collect(),
+            };
+            Ok(Self {
+                sock,
+                fd,
+                recv: TakeSlot::new(recv),
+                send: TakeSlot::new(send),
+                rearm_failures: AtomicU64::new(0),
+            })
         }
 
         pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -983,67 +1079,50 @@ mod linux_iou {
         /// the ring no longer fills; at `RECV_DEPTH` the socket has
         /// stopped receiving.
         pub fn rearm_failures(&self) -> u64 {
-            self.st.lock().rearm_failures
+            self.rearm_failures.load(Ordering::Relaxed)
         }
 
         pub fn set_nonblocking(&self, nb: bool) -> io::Result<()> {
             self.sock.set_nonblocking(nb)
         }
 
-        fn submit_all_recv(&self) -> io::Result<()> {
-            let mut st = self.st.lock();
-            for i in 0..st.recv.len() {
-                self.push_recv(&mut st, i)?;
-            }
-            st.ring.submit()?;
-            Ok(())
-        }
-
-        fn push_recv(&self, st: &mut State, idx: usize) -> io::Result<()> {
-            st.recv[idx].refresh();
-            let msg: *mut libc::msghdr = std::ptr::addr_of_mut!(st.recv[idx].msghdr);
-            let e = opcode::RecvMsg::new(types::Fd(self.fd), msg)
-                .build()
-                .user_data(idx as u64);
-            // SAFETY: the msghdr + buffers live in the boxed ctx for the
-            // socket's lifetime; the ctx is not reused until this op completes.
-            unsafe {
-                st.ring
-                    .submission()
-                    .push(&e)
-                    .map_err(|_| io::Error::other("io_uring SQ full (recv)"))?;
-            }
-            Ok(())
-        }
-
-        fn reap(&self, st: &mut State) {
-            let mut completed: Vec<(u64, i32)> = Vec::new();
-            for cqe in st.ring.completion() {
-                completed.push((cqe.user_data(), cqe.result()));
-            }
+        /// Collect the receive ring's completions: a datagram joins the
+        /// ready list, and a failed receive is queued again.
+        fn reap_recv(&self, st: &mut RecvState) {
+            let completed: Vec<(u64, i32)> =
+                st.ring.completion().map(|cqe| (cqe.user_data(), cqe.result())).collect();
             for (ud, res) in completed {
-                if ud >= SEND_TAG {
-                    st.free_send.push((ud - SEND_TAG) as usize);
-                } else {
-                    let idx = ud as usize;
-                    if res >= 0 {
-                        st.ready_len[idx] = res as usize;
-                        st.ready.push_back(idx);
-                    } else if self.push_recv(st, idx).is_err() {
-                        // The slot's receive failed and the ring could not
-                        // take a fresh one; the slot stays unarmed.
-                        st.rearm_failures += 1;
-                    }
+                let idx = ud as usize;
+                if res >= 0 {
+                    st.ready_len[idx] = res as usize;
+                    st.ready.push_back(idx);
+                } else if st.push(self.fd, idx).is_err() {
+                    // The slot's receive failed and the ring could not
+                    // take a fresh one; the slot stays unarmed.
+                    self.rearm_failures.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
 
         pub fn recv_with_kts(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, Option<i128>)> {
-            let mut st = self.st.lock();
-            self.reap(&mut st);
+            // A caller that finds the receive ring out with another caller
+            // reads what a non-blocking socket with nothing ready reads, and
+            // retries as it would after any empty poll.
+            match self.recv.with(|st| self.recv_on(st, buf)) {
+                Some(got) => got,
+                None => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            }
+        }
+
+        fn recv_on(
+            &self,
+            st: &mut RecvState,
+            buf: &mut [u8],
+        ) -> io::Result<(usize, SocketAddr, Option<i128>)> {
+            self.reap_recv(st);
             if st.ready.is_empty() {
                 st.ring.submit()?;
-                self.reap(&mut st);
+                self.reap_recv(st);
                 if st.ready.is_empty() {
                     return Err(io::Error::from(io::ErrorKind::WouldBlock));
                 }
@@ -1060,7 +1139,7 @@ mod linux_iou {
                     .ok_or_else(|| io::Error::other("non-IP source"))?;
                 kts = parse_timestamp(&ctx.msghdr);
             }
-            self.push_recv(&mut st, idx)?;
+            st.push(self.fd, idx)?;
             st.ring.submit()?;
             Ok((copy, from, kts))
         }
@@ -1069,11 +1148,20 @@ mod linux_iou {
             if data.len() > FRAME_CAP {
                 return Err(io::Error::other("datagram exceeds frame cap"));
             }
-            let mut st = self.st.lock();
-            self.reap(&mut st);
+            // A caller that finds the send ring out with another caller sends
+            // through the socket directly, as it does when every send context
+            // is in flight.
+            match self.send.with(|st| self.send_on(st, data, addr)) {
+                Some(sent) => sent,
+                None => self.sock.send_to(data, addr),
+            }
+        }
+
+        fn send_on(&self, st: &mut SendState, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            st.reap();
             if st.free_send.is_empty() {
                 st.ring.submit()?;
-                self.reap(&mut st);
+                st.reap();
                 if st.free_send.is_empty() {
                     return self.sock.send_to(data, addr);
                 }
@@ -1094,14 +1182,11 @@ mod linux_iou {
             let msg: *const libc::msghdr = std::ptr::addr_of!(st.send[idx].msghdr);
             let e = opcode::SendMsg::new(types::Fd(self.fd), msg)
                 .build()
-                .user_data(SEND_TAG | idx as u64);
+                .user_data(idx as u64);
             // SAFETY: the msghdr + buffers live in the boxed send ctx; the ctx
             // is not reused until this op completes (it left free_send).
-            unsafe {
-                st.ring
-                    .submission()
-                    .push(&e)
-                    .map_err(|_| io::Error::other("io_uring SQ full (send)"))?;
+            if unsafe { st.ring.submission().push(&e) }.is_err() {
+                return Err(io::Error::other("io_uring SQ full (send)"));
             }
             st.ring.submit()?;
             Ok(data.len())
@@ -1110,13 +1195,14 @@ mod linux_iou {
 }
 
 // ---------------------------------------------------------------------
-// Wire (AF_XDP NIC-bypass) datagram backend.
+// Wire (NIC-bypass) datagram backend.
 //
 // The RLC datagram rides a hand-built Ethernet+IPv4+UDP frame through a
 // `WireSocket`, bypassing the kernel networking stack. Point-to-point: the
 // single peer's MAC is configured (no general ARP needed for a sender <->
-// receiver link). Linux-only for now (AF_XDP); behind the wire-locale
-// feature. Config via SUBETHA_WIRE_{IFNAME,LOCAL_IP,LOCAL_MAC,PEER_MAC}.
+// receiver link). AF_XDP on Linux, netmap on FreeBSD, BPF on macOS; behind
+// the wire-locale feature. Config via
+// SUBETHA_WIRE_{IFNAME,LOCAL_IP,LOCAL_MAC,PEER_MAC}.
 // ---------------------------------------------------------------------
 
 // ---------------------------------------------------------------------
@@ -1233,9 +1319,8 @@ mod wire_backend {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use parking_lot::Mutex;
-
     use crate::locale_wire::WireSocket;
+    use crate::take_slot::TakeSlot;
 
     const ETH_HDR: usize = 14;
     const IP_HDR: usize = 20;
@@ -1326,14 +1411,22 @@ mod wire_backend {
         s.parse::<Ipv4Addr>().ok().map(|a| a.octets())
     }
 
+    /// The wire and the buffer outgoing frames are built in, held together.
+    struct Wire {
+        sock: WireSocket,
+        frame: Vec<u8>,
+    }
+
     /// A datagram socket whose wire is a `WireSocket` (AF_XDP on Linux,
     /// netmap on FreeBSD, BPF on macOS). Same surface as the UDP / io_uring backends; the
     /// kernel stack is bypassed. The interface in `SUBETHA_WIRE_IFNAME` is a
     /// NIC name on Linux and a netmap port spec (e.g. `vale0:a`,
     /// `netmap:em0`) on FreeBSD.
     pub struct WireDgram {
-        wire: Mutex<WireSocket>,
-        scratch: Mutex<Vec<u8>>,
+        /// The wire, held by one caller at a time. A caller that finds it
+        /// out with another reads `WouldBlock`, the answer a non-blocking
+        /// socket gives while it cannot take a datagram, and retries.
+        wire: TakeSlot<Wire>,
         local_ip: [u8; 4],
         local_mac: [u8; 6],
         peer_mac: [u8; 6],
@@ -1352,10 +1445,9 @@ mod wire_backend {
                 .ok_or_else(|| io::Error::other("bad SUBETHA_WIRE_LOCAL_MAC"))?;
             let peer_mac = parse_mac(&getv("SUBETHA_WIRE_PEER_MAC")?)
                 .ok_or_else(|| io::Error::other("bad SUBETHA_WIRE_PEER_MAC"))?;
-            let wire = WireSocket::bind(&ifname, 0)?;
+            let sock = WireSocket::bind(&ifname, 0)?;
             Ok(Self {
-                wire: Mutex::new(wire),
-                scratch: Mutex::new(Vec::with_capacity(HDRS + 2048)),
+                wire: TakeSlot::new(Wire { sock, frame: Vec::with_capacity(HDRS + 2048) }),
                 local_ip,
                 local_mac,
                 peer_mac,
@@ -1377,27 +1469,41 @@ mod wire_backend {
                 IpAddr::V4(v) => v.octets(),
                 IpAddr::V6(_) => return Err(io::Error::other("wire backend is IPv4-only")),
             };
-            let mut scratch = self.scratch.lock();
-            build_frame(
-                self.peer_mac,
-                self.local_mac,
-                self.local_ip,
-                dst_ip,
-                self.local_port,
-                addr.port(),
-                buf,
-                &mut scratch,
-            );
-            self.wire.lock().send_frame(&scratch)?;
-            Ok(buf.len())
+            let sent = self.wire.with(|w| {
+                build_frame(
+                    self.peer_mac,
+                    self.local_mac,
+                    self.local_ip,
+                    dst_ip,
+                    self.local_port,
+                    addr.port(),
+                    buf,
+                    &mut w.frame,
+                );
+                w.sock.send_frame(&w.frame)
+            });
+            match sent {
+                Some(sent) => sent.map(|()| buf.len()),
+                None => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            }
         }
 
         pub fn recv_with_kts(
             &self,
             buf: &mut [u8],
         ) -> io::Result<(usize, SocketAddr, Option<i128>)> {
+            match self.wire.with(|w| self.recv_on(&mut w.sock, buf)) {
+                Some(got) => got,
+                None => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            }
+        }
+
+        fn recv_on(
+            &self,
+            wire: &mut WireSocket,
+            buf: &mut [u8],
+        ) -> io::Result<(usize, SocketAddr, Option<i128>)> {
             let mut fb = [0u8; 2048];
-            let mut wire = self.wire.lock();
             loop {
                 // Non-blocking poll of the RX ring (0 ms timeout).
                 let n = wire.recv_frame(&mut fb, 0)?;

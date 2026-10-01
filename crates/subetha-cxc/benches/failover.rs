@@ -10,6 +10,9 @@
 //! - scan with 1024 slots, all alive (large table)
 //! - iter_in_flight_bits over a sparse u64 bitmap
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::hint::black_box;
 use std::sync::Mutex;
 

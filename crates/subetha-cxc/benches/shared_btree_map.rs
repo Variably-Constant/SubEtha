@@ -14,6 +14,9 @@
 //! - iter_ascending (100 elements)
 //! - get_hit_100k (large map, pseudo-random keys: exposes cache locality)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::Mutex;

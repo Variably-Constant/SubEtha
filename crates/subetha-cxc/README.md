@@ -1,6 +1,6 @@
 # subetha-cxc
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/LICENSE-MIT)
 [![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/)
 
 The MMF-backed cross-process primitive family for
@@ -174,12 +174,10 @@ your code
 
 ## Documentation
 
-Per-primitive reference + bench numbers in
-`crates/subetha-cxc/docs/pointers/*.md` (54 hand-written prose
-documents, one per primitive).
-
 Category overview at the published wiki:
-<https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/>.
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/>,
+and every primitive in its catalog:
+<https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/catalog/>.
 
 Architectural background:
 - [Frozen handshakes](https://variably-constant.github.io/SubEtha/docs/explanation/frozen-handshake/) -
@@ -189,4 +187,4 @@ Architectural background:
 
 ## License
 
-MIT. See [LICENSE-MIT](LICENSE-MIT).
+MIT. See [LICENSE-MIT](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/LICENSE-MIT).

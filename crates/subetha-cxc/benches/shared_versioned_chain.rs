@@ -11,6 +11,9 @@
 //! - current (head read)
 //! - len
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::hint::black_box;
 use std::sync::Mutex;
 

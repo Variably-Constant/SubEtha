@@ -43,8 +43,10 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+
+use subetha_core::SwapCell;
 
 use crate::locale_adaptive_ring::LocaleAdaptiveRing;
 
@@ -77,10 +79,13 @@ pub struct RemoteEndpoint {
 
 /// In-process registry mapping `EndpointId` to `EndpointTarget`.
 /// Each rebind bumps the registry-wide generation counter so
-/// pinned-endpoint holders see invalidation.
+/// pinned-endpoint holders see invalidation. The table is copied on
+/// write: a bind swaps in a new table, and a lookup reads a whole one
+/// without waiting on a bind.
 pub struct VirtualEndpointRegistry {
-    table: RwLock<HashMap<EndpointId, EndpointTarget>>,
-    /// Bumped on every successful bind / rebind / unbind.
+    table: SwapCell<HashMap<EndpointId, EndpointTarget>>,
+    /// Bumped on every successful bind / rebind / unbind, after the
+    /// table that bind produced is in place.
     generation: AtomicU64,
 }
 
@@ -88,34 +93,40 @@ impl VirtualEndpointRegistry {
     /// Construct an empty registry.
     pub fn new() -> Self {
         Self {
-            table: RwLock::new(HashMap::new()),
+            table: SwapCell::new(HashMap::new()),
             generation: AtomicU64::new(0),
         }
     }
 
     /// Insert or replace the target for `id`. Bumps the generation.
     pub fn bind(&self, id: EndpointId, target: EndpointTarget) {
-        let mut table = self.table.write().expect("registry table poisoned");
-        table.insert(id, target);
+        self.table.rcu(|table| {
+            let mut next = HashMap::clone(table);
+            next.insert(id, target.clone());
+            next
+        });
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Remove the binding for `id`, returning the prior target if
     /// any. Bumps the generation.
     pub fn unbind(&self, id: EndpointId) -> Option<EndpointTarget> {
-        let mut table = self.table.write().expect("registry table poisoned");
-        let prior = table.remove(&id);
+        let replaced = self.table.rcu(|table| {
+            let mut next = HashMap::clone(table);
+            next.remove(&id);
+            next
+        });
+        let prior = replaced.get(&id).cloned();
         if prior.is_some() {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
         prior
     }
 
-    /// Look up the target for `id`. Returns a clone so the caller
-    /// does not hold the registry lock across awaits.
+    /// Look up the target for `id`. Returns a clone, so the caller
+    /// holds nothing of the registry's across awaits.
     pub fn lookup(&self, id: EndpointId) -> Option<EndpointTarget> {
-        let table = self.table.read().expect("registry table poisoned");
-        table.get(&id).cloned()
+        self.table.load().get(&id).cloned()
     }
 
     /// Current generation. Pinned endpoints compare captured
@@ -126,7 +137,7 @@ impl VirtualEndpointRegistry {
 
     /// Number of bound endpoints.
     pub fn len(&self) -> usize {
-        self.table.read().expect("registry table poisoned").len()
+        self.table.load().len()
     }
 
     /// True when no endpoints are bound.

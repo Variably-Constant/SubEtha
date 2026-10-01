@@ -44,10 +44,9 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use subetha_core::Marshal;
 
 use crate::cross_process_waker::{CrossProcessWaker, WakerError, MAX_WAITERS_DEFAULT};
@@ -58,6 +57,7 @@ use crate::reactor::{spawn_seq_reactor, SeqReactor};
 use crate::shared_deque::SharedDeque;
 use crate::shared_hash_map::{InsertOutcome, MapError, SharedHashMap};
 use crate::shared_ring::{RingError, SharedRing, PAYLOAD_BYTES};
+use crate::waker_slot::WakerSlot;
 
 /// Heal tick for a blocking wait with no caller deadline: a wake (the
 /// common path) returns far sooner, the tick only backstops a wake lost
@@ -154,9 +154,9 @@ pub struct Channel<T: Marshal> {
     producer_waker: Arc<CrossProcessWaker>,
     /// The awaiting consumer's `Waker` (fired directly in-process, or by
     /// the recv reactor cross-process).
-    recv_slot: Arc<Mutex<Option<Waker>>>,
+    recv_slot: Arc<WakerSlot>,
     /// The awaiting producer's `Waker`.
-    send_slot: Arc<Mutex<Option<Waker>>>,
+    send_slot: Arc<WakerSlot>,
     /// Reactors spawned on first async use; bridge the MMF waker to the
     /// local slot when the peer is in another process.
     recv_reactor: OnceLock<SeqReactor>,
@@ -198,8 +198,8 @@ impl<T: Marshal> Channel<T> {
             ring: Arc::new(ring),
             consumer_waker: Arc::new(consumer_waker),
             producer_waker: Arc::new(producer_waker),
-            recv_slot: Arc::new(Mutex::new(None)),
-            send_slot: Arc::new(Mutex::new(None)),
+            recv_slot: Arc::new(WakerSlot::new()),
+            send_slot: Arc::new(WakerSlot::new()),
             recv_reactor: OnceLock::new(),
             send_reactor: OnceLock::new(),
             has_recv_waiter: AtomicBool::new(false),
@@ -274,9 +274,7 @@ impl<T: Marshal> Channel<T> {
         if !self.has_recv_waiter.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(w) = self.recv_slot.lock().take() {
-            w.wake();
-        }
+        self.recv_slot.wake();
         self.consumer_waker.wake_up_to(self.ring.producer_seq());
     }
 
@@ -285,9 +283,7 @@ impl<T: Marshal> Channel<T> {
         if !self.has_send_waiter.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(w) = self.send_slot.lock().take() {
-            w.wake();
-        }
+        self.send_slot.wake();
         self.producer_waker.wake_up_to(self.ring.consumer_seq());
     }
 
@@ -491,7 +487,7 @@ impl<'a, T: Marshal> Future for RecvFut<'a, T> {
             c.signal_producer();
             return Poll::Ready(Channel::<T>::unmarshal_buf(&buf, n));
         }
-        *c.recv_slot.lock() = Some(cx.waker().clone());
+        c.recv_slot.register(cx.waker());
         if let Ok(n) = c.ring_pop(&mut buf) {
             c.signal_producer();
             return Poll::Ready(Channel::<T>::unmarshal_buf(&buf, n));
@@ -516,7 +512,7 @@ impl<'a, T: Marshal> Future for SendFut<'a, T> {
             this.chan.signal_consumer();
             return Poll::Ready(Ok(()));
         }
-        *this.chan.send_slot.lock() = Some(cx.waker().clone());
+        this.chan.send_slot.register(cx.waker());
         if this.chan.ring_push(&this.buf[..this.len]).is_ok() {
             this.chan.signal_consumer();
             return Poll::Ready(Ok(()));

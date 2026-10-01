@@ -24,10 +24,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use subetha_core::Marshal;
 
 use crate::adaptive_ring::{AdaptiveRing, RingShape};
@@ -42,6 +41,8 @@ use crate::shared_deque::SharedDeque;
 use crate::shared_deque_khl::{SharedDequeKhl, Steal as KhlSteal};
 use crate::shared_deque_khpd::{LineItem, KHPD_ITEM_BYTES};
 use crate::shared_ring::PAYLOAD_BYTES;
+use crate::unbounded_queue::UnboundedQueue;
+use crate::waker_slot::WakerSlot;
 
 /// Tag values for the `AtomicU32` active-backing flag.
 const TAG_RING: u32 = 0;
@@ -136,9 +137,10 @@ pub struct AdaptiveIpc<T: Marshal + Copy + 'static> {
     khl: Option<Arc<SharedDequeKhl>>,
     /// Surplus from a KHL slot steal. `steal_slot` returns up to 3
     /// `LineItem`s per slot; `recv` yields one item per call, so the
-    /// 0..=2 surplus items wait here for the next `recv`. Shared (any
-    /// consumer drains it), so a stopped consumer never strands items.
-    khl_surplus: Mutex<Vec<LineItem>>,
+    /// 0..=2 surplus items wait here for the next `recv`. A lock-free
+    /// queue shared by every consumer, so a stopped consumer never
+    /// strands items.
+    khl_surplus: UnboundedQueue<LineItem>,
     /// Base path stem. Backings live at `{base_path}.ring.bin` +
     /// `{base_path}.deque.bin`; control flag at `{base_path}.ctl.bin`;
     /// pin generation at `{base_path}.pingen.bin`.
@@ -172,9 +174,9 @@ pub struct AdaptiveIpc<T: Marshal + Copy + 'static> {
     /// Consumer fires on recv; a blocking / awaiting send waits here.
     producer_waker: Arc<CrossProcessWaker>,
     /// The awaiting consumer's `Waker`, fired directly (in-process).
-    recv_slot: Arc<Mutex<Option<Waker>>>,
+    recv_slot: WakerSlot,
     /// The awaiting producer's `Waker`.
-    send_slot: Arc<Mutex<Option<Waker>>>,
+    send_slot: WakerSlot,
     /// Monotonic send / recv counters: the keys blocking waiters park
     /// on, backing-independent so they survive a ring<->deque migration.
     published: AtomicU64,
@@ -278,7 +280,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             ring,
             deque,
             khl,
-            khl_surplus: Mutex::new(Vec::new()),
+            khl_surplus: UnboundedQueue::new(),
             base_path,
             total_sends_atom: AtomicU64::new(0),
             batch_sends_atom: AtomicU64::new(0),
@@ -291,8 +293,8 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             last_inversion_check_nanos: AtomicU64::new(monotonic_nanos()),
             consumer_waker,
             producer_waker,
-            recv_slot: Arc::new(Mutex::new(None)),
-            send_slot: Arc::new(Mutex::new(None)),
+            recv_slot: WakerSlot::new(),
+            send_slot: WakerSlot::new(),
             published: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
             has_recv_waiter: AtomicBool::new(false),
@@ -395,7 +397,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             ring,
             deque,
             khl,
-            khl_surplus: Mutex::new(Vec::new()),
+            khl_surplus: UnboundedQueue::new(),
             base_path,
             total_sends_atom: AtomicU64::new(0),
             batch_sends_atom: AtomicU64::new(0),
@@ -408,8 +410,8 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             last_inversion_check_nanos: AtomicU64::new(monotonic_nanos()),
             consumer_waker,
             producer_waker,
-            recv_slot: Arc::new(Mutex::new(None)),
-            send_slot: Arc::new(Mutex::new(None)),
+            recv_slot: WakerSlot::new(),
+            send_slot: WakerSlot::new(),
             published: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
             has_recv_waiter: AtomicBool::new(false),
@@ -581,9 +583,8 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         if items.is_empty() {
             return Ok(());
         }
-        // KHL batched fast path (additive: the per-item path below is
-        // unchanged). A batch of >= 2 items whose payload fits KHL's
-        // 16-byte LineItem (`khl` is `Some` only then) routes to KHL,
+        // KHL batched fast path. A batch of >= 2 items whose payload fits
+        // KHL's 16-byte LineItem (`khl` is `Some` only then) routes to KHL,
         // which publishes 3 items per Release-store. Items land in the
         // khl side-backing, drained by `recv` alongside ring + deque.
         if items.len() >= 2
@@ -619,28 +620,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
                 Err(e) => return Err(e),
             }
         }
-        let len = items.len() as u64;
-        self.batch_sends_atom.fetch_add(1, Ordering::Relaxed);
-        self.batch_size_sum_atom.fetch_add(len, Ordering::Relaxed);
-        let mut cur = self.max_batch_size_atom.load(Ordering::Relaxed);
-        while len > cur {
-            match self.max_batch_size_atom.compare_exchange_weak(
-                cur,
-                len,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => cur = observed,
-            }
-        }
-        // Bloom-track the batched shape: kind=1, bucket = log2(len).
-        let log2_bucket = (64u32 - len.leading_zeros()).saturating_sub(1);
-        let mut bloom = subetha_pointers::bloom_pointer::Bloom64(
-            self.shape_bloom_atom.load(Ordering::Relaxed),
-        );
-        bloom.insert(&(1u32, log2_bucket));
-        self.shape_bloom_atom.store(bloom.0, Ordering::Relaxed);
+        self.record_batch_profile(items.len() as u64);
         Ok(())
     }
 
@@ -676,9 +656,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         Ok(())
     }
 
-    /// Record a batch in the profile counters. Duplicated from the
-    /// per-item `send_batch` tail so the KHL fast path leaves that path
-    /// byte-for-byte unchanged.
+    /// Record a batch in the profile counters and the shape filter.
     fn record_batch_profile(&self, len: u64) {
         self.batch_sends_atom.fetch_add(1, Ordering::Relaxed);
         self.batch_size_sum_atom.fetch_add(len, Ordering::Relaxed);
@@ -694,12 +672,15 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
                 Err(observed) => cur = observed,
             }
         }
+        // Bloom-track the batched shape: kind=1, bucket = log2(len). The
+        // key's bits are OR-ed into the filter, so a shape another sender
+        // records at the same moment is kept.
         let log2_bucket = (64u32 - len.leading_zeros()).saturating_sub(1);
-        let mut bloom = subetha_pointers::bloom_pointer::Bloom64(
-            self.shape_bloom_atom.load(Ordering::Relaxed),
-        );
-        bloom.insert(&(1u32, log2_bucket));
-        self.shape_bloom_atom.store(bloom.0, Ordering::Relaxed);
+        let mut shape = subetha_pointers::bloom_pointer::Bloom64::ZERO;
+        shape.insert(&(1u32, log2_bucket));
+        #[cfg(test)]
+        crate::test_races::pause_point();
+        self.shape_bloom_atom.fetch_or(shape.0, Ordering::Relaxed);
     }
 
     /// Drain one item from the KHL side-backing. Returns the buffered
@@ -712,11 +693,8 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
         let Some(khl) = self.khl.as_ref() else {
             return Ok(None);
         };
-        {
-            let mut surplus = self.khl_surplus.lock();
-            if let Some(item) = surplus.pop() {
-                return Ok(Some(Self::unmarshal_line(&item)?));
-            }
+        if let Some(item) = self.khl_surplus.pop() {
+            return Ok(Some(Self::unmarshal_line(&item)?));
         }
         for _ in 0..4 {
             match khl.steal_slot() {
@@ -725,13 +703,10 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
                     if n == 0 {
                         return Ok(None);
                     }
-                    if n > 1 {
-                        let mut surplus = self.khl_surplus.lock();
-                        // Push items[1..n] reversed so `pop` yields them
-                        // in producer order.
-                        for k in (1..n).rev() {
-                            surplus.push(res.items[k]);
-                        }
+                    // The queue is first in, first out, so the surplus
+                    // leaves it in producer order.
+                    for item in &res.items[1..n] {
+                        self.khl_surplus.push(*item);
                     }
                     return Ok(Some(Self::unmarshal_line(&res.items[0])?));
                 }
@@ -810,9 +785,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             return;
         }
         let n = self.published.fetch_add(1, Ordering::AcqRel) + 1;
-        if let Some(w) = self.recv_slot.lock().take() {
-            w.wake();
-        }
+        self.recv_slot.wake();
         self.consumer_waker.wake_up_to(n);
     }
 
@@ -822,9 +795,7 @@ impl<T: Marshal + Copy + 'static> AdaptiveIpc<T> {
             return;
         }
         let n = self.consumed.fetch_add(1, Ordering::AcqRel) + 1;
-        if let Some(w) = self.send_slot.lock().take() {
-            w.wake();
-        }
+        self.send_slot.wake();
         self.producer_waker.wake_up_to(n);
     }
 
@@ -1138,7 +1109,7 @@ impl<'a, T: Marshal + Copy + 'static> Future for AdaptiveRecvFut<'a, T> {
             Err(ApiError::Transport(TransportError::Empty)) => {}
             Err(e) => return Poll::Ready(Err(e)),
         }
-        *ipc.recv_slot.lock() = Some(cx.waker().clone());
+        ipc.recv_slot.register(cx.waker());
         match ipc.recv() {
             Ok(v) => Poll::Ready(Ok(v)),
             Err(ApiError::Transport(TransportError::Empty)) => Poll::Pending,
@@ -1164,7 +1135,7 @@ impl<'a, T: Marshal + Copy + 'static> Future for AdaptiveSendFut<'a, T> {
             Err(ApiError::Transport(TransportError::Full)) => {}
             Err(e) => return Poll::Ready(Err(e)),
         }
-        *self.ipc.send_slot.lock() = Some(cx.waker().clone());
+        self.ipc.send_slot.register(cx.waker());
         match self.ipc.send(&self.item) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(ApiError::Transport(TransportError::Full)) => Poll::Pending,
@@ -1476,6 +1447,34 @@ mod tests {
         assert_eq!(snap.batch_sends, 1);
         assert_eq!(snap.batch_size_sum, 8);
         assert_eq!(snap.max_batch_size, 8);
+    }
+
+    #[test]
+    fn a_batch_shape_recorded_inside_another_record_is_kept() {
+        use subetha_pointers::bloom_pointer::Bloom64;
+        let path = tmp("shape_race");
+        let shape = MmfWorkloadShape::StreamingMpmc { n_producers: 1, n_consumers: 1 };
+        let ipc = Arc::new(AdaptiveIpc::<u64>::create(&path, shape, 64, 1).expect("create"));
+        let mut two = Bloom64::ZERO;
+        two.insert(&(1u32, 1u32));
+        let mut sixteen = Bloom64::ZERO;
+        sixteen.insert(&(1u32, 4u32));
+        assert_ne!(sixteen.0 & !two.0, 0, "the two shapes set different bits");
+
+        // A batch of 2 stops inside its record, before its filter write,
+        // and a batch of 16 is recorded whole in that window.
+        let stopped_ipc = Arc::clone(&ipc);
+        let (pause, first) =
+            crate::test_races::stopped(move || stopped_ipc.record_batch_profile(2));
+        ipc.record_batch_profile(16);
+        pause.release();
+        first.join().expect("the stopped record completes");
+
+        assert_eq!(
+            ipc.shape_bloom_atom.load(Ordering::Relaxed),
+            two.0 | sixteen.0,
+            "both batch shapes are in the filter"
+        );
     }
 
     // A >16-byte Marshal type: forces `khl = None` (payload exceeds

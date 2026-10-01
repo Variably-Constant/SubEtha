@@ -12,9 +12,7 @@ readme = "README.md"
 description = "MMF-backed cross-process IPC primitives for SubEtha: SharedRing, SharedHashMap, SharedRWLock, SharedSemaphore, SharedLRUCache, OwnerLease, HeartbeatTable, plus 30+ more. One byte layout serves cross-thread, cross-process, and disk-persistent."
 
 [dependencies]
-arc-swap = { workspace = true }
-memmap2 = "0.9"
-parking_lot = { workspace = true }
+memmap2 = "0.9.11"
 once_cell = { workspace = true }
 subetha-core = { workspace = true }
 subetha-sidecar = { workspace = true }
@@ -22,7 +20,7 @@ subetha-pointers = { workspace = true }
 # Cross-platform SO_RCVBUF / SO_SNDBUF sizing for the reliable-UDP bridge,
 # so the flow-controlled in-flight block backlog cannot overflow the socket
 # buffer and manufacture loss on a fast clean link.
-socket2 = "0.6"
+socket2 = "0.6.5"
 
 # QuicBridge + TcpBridge primitive backends. Cross-platform; opt-in
 # via the quic-bridge / tcp-bridge Cargo features.
@@ -41,10 +39,10 @@ tokio-rustls = { workspace = true, optional = true }
 # `--features zmq-bench` where libzmq is installed (Cargo has no optional
 # dev-dependency, so this bench-only dep is an optional regular dependency
 # that the production graph never sees unless the feature is enabled).
-zmq = { version = "0.10", optional = true }
+zmq = { version = "0.10.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.189"
 
 # Linux io_uring backing for the KernelAsyncRing primitive (the Windows
 # IoRing side rides windows-sys, no extra crate). Linux-target only.
@@ -53,10 +51,15 @@ io-uring = { workspace = true }
 # AF_XDP datapath for the Linux Locale::Wire (UMEM + RX/TX/FILL/COMPLETION
 # rings + libxdp's redirect program). Opt-in behind the wire-locale
 # feature; Linux-target only.
-xsk-rs = { version = "0.8", optional = true }
+xsk-rs = { version = "0.11.0", optional = true }
+# The libxdp that xsk-rs links, named here only to select its cc build,
+# which compiles libxdp position-independent so wire-locale links into a
+# shared library as well as an executable. Its make build compiles the
+# static objects without -fPIC.
+libxdp-sys = { version = "0.2.4", optional = true, features = ["use_cc_build"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_Memory",
     "Win32_System_LibraryLoader",
@@ -64,6 +67,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
     "Win32_NetworkManagement_WiFi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
@@ -119,7 +123,7 @@ linux-futex-raw = []
 # XDP on Windows (in-box xdpapi.dll). Default off; needs root + a NIC (or
 # veth/feth) at runtime. xsk-rs is Linux-target-gated, so the feature pulls no
 # extra dependency on the other targets.
-wire-locale = ["dep:xsk-rs"]
+wire-locale = ["dep:xsk-rs", "dep:libxdp-sys"]
 # ZeroMQ (ipc://) cross-process bench contender in cross_process_compare. Off
 # by default; pulls the `zmq` crate (links C libzmq). Enable where libzmq is
 # installed: `cargo run --release --example cross_process_compare --features zmq-bench`.
@@ -137,10 +141,12 @@ iceoryx-bench = ["dep:iceoryx2"]
 criterion = { workspace = true }
 crossbeam-channel = { workspace = true }
 crossbeam-deque = { workspace = true }
+# The lock-based baselines some benches measure against.
+parking_lot = { workspace = true }
 # Pure-Rust channel contenders for the in-process SPSC shootout (no system
 # deps): flume (ergonomic MPSC/MPMC), rtrb (SPSC-specialized real-time ring).
-flume = "0.12"
-rtrb = "0.3"
+flume = "0.12.0"
+rtrb = "0.4.0"
 interprocess = { workspace = true }
 ipc-channel = { workspace = true }
 serde = { workspace = true }
@@ -417,6 +423,10 @@ required-features = ["quic-bridge", "tcp-bridge"]
 [[example]]
 name = "monitor_wait_probe"
 path = "examples/monitor_wait_probe.rs"
+
+[[example]]
+name = "wait_verdict"
+path = "examples/wait_verdict.rs"
 
 [[example]]
 name = "cacheline_probe"

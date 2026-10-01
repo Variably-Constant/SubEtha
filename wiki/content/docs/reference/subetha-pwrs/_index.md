@@ -8,7 +8,7 @@ weight: 58
 `subetha-pwrs` gives PowerShell the memory-mapped primitives directly,
 with no C shim between the shell and the Rust. It ships as a PowerShell
 module named `SubEtha` rather than to crates.io, and runs on
-PowerShell 7 on .NET 10 and on Windows PowerShell 5.1.
+PowerShell 7.4 and later and on Windows PowerShell 5.1.
 
 ```powershell
 Import-Module SubEtha
@@ -29,11 +29,11 @@ across three pages:
 
 - [What the values look like](values/) - real output, captured from a
   run, for the shapes a type name cannot convey.
-- [Every cmdlet, in full](cmdlets/) - all 135, grouped by family with a
+- [Every cmdlet, in full](cmdlets/) - all 139, grouped by family with a
   contents list: each parameter, its type, whether it is required, its
   position, what it takes from the pipeline, what the cmdlet writes,
   and the properties and methods of whatever came back.
-- [Every object, in full](classes/) - all 117 object types, with each
+- [Every object, in full](classes/) - all 121 object types, with each
   property and each method signature and return type.
 - [Every enum](enums/) - all 14, with their values.
 
@@ -45,6 +45,10 @@ whenever the surface changes.
 Every cmdlet also carries its own help, which is the faster lookup
 while you are in a shell: `Get-Help New-SubEthaRing -Full` gives a
 description, every parameter and an example.
+
+The module also registers a drive: `$shm:name = value` publishes a
+value every process of the user reads as `$shm:name`, live and
+outliving the session. [The shm: drive](shm-drive/) describes it.
 
 ## What a call costs, and what follows
 
@@ -70,16 +74,16 @@ does: PowerShell 7 reads a property cheaply and calls a method dearly,
 Windows PowerShell the other way round. Three shapes cross less often,
 and the surface is built around them:
 
-- **A batch call** carries many operations over one call.
-  `FetchAddMany`, `SendMany`, `RecvMany`, `InsertMany`, `GetMany`,
-  `Drain` and their kin are all this shape.
-- **A packed buffer** carries many items in one `byte[]` with no object
-  per item: `PushPacked`, `SendPacked` and `PopPacked` on the rings,
+- A batch call carries many operations over one call. `FetchAddMany`,
+  `SendMany`, `RecvMany`, `InsertMany`, `GetMany`, `Drain` and their kin
+  are all this shape.
+- A packed buffer carries many items in one `byte[]` with no object per
+  item: `PushPacked`, `SendPacked` and `PopPacked` on the rings,
   `ReadRange` and `WriteRange` on the vector and the slab. Read whole,
   it is tens of nanoseconds an item in either host.
-- **The pipeline** is for a script that reads as a pipeline. Per record
-  it costs about what a method call does in PowerShell 7 and several
-  times that in Windows PowerShell.
+- The pipeline is for a script that reads as a pipeline. Per record it
+  costs about what a method call does in PowerShell 7 and several times
+  that in Windows PowerShell.
 
 `bench/CallShapes.ps1` in the crate reproduces every row above on the
 reader's own machine, in whichever host runs it.
@@ -91,18 +95,18 @@ call on an object the module returned costs one native call into the
 library plus the host's own method invocation, which the table above
 puts a number on. So the module is built in two layers:
 
-- **Cmdlets obtain a structure.** `New-SubEthaRing` creates the file
+- Cmdlets obtain a structure. `New-SubEthaRing` creates the file
   when it does not exist and attaches to it when it does;
   `Open-SubEthaRing` attaches to one that must already exist. A path is
   resolved against the session's current location. Every cmdlet also
   answers to a shorter name with the `SE` prefix: `New-SERing`.
-- **Objects operate on it.** What a cmdlet writes is an object of a
+- Objects operate on it. What a cmdlet writes is an object of a
   `SubEtha.*` type. Its properties are what was fixed when the
   structure was obtained (the path, the capacity, the slot size), and
   its methods are the operations the Rust type offers, one method per
   operation, named in PascalCase after the Rust: `$ring.RegisterProducer()`,
   `$ring.Send($producer, $bytes)`, `$map.Insert(7, 70)`.
-- **The pipeline moves items.** `Send-SubEthaItem -To $structure` sends
+- The pipeline moves items. `Send-SubEthaItem -To $structure` sends
   whatever is piped in and writes back what the structure refused, so a
   full ring hands the item back rather than dropping it.
   `Receive-SubEthaItem -From $structure` reads a structure out into the
@@ -131,12 +135,12 @@ width each.
 
 ## The conventions
 
-- **A refusal is an answer, not a fault.** A push that does not fit
-  returns `$false`; a pop with nothing to take returns `$null`; a sweep
-  that freed nothing returns `0`; a sample that kept nothing returns
+- A refusal is an answer, not a fault. A push that does not fit returns
+  `$false`; a pop with nothing to take returns `$null`; a sweep that
+  freed nothing returns `0`; a sample that kept nothing returns
   `$null`. Only a genuine fault is an error.
-- **A method fails with an exception; a cmdlet writes an error
-  record**, non-terminating unless the cmdlet cannot go on, so
+- A method fails with an exception; a cmdlet writes an error record,
+  non-terminating unless the cmdlet cannot go on, so
   `-ErrorAction` works the PowerShell way. Every error id starts with
   `SubEtha`: `SubEthaOpen` when a structure could not be obtained,
   `SubEthaArgument` for an argument that cannot be right,
@@ -147,15 +151,15 @@ width each.
   `SubEthaKeyAbsent` when no lane holds a key, `SubEthaNotOwner` and
   `SubEthaLease` from the lease, and `SubEthaReleased` for a pin, hold
   or claim already given back.
-- **Anything holding a resource is disposable.** A hold, a permit, a
+- Anything holding a resource is disposable. A hold, a permit, a
   pin or a lane claim gives its resource back on `Release()`, on
   `Dispose()`, and when the garbage collector finalizes it, so a script
   that leaves a block early does not strand a lock. Every object frees
   its mapping the same way, and `IsDisposed` says whether it has.
-- **A value that is not measured yet is `$null`**, which is a different
+- A value that is not measured yet is `$null`, which is a different
   answer from zero.
-- **`-ErrorAction Stop` on a cmdlet turns a refusal to obtain into an
-  exception**, which is what a test or a script that cannot go on wants.
+- `-ErrorAction Stop` on a cmdlet turns a refusal to obtain into an
+  exception, which is what a test or a script that cannot go on wants.
 
 ## The front door
 
@@ -186,7 +190,7 @@ every sender's order is something only the application knows.
 
 | Cmdlet | Object | What it is |
 |---|---|---|
-| `New-SubEthaRing`, `Open-SubEthaRing` | `SubEtha.Ring` | The adaptive ring: producers and consumers register for an id, payloads larger than a slot go through `SendFrame` and `RecvFrame`, and the shape changes under the traffic. Built with `-Stamps Counter` it marks each item with the order its sender made it in. |
+| `New-SubEthaRing`, `Open-SubEthaRing` | `SubEtha.Ring` | The adaptive ring: producers and consumers register for an id, payloads larger than a slot go through `SendFrame` and `RecvFrame`, and the shape changes under the traffic. Built with `-Stamps Counter` it marks each item with the order its sender made it in. With `-Managed` it also runs a shape sidecar of its own, scanning every `-ScanIntervalUs` microseconds, 250 when not given, and `SidecarMorphs()` counts the morphs that sidecar made. |
 | `New-SubEthaSpscRing` | `SubEtha.SpscRing` | One writer, one reader. |
 | `New-SubEthaBroadcastRing` | `SubEtha.BroadcastRing` | One writer, many readers, each seeing everything. |
 | `New-SubEthaPubSub` | `SubEtha.PubSub`, `SubEtha.Subscriber` | Keeps the last N and tells a slow reader what it lost, with an error named `SubEthaLagged`. `Subscribe()` and `SubscribeFrom($position)` hand out readers. |
@@ -207,6 +211,53 @@ to one that exists.
 
 Both take `-Stamped`, and report `OrderingMode()` as a
 `SubEtha.OrderingMode`: `Unordered`, `MergeByStamp` or `MergeStrict`.
+
+Both also take `-Managed`, which starts a sidecar of the ring's own
+scanning every `-ScanIntervalUs` microseconds. Neither names a default
+interval, so a managed one needs it, and `-ScanIntervalUs` without
+`-Managed` is refused. A managed `CapacityRing` doubles when 85 percent
+full and halves when 10 percent full, within 64 to 65536 slots and no
+sooner than 100 ms after its last resize; `SidecarMorphs()` and
+`SidecarPrewarms()` count what it did. A managed `LocaleRing` moves to
+the locale `RequestLocale` last asked for, no sooner than 250 ms after
+its last move, and `SidecarMigrations()` counts the moves. On a managed
+`LocaleRing`, `MigrateTo` is also what its sidecar is asked to keep, so
+the sidecar does not move the ring back.
+
+## The sidecar
+
+One sidecar serves the process: a scan thread per NUMA node drains the
+observation ring of every registered object into its stats and, for an
+object registered with a policy, asks that policy which tag the object
+should run at.
+
+| Cmdlet or method | Object | What it is |
+|---|---|---|
+| `$object.Observe()`, `$object.Observe($policy)` | `SubEtha.Registration` | Registers the object with the process's sidecar. `Stats()` reads what the sidecar has drained as a `SubEtha.InstanceStats`, `Tag()` the tag the object runs at, and `Close()` or `Dispose()` unregisters it. An object has one registration at a time. |
+| `New-SubEthaAdaptive` | `SubEtha.Adaptive` | An adaptive object of the script's own: `Record` puts an operation in its ring, and `Tag()` is what its policy last answered. |
+| `Get-SubEthaSidecar` | `SubEtha.SidecarStatus` | How many objects are registered, the most it holds at once, and its scan threads. |
+| `Set-SubEthaSidecar -MaxInstances` | `SubEtha.SidecarStatus` with `-PassThru` | The most objects the sidecar holds at once, 10,000 until changed. `Observe` past it is refused. |
+| `Invoke-SubEthaSidecarScan` | `SubEtha.SidecarStatus` with `-PassThru` | Has every scan thread scan now and waits for it, so what was recorded before the call has been counted. |
+
+Twenty-six structures take `Observe`: `Arena`, `Atomic`, `BitVec`,
+`BlockedBloomFilter`, `BloomFilter`, `BroadcastRing`, `CountMinSketch`,
+`EpochBarrier`, `FenceClock`, `Graph`, `HandleTable`, `HashMap`,
+`Heartbeat`, `Histogram`, `HyperLogLog`, `LeaderElection`, `OwnerLease`,
+`RWLock`, `RateLimiter`, `Reservoir`, `Ring`, `Semaphore`,
+`TimePointTile`, `TopologyMap`, `Universal` and `VersionChain`, and
+`Adaptive` does too. Every structure keeps its own layout whatever tag
+a policy answers, so on a structure a policy moves a tag nothing reads;
+a policy that decides something is one on an `Adaptive`, whose script
+reads `Tag()` to choose how it works.
+
+A policy is a ScriptBlock taking the stats and the current tag and
+answering one tag, an integer from 0 to 4294967295, or nothing to stay.
+It runs on the sidecar's scan thread in a runspace its registration
+opens for it, so it sees none of the registering session's variables,
+and it is asked after every scan that drained something new. One that
+throws, or answers anything else, leaves the tag where it was and is
+counted by `PolicyErrors()`, with `LastPolicyError()` holding the error
+record.
 
 ## Order
 
@@ -482,9 +533,12 @@ example for any of them.
 Every method call on one object is serialized by the object, so an
 object handed to another runspace or thread is used safely, and the
 bridges' tests run a server's `AcceptOne` in a second runspace beside
-the client's `Run`. A hold, a pin or a claim can be released from any
-thread, including the finalizer's; every value the module holds is safe
-to send between threads, and the build refuses one that is not.
+the client's `Run`. A call that waits holds its object until it
+returns, so whatever ends the wait arrives through another object, and
+a server's `LocalAddr()` is read before its `AcceptOne` starts. A hold,
+a pin or a claim can be released from any thread, including the
+finalizer's; every value the module holds is safe to send between
+threads, and the build refuses one that is not.
 
 An `OrderedReceiver`, a `SlabPin`, a `MapPin`, a `LanedPin` or a
 `LaneClaim` keeps the structure it came from alive for as long as it
@@ -519,12 +573,21 @@ platform, so each is built on its own machine and
 `cargo pwrs merge target/pwrs/SubEtha <folder built elsewhere>` folds
 them into one module. Every machine needs the same `cargo pwrs` version
 as well as the same checkout, because the manifest gained fields between
-releases of the tool and `merge` refuses two that differ. The managed
-half is reproducible: built on Windows, Linux and macOS from one commit,
-the manifest and the shell assembly come out byte-identical, so only the
-natives are genuinely per-platform.
+releases of the tool and `merge` refuses two that differ.
+`cargo install --list` on each host settles which version it has; the
+binary's file date does not, because the newest file can be the oldest
+version.
 
-All 181 tests pass on each of four platforms:
+Built from one commit, everything but the native comes out
+byte-identical whichever machine builds it: the manifest, the format
+file, the script, the help and both shells. Built on Windows in pwsh
+7.6.6, on Linux in pwsh 7.6.5 and on FreeBSD in pwsh 7.5.5, every one of
+those files matched, so any platform's build can be the folder the
+others are merged into
+([how the binding works](../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)).
+
+All 183 tests pass on each of four platforms, each running the folder
+it built:
 
 | Platform | Host | Native |
 |---|---|---|
@@ -533,13 +596,29 @@ All 181 tests pass on each of four platforms:
 | macOS arm64 | pwsh 7.6.5 | `osx-arm64/libsubetha_pwrs.dylib` |
 | FreeBSD x64 | pwsh 7.5.5 on .NET 9 | `freebsd-x64/libsubetha_pwrs.so` |
 
+The folder built on Linux in pwsh 7.6.5 passes the same 183 there in
+pwsh 7.5.11 and 7.4.20 as well.
+
 FreeBSD is the one that needs arranging, for two reasons that are not
 this module's. Building it needs `PWRS_TOOLSET=5.3.0`, because the C#
 compiler the tool fetches by default wants .NET 10 and FreeBSD packages
-nothing past 9. Running the suite needs `$IsLinux` set, because Pester
-decides the platform by testing three booleans that are all false there
-and throws rather than guessing; it reads them with `Get-Variable`,
-which resolves through the scope chain, so
-`Set-Variable -Name IsLinux -Value $true -Scope Global -Force` answers it
-without modifying Pester. The module itself needs neither: it imports on
-FreeBSD unaided and every cmdlet works.
+nothing past 9. Running the suite needs Pester's platform check
+answered: Pester decides the platform from three booleans that are all
+false there and throws rather than guessing. It reads them with
+`Get-Variable`, which resolves through the scope chain, so a global
+`$IsLinux` answers it without modifying Pester. `cargo pwrs test`
+imports whatever `PWRS_PESTER_PATH` names in place of Pester, so a
+module that sets the global and then imports Pester lets the command run
+unchanged:
+
+```powershell
+# PesterIsLinuxShim.psm1
+Set-Variable -Name IsLinux -Value $true -Scope Global -Force
+Import-Module Pester -RequiredVersion 5.7.1 -Global -ErrorAction Stop
+```
+
+```sh
+export PWRS_TOOLSET=5.3.0
+export PWRS_PESTER_PATH="$HOME/PesterIsLinuxShim.psm1"
+cargo pwrs test --release
+```

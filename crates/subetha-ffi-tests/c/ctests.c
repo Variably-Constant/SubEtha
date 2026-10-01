@@ -386,6 +386,10 @@ static void test_shm_ring(void)
     subetha_handle attacher = SUBETHA_HANDLE_NONE;
     char name[64];
     snprintf(name, sizeof name, "subetha_ctest_%ld", (long)subetha_live_handles() + 1000);
+    /* An attach makes nothing: a ring that is not there is an I/O error,
+     * not one of another layout. */
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &attacher),
+                SUBETHA_E_RING_IO);
     EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &creator),
                 SUBETHA_OK);
     EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &attacher),
@@ -402,9 +406,151 @@ static void test_shm_ring(void)
     CHECK(len == SUBETHA_RING_SLOT_BYTES && memcmp(out, "shm", 3) == 0 && out[3] == 0);
     EXPECT_CODE(subetha_handle_destroy(attacher), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(creator), SUBETHA_OK);
+
+    /* The names outlive every handle, as a file-backed ring's files do,
+     * until an unlink removes them. On Windows a section goes with its last
+     * handle, so the ring is already gone and there is nothing to remove. */
+    subetha_handle later = SUBETHA_HANDLE_NONE;
     subetha_unlink_report report = {99, 99, 99};
+#if defined(_WIN32)
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &later),
+                SUBETHA_E_RING_IO);
     EXPECT_CODE(subetha_ring_unlink_shm(name, SUBETHA_SHM_SESSION, &report), SUBETHA_OK);
     CHECK(report.removed == 0 && report.missing == 0 && report.failed == 0);
+#else
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &later),
+                SUBETHA_OK);
+    if (later != SUBETHA_HANDLE_NONE) {
+        EXPECT_CODE(subetha_handle_destroy(later), SUBETHA_OK);
+        later = SUBETHA_HANDLE_NONE;
+    }
+    EXPECT_CODE(subetha_ring_unlink_shm(name, SUBETHA_SHM_SESSION, &report), SUBETHA_OK);
+    /* Five regions, two wakers and the notifier record; no payload,
+     * ordering or holders region was made. */
+    CHECK(report.removed == 8 && report.missing == 3 && report.failed == 0);
+#endif
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &later),
+                SUBETHA_E_RING_IO);
+}
+
+/* A shared-memory ring asked to remove its names when the last holder
+ * goes keeps them while any holder lives, the creator's leaving included,
+ * and the last one out removes every one, as a file-backed ring's last
+ * holder removes its files. */
+static void test_shm_ring_last_holder(void)
+{
+    uint32_t pid = 0;
+    EXPECT_CODE(subetha_current_pid(&pid), SUBETHA_OK);
+    char name[64];
+    snprintf(name, sizeof name, "subetha_ctest_shm_hold_%lu", (unsigned long)pid);
+    subetha_ring_options held = strict_options;
+    held.max_holders = 4;
+    held.last_holder = SUBETHA_LAST_HOLDER_UNLINK;
+
+    subetha_handle first = SUBETHA_HANDLE_NONE;
+    subetha_handle second = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &held, &first), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &held, &second), SUBETHA_OK);
+
+    EXPECT_CODE(subetha_handle_destroy(first), SUBETHA_OK);
+    subetha_handle third = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &third),
+                SUBETHA_OK);
+    if (third != SUBETHA_HANDLE_NONE) {
+        EXPECT_CODE(subetha_handle_destroy(third), SUBETHA_OK);
+        third = SUBETHA_HANDLE_NONE;
+    }
+
+    EXPECT_CODE(subetha_handle_destroy(second), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &strict_options, &third),
+                SUBETHA_E_RING_IO);
+    subetha_unlink_report report = {99, 99, 99};
+    EXPECT_CODE(subetha_ring_unlink_shm(name, SUBETHA_SHM_SESSION, &report), SUBETHA_OK);
+    CHECK(report.removed == 0 && report.failed == 0);
+}
+
+/* A shm attacher asking for the default stamps takes the creator's source
+ * and ordering mode, and one naming another source is refused, leaving the
+ * creator's ordering region as it was. */
+static void test_shm_ring_open_keeps_the_creators_stamps(void)
+{
+    uint32_t pid = 0;
+    EXPECT_CODE(subetha_current_pid(&pid), SUBETHA_OK);
+    char name[64];
+    snprintf(name, sizeof name, "subetha_ctest_stamps_%lu", (unsigned long)pid);
+    subetha_ring_options counted = strict_options;
+    counted.stamps = SUBETHA_STAMPS_SHARED_COUNTER;
+    subetha_handle creator = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &counted, &creator), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_set_ordering_mode(creator, SUBETHA_ORDERING_MERGE_STRICT), SUBETHA_OK);
+
+    subetha_ring_options any = strict_options;
+    any.stamps = SUBETHA_STAMPS_DEFAULT;
+    subetha_handle attacher = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &any, &attacher), SUBETHA_OK);
+    subetha_ring_stats stats;
+    EXPECT_CODE(subetha_ring_read_stats(attacher, &stats), SUBETHA_OK);
+    CHECK(stats.stamps == SUBETHA_STAMPS_SHARED_COUNTER);
+    CHECK(stats.ordering_mode == SUBETHA_ORDERING_MERGE_STRICT);
+
+    subetha_ring_options other = strict_options;
+    other.stamps = SUBETHA_STAMPS_MONOTONIC;
+    subetha_handle refused = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_open_shm(name, 1, 1, 64, SUBETHA_SHM_SESSION, &other, &refused),
+                SUBETHA_E_RING_LAYOUT_MISMATCH);
+    /* An open that wrongly succeeds is closed here, so the failure is
+     * reported by this test and not as a handle count off by one in every
+     * test after it. */
+    if (refused != SUBETHA_HANDLE_NONE) {
+        EXPECT_CODE(subetha_handle_destroy(refused), SUBETHA_OK);
+    }
+    EXPECT_CODE(subetha_ring_read_stats(creator, &stats), SUBETHA_OK);
+    CHECK(stats.ordering_mode == SUBETHA_ORDERING_MERGE_STRICT);
+
+    EXPECT_CODE(subetha_handle_destroy(attacher), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(creator), SUBETHA_OK);
+    subetha_unlink_report report = {99, 99, 99};
+    EXPECT_CODE(subetha_ring_unlink_shm(name, SUBETHA_SHM_SESSION, &report), SUBETHA_OK);
+}
+
+/* SUBETHA_SHM_APPCONTAINER takes its container from shm_container_sid:
+ * without one, or with a SID that is not an AppContainer's, the call is an
+ * invalid argument and makes nothing. With a container's SID, Windows
+ * creates in that container's directory, which exists only while a process
+ * of the container runs and none does here; a POSIX name is the same in
+ * every namespace. */
+static void test_shm_appcontainer_namespace(void)
+{
+    uint32_t pid = 0;
+    EXPECT_CODE(subetha_current_pid(&pid), SUBETHA_OK);
+    char name[64];
+    snprintf(name, sizeof name, "subetha_ctest_container_%lu", (unsigned long)pid);
+    subetha_handle h = SUBETHA_HANDLE_NONE;
+
+    subetha_ring_options no_sid = strict_options;
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_APPCONTAINER, &no_sid, &h),
+                SUBETHA_E_INVALID_ARGUMENT);
+    EXPECT_CODE(subetha_vyukov_open_shm(name, 16, SUBETHA_SHM_APPCONTAINER, &no_sid, &h),
+                SUBETHA_E_INVALID_ARGUMENT);
+    subetha_ring_options user_sid = strict_options;
+    user_sid.shm_container_sid = "S-1-5-21-1004336348-1177238915-682003330-512";
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_APPCONTAINER, &user_sid, &h),
+                SUBETHA_E_INVALID_ARGUMENT);
+    CHECK(h == SUBETHA_HANDLE_NONE);
+
+    subetha_ring_options container = strict_options;
+    container.shm_container_sid =
+        "S-1-15-2-2984720079-756820249-1175153539-3767409642-3989518943-1696783984-3418178104";
+#if defined(_WIN32)
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_APPCONTAINER, &container, &h),
+                SUBETHA_E_RING_IO);
+    CHECK(h == SUBETHA_HANDLE_NONE);
+#else
+    EXPECT_CODE(subetha_ring_create_shm(name, 1, 1, 64, SUBETHA_SHM_APPCONTAINER, &container, &h), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(h), SUBETHA_OK);
+#endif
+    subetha_unlink_report report = {99, 99, 99};
+    EXPECT_CODE(subetha_ring_unlink_shm(name, SUBETHA_SHM_APPCONTAINER, &report), SUBETHA_OK);
 }
 
 static void test_frames_on_the_ring(void)
@@ -714,6 +860,10 @@ static void test_vyukov_ring(const char *scratch_prefix)
 
     char name[64];
     snprintf(name, sizeof name, "subetha_vyukov_%ld", (long)subetha_live_handles() + 2000);
+    /* An attach makes nothing: a ring that is not there is an I/O error,
+     * not one of another layout. */
+    EXPECT_CODE(subetha_vyukov_open_shm(name, 16, SUBETHA_SHM_SESSION, &strict_options, &attacher),
+                SUBETHA_E_RING_IO);
     EXPECT_CODE(subetha_vyukov_create_shm(name, 16, SUBETHA_SHM_SESSION, &strict_options, &creator), SUBETHA_OK);
     EXPECT_CODE(subetha_vyukov_open_shm(name, 16, SUBETHA_SHM_SESSION, &strict_options, &attacher), SUBETHA_OK);
     EXPECT_CODE(subetha_vyukov_try_push(attacher, (const uint8_t *)"s", 1), SUBETHA_OK);
@@ -2947,7 +3097,7 @@ static void test_epoch_table(const char *scratch_prefix)
     EXPECT_CODE(subetha_pin_release(h, pin), SUBETHA_OK);
 
     /* Publishing makes the whole compound visible at once, and the
-     * token names nothing afterwards. */
+     * token names nothing afterward. */
     EXPECT_CODE(subetha_ticket_publish(h, ticket), SUBETHA_OK);
     EXPECT_CODE(subetha_ticket_epoch(h, ticket, &reserved), SUBETHA_E_INVALID_ARGUMENT);
     EXPECT_CODE(subetha_epochs_now(h, &now), SUBETHA_OK);
@@ -3153,7 +3303,17 @@ static void test_tcp_bridge(const char *scratch_prefix)
     }
 
     /* Built with the feature: a server on a port the system picks, a
-     * client aimed at it, and the ring carried between them. */
+     * client aimed at it, and a ring carried between them. `ring` is the
+     * sink; the bridge pushes as its producer 0, and this thread pops as
+     * its consumer. */
+    subetha_handle source = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &source), SUBETHA_OK);
+    uint32_t source_producer = 0, source_consumer = 0, sink_producer = 0, sink_consumer = 0;
+    EXPECT_CODE(subetha_ring_register_producer(source, &source_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(source, &source_consumer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_producer(ring, &sink_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(ring, &sink_consumer), SUBETHA_OK);
+
     subetha_handle server = SUBETHA_HANDLE_NONE;
     EXPECT_CODE(subetha_tcp_bridge_server(ring, "127.0.0.1:0", SUBETHA_MODE_MANAGED, &server),
                 SUBETHA_OK);
@@ -3169,7 +3329,62 @@ static void test_tcp_bridge(const char *scratch_prefix)
     EXPECT_CODE(subetha_tcp_bridge_read_stats(server, &stats), SUBETHA_OK);
     CHECK(stats.role == SUBETHA_BRIDGE_SERVER && !stats.running && !stats.finished);
 
+    /* The items sit in the source ring before the client runs, each a
+     * payload whose every byte follows from its index. */
+    enum { TCP_ITEMS = 40 };
+    for (uint32_t i = 0; i < TCP_ITEMS; i++) {
+        uint8_t payload[SUBETHA_RING_PAYLOAD_MAX];
+        for (size_t b = 0; b < sizeof payload; b++) {
+            payload[b] = (uint8_t)(i * 7u + b);
+        }
+        memcpy(payload, &i, sizeof i);
+        EXPECT_CODE(subetha_ring_try_push(source, source_producer, payload, sizeof payload), SUBETHA_OK);
+    }
+    /* Managed: the accept runs on the server's own thread and this
+     * returns at once. */
+    EXPECT_CODE(subetha_tcp_bridge_run(server, TCP_ITEMS, 10000), SUBETHA_OK);
+
+    char addr[64];
+    snprintf(addr, sizeof addr, "127.0.0.1:%u", (unsigned)port);
+    subetha_handle client = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_tcp_bridge_client(source, addr, SUBETHA_MODE_STRICT, &client), SUBETHA_OK);
+    /* Strict: this thread carries the transfer and returns when every
+     * item has shipped. */
+    EXPECT_CODE(subetha_tcp_bridge_run(client, TCP_ITEMS, 10000), SUBETHA_OK);
+    EXPECT_CODE(subetha_tcp_bridge_read_stats(client, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_CLIENT && stats.finished && !stats.running);
+    CHECK(stats.items == TCP_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* The server's run ends once the items have landed in the sink. */
+    for (int waited = 0; waited < 10000; waited++) {
+        EXPECT_CODE(subetha_tcp_bridge_read_stats(server, &stats), SUBETHA_OK);
+        if (stats.finished) {
+            break;
+        }
+        sleep_us(1000);
+    }
+    CHECK(stats.finished && stats.items == TCP_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* Every item, in order, byte for byte, and nothing after them. */
+    for (uint32_t i = 0; i < TCP_ITEMS; i++) {
+        uint8_t out[SUBETHA_RING_SLOT_BYTES];
+        size_t len = 0;
+        EXPECT_CODE(subetha_ring_try_pop(ring, sink_consumer, out, sizeof out, &len), SUBETHA_OK);
+        uint32_t got = 0;
+        memcpy(&got, out, sizeof got);
+        bool whole = len == SUBETHA_RING_SLOT_BYTES && got == i;
+        for (size_t b = sizeof got; b < SUBETHA_RING_PAYLOAD_MAX; b++) {
+            whole = whole && out[b] == (uint8_t)(i * 7u + b);
+        }
+        CHECK(whole);
+    }
+    uint8_t spare[SUBETHA_RING_SLOT_BYTES];
+    size_t spare_len = 0;
+    EXPECT_CODE(subetha_ring_try_pop(ring, sink_consumer, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
+
+    EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(ring), SUBETHA_OK);
 }
 
@@ -3278,6 +3493,128 @@ static void test_blocking_tcp_bridge(const char *scratch_prefix)
     uint8_t spare[SUBETHA_RING_SLOT_BYTES];
     size_t spare_len = 0;
     EXPECT_CODE(subetha_spsc_try_pop(sink, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
+
+    EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(sink), SUBETHA_OK);
+    EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
+}
+
+/* The QUIC bridge over the loopback, under a certificate the test mints
+ * for itself. Its entry points exist in every build, and minting the
+ * certificate is the call that says which build this is: a library
+ * without the feature must refuse every call and name the feature, and
+ * one with it must carry a ring across the connection. The server runs in
+ * managed mode so its accept sits on its own thread; the client runs in
+ * strict mode and returns once the server has acknowledged every item and
+ * the client's close has gone out; the sink ring is read back on this
+ * thread once the server's run reports finished. */
+static void test_quic_bridge(const char *scratch_prefix)
+{
+    (void)scratch_prefix;
+    subetha_handle source = SUBETHA_HANDLE_NONE, sink = SUBETHA_HANDLE_NONE, bridge = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &source), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_create_anon(1, 1, 64, &strict_options, &sink), SUBETHA_OK);
+
+    static uint8_t cert[8192];
+    static uint8_t key[8192];
+    size_t cert_len = 0, key_len = 0;
+    int32_t minted = subetha_quic_self_signed_cert("localhost", cert, sizeof cert, &cert_len, key, sizeof key,
+                                                   &key_len);
+    if (minted == SUBETHA_E_NOT_SUPPORTED) {
+        char detail[512];
+        size_t needed = subetha_last_error_detail(detail, sizeof detail);
+        CHECK(needed > 0 && strstr(detail, "quic-bridge") != NULL);
+        EXPECT_CODE(subetha_quic_bridge_server(sink, "127.0.0.1:0", cert, 1, key, 1, SUBETHA_MODE_STRICT, &bridge),
+                    SUBETHA_E_NOT_SUPPORTED);
+        EXPECT_CODE(subetha_quic_bridge_client(source, "127.0.0.1:9", "127.0.0.1:0", "localhost", cert, 1,
+                                               SUBETHA_MODE_STRICT, &bridge),
+                    SUBETHA_E_NOT_SUPPORTED);
+        EXPECT_CODE(subetha_handle_destroy(sink), SUBETHA_OK);
+        EXPECT_CODE(subetha_handle_destroy(source), SUBETHA_OK);
+        return;
+    }
+    EXPECT_CODE(minted, SUBETHA_OK);
+    CHECK(cert_len > 0 && key_len > 0);
+
+    /* The bridge pops the source as its consumer 0 and pushes the sink as
+     * its producer 0; this thread pushes the source and pops the sink. */
+    uint32_t source_producer = 0, source_consumer = 0, sink_producer = 0, sink_consumer = 0;
+    EXPECT_CODE(subetha_ring_register_producer(source, &source_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(source, &source_consumer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_producer(sink, &sink_producer), SUBETHA_OK);
+    EXPECT_CODE(subetha_ring_register_consumer(sink, &sink_consumer), SUBETHA_OK);
+
+    subetha_handle server = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_quic_bridge_server(sink, "127.0.0.1:0", cert, cert_len, key, key_len, SUBETHA_MODE_MANAGED,
+                                           &server),
+                SUBETHA_OK);
+    uint32_t kind = 0;
+    EXPECT_CODE(subetha_handle_kind(server, &kind), SUBETHA_OK);
+    CHECK(kind == SUBETHA_KIND_QUIC_BRIDGE);
+    uint16_t port = 0;
+    EXPECT_CODE(subetha_quic_bridge_local_port(server, &port), SUBETHA_OK);
+    CHECK(port != 0);
+    subetha_quic_bridge_stats stats;
+    EXPECT_CODE(subetha_quic_bridge_read_stats(server, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_SERVER && !stats.running && !stats.finished);
+
+    /* The items sit in the source ring before the client runs, each a
+     * payload whose every byte follows from its index. */
+    enum { QUIC_ITEMS = 40 };
+    for (uint32_t i = 0; i < QUIC_ITEMS; i++) {
+        uint8_t payload[SUBETHA_RING_PAYLOAD_MAX];
+        for (size_t b = 0; b < sizeof payload; b++) {
+            payload[b] = (uint8_t)(i * 7u + b);
+        }
+        memcpy(payload, &i, sizeof i);
+        EXPECT_CODE(subetha_ring_try_push(source, source_producer, payload, sizeof payload), SUBETHA_OK);
+    }
+    /* Managed: the accept runs on the server's own thread and this
+     * returns at once. */
+    EXPECT_CODE(subetha_quic_bridge_run(server, QUIC_ITEMS, 10000), SUBETHA_OK);
+
+    char addr[64];
+    snprintf(addr, sizeof addr, "127.0.0.1:%u", (unsigned)port);
+    subetha_handle client = SUBETHA_HANDLE_NONE;
+    EXPECT_CODE(subetha_quic_bridge_client(source, addr, "127.0.0.1:0", "localhost", cert, cert_len,
+                                           SUBETHA_MODE_STRICT, &client),
+                SUBETHA_OK);
+    EXPECT_CODE(subetha_quic_bridge_local_port(client, &port), SUBETHA_E_INVALID_ARGUMENT);
+    /* Strict: this thread carries the transfer and returns when the
+     * server has acknowledged every item. */
+    EXPECT_CODE(subetha_quic_bridge_run(client, QUIC_ITEMS, 10000), SUBETHA_OK);
+    EXPECT_CODE(subetha_quic_bridge_read_stats(client, &stats), SUBETHA_OK);
+    CHECK(stats.role == SUBETHA_BRIDGE_CLIENT && stats.finished && !stats.running);
+    CHECK(stats.items == QUIC_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* The server's run ends once the items have landed in the sink and
+     * the client has closed the connection. */
+    for (int waited = 0; waited < 10000; waited++) {
+        EXPECT_CODE(subetha_quic_bridge_read_stats(server, &stats), SUBETHA_OK);
+        if (stats.finished) {
+            break;
+        }
+        sleep_us(1000);
+    }
+    CHECK(stats.finished && stats.items == QUIC_ITEMS && stats.last_code == SUBETHA_OK);
+
+    /* Every item, in order, byte for byte, and nothing after them. */
+    for (uint32_t i = 0; i < QUIC_ITEMS; i++) {
+        uint8_t out[SUBETHA_RING_SLOT_BYTES];
+        size_t len = 0;
+        EXPECT_CODE(subetha_ring_try_pop(sink, sink_consumer, out, sizeof out, &len), SUBETHA_OK);
+        uint32_t got = 0;
+        memcpy(&got, out, sizeof got);
+        bool whole = len == SUBETHA_RING_SLOT_BYTES && got == i;
+        for (size_t b = sizeof got; b < SUBETHA_RING_PAYLOAD_MAX; b++) {
+            whole = whole && out[b] == (uint8_t)(i * 7u + b);
+        }
+        CHECK(whole);
+    }
+    uint8_t spare[SUBETHA_RING_SLOT_BYTES];
+    size_t spare_len = 0;
+    EXPECT_CODE(subetha_ring_try_pop(sink, sink_consumer, spare, sizeof spare, &spare_len), SUBETHA_E_RING_EMPTY);
 
     EXPECT_CODE(subetha_handle_destroy(client), SUBETHA_OK);
     EXPECT_CODE(subetha_handle_destroy(server), SUBETHA_OK);
@@ -3667,7 +4004,7 @@ static void test_sens_standalone_codes(const char *scratch_prefix)
  * PinnedEndpoint whose lifetime the compiler checks; a C caller holds a
  * generation and has to ask. So what is asserted is that the generation
  * moves when it should, that a reading taken before a rebind is reported
- * stale afterwards, and that an unbound id reads as a state rather than
+ * stale afterward, and that an unbound id reads as a state rather than
  * an error. */
 static void test_endpoint_registry(const char *scratch_prefix)
 {
@@ -4430,7 +4767,7 @@ static void test_graph(const char *scratch_prefix)
     ev = 12;
     EXPECT_CODE(subetha_graph_add_edge(g, b, c, (uint8_t *)&ev, 4, &e_bc), SUBETHA_OK);
 
-    /* A dangling edge is indistinguishable from a live one afterwards,
+    /* A dangling edge is indistinguishable from a live one afterward,
      * so an unallocated target is refused. */
     EXPECT_CODE(subetha_graph_add_edge(g, a, 999, (uint8_t *)&ev, 4, &e_bc), SUBETHA_E_INVALID_ARGUMENT);
 
@@ -4826,7 +5163,7 @@ static void test_waker(const char *scratch_prefix)
     CHECK(woken == 0);
 
     /* At the target it is woken, and the wait gives the park back, so a
-     * release afterwards names nothing. */
+     * release afterward names nothing. */
     EXPECT_CODE(subetha_waker_wake_up_to(h, 5, &woken), SUBETHA_OK);
     CHECK(woken == 1);
     EXPECT_CODE(subetha_waker_wait(h, park, 5000), SUBETHA_OK);
@@ -5946,6 +6283,9 @@ int subetha_ctest_run(const char *scratch_prefix)
     test_file_ring_two_handles(scratch_prefix);
     test_ring_last_holder(scratch_prefix);
     test_shm_ring();
+    test_shm_ring_last_holder();
+    test_shm_ring_open_keeps_the_creators_stamps();
+    test_shm_appcontainer_namespace();
     test_frames_on_the_ring();
     test_spsc_ring();
     test_spsc_file_two_handles(scratch_prefix);
@@ -5985,6 +6325,7 @@ int subetha_ctest_run(const char *scratch_prefix)
     test_waker(scratch_prefix);
     test_tcp_bridge(scratch_prefix);
     test_blocking_tcp_bridge(scratch_prefix);
+    test_quic_bridge(scratch_prefix);
     test_sens(scratch_prefix);
     test_sens_standalone_codes(scratch_prefix);
     test_endpoint_registry(scratch_prefix);
@@ -7248,7 +7589,7 @@ int subetha_ctest_peer_fleet(const char *path, uint32_t expect)
 
 /* Opens the lease at `path`, takes it under this process's own pid, and
  * exits still holding it. Nothing releases it and nothing beats for it
- * afterwards, which is the failure a lock cannot survive and a lease is
+ * afterward, which is the failure a lock cannot survive and a lease is
  * built for: the creator ticks the epoch past the grace window and takes
  * it back.
  *

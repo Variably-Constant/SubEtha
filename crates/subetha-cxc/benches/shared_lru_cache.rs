@@ -12,6 +12,9 @@
 //! - get_and_touch (read + promote, the strict-LRU path)
 //! - put with eviction (full cache + new key)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::{HashMap, VecDeque};
 use std::hint::black_box;
 use std::sync::Mutex;

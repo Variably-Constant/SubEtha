@@ -1,8 +1,9 @@
 //! End-to-end demonstration of the SharedRing stuck-slot recovery
 //! protocol. Simulates the crashed-producer pathology, observes
-//! the consumer hanging on Empty, runs the sidecar-equivalent
-//! recovery, and observes the consumer drain past the recovered
-//! slot.
+//! the consumer hanging on Empty, runs the recovery by hand, and
+//! observes the consumer drain past the recovered slot.
+//! `FailoverWatchdog` runs the same recovery on the rings it
+//! watches once a producer's heartbeat lapses.
 //!
 //! What is the stuck-slot pathology?
 //! ---------------------------------
@@ -21,17 +22,17 @@
 //!     keeps working, but the consumer is stuck behind the hole.
 //!
 //! The recovery protocol:
-//!  1. Sidecar's observation analysis detects elevated Empty rate
-//!     while `producer_seq > consumer_seq` (this demo simulates
-//!     that decision with a fixed wait threshold).
-//!  2. Sidecar calls `next_stuck_slot(from)` to walk the claimed-
-//!     but-undrained window and find the stuck position.
-//!  3. Sidecar calls `heal_stuck_slot(pos)`. One atomic CAS
-//!     advances `slot.sequence` from `pos` to `pos + 1`.
+//!  1. Decide the claiming producer is dead (this demo uses a fixed
+//!     wait on a consumer stuck at Empty while
+//!     `producer_seq > consumer_seq`; `FailoverWatchdog` uses a
+//!     lapsed heartbeat and a slot stuck across two scans).
+//!  2. Call `next_stuck_slot(from)` to walk the claimed-but-undrained
+//!     window and find the stuck position.
+//!  3. Call `heal_stuck_slot(pos)`. One atomic CAS advances
+//!     `slot.sequence` from `pos` to `pos + 1`.
 //!  4. Consumer drains the healed slot on its next `try_pop`.
 //!
-//! Hot-path cost: zero. The recovery method is dormant until the
-//! sidecar wakes it up.
+//! Hot-path cost: zero. The recovery methods run only when called.
 //!
 //! Run with:
 //!     cargo run --release --example stuck_slot_recovery
@@ -126,21 +127,21 @@ fn main() {
     thread::sleep(Duration::from_millis(50));
     let stuck_pre = drained.load(Ordering::Acquire);
     println!();
-    println!("[sidecar] consumer is wedged at {stuck_pre} drained \
+    println!("[recovery] consumer is wedged at {stuck_pre} drained \
               (approx_len reports {} items waiting)", ring.approx_len());
     println!();
 
-    // Run the recovery protocol the sidecar would run in production:
-    // scan for the stuck slot, then heal it.
+    // The recovery FailoverWatchdog runs on a watched ring: scan for
+    // the stuck slot, then heal it.
     let scan_from = ring.consumer_seq();
-    println!("[sidecar] scanning [consumer_seq={}, producer_seq={}) \
+    println!("[recovery] scanning [consumer_seq={}, producer_seq={}) \
               for stuck slots", scan_from, ring.producer_seq());
     let stuck_pos = ring.next_stuck_slot(scan_from)
-        .expect("sidecar must find the stuck slot");
-    println!("[sidecar] found stuck slot at position {stuck_pos}");
+        .expect("the scan must find the stuck slot");
+    println!("[recovery] found stuck slot at position {stuck_pos}");
 
     let healed = ring.heal_stuck_slot(stuck_pos).unwrap();
-    println!("[sidecar] heal_stuck_slot({stuck_pos}) returned {healed} \
+    println!("[recovery] heal_stuck_slot({stuck_pos}) returned {healed} \
               (true = CAS pos->pos+1 succeeded)");
     assert!(healed, "heal must succeed on a genuinely stuck slot");
     println!();

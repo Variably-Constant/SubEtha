@@ -181,9 +181,9 @@ Path                 -> 'C:\ipc\atom'
 
 ```powershell
 $m = New-SubEthaHashMap -Path 'C:\ipc\map' -Capacity 64 -KeySize 8 -ValueSize 8
-$k = [BitConverter]::GetBytes([ulong]7)
-$v = [BitConverter]::GetBytes([ulong]70)
-$other = [BitConverter]::GetBytes([ulong]999)
+$k = [BitConverter]::GetBytes([uint64]7)
+$v = [BitConverter]::GetBytes([uint64]70)
+$other = [BitConverter]::GetBytes([uint64]999)
 @(
   "KeySize / ValueSize  -> " + (Show-Value $m.KeySize) + ' / ' + (Show-Value $m.ValueSize)
   "Insert(k, v)         -> " + (Show-Value $m.Insert($k, $v))

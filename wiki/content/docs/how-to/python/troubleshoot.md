@@ -122,7 +122,7 @@ ring.push_many(work)
 
 The answer is how many registered, not a success flag, so a shortfall
 is a number you can report rather than a hang. Nothing detects the loss
-afterwards: `lag` reads `0` for a consumer that missed everything,
+afterward: `lag` reads `0` for a consumer that missed everything,
 because it is caught up with the head.
 
 `producer_position` read at the moment of registration is the other

@@ -322,11 +322,11 @@ immediately and skip fetch entirely.
   get_or_fetch on loaded config, is_loaded vs
   `std::sync::OnceLock<T>` and `Mutex<Option<T>>`).
 - Underlying primitive:
-  [SHARED_ONCE_CELL.md](../cells/shared-once-cell/) - the CAS-based
+  [Shared Once Cell](../cells/shared-once-cell/) - the CAS-based
   3-state machine LazyConfig wraps.
-- Sibling primitive: [SHARED_CELL.md](../cells/shared-cell/) -
+- Sibling primitive: [Shared Cell](../cells/shared-cell/) -
   mutable cell; LazyConfig is the write-once specialization.
 - Composes with:
-  [SHARED_BROADCAST_RING.md](../rings/shared-broadcast-ring/) - for
+  [Shared Broadcast Ring](../rings/shared-broadcast-ring/) - for
   config change notifications when paired with a versioned
   publish scheme.

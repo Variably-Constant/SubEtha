@@ -3,6 +3,7 @@
 //! computed once, and a bit vector.
 
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use pwrs::prelude::*;
 
@@ -17,6 +18,7 @@ use subetha_cxc::shared_once_cell::SharedOnceCellDyn;
 use subetha_cxc::shared_vec::VecError;
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, size};
+use crate::sidecar::{observe, Registration};
 
 assert_send!(Atomic, Region, Cell, SharedVec, SharedArc, LazyValue, BitVec);
 
@@ -87,13 +89,19 @@ pub struct Atomic {
     /// The file the atomic lives in.
     pub path: String,
     #[psfield(skip)]
-    inner: SharedAtomicU64,
+    inner: Arc<SharedAtomicU64>,
 }
 
 /// The operations of a `SubEtha.Atomic`. Every `order` argument is a
 /// `SubEtha.MemoryOrder`, sequentially consistent when absent.
 #[psmethods]
 impl Atomic {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// The value.
     pub fn load(&self, order: Option<MemoryOrder>) -> PsResult<u64> {
         Ok(self.inner.load(ordering(order)))
@@ -197,7 +205,7 @@ impl Cmdlet for NewSubEthaAtomic {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
         let inner = SharedAtomicU64::create(&path, self.init.unwrap_or(0)).map_err(|e| open_err("the atomic", &path, e))?;
-        ps.write(Atomic { path, inner })
+        ps.write(Atomic { path, inner: Arc::new(inner) })
     }
 }
 
@@ -219,7 +227,7 @@ impl Cmdlet for OpenSubEthaAtomic {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
         let inner = SharedAtomicU64::open(&path).map_err(|e| open_err("the atomic", &path, e))?;
-        ps.write(Atomic { path, inner })
+        ps.write(Atomic { path, inner: Arc::new(inner) })
     }
 }
 
@@ -939,7 +947,7 @@ pub struct BitVec {
     /// How many bits it holds.
     pub capacity_bits: u64,
     #[psfield(skip)]
-    inner: SharedBitVec,
+    inner: Arc<SharedBitVec>,
 }
 
 impl BitVec {
@@ -950,13 +958,19 @@ impl BitVec {
         let bits = size(capacity_bits, "the capacity")?;
         let inner = if open { SharedBitVec::open(&path, bits) } else { SharedBitVec::create(&path, bits) }
             .map_err(|e| open_err("the bit vector", &path, e))?;
-        Ok(Self { path, capacity_bits, inner })
+        Ok(Self { path, capacity_bits, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.BitVec`.
 #[psmethods]
 impl BitVec {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Sets bit `index` and returns what it was.
     pub fn set(&self, index: u64) -> PsResult<bool> {
         self.inner.set(size(index, "the index")?).map_err(|e| op_err("setting a bit", e))

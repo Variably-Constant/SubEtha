@@ -35,7 +35,7 @@ Op kinds use the `liveness` module: `OP_BEAT = 1`,
 `OP_SCAN = 5`.
 
 Canonical doc:
-[HEARTBEAT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HEARTBEAT.md).
+[Heartbeat Table](coordination-types/heartbeat/).
 
 ### `FailoverWatchdog`
 
@@ -59,7 +59,7 @@ separate thread - the application calls `scan` on its own
 cadence.
 
 Canonical doc:
-[FAILOVER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/FAILOVER.md).
+[Failover Watchdog](coordination-types/failover/).
 
 ### `EpochBarrier`
 
@@ -84,7 +84,7 @@ phased-execution patterns where every participant has to finish
 phase N before any starts phase N+1.
 
 Canonical doc:
-[EPOCH_BARRIER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/EPOCH_BARRIER.md).
+[Epoch Barrier](coordination-types/epoch-barrier/).
 
 ## Event log
 
@@ -113,7 +113,7 @@ Op kinds use the `event_log` module: `OP_EMIT = 1`,
 `OP_DRAIN_FOLD = 2`, `OP_READ_CURRENT = 3`.
 
 Canonical doc:
-[EVENT_STATE_LOG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/EVENT_STATE_LOG.md).
+[Event State Log](coordination-types/event-state-log/).
 
 ### `SharedVersionedChain`
 
@@ -127,7 +127,7 @@ trails across processes. Op kinds use the `versioned` module:
 `OP_VISIBLE_MASK = 4`.
 
 Canonical doc:
-[SHARED_VERSIONED_CHAIN.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_CHAIN.md).
+[Shared Versioned Chain](specialized/shared-versioned-chain/).
 
 ### `SharedTimePointTile`
 
@@ -140,7 +140,7 @@ known in advance.
 the `versioned` module.
 
 Canonical doc:
-[SHARED_TIME_POINT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TIME_POINT.md).
+[Shared Time Point](specialized/shared-time-point/).
 
 ## Fan-out and scheduling
 
@@ -156,7 +156,7 @@ Op kinds use the `priority_fanout` module: `OP_SUBMIT = 1`,
 `OP_DRAIN_HIGHEST = 2`, `OP_DRAIN_PRIORITY = 3`.
 
 Canonical doc:
-[PRIORITY_FANOUT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PRIORITY_FANOUT.md).
+[Priority Fanout](coordination-types/priority-fanout/).
 
 ### `ProgressTask`
 
@@ -169,7 +169,7 @@ Op kinds use the `progress` module: `OP_ADVANCE = 1`,
 `OP_READ = 2`, `OP_COMPLETE = 3`.
 
 Canonical doc:
-[PROGRESS_TASK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PROGRESS_TASK.md).
+[Progress Task](coordination-types/progress-task/).
 
 ### `BackgroundScheduler`
 
@@ -183,7 +183,7 @@ Op kinds use the `scheduler` module: `OP_SUBMIT = 1`,
 `OP_RECV = 2`, `OP_WATCHDOG_SCAN = 3`.
 
 Canonical doc:
-[SCHEDULER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SCHEDULER.md).
+[Background Scheduler](coordination-types/scheduler/).
 
 ## Graph and topology
 
@@ -198,7 +198,7 @@ Op kinds use the `graph` module: `OP_ADD_NODE = 1`,
 `OP_ADD_EDGE = 2`, `OP_NEIGHBORS = 3`, `OP_REMOVE_EDGE = 4`.
 
 Canonical doc:
-[SHARED_GRAPH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_GRAPH.md).
+[Shared Graph](specialized/shared-graph/).
 
 ### `SharedTopologyMap`
 
@@ -212,7 +212,7 @@ Op kinds use the `topology` module: `OP_RECORD = 1`,
 `OP_FAN_OUT = 2`, `OP_FAN_IN = 3`, `OP_RECOMMEND = 4`.
 
 Canonical doc:
-[SHARED_TOPOLOGY_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TOPOLOGY_MAP.md).
+[Shared Topology Map](specialized/shared-topology-map/).
 
 ## Other coordination shapes
 
@@ -228,7 +228,7 @@ Op kinds use the `cascade` module: `OP_INSERT = 1`,
 `OP_GET = 2`.
 
 Canonical doc:
-[K_TOWER_CASCADE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/K_TOWER_CASCADE.md).
+[K-Tower Cascade](coordination-types/k-tower-cascade/).
 
 ### `SharedAsyncPointer`
 
@@ -242,7 +242,7 @@ Op kinds use the `async_pointer` module: `OP_GET_OR_FETCH = 1`,
 `OP_TRY_GET = 2`.
 
 Canonical doc:
-[SHARED_ASYNC_POINTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ASYNC_POINTER.md).
+[Shared Async Pointer](coordination-types/shared-async-pointer/).
 
 ### `SharedUniversal`
 
@@ -256,7 +256,7 @@ Op kinds use the `universal` module: `OP_INSERT = 1`,
 `OP_CONTAINS = 2`, `OP_REMOVE = 3`, `OP_MIGRATE = 4`.
 
 Canonical doc:
-[SHARED_UNIVERSAL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_UNIVERSAL.md).
+[Shared Universal](specialized/shared-universal/).
 
 ### `SharedNaNValue` and `SharedNaNTaggedValue`
 
@@ -272,8 +272,8 @@ The cross-process variant lets two processes exchange typed
 values without an out-of-band type channel.
 
 Canonical docs:
-[SHARED_NAN_VALUE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_NAN_VALUE.md),
-[SHARED_NAN_TAGGED_VALUE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_NAN_TAGGED_VALUE.md).
+[Shared NaN Value](specialized/shared-nan-value/),
+[Shared NaN-Tagged Value](specialized/shared-nan-tagged-value/).
 
 ### `SharedUmbraPointer`
 
@@ -286,7 +286,7 @@ Op kinds use the `umbra_pointer` module: `OP_PREFIX_EQ = 1`,
 `OP_RESOLVE = 2`.
 
 Canonical doc:
-[SHARED_UMBRA_POINTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_UMBRA_POINTER.md).
+[Shared Umbra Pointer](specialized/shared-umbra-pointer/).
 
 ### Vec and linked list
 
@@ -297,8 +297,8 @@ list adds both-end ops via `OP_PUSH_HEAD`, `OP_PUSH_TAIL`,
 `OP_POP_HEAD`, `OP_POP_TAIL`.
 
 Canonical docs:
-[SHARED_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VEC.md),
-[SHARED_LINKED_LIST.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LINKED_LIST.md).
+[Shared Vec](specialized/shared-vec/),
+[Shared Linked List](maps/shared-linked-list/).
 
 ### `SharedRegion`
 
@@ -312,7 +312,7 @@ Op kinds use the `region` module: `OP_ALLOCATE = 1`,
 `OP_FREE = 2`, `OP_GET = 3`, `OP_SET = 4`.
 
 Canonical doc:
-[SHARED_REGION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_REGION.md).
+[Shared Region](arenas/shared-region/).
 
 ### `pass_registry`
 
@@ -328,7 +328,7 @@ Used to coordinate cross-process dispatch when the work runs
 in a specific process (because of resource ownership, security
 context, or hardware affinity) but the request can come from
 any process. Canonical doc:
-[PASS_REGISTRY.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PASS_REGISTRY.md).
+[Pass Registry](coordination-types/pass-registry/).
 
 ## See also
 

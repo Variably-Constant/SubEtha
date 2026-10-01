@@ -369,15 +369,15 @@ soon as the threshold is met without waiting for stragglers.
 - Bench: `crates/subetha-cxc/benches/epoch_barrier.rs`
   (current_epoch, wait_quorum_1, live_peer_count, 4-thread
   release vs `std::sync::Barrier`).
-- Underlying primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Underlying primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the packed-state AtomicU64 EpochBarrier sits on.
-- Dependency: [HEARTBEAT.md](heartbeat/) - the live-peer
+- Dependency: [Heartbeat Table](heartbeat/) - the live-peer
   source EpochBarrier reads each release-wait iteration.
 - Sibling primitive:
-  [SHARED_LEADER_ELECTION.md](../ownership-types/shared-leader-election/) -
+  [Shared Leader Election](../ownership-types/shared-leader-election/) -
   same heartbeat dependency, different protocol
   (lowest-live-PID claims leadership).
-- Sibling primitive: [FAILOVER.md](failover/) -
+- Sibling primitive: [Failover Watchdog](failover/) -
   same heartbeat dependency; failover triggers on staleness
   rather than synchronizing on liveness.
 - Not to be confused with: [Shared Epochs](../shared-epochs/) - a

@@ -302,11 +302,11 @@ corresponding bit. Duplicates are detected by `set` returning
   count_ones, storage witness vs `Mutex<Vec<bool>>` and
   `Mutex<Vec<u64>>`).
 - Consumer:
-  [SHARED_BLOOM_FILTER.md](shared-bloom-filter/) - probabilistic
+  [Shared Bloom Filter](shared-bloom-filter/) - probabilistic
   set built on top of `SharedBitVec` with `k` hash functions.
 - Sibling primitive:
-  [SHARED_HASH_MAP.md](../maps/shared-hash-map/) - keyed map; bit-vec
+  [Shared Hash Map](../maps/shared-hash-map/) - keyed map; bit-vec
   is the boolean-only specialization that drops keys entirely.
 - Sibling primitive:
-  [SHARED_ATOMIC.md](../atomics/shared-atomic/) - single-cell atomic; the
+  [Shared Atomic](../atomics/shared-atomic/) - single-cell atomic; the
   bit-vec is an array of u64 atomics with bit addressing.

@@ -48,7 +48,7 @@ covers a strict subset:
 | `AdaptiveRing` | anon, file | ring | morphs across all 4 ring shapes |
 | `AdaptiveIpc<T>` | file | morphs across ring + deque | ring backing is itself `AdaptiveRing` so the shape axis is composed in by default; deque path is fixed at WorkStealing |
 | `LocaleAdaptiveRing` | morphs anon / file / shmfs | ring | carries the **locale** axis; holds one `AdaptiveRing` per locale |
-| `CapacityAdaptiveRing` | anon, file, shmfs | ring | carries the **capacity** axis; ArcSwaps the active backing for a new pow2 slot count, old backing on a stale list |
+| `CapacityAdaptiveRing` | anon, file, shmfs | ring | carries the **capacity** axis; swaps the active backing in a `SwapCell` for a new pow2 slot count, old backing on a stale list |
 | `AdaptiveRing` + `with_ordering_stamps` | anon, file, shmfs | ring | carries the **ordering** axis; MMF-resident switch flips per-producer FIFO to global FIFO |
 | QUIC bridge | bridges two anon-locale rings | ring (transparent) | preserves endpoint shape |
 
@@ -219,7 +219,7 @@ boundaries, not per op.
 | Shape (SPSC <-> MPSC <-> MPMC) | items in flight x per-op transfer cost (microseconds) | 1.06-1.09x native (measured on `AdaptiveRing`) | All shapes share the SpscRingCore primitive; transfer is byte copy through one buffer. |
 | Protocol (ring <-> deque) | items in flight x per-op transfer cost; protocols pre-allocated so no syscall | within noise of native (measured on `AdaptiveIpc`) | Different primitives need a marshal/unmarshal step at the morph boundary because slot layout differs. |
 | Locale (anon <-> file <-> ssd <-> remote) | mmap remap + page eviction; potential network round-trip for remote | depends on locale (anon = native, file = native, ssd = first-touch latency, remote = QUIC RTT) | Asymmetric for remote: the receiving side must run the bridge server before the locale-shift completes on the sending side. |
-| Capacity (grow / shrink pow2) | one ArcSwap store on the active pointer + push the old backing to a stale list; no data copy | pinned: native; unpinned: one ArcSwap load + stale-list walk + inner dispatch per call | The old backing stays readable on the stale list until the consumer drains it, so in-flight items survive the capacity morph. |
+| Capacity (grow / shrink pow2) | one `SwapCell` compare-and-set of the ring state + push the old backing to a stale list; no data copy | pinned: native; unpinned: one `SwapCell` load + stale-list walk + inner dispatch per call | The old backing stays readable on the stale list until the consumer drains it, so in-flight items survive the capacity morph. |
 | Ordering (per-producer <-> global FIFO) | one store on the MMF-resident switch flag; the ring backing does not change | per-producer: native pop; global FIFO: a k-way min-stamp merge over the ring heads at each pop | Retroactive: stamps written at push time order the in-flight backlog the moment the merge turns on. No drain, no re-send. |
 
 ## Shipped coverage of the grid
@@ -243,7 +243,7 @@ Today's substrate covers:
   (`anon <-> file <-> shmfs`) are wired through `LocaleAdaptiveRing`
   and the `locale_morph` + `locale_migrate_sidecar_e2e` examples.
 - **Capacity axis morph**: complete. `CapacityAdaptiveRing` grows and
-  shrinks the pow2 slot count through an ArcSwap of the active backing
+  shrinks the pow2 slot count through a `SwapCell` holding the active backing
   plus a stale list; sidecar-driven, with the `capacity_morph_e2e`,
   `cap_morph_sidecar_e2e`, and `capacity_morph_xproc` examples proving
   it E2E, cross-process included.

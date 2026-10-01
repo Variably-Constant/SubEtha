@@ -45,7 +45,7 @@ Op kinds: `OP_READ = 1`, `OP_WRITE = 2`, `OP_TRY_READ = 3`,
 `OP_TRY_WRITE = 4`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_RW_LOCK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RW_LOCK.md).
+[Shared RW Lock](locks/shared-rw-lock/).
 
 ## `SharedSemaphore`
 
@@ -68,7 +68,7 @@ pub fn release(&self) -> Result<(), SemaphoreError>;
 Op kinds: `OP_ACQUIRE = 1`, `OP_RELEASE = 2`, `OP_TRY_ACQUIRE = 3`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_SEMAPHORE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SEMAPHORE.md).
+[Shared Semaphore](locks/shared-semaphore/).
 
 ## `SharedRateLimiter`
 
@@ -96,7 +96,7 @@ CAS on the token count is what serializes concurrent
 acquisitions. Op kinds: `OP_TRY_ACQUIRE = 1`, `OP_AVAILABLE = 2`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_RATE_LIMITER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RATE_LIMITER.md).
+[Shared Rate Limiter](locks/shared-rate-limiter/).
 
 ## `SharedFenceClock`
 
@@ -126,7 +126,7 @@ one. Op kinds: `OP_TICK = 1`, `OP_MERGE = 2`, `OP_GET_LOCAL = 3`,
 `OP_COMPUTE_FENCE = 4`.
 
 Canonical doc:
-[crates/subetha-cxc/docs/pointers/SHARED_FENCE_CLOCK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_FENCE_CLOCK.md).
+[Shared Fence Clock](locks/shared-fence-clock/).
 
 ## See also
 

@@ -25,8 +25,9 @@ cargo pwrs build --release
 Import-Module ../../target/pwrs/SubEtha/SubEtha.psd1
 ```
 
-One module folder serves PowerShell 7 on .NET 10 and Windows
-PowerShell 5.1. Every cmdlet has a long name and a short one: this page
+One module folder serves PowerShell 7 and Windows PowerShell 5.1.
+Built here, its PowerShell 7 half needs the PowerShell 7 that built it
+or a later one. Every cmdlet has a long name and a short one: this page
 uses the long ones, and `New-SEAtomic` is `New-SubEthaAtomic`.
 
 ## A counter two processes share
@@ -120,16 +121,17 @@ PowerShell 7 and several times that in Windows PowerShell; the Rust
 underneath costs seven nanoseconds. Two shapes avoid paying the call
 per item.
 
-**Carry many operations over one call.** Every family has a batched
-form:
+The first carries many operations over one call. Every family has a
+batched form:
 
 ```powershell
 $ring.SendMany($producer, @('one', 'two', 'three'))
 $items = $ring.RecvMany($consumer, 256)
 ```
 
-**Cross once with everything packed.** The rings take and answer items
-packed end to end in one `byte[]`, so no object is built per item:
+The second crosses once with everything packed. The rings take and
+answer items packed end to end in one `byte[]`, so no object is built
+per item:
 
 ```powershell
 $ring.SendPacked($producer, $buffer, 64)      # every 64 bytes of $buffer is one item

@@ -24,15 +24,17 @@ two pages:
 - [What the values look like](values/) - real output, captured from a
   run against the built extension, for the shapes a type name cannot
   convey.
-- [Every class, in full](classes/) - all 91 classes, with every
+- [Every class, in full](classes/) - all 94 classes, with every
   attribute and every method signature.
 - [Module functions, attributes and exceptions](module/) - what
-  `import subetha` gives you besides the classes.
+  `import subetha` gives you besides the classes, and the
+  `subetha.sidecar` module.
 
 Both are produced by `crates/subetha-py/tools/export_reference.py`
 reading `python/subetha/__init__.pyi`, which `tests/test_surface.py`
 holds against the compiled module, so a name there is a name that
-ships. Regenerate them whenever the surface changes.
+ships, and `python/subetha/sidecar.py`. Regenerate them whenever the
+surface changes.
 
 To install it and send a first message, start at
 [SubEtha from Python](../../tutorial/python/).
@@ -114,7 +116,7 @@ to reach for when entries have to go away.
 
 | Class | What it is |
 |---|---|
-| `Ring` | The adaptive ring: producers and consumers register for an id, payloads larger than a slot are framed, and the shape changes under the traffic. Built with `stamps` it marks each item with the order its sender made it in. |
+| `Ring` | The adaptive ring: producers and consumers register for an id, payloads larger than a slot are framed, and the shape changes under the traffic. Built with `stamps` it marks each item with the order its sender made it in. With `managed=True` it also runs a shape sidecar of its own, scanning every `scan_interval_us` microseconds, 250 when not given, and `sidecar_morphs` counts the morphs that sidecar made. |
 | `SpscRing` | One writer, one reader. |
 | `BroadcastRing` | One writer, many readers, each seeing everything. |
 | `PubSub`, `Subscriber` | Keeps the last N and tells a slow reader what it lost, by raising `Lagged`. |
@@ -134,6 +136,50 @@ makes them correct.
 
 Both accept `stamped`, and report `ordering_mode` as one of
 `unordered`, `merge_by_stamp` or `merge_strict`.
+
+Both also accept `managed=True`, which starts a sidecar of the ring's
+own scanning every `scan_interval_us` microseconds. Neither names a
+default interval, so a managed one needs it, and `scan_interval_us`
+without `managed=True` raises `ValueError`. A managed `CapacityRing`
+doubles when 85 percent full and halves when 10 percent full, within
+64 to 65536 slots and no sooner than 100 ms after its last resize;
+`sidecar_morphs` and `sidecar_prewarms` count what it did. A managed
+`LocaleRing` moves to the locale `request_locale` last asked for, no
+sooner than 250 ms after its last move, and `sidecar_migrations`
+counts the moves. On a managed `LocaleRing`, `migrate_to` is also what
+its sidecar is asked to keep, so the sidecar does not move the ring
+back.
+
+## The sidecar
+
+One sidecar serves the process: a scan thread per NUMA node drains the
+observation ring of every registered object into its stats and, for an
+object registered with a policy, asks that policy which tag the object
+should run at.
+
+| Name | What it is |
+|---|---|
+| `obj.observe()`, `obj.observe(policy)` | Registers the object with the process's sidecar and returns a `Registration`: `stats()` reads what the sidecar has drained as an `InstanceStats`, `tag` the tag the object runs at, and `close()`, leaving a `with` block, or collection unregisters it. An object has one registration at a time. |
+| `Adaptive` | An adaptive object of the caller's own: `record` puts an operation in its ring, and `tag` is what its policy last answered. |
+| `subetha.sidecar` | The sidecar as a whole: `scan_now()` has every scan thread scan and waits for it, `instance_count()`, `max_instances()` and `set_max_instances()` read and move the cap of 10,000 objects, and `node_count()` counts the scan threads. |
+
+Twenty-six classes have `observe`: `Arena`, `Atomic`, `BitVec`,
+`BlockedBloomFilter`, `BloomFilter`, `BroadcastRing`, `CountMinSketch`,
+`EpochBarrier`, `FenceClock`, `Graph`, `HandleTable`, `HashMap`,
+`Heartbeat`, `Histogram`, `HyperLogLog`, `LeaderElection`, `OwnerLease`,
+`RWLock`, `RateLimiter`, `Reservoir`, `Ring`, `Semaphore`,
+`TimePointTile`, `TopologyMap`, `Universal` and `VersionChain`, and
+`Adaptive` does too. Every structure keeps its own layout whatever tag
+a policy answers, so on a structure a policy moves a tag nothing reads;
+a policy that decides something is one on an `Adaptive`, whose caller
+reads `tag` to choose how it works.
+
+A policy is a callable taking the stats and the current tag and
+returning a tag, an integer from 0 to 4294967295, or `None` to stay.
+It runs on the sidecar's scan thread and is asked after every scan
+that drained something new. One that raises, or returns anything else,
+leaves the tag where it was and is counted by `policy_errors`, with
+`last_policy_error` holding the exception.
 
 ## Order
 
@@ -195,7 +241,7 @@ The waiting forms that take a timeout sleep rather than spin, so a long
 wait costs no processor, and they never wait past the deadline even if
 whoever holds the lock never gives it back. Only the bounded forms are
 here: an unbounded park sleeps until something signals it, which against
-a peer that releases without signalling would never wake.
+a peer that releases without signaling would never wake.
 
 A lease changes hands two ways and a caller has to know them apart. A
 process whose id is lower than the owner's takes it on the spot,

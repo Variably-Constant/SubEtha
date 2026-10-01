@@ -240,7 +240,14 @@ mod built {
 
     enum Half {
         Client(TcpBridgeClient),
-        Server(TcpBridgeServer),
+        /// The listener and the runtime it is registered with, the only
+        /// one that can drive its accept. The listener is declared first
+        /// so it is dropped while the driver it is registered with is
+        /// still there.
+        Server {
+            bridge: TcpBridgeServer,
+            runtime: tokio::runtime::Runtime,
+        },
     }
 
     /// What a run has done so far, shared with the thread carrying it in
@@ -345,19 +352,20 @@ mod built {
             SUBETHA_OK
         });
         let Some(consumer) = taken else { return code };
-        // The bind is asynchronous, so even constructing the server needs
-        // a runtime; it runs here on the calling thread and ends with the
-        // call.
-        let rt = match here() {
+        // The bind registers the listener with this runtime's driver, so
+        // the runtime stays with the listener and the accept is driven on
+        // it by whichever thread carries the run. It is driven only while
+        // a run is, so between runs the object holds no thread.
+        let runtime = match here() {
             Ok(rt) => rt,
             Err(code) => return code,
         };
-        let bound = match rt.block_on(TcpBridgeServer::bind(consumer, socket)) {
+        let bridge = match runtime.block_on(TcpBridgeServer::bind(consumer, socket)) {
             Ok(s) => s,
             Err(e) => return code_for(&e),
         };
         let object = TcpBridgeObject {
-            half: Arc::new(Half::Server(bound)),
+            half: Arc::new(Half::Server { bridge, runtime }),
             mode,
             role: SUBETHA_BRIDGE_SERVER,
             progress: Arc::new(Progress::default()),
@@ -388,7 +396,7 @@ mod built {
     /// `out` is a valid pointer, checked by the caller.
     pub(crate) unsafe fn local_port(b: &TcpBridgeObject, out: *mut u16) -> i32 {
         match &*b.half {
-            Half::Server(s) => match s.local_addr() {
+            Half::Server { bridge, .. } => match bridge.local_addr() {
                 Ok(addr) => {
                     // SAFETY: the caller checked it is non-null and writable.
                     unsafe { *out = addr.port() };
@@ -402,31 +410,40 @@ mod built {
         }
     }
 
-    /// One transfer, on this thread or on the object's own.
+    /// One transfer, on this thread or on the object's own. A client
+    /// connects inside the run, so a runtime of the call's own carries it;
+    /// a server's accept runs on the runtime its listener was bound in.
     fn carry(half: &Half, items: u64, timeout: Option<Duration>) -> i32 {
-        let rt = match here() {
-            Ok(rt) => rt,
-            Err(code) => return code,
-        };
-        rt.block_on(async {
-            let work = async {
-                match half {
-                    Half::Client(c) => c.run(items).await.map(|()| items),
-                    Half::Server(s) => s.accept_one().await,
-                }
-            };
-            match timeout {
-                Some(d) => match tokio::time::timeout(d, work).await {
-                    Ok(Ok(_)) => SUBETHA_OK,
-                    Ok(Err(e)) => code_for(&e),
-                    Err(_elapsed) => SUBETHA_E_TIMEOUT,
-                },
-                None => match work.await {
-                    Ok(_) => SUBETHA_OK,
-                    Err(e) => code_for(&e),
-                },
+        match half {
+            Half::Client(c) => match here() {
+                Ok(rt) => rt.block_on(bounded(
+                    async { c.run(items).await.map(|()| items) },
+                    timeout,
+                )),
+                Err(code) => code,
+            },
+            Half::Server { bridge, runtime } => {
+                runtime.block_on(bounded(bridge.accept_one(), timeout))
             }
-        })
+        }
+    }
+
+    /// `work` under the caller's deadline, as a code.
+    async fn bounded(
+        work: impl std::future::Future<Output = Result<u64, TcpBridgeError>>,
+        timeout: Option<Duration>,
+    ) -> i32 {
+        match timeout {
+            Some(d) => match tokio::time::timeout(d, work).await {
+                Ok(Ok(_)) => SUBETHA_OK,
+                Ok(Err(e)) => code_for(&e),
+                Err(_elapsed) => SUBETHA_E_TIMEOUT,
+            },
+            None => match work.await {
+                Ok(_) => SUBETHA_OK,
+                Err(e) => code_for(&e),
+            },
+        }
     }
 
     pub(crate) fn run(b: &TcpBridgeObject, items: u64, timeout_ms: i64) -> i32 {

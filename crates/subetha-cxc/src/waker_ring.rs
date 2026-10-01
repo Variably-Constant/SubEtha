@@ -6,8 +6,8 @@
 //! awaiting subscribers. Contrast [`crate::async_ring::AsyncSpscRing`],
 //! which spawns one OS thread per in-flight future to do the blocking
 //! recv: fine for a handful of long-running tasks, wrong for ten
-//! thousand. Here a consumer that finds the ring empty parks its
-//! `Waker` in a process-local cell beside the ring; the producer's push
+//! thousand. Here a consumer that finds the ring empty registers its
+//! `Waker` in a `WakerSlot` beside the ring; the producer's push
 //! takes that `Waker` and wakes it, which re-enqueues the task on
 //! whatever executor is driving it (including [`crate::task_pool`]).
 //!
@@ -27,39 +27,11 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
-
-use parking_lot::Mutex;
+use std::task::{Context, Poll};
 
 use crate::shared_ring::RingError;
 use crate::spsc_ring::{SpscRingCore, SPSC_PAYLOAD_BYTES};
-
-/// A single-slot home for the consumer task's `Waker`. The producer
-/// `wake()`s it; the consumer `register()`s on each empty poll.
-struct WakerCell {
-    waker: Mutex<Option<Waker>>,
-}
-
-impl WakerCell {
-    fn new() -> Self {
-        Self { waker: Mutex::new(None) }
-    }
-
-    fn register(&self, w: &Waker) {
-        let mut g = self.waker.lock();
-        match g.as_ref() {
-            // Same task re-polling: skip the clone.
-            Some(existing) if existing.will_wake(w) => {}
-            _ => *g = Some(w.clone()),
-        }
-    }
-
-    fn wake(&self) {
-        if let Some(w) = self.waker.lock().take() {
-            w.wake();
-        }
-    }
-}
+use crate::waker_slot::WakerSlot;
 
 /// Factory for a thread-free async SPSC pair.
 pub struct WakerRing;
@@ -71,7 +43,7 @@ impl WakerRing {
         capacity: usize,
     ) -> Result<(WakerProducer, WakerConsumer), RingError> {
         let ring = Arc::new(SpscRingCore::create_anon(capacity)?);
-        let cell = Arc::new(WakerCell::new());
+        let cell = Arc::new(WakerSlot::new());
         Ok((
             WakerProducer { ring: Arc::clone(&ring), cell: Arc::clone(&cell) },
             WakerConsumer { ring, cell },
@@ -83,7 +55,7 @@ impl WakerRing {
 /// consumer's `Waker` in the same call - no thread, no syscall.
 pub struct WakerProducer {
     ring: Arc<SpscRingCore>,
-    cell: Arc<WakerCell>,
+    cell: Arc<WakerSlot>,
 }
 
 impl WakerProducer {
@@ -102,7 +74,7 @@ impl WakerProducer {
 /// when an item arrives, suspending the task (off-thread) until then.
 pub struct WakerConsumer {
     ring: Arc<SpscRingCore>,
-    cell: Arc<WakerCell>,
+    cell: Arc<WakerSlot>,
 }
 
 impl WakerConsumer {
@@ -124,7 +96,7 @@ impl WakerConsumer {
 /// Future returned by [`WakerConsumer::recv`].
 pub struct WakerRecv {
     ring: Arc<SpscRingCore>,
-    cell: Arc<WakerCell>,
+    cell: Arc<WakerSlot>,
 }
 
 impl Future for WakerRecv {

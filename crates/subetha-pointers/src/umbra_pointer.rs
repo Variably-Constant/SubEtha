@@ -3,8 +3,8 @@
 //! 16-byte slot. Actual `#[repr(C, align(16))]` layout is:
 //! `target: *const T` at offset 0..8, `prefix: u32` at offset 8..12,
 //! `_pad: u32` at offset 12..16. The prefix is 4 bytes derived from
-//! the target's content (either the first 4 bytes of an underlying
-//! byte-representation, or a 4-byte hash).
+//! the target's content (the first 4 bytes of its `Marshal` encoding,
+//! a 4-byte hash, or a prefix the caller supplies).
 //!
 //! The architectural win: equality / lookup operations check the
 //! 4-byte prefix in-register before dereferencing `target`. For
@@ -13,19 +13,17 @@
 //! circuits the dereference, eliminating the cache miss on the
 //! pointed-to object.
 //!
-//! This is the generic primitive that callers specialize per content
-//! type: a string-content overlay (prefix = first 4 bytes of the
-//! UTF-8 bytes) and a bit-sliced N-pointer tile overlay both fit
-//! inside the same 16-byte slot by reinterpreting `prefix` as
-//! content-specific bits.
+//! Callers choose what the prefix means per content type, such as the
+//! first 4 bytes of a string's UTF-8 bytes, through
+//! [`UmbraPointer::from_raw`] or [`UmbraPointer::from_arc`].
 //!
-//! Two prefix construction modes:
+//! Two prefix construction modes that derive it from the value:
 //!
-//! - [`UmbraPointer::with_content_prefix`] copies 4 bytes from the
-//!   target's byte-representation (caller supplies bytes).
+//! - [`UmbraPointer::with_content_prefix`] takes the first 4 bytes of
+//!   the value's `Marshal` encoding.
 //! - [`UmbraPointer::with_hash_prefix`] takes a 4-byte hash of the
-//!   target's identity. Near-perfect rejection rate (~2^-32
-//!   collision) at the cost of computing the hash on construction.
+//!   value. Near-perfect rejection rate (~2^-32 collision) at the
+//!   cost of computing the hash on construction.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -35,15 +33,15 @@ use std::sync::Arc;
 /// positions.
 #[repr(C, align(16))]
 pub struct UmbraPointer<T> {
-    /// Pointer to the heap-allocated target. Placed first so its
-    /// natural 8-byte alignment does not push the layout off the
-    /// 16-byte boundary. Requires `T: Sized` so the pointer stays
-    /// thin (8 bytes); for unsized targets, wrap in `Box<[u8]>` or
-    /// equivalent at the application layer.
+    /// Pointer to the heap-allocated target, at offset 0. Requires
+    /// `T: Sized` so the pointer stays thin (8 bytes); for unsized
+    /// targets, wrap in `Box<[u8]>` or equivalent at the application
+    /// layer.
     target: *const T,
     /// 4-byte content prefix, at offset 8.
     prefix: u32,
-    /// Padding to fill out the 16-byte slot.
+    /// Bytes 12..16 as a zeroed field, so every byte of the slot is
+    /// initialized.
     _pad: u32,
     _phantom: PhantomData<T>,
 }
@@ -96,24 +94,32 @@ impl<T> UmbraPointer<T> {
 }
 
 impl<T> UmbraPointer<T> {
-    /// Build by moving `value` onto the heap and copying its first
-    /// 4 bytes (in declaration order) as the prefix.
+    /// Build by moving `value` onto the heap, with the first 4 bytes
+    /// of its `Marshal` encoding as the prefix (zero-filled when the
+    /// encoding is shorter). Integers encode little-endian, so an
+    /// integer's prefix is its low 4 bytes.
     ///
     /// Useful for types whose first 4 bytes are a meaningful key
     /// field (database row IDs, packet headers, etc.). For more
     /// general use, prefer [`UmbraPointer::with_hash_prefix`].
-    pub fn with_content_prefix(value: T) -> Box<UmbraOwner<T>> {
-        // SAFETY: we read 4 bytes from `&value` without moving it,
-        // then move value into a Box. Reading the raw bytes does not
-        // require T: Copy; we only need the bytes for prefix
-        // derivation. Endianness is platform-native.
-        let bytes = unsafe {
-            let p = &value as *const T as *const u8;
-            let n = std::mem::size_of::<T>().min(4);
-            let mut buf = [0u8; 4];
-            std::ptr::copy_nonoverlapping(p, buf.as_mut_ptr(), n);
-            buf
-        };
+    ///
+    /// A type with no `Marshal` encoding does not qualify: its padding
+    /// bytes hold no value to read.
+    ///
+    /// ```compile_fail
+    /// use subetha_pointers::umbra_pointer::UmbraPointer;
+    /// #[repr(C)]
+    /// struct Padded { tag: u8, id: u32 }
+    /// let _owner = UmbraPointer::with_content_prefix(Padded { tag: 1, id: 2 });
+    /// ```
+    pub fn with_content_prefix(value: T) -> Box<UmbraOwner<T>>
+    where T: subetha_core::Marshal,
+    {
+        let mut encoded = vec![0u8; T::PAYLOAD_BYTES];
+        value.marshal(&mut encoded);
+        let mut bytes = [0u8; 4];
+        let n = encoded.len().min(4);
+        bytes[..n].copy_from_slice(&encoded[..n]);
         let prefix = u32::from_le_bytes(bytes);
         let boxed = Box::new(value);
         let target = Box::into_raw(boxed) as *const T;
@@ -121,9 +127,9 @@ impl<T> UmbraPointer<T> {
         Box::new(UmbraOwner { ptr })
     }
 
-    /// Build by moving `value` onto the heap and hashing its byte
-    /// representation as the prefix. Near-perfect rejection rate
-    /// because hash distribution is approximately random over u32.
+    /// Build by moving `value` onto the heap. The prefix is the low 32
+    /// bits of the value's `DefaultHasher` hash, taken through its
+    /// `Hash` impl, so distinct values rarely share a prefix.
     pub fn with_hash_prefix(value: T) -> Box<UmbraOwner<T>>
     where T: std::hash::Hash,
     {
@@ -140,8 +146,8 @@ impl<T> UmbraPointer<T> {
         Box::new(UmbraOwner { ptr })
     }
 
-    /// Wrap an `Arc<T>` without taking ownership of the heap
-    /// allocation. Uses hash-based prefix.
+    /// Wrap an `Arc<T>` with an explicit `prefix`. The returned
+    /// `ArcUmbra` holds the `Arc`, which keeps the target alive.
     pub fn from_arc(value: Arc<T>, prefix: u32) -> ArcUmbra<T> {
         let target = Arc::as_ptr(&value);
         let ptr = unsafe { Self::from_raw(prefix, target) };
@@ -294,13 +300,14 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
+        #[derive(Hash)]
         struct DropCounter(u64);
         impl Drop for DropCounter {
             fn drop(&mut self) { DROPS.fetch_add(1, Ordering::Relaxed); }
         }
 
         let before = DROPS.load(Ordering::Relaxed);
-        let owner = UmbraPointer::with_content_prefix(DropCounter(99));
+        let owner = UmbraPointer::with_hash_prefix(DropCounter(99));
         assert_eq!(owner.value().0, 99);
         drop(owner);
         let after = DROPS.load(Ordering::Relaxed);

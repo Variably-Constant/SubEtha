@@ -94,11 +94,13 @@ The binary writes `docs/cross_process_ipc_results.json` (machine-readable, times
 
 | Contender | Note |
 |---|---|
-| iceoryx2 (Eclipse zero-copy) | Requires POSIX user info (`/etc/passwd`); initializes on Linux/WSL, exits silently on native Windows, and is excluded from the FreeBSD build (libclang/bindgen) and the macOS build (its platform layer needs `MSG_NOSIGNAL`, absent on Darwin). |
+| iceoryx2 (Eclipse zero-copy) | Reads POSIX user info (`/etc/passwd`). On native Windows, 0.9 could not create a node without it, so the committed results carry no iceoryx2 figure for Windows; 0.10.0 warns that the user database is unavailable, falls back to its default config and runs. Excluded from the FreeBSD build (libclang/bindgen) and the macOS build (its platform layer needs `MSG_NOSIGNAL`, absent on Darwin). |
 | ZeroMQ (`ipc://` REQ/REP) | Optional, behind the `zmq-bench` feature; links the system `libzmq` (a C dependency), so it is a single-host Linux contender rather than part of the cross-platform sweep. A full messaging framework, not a minimal channel: its framing and socket round-trip land it well behind the kernel pipes on an 8-byte ping-pong. |
 | SubEtha shmfs on macOS | Darwin caps POSIX `shm_open` names at `PSHMNAMLEN` (31 chars) and permits `ftruncate` on a region only once, at creation. `ShmFile` hashes an over-long name to a short fixed form and sizes the region only when it is not already sized, so the create-then-open handshake (parent creates, child opens the same region) works cross-process. Without those two the bench masked the failures as `PayloadTooLarge`. |
 
 ## Tested versions
+
+The committed results were measured with:
 
 - SubEtha AdaptiveRing pinned handles (this repo)
 - `interprocess` 2.2
@@ -106,6 +108,11 @@ The binary writes `docs/cross_process_ipc_results.json` (machine-readable, times
 - `iceoryx2` 0.9
 - `zmq` 0.10 (optional `zmq-bench` feature; links system `libzmq`)
 - Rust stdlib `std::net::TcpStream`, `std::net::UdpSocket`, `std::process::Command` pipes
+
+The example now builds with `interprocess` 2.4.4, `ipc-channel` 0.23.0,
+`iceoryx2` 0.10.0 and `zmq` 0.10.0. On Windows 11 / Ryzen 9 7900X every
+contender completed its 10,000 round trips with them, iceoryx2 included,
+in a run made to check them rather than to replace the results above.
 
 ## Related results
 

@@ -26,11 +26,14 @@ primitive_op() {
 ```
 
 `ObservationRing` is 64-byte aligned and holds 4096 slots, each
-24 bytes. The producer increments a relaxed-tail-write, the
-consumer reads a release-tail and writes a release-head. SPSC -
-one producer, one consumer. Push cost is roughly 3 cycles
-steady-state. The ring is on the same cache line as the writer's
-working set, which is the point.
+24 bytes. Each primitive instance owns one ring, and every thread
+that operates on the instance pushes into it. While no ring in the
+process is armed, a push is one relaxed load of a process-global
+count and a branch, with the rest of the push out of line. Once a
+sidecar arms the ring, a producer claims a slot with a
+compare-and-swap on the ring's tail and publishes the record through
+the slot's sequence number, so two producers never write one slot
+and the sidecar never reads a record that is still being written.
 
 If the ring is full, the push returns `false` and the
 observation is dropped. This is the rule that makes the producer
@@ -39,15 +42,13 @@ enough between two 200 µs scans for any sane workload, and a
 workload that runs the ring full has so much op-stream signal
 that dropping a few samples does not change the policy decision.
 
-**Why TLS-local instead of one shared ring.** A single shared
-MPMC ring across all producer threads contends on the
-tail-write. Sixteen threads producing 10 M ops a second each
-hammer one cache line continuously. TLS-local SPSC rings turn
-the producer side into a per-thread cache-line dance with no
-inter-thread traffic. The cost is one ring per active thread
-instead of one ring per instance - acceptable because rings are
-4096 slots times 24 bytes = ~96 KB, and active threads are tens
-or hundreds, not millions.
+**One ring per instance.** The sidecar keeps its statistics per
+instance, so each instance's observations go into the one ring the
+scan drains into that instance's `InstanceStats`. The threads
+operating on one instance share its ring's tail: once a sidecar has
+armed the ring, a compare-and-swap there is part of every push, and
+while no ring is armed nothing past the one load is paid. A ring
+allocates its 4096 slots times 24 bytes = 96 KiB only when armed.
 
 **The producer auto-stamps `thread_id`.** Every observation
 carries a `producer_thread_id` field. If the producer leaves it
@@ -66,7 +67,7 @@ One scan thread per detected NUMA node, named
 ```text
 loop {
     if shutdown_requested() { break; }
-    scan_this_node();
+    scan_node(node);
     sleep(200us);
 }
 ```
@@ -79,17 +80,18 @@ does not. The routing happens at registration time via
 `SidecarBox::new(prim)` decides which node owns the instance.
 
 **Why 200 µs.** Short enough that a workload transition gets
-noticed within roughly one millisecond (five scans). Long enough
-that an idle process pays no measurable CPU on the sidecar. A
-hosting process that registers ten instances and then idles sees
-the sidecar wake up roughly every 200 µs to find nothing in any
-ring, fold nothing, and go back to sleep.
+noticed within roughly one millisecond (five scans). A hosting
+process that registers ten instances and then idles sees the
+sidecar wake up roughly every 200 µs to find nothing in any ring,
+fold nothing, and go back to sleep.
 
 ## Stage 3: drain and fold
 
-`scan_this_node` takes the read lock on the node's slot vec
-(so it does not block other readers, only `unregister`'s write
-lock can fence it out), then walks each populated slot:
+`scan_node` runs on the node's own thread, the only consumer of
+every ring on the node (`scan_now` asks that thread for a scan and
+waits rather than draining a ring itself). It enters each live
+slot, counted so that an `unregister` of that instance waits for it
+to leave, and walks them:
 
 ```text
 for each registered instance on this node:
@@ -108,7 +110,8 @@ for each registered instance on this node:
 
     if drained_ops == 0: continue
 
-    fold local accumulators into persistent InstanceStats
+    stats = copy of the instance's InstanceStats
+    fold local accumulators into stats
     for (op_kind, tid) in tid_dedupe:
         record_thread_for_op(stats, op_kind, tid)
 ```
@@ -127,17 +130,14 @@ side does no dedupe at all; it pays one push per op.
 
 **`DRAIN_SAFETY_CAP = 8192`.** The ring's natural capacity is
 4096, so under normal operation the drain bottoms out long
-before the cap. The cap is the catastrophe-mode bound: a
-misconfigured ring or a degenerate scan-latency-vs-push-rate
-ratio cannot pin one instance's drain so long that other
-instances on the same node never get scanned.
+before the cap. The cap is the bound for producers that push as
+fast as the scan drains: they cannot pin one instance's drain so
+long that other instances on the same node never get scanned.
 
 **`drained_ops == 0` short-circuit.** If nothing was popped, the
-sidecar skips the stats-lock acquisition and the policy decision.
-An idle instance costs the scan thread one ring head-vs-tail
-comparison (no atomic RMW; the comparison is on the consumer's
-private head and a release-loaded tail), then continue. Tens of
-thousands of idle instances cost effectively nothing per scan.
+sidecar skips the stats update and the policy decision.
+An idle instance costs the scan thread one acquire load of the
+sequence of the ring's next slot (no atomic RMW), then continue.
 
 ## Stage 4: policy decision
 
@@ -145,10 +145,11 @@ After folding, the sidecar reads the per-instance `Policy`:
 
 ```text
 current_tag = header.tag()
-if let Some(new_tag) = policy.decide(&stats_snapshot, current_tag):
+if let Some(new_tag) = policy.decide(&stats, current_tag):
     if new_tag != current_tag:
         instance.apply_migration(new_tag)
         stats.migrations_triggered += 1
+publish stats with one atomic swap
 ```
 
 The `decide` callback runs only when at least one observation
@@ -160,12 +161,11 @@ on a primitive with a heavy data-layout swap allocates the new
 layout, drains the old, and frees it. That work should never
 run for a no-op decision.
 
-The `decide` callback receives an `InstanceStats` snapshot, not
-a reference. The snapshot is a copy of the persistent struct at
-the moment of the call. Policies are free to compute derived
-signals (averages, ratios, multi-thread predicates) from the
-snapshot without holding any lock; the convenience accessors
-on `InstanceStats` are pure functions.
+The `decide` callback receives the scan's own copy of the
+`InstanceStats`, which nothing else writes. Policies are free to
+compute derived signals (averages, ratios, multi-thread predicates)
+from it; the convenience accessors on `InstanceStats` are pure
+functions. `Sidecar::stats` reads the last published copy whole.
 
 ## Why a sidecar at all
 
@@ -204,7 +204,7 @@ regardless of how complex the policy gets.
 - [Migration protocol](../reference/subetha-core/migration.md) -
   what the sidecar triggers when the policy returns `Some(new_tag)`.
 - [`ObservationRing`](../reference/subetha-core/observation.md) -
-  the per-thread SPSC ring's API surface.
+  the per-instance ring's API surface.
 - [`InstanceStats`](../reference/subetha-sidecar/instance-stats.md) -
   the persistent accumulator the scan folds into.
 - [Sidecar registry](../reference/subetha-sidecar/registry.md) -

@@ -29,6 +29,9 @@
 //! at any price; and the dead-owner reap, which has no baseline at all
 //! because a process-local pin set cannot outlive its process.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::hint::black_box;
 use std::sync::Mutex;
 

@@ -324,7 +324,7 @@ each iteration. No IPC pipe / socket needed.
   `SharedAtomicU32` with 0/1 encoding.
 - **MMF size is one cache line per atomic**: there is no array form
   in this primitive. For arrays of cross-process counters use
-  [SHARED_VEC.md](../specialized/shared-vec/) or a custom MMF layout.
+  [Shared Vec](../specialized/shared-vec/) or a custom MMF layout.
 - **Durability requires explicit flush**: writes are visible
   cross-process immediately (cache coherence), but durable to disk
   only after `flush`. Crash-before-flush loses the latest writes.
@@ -377,9 +377,9 @@ each iteration. No IPC pipe / socket needed.
   visibility, concurrent fetch_add summation, compare_exchange,
   bool swap, disk persistence survives reopen, open rejects wrong
   width).
-- Sibling primitive: [OFFSET_PTR.md](../pointers/offset-ptr/) - the
+- Sibling primitive: [Offset Pointer](../pointers/offset-ptr/) - the
   foundational MMF-backed pointer that other shared types
   compose on.
-- Sibling primitive: [SHARED_CELL.md](../cells/shared-cell/) - the
+- Sibling primitive: [Shared Cell](../cells/shared-cell/) - the
   non-atomic cross-process cell. Use SharedAtomic when concurrent
   ops are required; use SharedCell for single-writer scenarios.

@@ -1,6 +1,6 @@
 //! The adaptive ring through the C ABI: one handle per ring, byte payloads,
 //! producer and consumer ids from registration, a try and a waiting form of
-//! push and pop, and the file-locale unlink.
+//! push and pop, and the file- and shared-memory-locale unlinks.
 //!
 //! Waiting parks on a cross-process waker beside the ring: a push wakes one
 //! parked consumer, a pop wakes one parked producer. In the file and
@@ -34,7 +34,7 @@ use subetha_cxc::cross_process_waker::{
 use subetha_cxc::frame_ring::{FrameClass, LayoutHint};
 use subetha_cxc::ordering::{OrderingMode, StampKind};
 use subetha_cxc::ring_contract::{OrderingContract, RingContract};
-use subetha_cxc::shm_file::{ShmFile, ShmNamespace};
+use subetha_cxc::shm_file::{ContainerSid, ShmFile, ShmNamespace};
 
 use crate::batch::{run_pop_many, run_push_many};
 
@@ -70,6 +70,13 @@ pub const SUBETHA_RING_SHAPE_VYUKOV: u32 = 3;
 pub const SUBETHA_SHM_SESSION: u32 = 0;
 /// Shared-memory names resolve machine-wide (`Global\` on Windows).
 pub const SUBETHA_SHM_MACHINE: u32 = 1;
+/// Shared-memory names resolve in the named-object directory of the
+/// AppContainer that `shm_container_sid` names (Windows), reached from
+/// outside the container. A process inside the container reaches the same
+/// objects with `SUBETHA_SHM_SESSION`. The directory exists only while a
+/// process of the container runs. On other platforms the names are the
+/// same in every namespace.
+pub const SUBETHA_SHM_APPCONTAINER: u32 = 2;
 
 /// The shape sidecar's scan cadence when a managed-mode caller names
 /// none, in microseconds.
@@ -83,6 +90,10 @@ pub const SUBETHA_SHM_MACHINE: u32 = 1;
 /// trips, and costs a few percent of the scanning CPU that a ten-times
 /// shorter cadence would.
 pub const SUBETHA_SCAN_INTERVAL_DEFAULT_US: u64 = 250;
+const _: () = assert!(
+    SUBETHA_SCAN_INTERVAL_DEFAULT_US == subetha_cxc::adaptive_ring::SCAN_INTERVAL_DEFAULT_US,
+    "the C ABI's default scan interval is the Rust managed ring's default"
+);
 
 /// Wait without a deadline.
 pub const SUBETHA_WAIT_FOREVER: i64 = -1;
@@ -165,7 +176,8 @@ pub struct subetha_ring_contract {
 
 /// Options every ring constructor takes. A C initializer that names the
 /// first three fields and leaves the rest zero asks for no stamps, no
-/// contract, the lazily created frame region and no security descriptor.
+/// contract, the lazily created frame region, no security descriptor and
+/// no AppContainer.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
@@ -204,15 +216,16 @@ pub struct subetha_ring_options {
     /// Holder slots in the ring's holder table, which is the number of
     /// handles that may hold the backings open at once. Zero takes no
     /// hold at all, which is the behavior of a ring that names no
-    /// holder table: the backings outlive every handle. A file-backed
-    /// ring only; see `last_holder`.
+    /// holder table: the backings outlive every handle. A file-backed or
+    /// shared-memory ring only; see `last_holder`.
     pub max_holders: u32,
     /// `SUBETHA_LAST_HOLDER_KEEP` or `SUBETHA_LAST_HOLDER_UNLINK`: what
     /// becomes of the backings when the last holder releases. Unlinking
     /// needs `max_holders`, and the library names no default for it, so
     /// asking to unlink with `max_holders` zero is refused rather than
-    /// given a number nobody chose. Only a file-backed ring has files to
-    /// remove; anonymous and shared-memory rings refuse a hold.
+    /// given a number nobody chose. A file-backed ring's backings are
+    /// files and a shared-memory ring's are names; an anonymous ring has
+    /// neither and refuses a hold.
     pub last_holder: u32,
     /// The security descriptor, as an SDDL string, for every shared-memory
     /// region this object creates; null applies the platform's default,
@@ -221,6 +234,12 @@ pub struct subetha_ring_options {
     /// one. Ignored where the object is not in shared memory and on
     /// platforms without descriptors.
     pub shm_sddl: *const c_char,
+    /// With `SUBETHA_SHM_APPCONTAINER`, the container's SID in its string
+    /// form, `S-1-15-2-...`, which names the directory the object's
+    /// regions and events are in; the descriptor in `shm_sddl` must then
+    /// admit that SID. Required with that namespace, and ignored with the
+    /// others.
+    pub shm_container_sid: *const c_char,
 }
 
 impl Default for subetha_ring_options {
@@ -236,6 +255,7 @@ impl Default for subetha_ring_options {
             max_holders: 0,
             last_holder: 0,
             shm_sddl: std::ptr::null(),
+            shm_container_sid: std::ptr::null(),
         }
     }
 }
@@ -399,15 +419,44 @@ pub(crate) fn waker_for(
     match locale {
         Locale::Anon => CrossProcessWaker::create_anon(capacity).map_err(waker_code),
         Locale::File(prefix) => file_waker(prefix, file_suffix, capacity),
-        Locale::Shm { name, namespace, create, sddl } => shm_waker(name, shm_suffix, *namespace, capacity, *create, *sddl),
+        Locale::Shm { name, namespace, create, sddl } => {
+            shm_waker(name, shm_suffix, *namespace, capacity, *create, *sddl, false)
+        }
     }
 }
 
-/// The named shared-memory region an object's backing lives in, created
-/// with `sddl` as its security descriptor or opened.
-pub(crate) fn shm_region(name: &str, size: usize, namespace: ShmNamespace, sddl: Option<&str>) -> Result<ShmFile, i32> {
-    ShmFile::create_or_open_named_secured(name, size, namespace, sddl)
-        .map_err(|e| fail(SUBETHA_E_RING_IO, format!("shared-memory region {name}: {e}")))
+/// The adaptive ring's two wakers. In shared memory their names are kept
+/// with the ring's, whichever handle drops, until
+/// `subetha_ring_unlink_shm` or the last holder removes them, as a
+/// file-backed ring's waker files are. Every other object's shared-memory
+/// wakers go with the handle that created them.
+fn ring_wakers(locale: &Locale<'_>, max_waiters: u32) -> Result<(CrossProcessWaker, CrossProcessWaker), i32> {
+    let Locale::Shm { name, namespace, create, sddl } = locale else {
+        return wakers_for(locale, max_waiters);
+    };
+    let capacity = waker_capacity(max_waiters);
+    Ok((
+        shm_waker(name, "_cwaker", *namespace, capacity, *create, *sddl, true)?,
+        shm_waker(name, "_pwaker", *namespace, capacity, *create, *sddl, true)?,
+    ))
+}
+
+/// The named shared-memory region an object's backing lives in: created
+/// with `sddl` as its security descriptor by the object's creator, or
+/// opened, which finds the creator's region or fails and never makes one.
+pub(crate) fn shm_region(
+    name: &str,
+    size: usize,
+    namespace: ShmNamespace,
+    sddl: Option<&str>,
+    create: bool,
+) -> Result<ShmFile, i32> {
+    let region = if create {
+        ShmFile::create_named_secured(name, size, namespace, sddl)
+    } else {
+        ShmFile::open_named_secured(name, size, namespace, sddl)
+    };
+    region.map_err(|e| fail(SUBETHA_E_RING_IO, format!("shared-memory region {name}: {e}")))
 }
 
 fn file_waker(prefix: &Path, suffix: &str, capacity: usize) -> Result<CrossProcessWaker, i32> {
@@ -416,6 +465,10 @@ fn file_waker(prefix: &Path, suffix: &str, capacity: usize) -> Result<CrossProce
     CrossProcessWaker::create(PathBuf::from(p), capacity).map_err(waker_code)
 }
 
+/// A waker in the region `{name}{suffix}`, created or opened. With
+/// `keep_name` a created region's name outlives this handle, for an
+/// object whose names go together rather than with the handle that made
+/// them.
 fn shm_waker(
     name: &str,
     suffix: &str,
@@ -423,14 +476,19 @@ fn shm_waker(
     capacity: usize,
     create: bool,
     sddl: Option<&str>,
+    keep_name: bool,
 ) -> Result<CrossProcessWaker, i32> {
-    let region = ShmFile::create_or_open_named_secured(
-        &format!("{name}{suffix}"),
-        waker_region_size(capacity),
-        namespace,
-        sddl,
-    )
-    .map_err(|e| fail(SUBETHA_E_RING_IO, format!("waker region {name}{suffix}: {e}")))?;
+    let region_name = format!("{name}{suffix}");
+    let size = waker_region_size(capacity);
+    let mut region = if create {
+        ShmFile::create_named_secured(&region_name, size, namespace, sddl)
+    } else {
+        ShmFile::open_named_secured(&region_name, size, namespace, sddl)
+    }
+    .map_err(|e| fail(SUBETHA_E_RING_IO, format!("waker region {region_name}: {e}")))?;
+    if keep_name {
+        region.keep_name();
+    }
     if create {
         CrossProcessWaker::create_from_shm(region, capacity).map_err(waker_code)
     } else {
@@ -546,20 +604,20 @@ fn hold_ring(
         }
         return Ok(ring);
     }
-    if !matches!(locale, Locale::File(_)) {
-        return Err(fail(
-            SUBETHA_E_INVALID_ARGUMENT,
-            "max_holders needs a file-backed ring; only its backings are files a holder can remove",
-        ));
-    }
     // The wakers and the notifier record are this layer's, kept beside
     // the ring's backings and invisible to it. Handed over so the last
     // holder takes the whole prefix rather than the ring's share of it.
-    ring.with_last_holder(
-        options.max_holders as usize,
-        on_last,
-        &[".cwaker.bin", ".pwaker.bin", ".notify.bin"],
-    )
+    let also_remove: &[&str] = match locale {
+        Locale::File(_) => &[".cwaker.bin", ".pwaker.bin", ".notify.bin"],
+        Locale::Shm { .. } => &["_cwaker", "_pwaker", "_notify"],
+        Locale::Anon => {
+            return Err(fail(
+                SUBETHA_E_INVALID_ARGUMENT,
+                "max_holders needs a file-backed or shared-memory ring; an anonymous ring has no backings a holder can remove",
+            ))
+        }
+    };
+    ring.with_last_holder(options.max_holders as usize, on_last, also_remove)
         .map_err(last_holder_code)
 }
 
@@ -568,7 +626,7 @@ impl RingObject {
         let mode = resolve_mode(options.mode)?;
         let ring = shape_ring(ring, &options)?;
         let ring = hold_ring(ring, &locale, &options)?;
-        let (consumer_waker, producer_waker) = wakers_for(&locale, options.max_waiters)?;
+        let (consumer_waker, producer_waker) = ring_wakers(&locale, options.max_waiters)?;
         let notifiers = notifiers_for(&locale)?;
         let ring = Arc::new(ring);
         let sidecar = if mode == SUBETHA_MODE_MANAGED {
@@ -981,11 +1039,35 @@ pub(crate) fn with_suffix(base: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// The shared-memory namespace a `SUBETHA_SHM_` constant names.
-pub(crate) fn namespace(ns: u32) -> Result<ShmNamespace, i32> {
+/// The shared-memory namespace a `SUBETHA_SHM_` constant names, with the
+/// container's SID read from `options` for `SUBETHA_SHM_APPCONTAINER`.
+///
+/// # Safety
+/// `options.shm_container_sid` is null or a NUL-terminated UTF-8 string.
+pub(crate) unsafe fn namespace(ns: u32, options: &subetha_ring_options) -> Result<ShmNamespace, i32> {
     match ns {
         SUBETHA_SHM_SESSION => Ok(ShmNamespace::Session),
         SUBETHA_SHM_MACHINE => Ok(ShmNamespace::Machine),
+        SUBETHA_SHM_APPCONTAINER => {
+            if options.shm_container_sid.is_null() {
+                return Err(fail(SUBETHA_E_INVALID_ARGUMENT, "SUBETHA_SHM_APPCONTAINER needs shm_container_sid"));
+            }
+            let sid = unsafe { text(options.shm_container_sid, "shm_container_sid") }?;
+            sid.parse::<ContainerSid>()
+                .map(ShmNamespace::AppContainer)
+                .map_err(|e| fail(SUBETHA_E_INVALID_ARGUMENT, format!("shm_container_sid: {e}")))
+        }
+        other => Err(fail(SUBETHA_E_INVALID_ARGUMENT, format!("namespace {other} is not a namespace"))),
+    }
+}
+
+/// Whether `ns` is one of the `SUBETHA_SHM_` constants, for a call that
+/// needs no more than that: an unlink by name, where Windows releases the
+/// name with the last handle and Unix names a region the same in every
+/// namespace.
+pub(crate) fn namespace_known(ns: u32) -> Result<(), i32> {
+    match ns {
+        SUBETHA_SHM_SESSION | SUBETHA_SHM_MACHINE | SUBETHA_SHM_APPCONTAINER => Ok(()),
         other => Err(fail(SUBETHA_E_INVALID_ARGUMENT, format!("namespace {other} is not a namespace"))),
     }
 }
@@ -1143,9 +1225,18 @@ pub unsafe extern "C" fn subetha_ring_open(
 }
 
 /// Create a ring in named shared memory under `name`, in the namespace
-/// `SUBETHA_SHM_SESSION` or `SUBETHA_SHM_MACHINE`. The regions are named
+/// `SUBETHA_SHM_SESSION`, `SUBETHA_SHM_MACHINE` or
+/// `SUBETHA_SHM_APPCONTAINER` with `shm_container_sid`. The regions are named
 /// `{name}_spsc`, `{name}_mpsc_<i>`, `{name}_mpmc_<i>`, `{name}_vyukov`,
-/// plus `{name}_cwaker` and `{name}_pwaker`.
+/// `{name}_peers`, plus `{name}_cwaker`, `{name}_pwaker` and the notifier
+/// record `{name}_notify`.
+///
+/// The names outlive every handle, as a file-backed ring's files do,
+/// including the ones made later by whichever handle needed them: a
+/// per-producer backing a peer grew, the payload region of the first
+/// oversized frame. `subetha_ring_unlink_shm` removes them, as does the
+/// last holder of a ring created with `max_holders`. On Windows a name goes
+/// with the last handle to its region whatever the ring does.
 ///
 /// # Safety
 /// `name` is a NUL-terminated UTF-8 string; `options` and `out` are valid
@@ -1172,7 +1263,7 @@ pub unsafe extern "C" fn subetha_ring_create_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -1196,8 +1287,8 @@ pub unsafe extern "C" fn subetha_ring_create_shm(
 }
 
 /// Attach to a ring another process created in named shared memory. The
-/// namespace must match the creator's: a mismatch resolves a different,
-/// empty set of regions rather than failing.
+/// attach makes nothing: a ring that is not there, including one created
+/// under another namespace, fails with `SUBETHA_E_RING_IO`.
 ///
 /// # Safety
 /// `name` is a NUL-terminated UTF-8 string; `options` and `out` are valid
@@ -1224,7 +1315,7 @@ pub unsafe extern "C" fn subetha_ring_open_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -1879,12 +1970,18 @@ pub unsafe extern "C" fn subetha_ring_recv_frame_wait(
     })
 }
 
-/// A shared-memory ring's names are released by the OS with the last
-/// handle that maps them: on Unix the creating handle unlinks each name
-/// when it is destroyed, on Windows the section vanishes when the last
-/// handle closes. There is nothing to remove by name, so this reports zero
-/// removed and succeeds; it exists so the two locales have the same
-/// lifecycle calls.
+/// Remove every name a shared-memory ring under `name` holds, so no later
+/// process attaches to it: the ring's regions, its two wakers, its
+/// notifier record, and on Unix the notifier FIFOs a consumer that died
+/// without detaching left behind. Handles still open keep their mappings
+/// until destroyed. The ring's peer directory names how many per-producer
+/// backings it has; with the directory gone, none are looked for. The
+/// counts land in `report` when it is not null. Returns
+/// `SUBETHA_E_RING_IO` when any removal was refused, with the first refusal
+/// named in the detail; a missing name is not a refusal.
+///
+/// On Windows a section's name goes with the last handle to it, so there
+/// is nothing to remove by name: this reports zero and succeeds.
 ///
 /// # Safety
 /// `name` is a NUL-terminated UTF-8 string; `report` is null or a valid
@@ -1899,18 +1996,27 @@ pub unsafe extern "C" fn subetha_ring_unlink_shm(
         if let Err(code) = require_initialized() {
             return code;
         }
-        if let Err(code) = unsafe { text(name, "name") } {
+        let name = match unsafe { text(name, "name") } {
+            Ok(n) => n,
+            Err(code) => return code,
+        };
+        if let Err(code) = namespace_known(shm_namespace) {
             return code;
         }
-        if let Err(code) = namespace(shm_namespace) {
-            return code;
+        // Unix names a region the same in every namespace and Windows
+        // removes nothing by name, so any of the three resolves here.
+        let ns = ShmNamespace::Session;
+        let mut found = AdaptiveRing::unlink_shmfs_in(name, ns, 0);
+        found.remove_shm(&format!("{name}_cwaker"), ns);
+        found.remove_shm(&format!("{name}_pwaker"), ns);
+        for path in subetha_cxc::cross_process_notifier::NotifyRecordHandle::shm_fifo_paths_under(name, ns) {
+            found.remove(path);
         }
-        if !report.is_null() {
-            // SAFETY: checked non-null; the caller guarantees it is writable.
-            unsafe { *report = subetha_unlink_report::default() };
+        found.remove_shm(&format!("{name}_notify"), ns);
+        if cfg!(windows) {
+            crate::error::set_detail("shared-memory names are released with the last handle; nothing to remove by name");
         }
-        crate::error::set_detail("shared-memory names are released with the last handle; nothing to remove by name");
-        SUBETHA_OK
+        unsafe { finish_unlink(found, report) }
     })
 }
 

@@ -12,15 +12,52 @@ exists for a documented reason, listed with it.
 
 ## Environment variables
 
-All are read once per process at first use and cached.
+All are read once per process at first use and cached, so a variable
+set from inside the process has to be set before SubEtha first reads
+it: before the first structure is made, and in Python and PowerShell
+before the package or module is loaded.
+
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
+```bash
+SUBETHA_WAIT_CALIBRATION=off cargo run --release
+```
+{{< /tab >}}
+
+{{< tab name="Python" >}}
+```python
+import os
+
+os.environ["SUBETHA_WAIT_CALIBRATION"] = "off"
+
+import subetha
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+$env:SUBETHA_WAIT_CALIBRATION = 'off'
+Import-Module SubEtha
+```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 | Variable | Effect | Default | When to set it |
 |---|---|---|---|
-| `SUBETHA_NO_MONITOR_WAIT=1` | Disables the hardware monitor-wait tier (`MONITORX`/`MWAITX`, `UMONITOR`/`UMWAIT`, `LDAXR`+`WFE`). Waits go straight from spin to the kernel park. | tier enabled where the CPU reports it | A/B measurement, or a host whose hypervisor advertises the CPUID bit but mishandles the instruction. |
-| `SUBETHA_MONITOR_WAIT_CYCLES=<n>` | Per-wait monitor budget in counter ticks before escalating to the kernel park. | ~90,000 TSC cycles on x86-64 (about 28 us); derived from `CNTFRQ_EL0` for the same window on aarch64 | Lengthen on hosts where kernel parks are unusually expensive; shorten when waits should yield the core sooner. |
+| `SUBETHA_WAIT_CALIBRATION=off` | No background calibration, no measurement and no cache: every blocking wait keeps 0.5.1's fixed ladder. `on` calibrates. | `on` | A process that must not spend the calibration's background processor time, or an A/B against the fixed ladder. |
+| `SUBETHA_NO_MONITOR_WAIT=1` | Removes the hardware monitor-wait phase (`MONITORX`/`MWAITX`, `UMONITOR`/`UMWAIT`, `LDAXR`+`WFE`) from every wait, and no monitor instruction runs, calibration included. A calibrated wait spins to its break-even and parks; the fixed ladder spins its rounds and parks. | phase present where the CPU reports a family | A/B measurement, or a host whose hypervisor advertises the CPUID bit but mishandles the instruction. |
+| `SUBETHA_MONITOR_WAIT_CYCLES=<n>` | The monitor phase's length in counter ticks, in the calibrated plan and the fixed ladder alike. | the calibrated plan's; in the fixed ladder ~90,000 TSC cycles on x86-64 (about 28 us), the same window from `CNTFRQ_EL0` on aarch64 | Lengthen on hosts where kernel parks are unusually expensive; shorten when waits should yield the core sooner. |
+| `SUBETHA_PRE_PARK_SPIN=<rounds>` | The spin phase's rounds before the monitor phase or the park, in every blocking wait; `0` skips the spin. | the calibrated plan's; 32 in the fixed ladder | A/B measurement; with `SUBETHA_NO_MONITOR_WAIT=1`, `0` gives a pure park. |
 | `SUBETHA_NO_MMF_WARM=1` | Disables prefaulting at MMF attach everywhere. | warm enabled on Linux (`MADV_POPULATE_WRITE`) and FreeBSD (`MADV_WILLNEED`) | A/B measurement of attach-time vs first-traffic fault cost. |
 | `SUBETHA_MMF_WARM=1` | Forces `PrefetchVirtualMemory` warm-up on Windows, where the automatic path is off (measured pure overhead on page-cache-hot backings). | off on Windows | Re-opening large persistent rings whose pages are cold on disk: one large batched I/O beats per-page demand faults. |
 | `SUBETHA_BUSY_POLL_US=<n>` | Sets `SO_BUSY_POLL` on bridge TCP sockets (Linux only): the kernel busy-polls the NIC queue for `n` microseconds before sleeping. | unset (no busy poll) | Latency-critical bridge links on NICs with NAPI support, where trading CPU for tail latency is the right call. |
+
+The four wait settings steer the
+[wait calibration](../../reference/subetha-cxc/coordination-types/wait-calibration/);
+a value they cannot use is ignored and named, with the reason, by
+`subetha_cxc::wait_active::ignored_settings()`.
 
 One bench-side variable, not read by the library:
 `SUBETHA_COMPARE_FILE=1` switches `examples/cross_process_compare.rs`
@@ -66,6 +103,12 @@ shape left, the shape taken and the walked set the morph leaves behind).
 The default feature set is empty: the core substrate compiles with
 no optional dependencies on every supported target.
 
+The bindings are built with their features already chosen. The
+default Python wheel leaves the bridges out, and `subetha.transports`
+lists the ones a wheel was built with. The PowerShell module always
+carries the TCP and QUIC bridges, since a module ships as one
+artifact with no way to ask for an extra.
+
 ## Build recipes
 
 | Recipe | What it does | Measured effect |
@@ -85,6 +128,7 @@ the substrate decided and where to check:
 | Probe | Selects | Inspect via |
 |---|---|---|
 | Monitor-wait family | WAITPKG, then MWAITX, then WFE on aarch64; `None` when hidden (hypervisors often hide the CPUID bits) | `subetha_cxc::monitor_wait_kind()` |
+| Wait plan | the spin, monitor and park lengths a blocking wait takes: calibrated for this host, core class and load band, or 0.5.1's fixed ladder until measured | `subetha_cxc::wait_active::active_plan(kind)`, `subetha_cxc::wait_calibration::report()` |
 | Invariant TSC (CPUID `0x8000_0007` EDX bit 8) | `StampKind::Tsc` ordering stamps; falls back to `SharedCounter` / `Monotonic` | `subetha_cxc::has_invariant_tsc()` |
 | CLDEMOTE (CPUID `7.0` ECX bit 25) | diagnostic only - the instruction is emitted unconditionally and is an architectural NOP where unsupported | `subetha_cxc::has_cldemote()` |
 

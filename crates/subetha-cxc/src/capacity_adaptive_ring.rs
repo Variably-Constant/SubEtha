@@ -47,12 +47,14 @@
 //!   next `is_still_valid()` call. Hot loops sample at whatever
 //!   cadence fits their latency budget; the substrate does not
 //!   push.
-//! - **Morph is serialized.** A single in-flight morph at a time;
-//!   concurrent callers of `morph_capacity_to` are mutex-serialized
-//!   so the stale-list push and atomic active swap are atomic with
-//!   respect to other morphs. Producer / consumer hot-path ops are
+//! - **Morphs land one after another.** A morph publishes its new
+//!   state (active backing, stale list, capacity, locale) with one
+//!   compare-and-swap against the state it read, so two concurrent
+//!   callers of `morph_capacity_to` never both build on one state:
+//!   the one that loses the swap decides again from the winner's
+//!   state and lands after it. Producer / consumer hot-path ops are
 //!   not serialized against the morph - they keep dispatching via
-//!   the ArcSwap pointer.
+//!   the state the SwapCell holds.
 //! - **Consumer is sole reader of every backing.** Producers only
 //!   write to active; morphs never read from any backing. This is
 //!   what keeps the per-backing SPSC/MPSC/MPMC contract intact
@@ -63,7 +65,7 @@
 //!
 //! For in-process and cross-thread use, the
 //! [`create_anon`](CapacityAdaptiveRing::create_anon) constructor
-//! holds the active ring in an [`ArcSwap`]; the morph is one
+//! holds the active ring in a [`SwapCell`]; the morph is one
 //! atomic store on the active pointer plus a push onto the stale
 //! list. The consumer's `try_recv` walks the stale list before
 //! reading from active, picking up every in-flight item in
@@ -98,14 +100,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
 
-use arc_swap::ArcSwap;
-use parking_lot::Mutex;
+use subetha_core::SwapCell;
 
 use crate::adaptive_ring::{AdaptiveError, AdaptiveRing, RingShape};
 use crate::ordering::{default_stamp_kind, OrderingMode, StampKind};
 use crate::shared_ring::RingError;
+use crate::warm_slot::WarmSlot;
 
 /// Locale target for a capacity wrapper's backings. Public mirror
 /// of the construction-time locale choice, used by
@@ -125,7 +127,7 @@ pub enum BackingTarget {
 /// Compound morph target for [`CapacityAdaptiveRing::morph_to_config`].
 /// Every axis is optional; `None` keeps the current value. One
 /// compound morph builds a single fresh backing at the combined target,
-/// mirrors registrations once, bumps the pin generation once, and
+/// carries the registered ids once, bumps the pin generation once, and
 /// appends the displaced active to the stale list once - however
 /// many axes changed.
 #[derive(Debug, Clone, Default)]
@@ -154,9 +156,8 @@ pub enum CapacityMorphError {
     /// Underlying ring allocation, push, or pop failed during the
     /// morph. The active backing is unchanged.
     Ring(RingError),
-    /// Producer / consumer registration on the new backing
-    /// failed (e.g. mirroring more peers than the configured
-    /// max_producers / max_consumers).
+    /// Carrying a registered producer or consumer id onto the new
+    /// backing failed (a producer's ring could not be made there).
     Adaptive(AdaptiveError),
 }
 
@@ -187,39 +188,26 @@ impl std::error::Error for CapacityMorphError {}
 /// Runtime-resizable adaptive ring.
 ///
 /// See the module-level docs for the morph protocol. Hot-path
-/// `try_send` / `try_recv` calls hop through one ArcSwap load plus
+/// `try_send` / `try_recv` calls hop through one SwapCell load plus
 /// the active [`AdaptiveRing`]'s dispatch.
 pub struct CapacityAdaptiveRing {
-    /// Combined active + stale list behind a single ArcSwap. Hot-
-    /// path `try_send` / `try_recv` performs one ArcSwap load
+    /// Combined active + stale list behind a single SwapCell. Hot-
+    /// path `try_send` / `try_recv` performs one SwapCell load
     /// (~5-10 ns) and delegates to the active backing's native
     /// dispatch; no mutex acquisition in steady state. Morph
     /// builds a fresh `RingState { active: new, stale: prune(old.stale) ++ old.active }`
     /// and atomic-swaps it; the FIFO-correctness combined-snapshot
     /// is given for free by the single atomic load.
-    state: ArcSwap<RingState>,
+    state: SwapCell<RingState>,
     /// Bumped on every successful morph so outstanding
     /// [`PinnedCapacity`] handles invalidate.
     pin_generation: AtomicU64,
-    /// Cached observable capacity of the active backing; stays in
-    /// lockstep with `active`.
-    capacity_atom: AtomicU64,
     /// max_producers configured at construction; mirrored on every
     /// newly-allocated backing during a morph.
     max_producers: usize,
     /// max_consumers configured at construction; mirrored on every
     /// newly-allocated backing during a morph.
     max_consumers: usize,
-    /// Locale source for the morph-allocated backings. `Anon` is
-    /// in-process; `File(base)` allocates new backings at
-    /// `{base}.cap_{N}_g{morph_seq}.bin` per morph; `Shm(prefix)`
-    /// allocates named-shm backings at
-    /// `{prefix}_cap_{N}_g{morph_seq}` per morph (cross-process
-    /// visible, RAM-resident). Behind a mutex because a compound
-    /// morph with a locale axis retargets it at runtime; read by
-    /// `build_backing` (also reachable off the morph lock via
-    /// `prewarm`).
-    backing_source: Mutex<BackingTarget>,
     /// Monotonic morph counter. Bumped on every morph ahead of the
     /// new backing is allocated so the new path / shm-name is
     /// unique even when callers cycle through the same capacities
@@ -234,11 +222,9 @@ pub struct CapacityAdaptiveRing {
     /// morph-allocated backing so the ordering axis survives
     /// capacity morphs.
     stamped: Option<StampKind>,
-    /// Serializes concurrent `morph_capacity_to` callers.
-    morph_lock: Mutex<()>,
     /// One-slot warm cache: a fully constructed (and stamped, when
     /// the wrapper is stamped) backing at a predicted
-    /// (capacity, locale), built off the morph lock by
+    /// (capacity, locale), built off the morph's critical path by
     /// [`prewarm`](Self::prewarm) / [`prewarm_config`](Self::prewarm_config).
     /// The morph takes it when both key components match the morph
     /// target, skipping allocation + mapping + zeroing on the
@@ -247,7 +233,7 @@ pub struct CapacityAdaptiveRing {
     /// on an empty backing costs microseconds. A wrong prediction
     /// stays in the slot until the next prewarm replaces it or
     /// the wrapper drops.
-    warm: Mutex<Option<(usize, BackingTarget, Arc<AdaptiveRing>)>>,
+    warm: WarmSlot<(usize, BackingTarget), Arc<AdaptiveRing>>,
     /// Successful warm-cache hits consumed by capacity morphs.
     warm_hits: AtomicU64,
     /// Items the consumer popped from stale (post-morph) backings
@@ -258,7 +244,7 @@ pub struct CapacityAdaptiveRing {
 }
 
 /// Atomic snapshot of the ring's active backing + stale list.
-/// Held behind an `ArcSwap` on [`CapacityAdaptiveRing`] so the
+/// Held behind a `SwapCell` on [`CapacityAdaptiveRing`] so the
 /// hot path is a single Acquire load: producers go straight to
 /// `state.active`, consumers walk `state.stale` then fall
 /// through to `state.active`. Morph constructs a new `RingState`
@@ -274,12 +260,61 @@ struct RingState {
     /// backing it names stays here so the write it carries is
     /// still drained.
     stale: Vec<Arc<AdaptiveRing>>,
+    /// The active backing's capacity.
+    capacity: usize,
+    /// Where this state's morphs and prewarms build backings. A
+    /// compound morph with a locale axis retargets it.
+    locale: BackingTarget,
+    /// Set once the state that replaced this one has been settled: a
+    /// registration that lands on `active` after that is taken back and
+    /// made again on the state in place. A reshaped copy of the state
+    /// names the same backing and shares it.
+    registrations_sealed: Arc<AtomicBool>,
+    /// The seal of the backing this state's morph replaced, which the
+    /// settle sets before it reads that backing's registrations.
+    predecessor_sealed: Option<Arc<AtomicBool>>,
+    /// Whether the registrations on the backing this state replaced are
+    /// carried onto `active`. False from the morph that publishes the
+    /// state until the first registration, send, receive or pin on it
+    /// settles it.
+    settled: AtomicBool,
 }
 
 unsafe impl Send for CapacityAdaptiveRing {}
 unsafe impl Sync for CapacityAdaptiveRing {}
 
 impl CapacityAdaptiveRing {
+    /// The wrapper around its first backing.
+    fn around(
+        ring: AdaptiveRing,
+        max_producers: usize,
+        max_consumers: usize,
+        capacity: usize,
+        locale: BackingTarget,
+        stamped: Option<StampKind>,
+    ) -> Self {
+        Self {
+            // The first backing replaced none, so it has nothing to carry.
+            state: SwapCell::from_arc(Arc::new(RingState {
+                active: Arc::new(ring),
+                stale: Vec::new(),
+                capacity,
+                locale,
+                registrations_sealed: Arc::new(AtomicBool::new(false)),
+                predecessor_sealed: None,
+                settled: AtomicBool::new(true),
+            })),
+            pin_generation: AtomicU64::new(0),
+            max_producers,
+            max_consumers,
+            morph_seq: AtomicU64::new(0),
+            stamped,
+            warm: WarmSlot::new(),
+            warm_hits: AtomicU64::new(0),
+            stale_pops: AtomicU64::new(0),
+        }
+    }
+
     /// Anon (in-process) capacity-adaptive ring. The active backing
     /// is an anonymous mmap; subsequent morphs allocate fresh anon
     /// mmaps at the new capacity and drop the prior one once
@@ -297,23 +332,9 @@ impl CapacityAdaptiveRing {
             max_consumers,
             initial_capacity,
         )?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            max_producers,
-            max_consumers,
-            backing_source: Mutex::new(BackingTarget::Anon),
-            morph_seq: AtomicU64::new(0),
-            stamped: None,
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring, max_producers, max_consumers, initial_capacity, BackingTarget::Anon, None,
+        ))
     }
 
     /// As [`create_anon`](Self::create_anon) with ordering stamps
@@ -334,23 +355,9 @@ impl CapacityAdaptiveRing {
         )?
         .with_ordering_stamps_kind(kind)
         .map_err(CapacityMorphError::Ring)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            max_producers,
-            max_consumers,
-            backing_source: Mutex::new(BackingTarget::Anon),
-            morph_seq: AtomicU64::new(0),
-            stamped: Some(kind),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring, max_producers, max_consumers, initial_capacity, BackingTarget::Anon, Some(kind),
+        ))
     }
 
     /// File-backed capacity-adaptive ring. The active backing is
@@ -374,23 +381,9 @@ impl CapacityAdaptiveRing {
             max_consumers,
             initial_capacity,
         )?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            max_producers,
-            max_consumers,
-            backing_source: Mutex::new(BackingTarget::File(base)),
-            morph_seq: AtomicU64::new(0),
-            stamped: None,
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring, max_producers, max_consumers, initial_capacity, BackingTarget::File(base), None,
+        ))
     }
 
     /// Attach to the file-backed capacity-adaptive ring another handle
@@ -419,23 +412,9 @@ impl CapacityAdaptiveRing {
         } else {
             (ring, None)
         };
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            max_producers,
-            max_consumers,
-            backing_source: Mutex::new(BackingTarget::File(base)),
-            morph_seq: AtomicU64::new(0),
-            stamped: kind,
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring, max_producers, max_consumers, initial_capacity, BackingTarget::File(base), kind,
+        ))
     }
 
     /// As [`create`](Self::create) with ordering stamps on the
@@ -457,23 +436,9 @@ impl CapacityAdaptiveRing {
         )?
         .with_ordering_stamps_kind(kind)
         .map_err(CapacityMorphError::Ring)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
-            max_producers,
-            max_consumers,
-            backing_source: Mutex::new(BackingTarget::File(base)),
-            morph_seq: AtomicU64::new(0),
-            stamped: Some(kind),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+        Ok(Self::around(
+            ring, max_producers, max_consumers, initial_capacity, BackingTarget::File(base), Some(kind),
+        ))
     }
 
     /// ShmFs (named shared memory) capacity-adaptive ring. The
@@ -483,6 +448,10 @@ impl CapacityAdaptiveRing {
     /// drain. Cross-process visible: another process opens the
     /// same logical ring by constructing a CapacityAdaptiveRing
     /// with the same `name_prefix`.
+    ///
+    /// Each backing is this ring's alone, so its shared-memory names go
+    /// when the ring drops it, unlike a plain shm-backed
+    /// [`AdaptiveRing`]'s, which outlive every handle.
     pub fn create_shmfs(
         name_prefix: &str,
         max_producers: usize,
@@ -498,24 +467,16 @@ impl CapacityAdaptiveRing {
             max_producers,
             max_consumers,
             initial_capacity,
-        )?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
+        )?
+        .removing_names_on_drop();
+        Ok(Self::around(
+            ring,
             max_producers,
             max_consumers,
-            backing_source: Mutex::new(BackingTarget::Shm(name_prefix.to_owned())),
-            morph_seq: AtomicU64::new(0),
-            stamped: None,
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+            initial_capacity,
+            BackingTarget::Shm(name_prefix.to_owned()),
+            None,
+        ))
     }
 
     /// As [`create_shmfs`](Self::create_shmfs) with ordering stamps
@@ -534,32 +495,23 @@ impl CapacityAdaptiveRing {
         let ring = AdaptiveRing::create_shmfs(
             &name, max_producers, max_consumers, initial_capacity,
         )?
+        .removing_names_on_drop()
         .with_ordering_stamps_kind(kind)
         .map_err(CapacityMorphError::Ring)?;
-        Ok(Self {
-            state: ArcSwap::from(Arc::new(RingState {
-                active: Arc::new(ring),
-                stale: Vec::new(),
-            })),
-            pin_generation: AtomicU64::new(0),
-            capacity_atom: AtomicU64::new(initial_capacity as u64),
+        Ok(Self::around(
+            ring,
             max_producers,
             max_consumers,
-            backing_source: Mutex::new(BackingTarget::Shm(name_prefix.to_owned())),
-            morph_seq: AtomicU64::new(0),
-            stamped: Some(kind),
-            morph_lock: Mutex::new(()),
-            warm: Mutex::new(None),
-            warm_hits: AtomicU64::new(0),
-            stale_pops: AtomicU64::new(0),
-        })
+            initial_capacity,
+            BackingTarget::Shm(name_prefix.to_owned()),
+            Some(kind),
+        ))
     }
 
-    /// Current capacity of the active backing. Stays in lockstep
-    /// with the active ArcSwap; observers see the value the morph
-    /// publishes via a Release store.
+    /// Current capacity of the active backing, read from the same
+    /// state the active backing is.
     pub fn current_capacity(&self) -> usize {
-        self.capacity_atom.load(Ordering::Acquire) as usize
+        self.state.load().capacity
     }
 
     /// Current pin generation. Pinned handles capture this at pin
@@ -568,29 +520,91 @@ impl CapacityAdaptiveRing {
         self.pin_generation.load(Ordering::Acquire)
     }
 
-    /// Register a producer on the active backing. The returned id
-    /// is valid only against the current capacity backing; after a
-    /// morph the caller re-registers against the new active backing
-    /// (mirrored automatically by `morph_capacity_to`).
+    /// Register a producer on the active backing and return its id. The
+    /// id stays the producer's across morphs: each backing a morph makes
+    /// active carries the registrations of the one it replaced, and a
+    /// registration that lands on a backing already replaced is made
+    /// again on the backing in place.
     pub fn register_producer(&self) -> Result<usize, AdaptiveError> {
-        self.state.load().active.register_producer()
+        loop {
+            let state = self.state.load_full();
+            self.settle(&state);
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            let id = state.active.register_producer()?;
+            // Pairs with the fence in `settle`: either the seal is seen
+            // here, or the settle that set it sees this id and carries it.
+            fence(Ordering::SeqCst);
+            if !state.registrations_sealed.load(Ordering::SeqCst) {
+                return Ok(id);
+            }
+            state.active.unregister_producer(id);
+        }
     }
 
-    /// Register a consumer on the active backing. The id is valid only
-    /// against the current backing, as with `register_producer`.
+    /// Register a consumer on the active backing and return its id,
+    /// which stays the consumer's across morphs as a producer's does.
     pub fn register_consumer(&self) -> Result<usize, AdaptiveError> {
-        self.state.load().active.register_consumer()
+        loop {
+            let state = self.state.load_full();
+            self.settle(&state);
+            let id = state.active.register_consumer()?;
+            // Pairs with the fence in `settle`, as in `register_producer`.
+            fence(Ordering::SeqCst);
+            if !state.registrations_sealed.load(Ordering::SeqCst) {
+                return Ok(id);
+            }
+            state.active.unregister_consumer(id);
+        }
     }
 
-    /// Hot-path push. One ArcSwap load + the active backing's
-    /// dispatched `try_send`.
+    /// Carry the registrations of the backing `state`'s morph replaced
+    /// onto its active backing, once, before anything registers on,
+    /// sends into, receives from or pins it. The replaced backing is
+    /// sealed first, so a registration that lands there afterwards is
+    /// made again on this state instead. A producer whose ring cannot
+    /// be made here keeps its claim, so the shape still counts it, and
+    /// is named on stderr: its sends to this backing are refused.
+    fn settle(&self, state: &RingState) {
+        if state.settled.load(Ordering::Acquire) {
+            return;
+        }
+        if let (Some(seal), Some(replaced)) = (&state.predecessor_sealed, state.stale.last()) {
+            seal.store(true, Ordering::SeqCst);
+            // Pairs with the fence in `register_producer` and
+            // `register_consumer`.
+            fence(Ordering::SeqCst);
+            for id in replaced.producer_ids() {
+                if let Err(e) = state.active.carry_producer(id) {
+                    eprintln!(
+                        "subetha: producer {id} could not be carried onto the backing a capacity \
+                         morph made active, so what it sends there is refused: {e:?}"
+                    );
+                }
+            }
+            for id in replaced.consumer_ids() {
+                if let Err(e) = state.active.carry_consumer(id) {
+                    eprintln!(
+                        "subetha: consumer {id} could not be carried onto the backing a capacity \
+                         morph made active: {e:?}"
+                    );
+                }
+            }
+        }
+        state.settled.store(true, Ordering::Release);
+    }
+
+    /// Hot-path push. One SwapCell load + the active backing's
+    /// dispatched `try_send`, after the settle a new backing takes once.
     #[inline]
     pub fn try_send(
         &self,
         producer_id: usize,
         payload: &[u8],
     ) -> Result<(), RingError> {
-        self.state.load().active.try_send(producer_id, payload)
+        let state = self.state.load();
+        self.settle(&state);
+        state.active.try_send(producer_id, payload)
     }
 
     /// Hot-path pop. Walks the stale backing list oldest-first,
@@ -615,7 +629,7 @@ impl CapacityAdaptiveRing {
         consumer_id: usize,
         out: &mut [u8],
     ) -> Result<usize, RingError> {
-        // One ArcSwap load gives us a consistent snapshot of
+        // One SwapCell load gives us a consistent snapshot of
         // both stale and active. The wrapper does no mutex
         // acquisition on the hot path.
         //
@@ -661,6 +675,7 @@ impl CapacityAdaptiveRing {
                 }
             }
         }
+        self.settle(&state);
         state.active.try_recv(consumer_id, out)
     }
 
@@ -668,9 +683,9 @@ impl CapacityAdaptiveRing {
     /// fresh backing at the new size, bumps `pin_generation`,
     /// stashes the old backing onto the `stale` list (the
     /// consumer drains it via `try_recv`'s stale-walk), and
-    /// atomic-swaps the active pointer. Concurrent morphs are
-    /// serialized through an internal mutex; hot-path ops are not
-    /// blocked.
+    /// atomic-swaps the active pointer. Concurrent morphs each land
+    /// in turn: a morph whose state another replaced first decides
+    /// again from the replacement. Hot-path ops are not blocked.
     ///
     /// Critically the morph leaves the old backing undrained - that
     /// would race against the consumer's concurrent `try_recv` on
@@ -702,7 +717,7 @@ impl CapacityAdaptiveRing {
     /// locale} in a single transition. Builds one fresh backing at
     /// the combined target (warm-cache hit when
     /// [`prewarm_config`](Self::prewarm_config) predicted it),
-    /// seeds stamps, mirrors registrations once, applies the
+    /// seeds stamps, carries the registered ids once, applies the
     /// target shape to the empty new backing, bumps the pin
     /// generation once, and appends the displaced active to the
     /// stale list once - however many axes changed. A sequential
@@ -721,130 +736,151 @@ impl CapacityAdaptiveRing {
         &self,
         target: &RingConfig,
     ) -> Result<(), CapacityMorphError> {
-        let _morph_guard = self.morph_lock.lock();
+        loop {
+            let old_state = self.state.load_full();
+            // A state is settled before it is replaced, so the backing
+            // its settle carries from is never one a prune has taken.
+            self.settle(&old_state);
+            let old = Arc::clone(&old_state.active);
+            let old_capacity = old_state.capacity;
+            let old_shape = old.current_shape();
+            let old_locale = old_state.locale.clone();
 
-        let old_state = self.state.load_full();
-        let old = Arc::clone(&old_state.active);
-        let old_capacity = self.capacity_atom.load(Ordering::Acquire) as usize;
-        let old_shape = old.current_shape();
-        let old_locale = self.backing_source.lock().clone();
-
-        let new_capacity = target.capacity.unwrap_or(old_capacity);
-        if !new_capacity.is_power_of_two() || new_capacity < 2 {
-            return Err(CapacityMorphError::InvalidCapacity);
-        }
-        let new_shape = target.shape.unwrap_or(old_shape);
-        let new_locale =
-            target.locale.clone().unwrap_or_else(|| old_locale.clone());
-
-        if new_capacity == old_capacity
-            && new_shape == old_shape
-            && new_locale == old_locale
-        {
-            return Ok(());
-        }
-
-        // Shape-only: in-place morph on the active backing. No
-        // fresh backing, no wrapper pin invalidation, no stale
-        // entry - AdaptiveRing pre-allocates all four shape
-        // protocols and handles its own transition.
-        if new_capacity == old_capacity && new_locale == old_locale {
-            return old.morph_to(new_shape).map_err(CapacityMorphError::Ring);
-        }
-
-        // Publish a locale retarget before building so this build
-        // and every later one allocate at the new locale.
-        if new_locale != old_locale {
-            *self.backing_source.lock() = new_locale.clone();
-        }
-
-        // Warm-cache probe: one uncontended lock + Option take. A
-        // prediction matching the morph target's (capacity, locale)
-        // skips allocation + mapping + zeroing entirely; a mismatch
-        // stays cached for a later morph and the cold path below
-        // runs unchanged.
-        let warm_hit = {
-            let mut warm = self.warm.lock();
-            warm.take_if(|(cap, loc, _)| {
-                *cap == new_capacity && *loc == new_locale
-            })
-        };
-        let new = match warm_hit {
-            Some((_, _, ring)) => {
-                self.warm_hits.fetch_add(1, Ordering::Relaxed);
-                ring
+            let new_capacity = target.capacity.unwrap_or(old_capacity);
+            if !new_capacity.is_power_of_two() || new_capacity < 2 {
+                return Err(CapacityMorphError::InvalidCapacity);
             }
-            None => self.build_backing(new_capacity, &new_locale)?,
-        };
+            let new_shape = target.shape.unwrap_or(old_shape);
+            let new_locale =
+                target.locale.clone().unwrap_or_else(|| old_locale.clone());
 
-        // Seed the ordering axis at swap time - counters move
-        // continuously, so seeding cannot happen at build time.
-        // The fresh region inherits the old one's counter stamps
-        // and live mode flag, keeping stamps monotone across the
-        // swap for warm and cold builds alike.
-        if self.stamped.is_some()
-            && let (Some(new_region), Some(old_region)) =
-                (new.ordering_region(), old.ordering_region())
-        {
-            new_region.seed_from(old_region);
+            if new_capacity == old_capacity
+                && new_shape == old_shape
+                && new_locale == old_locale
+            {
+                return Ok(());
+            }
+
+            // Shape-only: in-place morph on the active backing. No
+            // fresh backing, no wrapper pin invalidation, no stale
+            // entry - AdaptiveRing pre-allocates all four shape
+            // protocols and handles its own transition. A copy of the
+            // state goes in after it, so a morph that read the state
+            // before this reshape finds it replaced and decides again
+            // from the reshaped backing.
+            if new_capacity == old_capacity && new_locale == old_locale {
+                old.morph_to(new_shape).map_err(CapacityMorphError::Ring)?;
+                let reshaped = RingState {
+                    active: Arc::clone(&old),
+                    stale: old_state.stale.clone(),
+                    capacity: old_capacity,
+                    locale: old_locale,
+                    registrations_sealed: Arc::clone(&old_state.registrations_sealed),
+                    predecessor_sealed: old_state.predecessor_sealed.clone(),
+                    // Settled above, with the same backing.
+                    settled: AtomicBool::new(true),
+                };
+                if self.publish_state(&old_state, reshaped) {
+                    return Ok(());
+                }
+                continue;
+            }
+
+            // Warm-cache probe: a prediction matching the morph
+            // target's (capacity, locale) skips allocation + mapping +
+            // zeroing entirely; a mismatch stays cached for a later
+            // morph and the cold path below runs unchanged.
+            let (new, from_warm) = match self.warm.take(&(new_capacity, new_locale.clone())) {
+                Some(ring) => (ring, true),
+                None => (self.build_backing(new_capacity, &new_locale)?, false),
+            };
+
+            // Seed the ordering axis at swap time - counters move
+            // continuously, so seeding cannot happen at build time.
+            // The fresh region inherits the old one's counter stamps
+            // and live mode flag, keeping stamps monotone across the
+            // swap for warm and cold builds alike.
+            if self.stamped.is_some()
+                && let (Some(new_region), Some(old_region)) =
+                    (new.ordering_region(), old.ordering_region())
+            {
+                new_region.seed_from(old_region);
+            }
+
+            // Carry the registered ids so the new backing accepts ops
+            // against the same ids the old one accepted. One that lands
+            // on the old backing after this read is carried by the new
+            // state's settle.
+            for id in old.producer_ids() {
+                new.carry_producer(id)?;
+            }
+            for id in old.consumer_ids() {
+                new.carry_consumer(id)?;
+            }
+
+            // Apply the target shape to the (empty, unobserved) new
+            // backing. Fresh and warm backings both start SPSC, so one
+            // call covers the keep-shape mirror and the compound shape
+            // axis; registration counts alone never trigger a shape
+            // morph, and skipping this would silently drop an MPSC /
+            // MPMC / Vyukov ring back to SPSC on the new backing.
+            if new.current_shape() != new_shape {
+                new.morph_to(new_shape).map_err(CapacityMorphError::Ring)?;
+            }
+
+            // Build the new state in one shot: prune the old stale
+            // list, append the prior active onto the end, then publish
+            // atomically. Producers and consumers reading via
+            // `self.state.load()` see either the full old state or the
+            // full new state - never a half-state where active and
+            // stale disagree.
+            //
+            // A stale entry leaves the list only when it is drained and
+            // this list is its last holder. A producer pushes into the
+            // active backing of the state it loaded, and that load can
+            // predate this morph and the one before it; its snapshot
+            // holds the RingState, which holds the backing, so a
+            // backing some snapshot can still reach has a strong count
+            // above one and stays reachable to the consumer's stale walk
+            // for the push that has not landed yet. With this list the
+            // sole holder, no push can arrive and the emptiness is
+            // final.
+            let mut new_stale: Vec<Arc<AdaptiveRing>> = old_state
+                .stale
+                .iter()
+                .filter(|r| !(r.is_empty() && Arc::strong_count(r) == 1))
+                .cloned()
+                .collect();
+            new_stale.push(old);
+            let new_state = RingState {
+                active: new,
+                stale: new_stale,
+                capacity: new_capacity,
+                locale: new_locale,
+                registrations_sealed: Arc::new(AtomicBool::new(false)),
+                predecessor_sealed: Some(Arc::clone(&old_state.registrations_sealed)),
+                settled: AtomicBool::new(false),
+            };
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            if self.publish_state(&old_state, new_state) {
+                if from_warm {
+                    self.warm_hits.fetch_add(1, Ordering::Relaxed);
+                }
+                // Bump the pin generation so outstanding pins invalidate.
+                self.pin_generation.fetch_add(1, Ordering::AcqRel);
+                return Ok(());
+            }
+            // Another morph replaced the state first. The backing built
+            // here was shaped for a state that is gone, so it drops, and
+            // the next pass decides again from the state in place.
         }
+    }
 
-        // Mirror the producer/consumer registration counts so the
-        // new backing accepts ops against the same ids the old one
-        // accepted.
-        let n_producers = old.active_producers();
-        let n_consumers = old.active_consumers();
-        for _ in 0..n_producers {
-            new.register_producer()?;
-        }
-        for _ in 0..n_consumers {
-            new.register_consumer()?;
-        }
-
-        // Apply the target shape to the (empty, unobserved) new
-        // backing. Fresh and warm backings both start SPSC, so one
-        // call covers the keep-shape mirror and the compound shape
-        // axis; registration counts alone never trigger a shape
-        // morph, and skipping this would silently drop an MPSC /
-        // MPMC / Vyukov ring back to SPSC on the new backing.
-        if new.current_shape() != new_shape {
-            new.morph_to(new_shape).map_err(CapacityMorphError::Ring)?;
-        }
-
-        // Bump the pin generation so outstanding pins invalidate.
-        self.pin_generation.fetch_add(1, Ordering::AcqRel);
-
-        // Build the new state in one shot: prune the old stale
-        // list, append the prior active onto the end, then publish
-        // atomically. Producers and consumers reading via
-        // `self.state.load()` see either the full old state or the
-        // full new state - never a half-state where active and stale
-        // disagree.
-        //
-        // A stale entry leaves the list only when it is drained and
-        // this list is its last holder. A producer pushes into the
-        // active backing of the state it loaded, and that load can
-        // predate this morph and the one before it; its snapshot
-        // holds the RingState, which holds the backing, so a backing
-        // some snapshot can still reach has a strong count above one
-        // and stays reachable to the consumer's stale walk for the
-        // push that has not landed yet. With this list the sole
-        // holder, no push can arrive and the emptiness is final.
-        let mut new_stale: Vec<Arc<AdaptiveRing>> = old_state
-            .stale
-            .iter()
-            .filter(|r| !(r.is_empty() && Arc::strong_count(r) == 1))
-            .cloned()
-            .collect();
-        new_stale.push(old);
-        let new_state = RingState { active: new, stale: new_stale };
-        self.state.store(Arc::new(new_state));
-
-        // Publish the new observable capacity.
-        self.capacity_atom
-            .store(new_capacity as u64, Ordering::Release);
-
-        Ok(())
+    /// Put `new` in place of `old`: false when another morph replaced
+    /// `old` first.
+    fn publish_state(&self, old: &Arc<RingState>, new: RingState) -> bool {
+        self.state.compare_and_set(old, Arc::new(new)).is_ok()
     }
 
     /// Construct (and stamp, when the wrapper is stamped) a fresh
@@ -881,7 +917,8 @@ impl CapacityAdaptiveRing {
                 self.max_producers,
                 self.max_consumers,
                 capacity,
-            )?,
+            )?
+            .removing_names_on_drop(),
         };
         // Stamp at build time: stamping consumes the ring by
         // value, so a cached warm backing must already carry its
@@ -896,7 +933,7 @@ impl CapacityAdaptiveRing {
     }
 
     /// Speculatively build a backing at `capacity` (current
-    /// locale) into the one-slot warm cache, off the morph lock's
+    /// locale) into the one-slot warm cache, off the morph's
     /// critical path. The next morph targeting that capacity
     /// consumes it and skips allocation + mapping + zeroing.
     pub fn prewarm(&self, capacity: usize) -> Result<(), CapacityMorphError> {
@@ -907,7 +944,7 @@ impl CapacityAdaptiveRing {
     }
 
     /// Speculatively build a backing at `target`'s (capacity,
-    /// locale) into the one-slot warm cache, off the morph lock's
+    /// locale) into the one-slot warm cache, off the morph's
     /// critical path - the build half of a build-beside-and-
     /// repatch transition: the following
     /// [`morph_to_config`](Self::morph_to_config) at the same
@@ -929,26 +966,19 @@ impl CapacityAdaptiveRing {
         let locale = target
             .locale
             .clone()
-            .unwrap_or_else(|| self.backing_source.lock().clone());
-        if self
-            .warm
-            .lock()
-            .as_ref()
-            .is_some_and(|(c, l, _)| *c == capacity && *l == locale)
-        {
+            .unwrap_or_else(|| self.state.load().locale.clone());
+        if self.warm.holds(&(capacity, locale.clone())) {
             return Ok(());
         }
-        // Build without holding the warm lock - a large file-backed
-        // build takes milliseconds and the lock is probed by every
-        // morph. Concurrent prewarms race benignly: last store wins.
+        // Concurrent prewarms race benignly: the last store wins.
         let ring = self.build_backing(capacity, &locale)?;
-        *self.warm.lock() = Some((capacity, locale, ring));
+        self.warm.store((capacity, locale), ring);
         Ok(())
     }
 
     /// Capacity currently held in the warm cache, if any.
     pub fn warm_capacity(&self) -> Option<usize> {
-        self.warm.lock().as_ref().map(|(c, _, _)| *c)
+        self.warm.key().map(|(capacity, _)| capacity)
     }
 
     /// Number of morphs that consumed a warm-cache prediction.
@@ -966,18 +996,21 @@ impl CapacityAdaptiveRing {
     /// Drop any cached prediction, releasing its memory (and its
     /// file / shm region for non-anon locales).
     pub fn clear_warm(&self) {
-        *self.warm.lock() = None;
+        self.warm.clear();
     }
 
     /// Pin the current capacity backing for a hot loop. The
     /// returned [`PinnedCapacity`] exposes the underlying
     /// [`AdaptiveRing`] directly and validates
     /// against the pin generation via
-    /// [`is_still_valid`](PinnedCapacity::is_still_valid).
+    /// [`is_still_valid`](PinnedCapacity::is_still_valid). The backing
+    /// is settled first, so every registered id is on it.
     pub fn pin_current_capacity(&self) -> PinnedCapacity<'_> {
         let captured_gen = self.pin_generation.load(Ordering::Acquire);
-        let ring = Arc::clone(&self.state.load().active);
-        let capacity = self.capacity_atom.load(Ordering::Acquire) as usize;
+        let state = self.state.load();
+        self.settle(&state);
+        let ring = Arc::clone(&state.active);
+        let capacity = state.capacity;
         PinnedCapacity {
             parent: self,
             pinned_generation: captured_gen,
@@ -987,11 +1020,14 @@ impl CapacityAdaptiveRing {
         }
     }
 
-    /// Direct access to the active [`AdaptiveRing`].
+    /// Direct access to the active [`AdaptiveRing`], settled first, so
+    /// every registered id is on it.
     /// Override hatch for callers that want the shape-axis surface
     /// on top of the capacity-axis morphing.
     pub fn ring_handle(&self) -> Arc<AdaptiveRing> {
-        Arc::clone(&self.state.load().active)
+        let state = self.state.load();
+        self.settle(&state);
+        Arc::clone(&state.active)
     }
 
     /// Whether this wrapper's backings carry ordering stamps.
@@ -1230,11 +1266,11 @@ impl CapacityAdaptiveRingSidecar {
     /// Prediction wiring: when `policy.predict` names the same
     /// target on two consecutive scans (a sustained trend, not a
     /// one-scan blip), the sidecar pre-builds that backing via
-    /// [`CapacityAdaptiveRing::prewarm`] - off the morph lock, on
-    /// this thread's idle time - so the eventual `decide`-driven
-    /// morph consumes it instead of allocating on the critical
-    /// path. Policies whose `predict` returns `None` (the trait
-    /// default) get today's behavior exactly.
+    /// [`CapacityAdaptiveRing::prewarm`] - off the morph's critical
+    /// path, on this thread's idle time - so the eventual
+    /// `decide`-driven morph consumes it instead of allocating on the
+    /// critical path. A policy whose `predict` returns `None` (the
+    /// trait default) never prewarms.
     pub fn spawn<P: CapacityPolicy>(
         ring: Arc<CapacityAdaptiveRing>,
         policy: P,
@@ -2113,5 +2149,64 @@ mod tests {
         );
         assert_eq!(&out[..8], &7u64.to_le_bytes());
         assert!(ring.try_recv(0, &mut out).is_err(), "nothing else was pushed");
+    }
+
+    /// One item from each of two producers after a morph: the backing in
+    /// place counts both, so it is not a single-producer ring with two
+    /// writers, and both items come out.
+    fn sends_from_both_arrive(ring: &CapacityAdaptiveRing, first: usize, late: usize, consumer: usize) {
+        assert_ne!(first, late, "two producers were handed one id");
+        for (id, value) in [(first, 1u64), (late, 2u64)] {
+            let mut payload = [0u8; 56];
+            payload[..8].copy_from_slice(&value.to_le_bytes());
+            if let Err(e) = ring.try_send(id, &payload) {
+                panic!("producer {id}'s send after the morph was refused: {e:?}");
+            }
+        }
+        assert_eq!(
+            ring.ring_handle().active_producers(),
+            2,
+            "the backing in place counts one producer while two send into it"
+        );
+        let mut got = Vec::new();
+        let mut out = [0u8; 64];
+        while ring.try_recv(consumer, &mut out).is_ok() {
+            got.push(u64::from_le_bytes(out[..8].try_into().unwrap()));
+        }
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2], "an item a producer sent after the morph is missing");
+    }
+
+    /// A producer that registers while a morph has built its backing and
+    /// not yet published it is carried onto that backing.
+    #[test]
+    fn a_producer_registering_inside_a_morph_is_carried_onto_the_new_backing() {
+        let ring = Arc::new(CapacityAdaptiveRing::create_anon(2, 1, 64).unwrap());
+        let first = ring.register_producer().unwrap();
+        let consumer = ring.register_consumer().unwrap();
+        let morphing = Arc::clone(&ring);
+        let (pause, morph) = crate::test_races::stopped(move || morphing.morph_capacity_to(128));
+        let late = ring.register_producer().expect("a registration inside the morph");
+        pause.release();
+        morph.join().expect("the morph thread").expect("the morph");
+        sends_from_both_arrive(&ring, first, late, consumer);
+    }
+
+    /// A producer stopped before it registers, while a morph publishes a
+    /// backing and a handle on it settles it: the registration lands on
+    /// the backing already replaced, finds it sealed, and is made again on
+    /// the backing in place.
+    #[test]
+    fn a_producer_registering_on_a_replaced_backing_registers_on_the_new_one() {
+        let ring = Arc::new(CapacityAdaptiveRing::create_anon(2, 1, 64).unwrap());
+        let first = ring.register_producer().unwrap();
+        let consumer = ring.register_consumer().unwrap();
+        let registering = Arc::clone(&ring);
+        let (pause, registrant) = crate::test_races::stopped(move || registering.register_producer());
+        ring.morph_capacity_to(128).expect("the morph");
+        assert_eq!(ring.ring_handle().active_producers(), 1, "only the first producer is registered yet");
+        pause.release();
+        let late = registrant.join().expect("the registrant thread").expect("the registration");
+        sends_from_both_arrive(&ring, first, late, consumer);
     }
 }

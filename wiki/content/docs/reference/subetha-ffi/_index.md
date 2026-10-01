@@ -78,7 +78,17 @@ int main(void) {
 Another process attaches to the same prefix with `subetha_ring_open`, and a
 `subetha_ring_pop_wait` there parks on a waker in the mapping that this
 process's push wakes. `subetha_ring_create_shm` and `subetha_ring_open_shm`
-do the same in named shared memory.
+do the same in named shared memory. A shared-memory ring's names outlive
+every handle, as a file ring's files do, whichever process made them:
+`subetha_ring_unlink_shm` removes them, as does the last holder of a ring
+created with `max_holders`. On Windows a name goes with the last handle to
+its region, so a ring's handles open what their peers make (a grown
+producer pair, the payload region) at their next call, and a managed-mode
+ring's sidecar opens it between calls too. A region whose maker left
+before anything opened it is gone with what was sent into it: its
+producer pair is laid out again empty and the loss written to stderr, and
+a frame whose payload region went that way returns `SUBETHA_E_RING_IO`.
+See the [AdaptiveRing lifetime](../subetha-cxc/rings/shared-ring-adaptive/#lifetime).
 
 The ring moves fixed slots of `SUBETHA_RING_SLOT_BYTES` bytes. A push
 zero-fills the slot past its payload and a pop yields the whole slot, so
@@ -292,9 +302,10 @@ rather than as packed pairs.
   claim cannot overwrite the winner's value.
 
 - `subetha_waker_`: parking and waking between processes, down on the
-  platform's own futex - `WaitOnAddress` and the hardware monitor on
-  Windows, `futex` on Linux, `_umtx_op` on FreeBSD - so a parked thread
-  costs nothing until it is woken. A consumer parks at the sequence
+  platform's own wait - `futex` on Linux, `_umtx_op` on FreeBSD, and on
+  Windows the hardware monitor followed by a named event the parker
+  publishes in its slot - so a parked thread costs nothing until it is
+  woken. A consumer parks at the sequence
   number it is waiting for and a producer that reaches that number wakes
   it; the sequence is the caller's own, a ring's write position or a job
   counter or anything a producer can compare against.
@@ -417,9 +428,12 @@ Tier 5, the probabilistic and specialist structures:
 
 `subetha_ring_options` also carries the adaptive ring's frame region
 geometry (`frame_block`, `frame_blocks`), so a frame up to a block travels
-past the slot from the first push, and `shm_sddl`, the security descriptor
+past the slot from the first push, `shm_sddl`, the security descriptor
 the object's shared-memory regions are created with, which a region mapped
-from another Windows session needs.
+from another Windows session needs, and `shm_container_sid`, the SID of the
+AppContainer whose named-object directory a `SUBETHA_SHM_APPCONTAINER`
+object is made in, which a process inside that container reaches with
+`SUBETHA_SHM_SESSION`.
 
 ## Installing for C consumers
 

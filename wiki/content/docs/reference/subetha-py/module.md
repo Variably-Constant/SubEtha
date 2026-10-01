@@ -6,7 +6,7 @@ weight: 20
 # Module functions, attributes and exceptions
 
 What `import subetha` gives you besides the classes. Generated
-from the type stub by
+from the type stub and `python/subetha/sidecar.py` by
 `crates/subetha-py/tools/export_reference.py`.
 
 ## Functions
@@ -21,6 +21,20 @@ from the type stub by
 | `mpmc_grid_open(path: str, producers: int, consumers: int, capacity: int) -> tuple[list[MpmcProducer], list[MpmcConsumer]]` | Attach to a grid that already exists, with the shape it was built at. |
 | `mpsc_pool(path: str, producers: int, capacity: int) -> tuple[list[MpscProducer], MpscConsumer]` | Build an MPSC pool: one ring per producer, drained by one consumer. |
 | `mpsc_pool_open(path: str, producers: int, capacity: int) -> tuple[list[MpscProducer], MpscConsumer]` | Attach to a pool that already exists, with the shape it was built at. |
+
+## The sidecar module
+
+`from subetha import sidecar` reaches the process's sidecar as a
+whole. An object registers with it through its own `observe`,
+which returns a `Registration`.
+
+| Function | What it does |
+|---|---|
+| `sidecar.instance_count() -> int` | How many objects are registered with the sidecar now. |
+| `sidecar.max_instances() -> int` | The most objects the sidecar holds at once, 10,000 unless changed. |
+| `sidecar.node_count() -> int` | The sidecar's scan threads, one per NUMA node. |
+| `sidecar.scan_now() -> None` | Have every scan thread scan now, and wait for it. |
+| `sidecar.set_max_instances(cap: int) -> None` | Raise or lower the most objects the sidecar holds at once. |
 
 ## Attributes
 

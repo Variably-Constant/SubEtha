@@ -290,14 +290,14 @@ re-opening the files at process start restores the graph.
   `Region` / `InvalidNode` / `InvalidEdge` / `IoError`.
 - Bench: `crates/subetha-cxc/benches/shared_graph.rs` (add_node,
   add_edge, neighbors_50 walk vs `Mutex<HashMap<u32, Vec>>`).
-- Underlying primitive: [SHARED_REGION.md](../arenas/shared-region/) -
+- Underlying primitive: [Shared Region](../arenas/shared-region/) -
   the ABA-safe free-list-backed region used for nodes and
   edges.
 - Sibling primitive:
-  [SHARED_LINKED_LIST.md](../maps/shared-linked-list/) - the
+  [Shared Linked List](../maps/shared-linked-list/) - the
   simpler flat-list variant; SharedGraph adds per-node lists
   for adjacency.
 - Sibling primitive:
-  [SHARED_TOPOLOGY_MAP.md](shared-topology-map/) - the
+  [Shared Topology Map](shared-topology-map/) - the
   topology-aware variant for hardware-shaped graphs (NUMA,
   CPU/GPU/NPU class hierarchy).

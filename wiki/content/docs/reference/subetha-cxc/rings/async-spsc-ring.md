@@ -27,12 +27,13 @@ with any async executor (tokio, smol, async-std, custom).
 
 > **The "kernel-park to Rust Waker bridge" primitive.** First
 > poll calls `try_*` on the inner ring; if immediately ready,
-> return `Poll::Ready`. Otherwise spawn a `std::thread` that
-> calls the blocking counterpart (`recv_blocking` /
-> `send_blocking`) with the caller's timeout; park the Rust
-> `Waker`. When the blocking call returns, store the result and
-> fire the `Waker`. Next poll observes the stored result and
-> returns `Poll::Ready`.
+> return `Poll::Ready`. Otherwise register the Rust `Waker` and
+> spawn a `std::thread` that calls the blocking counterpart
+> (`recv_blocking` / `send_blocking`) with the caller's timeout.
+> When the blocking call returns, store the result and fire the
+> `Waker`. Next poll observes the stored result and returns
+> `Poll::Ready`. The result and the `Waker` pass between the two
+> threads through atomics, with no lock.
 
 ## Constraints
 
@@ -108,10 +109,10 @@ capacity (16) was always ahead of the consumer.
 
 ## See also
 
-- Source: `crates/subetha-cxc/src/async_ring.rs` (340 lines, 4
-  unit tests: recv-ready-immediately, recv-parks-then-completes,
-  recv-times-out, send-completes-when-not-full; driven by a
-  hand-rolled executor-agnostic `block_on`).
+- Source: `crates/subetha-cxc/src/async_ring.rs` (4 unit tests:
+  recv-ready-immediately, recv-parks-then-completes, recv-times-out,
+  send-completes-when-not-full; driven by the crate's runtime-free
+  `reactor::block_on`).
 - [`BlockingSpscRing`]({{< ref "blocking-spsc-ring" >}}): the
   synchronous primitive this wraps.
 - [`CrossProcessWaker`]({{< ref "../coordination-types/cross-process-waker" >}}):

@@ -1,7 +1,7 @@
 //! `SelfDescPointer<T>` - pointer carrying type ID + layout shape in
 //! stolen high bits.
 //!
-//! Layout: a single `u64` with the high 16 bits stolen:
+//! Layout: a single `u64` with the high 11 bits stolen:
 //! - bits 56..=63: `type_id` (u8)
 //! - bits 53..=55: `layout` shape (3 bits, [`LayoutShape`])
 //! - bits 0..=52:  the address (53-bit virtual; ample on x86_64 / Apple Silicon)
@@ -19,11 +19,6 @@
 //! | `dyn Trait` vtable           | 1 indirect call | unbounded   |
 //! | `enum` with variants         | tag-match     | bounded      |
 //! | `SelfDescPointer<T>`         | switch on byte | <= 256       |
-//!
-//! The architectural shape mirrors JVM compressed-klass pointers
-//! (where the klass is encoded in the top bits of an object ref)
-//! but at a lighter weight: only 8 bits + 3 layout-shape bits
-//! stolen, vs JVM's full 32-bit compressed klass.
 //!
 //! # Bit budget
 //!

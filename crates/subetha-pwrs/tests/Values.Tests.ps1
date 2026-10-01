@@ -34,7 +34,7 @@ Describe 'SubEtha.FineBloom' {
         $b.Contains('zzz') | Should -BeFalse
         $b.InsertMany(@('b', 'c')) | Should -Be 2
         $b.ContainsMany(@('a', 'b', 'c')) | Should -Be @($true, $true, $true)
-        $b.SuggestedCapacity() | Should -Be 64
+        $b.SuggestedCapacity() | Should -Be 32
         $b.Dispose()
     }
 }

@@ -3679,7 +3679,7 @@ def test_a_rate_limiter_refuses_a_zero_configuration(scratch):
         subetha.RateLimiter(scratch("limiter2"), capacity=1, refill_per_second=0)
 
 
-# The adaptive ring, which the C ABI is organised around. Producers and
+# The adaptive ring, which the C ABI is organized around. Producers and
 # consumers register for an id and every call names one.
 
 

@@ -2953,6 +2953,7 @@ impl RsSession {
     /// fd for the batched recvmmsg / WSARecvMsg path. Pop the queue and process
     /// each datagram. Returns `true` when nothing was queued (idle), the same
     /// "nothing arrived" convention the fd recv paths use.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))]
     fn recv_demux_drain(&mut self, out: &mut Vec<Vec<u8>>) -> io::Result<bool> {
         let mut buf = [0u8; RECV_BUF];
         let mut idle = true;
@@ -4558,7 +4559,7 @@ mod tests {
     use std::sync::Arc;
 
     /// The recovery queue holds datagrams built when the gap was enqueued,
-    /// so a block the peer acknowledges afterwards is still sitting in it.
+    /// so a block the peer acknowledges afterward is still sitting in it.
     /// Draining those costs the link datagrams the peer refuses as already
     /// delivered, while the block it is waiting on competes with them.
     ///
@@ -4861,27 +4862,28 @@ mod tests {
         }
         assert_eq!(seen, N, "first session did not deliver");
 
-        // A second epoch, from a socket that is then dropped so the
-        // challenge it provokes can never be answered. A fresh encoder
-        // derives its own epoch, which is what makes this a replacement.
+        // A second epoch, from a socket that closes once the receiver has
+        // challenged it, so the challenge can never be answered. A fresh
+        // encoder derives its own epoch, which is what makes this a
+        // replacement.
         let mut enc = Encoder::new(4, 2, 8);
         assert_ne!(enc.epoch(), first.enc.epoch(), "encoder epochs collided");
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let mut pkts = Vec::new();
         for i in 0..4u64 {
             pkts.extend(enc.push(&i.to_le_bytes()));
         }
         pkts.extend(enc.flush());
-        for p in &pkts {
-            sock.send_to(p, addr).unwrap();
-        }
-        drop(sock);
-
-        // It must be challenged, then leave on its own, with nothing but
-        // polling driving it.
-        let armed = Instant::now();
-        while recv.pending_admissions().is_empty() && armed.elapsed() < Duration::from_secs(5) {
-            recv.poll().ok();
+        {
+            // The burst goes again until it is challenged, since one can be
+            // dropped whole on its way.
+            let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let armed = Instant::now();
+            while recv.pending_admissions().is_empty() && armed.elapsed() < Duration::from_secs(5) {
+                for p in &pkts {
+                    sock.send_to(p, addr).unwrap();
+                }
+                recv.poll().expect("the receiver polls");
+            }
         }
         assert!(
             !recv.pending_admissions().is_empty(),
@@ -4889,6 +4891,7 @@ mod tests {
         );
         let (_, failures_before) = recv.session_adoption_counts();
 
+        // It leaves on its own, with nothing but polling driving it.
         let retire = Instant::now();
         while !recv.pending_admissions().is_empty() && retire.elapsed() < Duration::from_secs(5) {
             recv.poll().ok();

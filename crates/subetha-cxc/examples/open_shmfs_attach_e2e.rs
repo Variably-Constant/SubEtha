@@ -56,6 +56,12 @@ fn main() -> Result<(), BoxErr> {
     }
     let status = cmd.status()?;
     drop(ring); // release the region only after the worker has finished
+    // The ring's names outlive every handle, so the process that made it
+    // removes them once the worker is done.
+    let removed = AdaptiveRing::unlink_shmfs(&name, 1);
+    if removed.failed != 0 {
+        eprintln!("parent: shmfs region '{name}' not fully removed: {:?}", removed.first_failure);
+    }
 
     let ok = status.success();
     println!(

@@ -396,13 +396,13 @@ bits resolve to the same data, no relocation pass needed.
   sparse_insert_100 [20.3x hashmap win per-batch],
   all vs `Mutex<HashMap<u64, u64>>`).
 - Underlying primitive:
-  [SHARED_REGION.md](../arenas/shared-region/) - the flat-array
+  [Shared Region](../arenas/shared-region/) - the flat-array
   region each cascade level reads from.
-- Sibling primitive: [OFFSET_PTR.md](../pointers/offset-ptr/) -
+- Sibling primitive: [Offset Pointer](../pointers/offset-ptr/) -
   single-level position-independent pointer; KTowerCascade
   generalizes this to N nested levels.
 - Sibling primitive:
-  [TAGGED_OFFSET_PTR.md](../pointers/tagged-offset-ptr/) - OffsetPtr
+  [Tagged Offset Pointer](../pointers/tagged-offset-ptr/) - OffsetPtr
   with a u32 tag; orthogonal to cascade nesting.
 - Hardware analog: x86_64 MMU PML4 -> PDPT -> PD -> PT, four
   levels of 9-bit indices. KTowerCascade lifts the same

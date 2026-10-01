@@ -11,6 +11,12 @@
 //! Every run prints one `WL` line per role with what the C side measured,
 //! so a `--nocapture` run is the record.
 
+// clippy::disallowed_types is allowed here: the tests take turns at the
+// library's process-wide init and shutdown under a lock, and the line
+// log and pod workloads serialize their producers with one, as the
+// programs they model do.
+#![allow(clippy::disallowed_types)]
+
 use std::env::VarError;
 use std::ffi::CString;
 use std::io::{BufRead, BufReader};

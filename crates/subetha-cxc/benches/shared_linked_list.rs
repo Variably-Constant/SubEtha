@@ -13,6 +13,9 @@
 //! - iter_forward 100-element list
 //! - remove from middle by handle (vs scan-and-remove)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::{LinkedList, VecDeque};
 use std::hint::black_box;
 use std::sync::Mutex;

@@ -53,16 +53,24 @@
 //! - **`SharedDequeKhpd` (this primitive)** - producer batches
 //!   multiple items per publication line. Beats Chase-Lev by ~16%
 //!   on producer-side throughput when the workload calls
-//!   [`publish`](SharedDequeKhpd::publish) with several staged items.
+//!   [`publish`](KhpdStager::publish) with several staged items.
 //!   On per-item dispatch (one stage + one publish per call), KHPD
 //!   gives back the amortization win and may underperform.
+//!
+//! ## Staging
+//!
+//! Items staged one at a time wait in a [`KhpdStager`], a buffer its
+//! owner holds and mutates through `&mut self`, so staging takes no
+//! atomic and no lock, and a second stager is a second buffer rather
+//! than a second writer of one. Every publish, staged or batched,
+//! reserves its lines with one compare-and-swap on `tail`, so publishers
+//! racing for the last free lines see `Full` rather than overfill.
 
 #![allow(clippy::missing_errors_doc)]
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering, fence};
 
 use memmap2::{MmapMut, MmapOptions};
@@ -266,7 +274,8 @@ pub const fn khpd_file_size(capacity: usize) -> usize {
     std::mem::size_of::<KhpdHeader>() + capacity * KHPD_LINE_SIZE
 }
 
-/// Outcome of [`SharedDequeKhpd::publish`].
+/// Outcome of [`KhpdStager::publish`], [`SharedDequeKhpd::publish_batch`],
+/// [`LineItem::new`] and [`FatLineItem::from_items`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushError {
     /// Ring at capacity; consumer has not caught up.
@@ -305,16 +314,12 @@ pub struct SharedDequeKhpd {
     mmap: MmapMut,
     capacity: usize,
     capacity_mask: i64,
-    /// Owner-side staging buffer. Items accumulate here until the
-    /// caller calls [`publish`](Self::publish) to flush the buffer
-    /// into one or more publication lines. `Mutex` is uncontended
-    /// on the hot path (only the owner stages).
-    pending: Mutex<Vec<LineItem>>,
 }
 
 // SAFETY: all fields are Send. Mmap handle is Send + Sync per
 // memmap2. Every line access goes through the per-line state-atomic
-// protocol; the `pending` Mutex linearizes owner-side accesses.
+// protocol, and publishers reserve disjoint lines through the
+// compare-and-swap on `tail`.
 unsafe impl Send for SharedDequeKhpd {}
 // SAFETY: same justification as the Send impl directly above.
 unsafe impl Sync for SharedDequeKhpd {}
@@ -372,7 +377,6 @@ impl SharedDequeKhpd {
             mmap,
             capacity,
             capacity_mask: (capacity as i64) - 1,
-            pending: Mutex::new(Vec::with_capacity(LINE_ITEMS)),
         })
     }
 
@@ -419,7 +423,6 @@ impl SharedDequeKhpd {
             mmap,
             capacity,
             capacity_mask: (capacity as i64) - 1,
-            pending: Mutex::new(Vec::with_capacity(LINE_ITEMS)),
         })
     }
 
@@ -452,109 +455,65 @@ impl SharedDequeKhpd {
         unsafe { self.mmap.as_ptr().add(off) as *mut PublicationLine }
     }
 
-    /// Snapshot `(head, tail, ring_size_lines, pending_items)`.
-    pub fn snapshot_size(&self) -> (i64, i64, i64, usize) {
+    /// Snapshot `(head, tail, ring_size_lines)`. Staged items live in
+    /// their [`KhpdStager`] and are not counted here.
+    pub fn snapshot_size(&self) -> (i64, i64, i64) {
         let h = self.header();
         let head = h.head.load(Ordering::Acquire);
         let tail = h.tail.load(Ordering::Acquire);
-        let pending = self
-            .pending
-            .try_lock()
-            .map(|g| g.len())
-            .unwrap_or(0);
-        (head, tail, tail - head, pending)
+        (head, tail, tail - head)
     }
 
-    /// Owner-side stage. Adds one item to the pending buffer.
-    /// Returns the running pending count (so the caller can decide
-    /// to flush at [`LINE_ITEMS`]). **Only the owner process may
+    /// An owner-side staging buffer: items
+    /// [`stage`](KhpdStager::stage)d into it reach this deque on
+    /// [`publish`](KhpdStager::publish). **Only the owner process may
     /// stage.**
-    pub fn stage(&self, item: LineItem) -> Result<usize, PushError> {
-        let mut p = self.pending.lock().expect("KHPD pending poisoned");
-        p.push(item);
-        Ok(p.len())
+    pub fn stager(&self) -> KhpdStager<'_> {
+        KhpdStager { deque: self, pending: Vec::with_capacity(LINE_ITEMS) }
     }
 
-    /// Owner-side single-call batch publish. Bypasses the
-    /// [`stage`](Self::stage)/[`publish`](Self::publish) pair so the
-    /// caller pays only a single Mutex acquire per batch instead of one
-    /// per staged item. This is the canonical hot-path API: the
-    /// caller hands in a slice of [`LineItem`] values and the method
-    /// publishes them into `ceil(items.len() / LINE_ITEMS)`
-    /// publication lines with one `tail.fetch_add(n_lines)` plus
-    /// one Release-store per line.
+    /// Reserve `n_lines` publication lines at the tail and return the
+    /// first one's index, or `Full` when they would pass the capacity
+    /// left unclaimed. The reservation is a compare-and-swap on `tail`,
+    /// so of two publishers racing for the last free lines only one has
+    /// them, and the other checks again against the winner's tail.
+    fn reserve_lines(&self, n_lines: usize) -> Result<i64, PushError> {
+        let h = self.header();
+        let n = n_lines as i64;
+        let mut tail = h.tail.load(Ordering::Relaxed);
+        loop {
+            let head = h.head.load(Ordering::Acquire);
+            if tail - head + n > self.capacity as i64 {
+                return Err(PushError::Full);
+            }
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            match h.tail.compare_exchange_weak(tail, tail + n, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return Ok(tail),
+                Err(now) => tail = now,
+            }
+        }
+    }
+
+    /// Owner-side single-call batch publish, the canonical hot-path
+    /// API: the caller hands in a slice of [`LineItem`] values and the
+    /// method publishes them into `ceil(items.len() / LINE_ITEMS)`
+    /// publication lines with one reservation plus one Release-store
+    /// per line. [`KhpdStager::publish`] goes through it.
     ///
     /// Returns the number of lines published.
     pub fn publish_batch(&self, items: &[LineItem]) -> Result<usize, PushError> {
         if items.is_empty() {
             return Ok(0);
         }
-        // Hold migration_lock-equivalent: serialize against other
-        // owner-side publishes by going through the same Mutex the
-        // staged path uses.
-        let _g = self.pending.lock().expect("KHPD pending poisoned");
         let n_lines = items.len().div_ceil(LINE_ITEMS);
-        let h = self.header();
-        let head_snap = h.head.load(Ordering::Acquire);
-        let tail_snap = h.tail.load(Ordering::Relaxed);
-        if (tail_snap - head_snap + n_lines as i64) > self.capacity as i64 {
-            return Err(PushError::Full);
-        }
-        let base = h.tail.fetch_add(n_lines as i64, Ordering::AcqRel);
+        let base = self.reserve_lines(n_lines)?;
 
         // No PREFETCHW: publication lines are L1d-warm from the previous
         // `publish_batch` iteration, and prefetching them measured 12%
         // slower on a Zen+ R7 2700.
 
         let mut it = items.iter();
-        for line_i in 0..n_lines {
-            let idx = base + line_i as i64;
-            let line = self.line_ptr(idx);
-            // SAFETY: line is in-bounds + aligned.
-            unsafe {
-                loop {
-                    let st = (*line).state.load(Ordering::Acquire);
-                    if st == STATE_EMPTY { break; }
-                    std::hint::spin_loop();
-                }
-                let mut n_filled = 0usize;
-                for slot in 0..LINE_ITEMS {
-                    match it.next() {
-                        Some(item) => {
-                            (*line).items[slot] = *item;
-                            n_filled += 1;
-                        }
-                        None => break,
-                    }
-                }
-                let new_state =
-                    ((idx as u64) << 32) | ((n_filled as u64) << 16) | CLAIM_BIT;
-                (*line).state.store(new_state, Ordering::Release);
-            }
-        }
-        Ok(n_lines)
-    }
-
-    /// Owner-side publish. Drains the pending buffer into one or
-    /// more publication lines ([`LINE_ITEMS`] items per line). Each
-    /// line takes one `tail.fetch_add(1)` plus one Release-store on
-    /// the line's state. Returns the number of lines published.
-    pub fn publish(&self) -> Result<usize, PushError> {
-        let mut p = self.pending.lock().expect("KHPD pending poisoned");
-        if p.is_empty() {
-            return Ok(0);
-        }
-        let total = p.len();
-        let n_lines = total.div_ceil(LINE_ITEMS);
-        let h = self.header();
-        let head_snap = h.head.load(Ordering::Acquire);
-        let tail_snap = h.tail.load(Ordering::Relaxed);
-        if (tail_snap - head_snap + n_lines as i64) > self.capacity as i64 {
-            return Err(PushError::Full);
-        }
-        let base = h.tail.fetch_add(n_lines as i64, Ordering::AcqRel);
-
-        let mut item_iter = p.drain(..);
         for line_i in 0..n_lines {
             let idx = base + line_i as i64;
             let line = self.line_ptr(idx);
@@ -567,18 +526,14 @@ impl SharedDequeKhpd {
             unsafe {
                 loop {
                     let st = (*line).state.load(Ordering::Acquire);
-                    if st == STATE_EMPTY {
-                        break;
-                    }
+                    if st == STATE_EMPTY { break; }
                     std::hint::spin_loop();
                 }
-
-                // Fill items.
                 let mut n_filled = 0usize;
-                for i in 0..LINE_ITEMS {
-                    match item_iter.next() {
+                for slot in 0..LINE_ITEMS {
+                    match it.next() {
                         Some(item) => {
-                            (*line).items[i] = item;
+                            (*line).items[slot] = *item;
                             n_filled += 1;
                         }
                         None => break,
@@ -655,6 +610,39 @@ impl SharedDequeKhpd {
     }
 }
 
+/// The owner's staging buffer for a [`SharedDequeKhpd`], from
+/// [`SharedDequeKhpd::stager`]. Items wait here until
+/// [`publish`](Self::publish) packs them into publication lines. Its
+/// holder mutates it through `&mut self`, so staging touches no atomic.
+pub struct KhpdStager<'a> {
+    deque: &'a SharedDequeKhpd,
+    pending: Vec<LineItem>,
+}
+
+impl KhpdStager<'_> {
+    /// Stage one item. Returns the running pending count (so the
+    /// caller can decide to publish at [`LINE_ITEMS`]).
+    pub fn stage(&mut self, item: LineItem) -> Result<usize, PushError> {
+        self.pending.push(item);
+        Ok(self.pending.len())
+    }
+
+    /// Items staged and not yet published.
+    pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Publish every staged item into one or more publication lines
+    /// ([`LINE_ITEMS`] items per line) through
+    /// [`SharedDequeKhpd::publish_batch`]. Returns the number of lines
+    /// published; on `Full` the items stay staged.
+    pub fn publish(&mut self) -> Result<usize, PushError> {
+        let lines = self.deque.publish_batch(&self.pending)?;
+        self.pending.clear();
+        Ok(lines)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,27 +688,29 @@ mod tests {
     fn stage_then_publish_writes_one_line() {
         let path = temp_path("stage_publish");
         let d = SharedDequeKhpd::create(&path, 4).expect("create");
-        d.stage(u32_item(1)).expect("stage 1");
-        d.stage(u32_item(2)).expect("stage 2");
-        let lines = d.publish().expect("publish");
+        let mut s = d.stager();
+        s.stage(u32_item(1)).expect("stage 1");
+        s.stage(u32_item(2)).expect("stage 2");
+        let lines = s.publish().expect("publish");
         assert_eq!(lines, 1);
-        let (_, tail, sz, pending) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 1);
         assert_eq!(sz, 1);
-        assert_eq!(pending, 0);
+        assert_eq!(s.pending(), 0);
     }
 
     #[test]
     fn publish_spans_multiple_lines() {
         let path = temp_path("multi_line");
         let d = SharedDequeKhpd::create(&path, 4).expect("create");
+        let mut s = d.stager();
         // 7 items: 3 + 3 + 1 = 3 lines.
         for i in 1..=7u32 {
-            d.stage(u32_item(i)).expect("stage");
+            s.stage(u32_item(i)).expect("stage");
         }
-        let lines = d.publish().expect("publish");
+        let lines = s.publish().expect("publish");
         assert_eq!(lines, 3);
-        let (_, tail, sz, _) = d.snapshot_size();
+        let (_, tail, sz) = d.snapshot_size();
         assert_eq!(tail, 3);
         assert_eq!(sz, 3);
     }
@@ -729,10 +719,11 @@ mod tests {
     fn steal_returns_items_in_publication_order() {
         let path = temp_path("fifo");
         let d = SharedDequeKhpd::create(&path, 4).expect("create");
+        let mut s = d.stager();
         for i in 1..=5u32 {
-            d.stage(u32_item(i)).expect("stage");
+            s.stage(u32_item(i)).expect("stage");
         }
-        d.publish().expect("publish");
+        s.publish().expect("publish");
         // Line 0 carries (1, 2, 3); line 1 carries (4, 5).
         loop {
             match d.steal_line() {
@@ -777,15 +768,45 @@ mod tests {
     fn ring_full_at_capacity_returns_full() {
         let path = temp_path("full");
         let d = SharedDequeKhpd::create(&path, 2).expect("create");
+        let mut s = d.stager();
         // Fill the ring (2 publication lines * 3 items = 6 items).
         for i in 1..=6u32 {
-            d.stage(u32_item(i)).expect("stage");
+            s.stage(u32_item(i)).expect("stage");
         }
-        d.publish().expect("publish 2 lines");
+        s.publish().expect("publish 2 lines");
         // Stage more + publish; ring is full.
-        d.stage(u32_item(7)).expect("stage 7");
-        let err = d.publish().expect_err("publish past capacity");
+        s.stage(u32_item(7)).expect("stage 7");
+        let err = s.publish().expect_err("publish past capacity");
         assert_eq!(err, PushError::Full);
+        assert_eq!(s.pending(), 1, "a publish refused as full leaves its items staged");
+    }
+
+    #[test]
+    fn publishers_racing_for_the_last_line_do_not_both_take_it() {
+        let path = temp_path("race_last_line");
+        let d = Arc::new(SharedDequeKhpd::create(&path, 2).expect("create"));
+        d.publish_batch(&[u32_item(1)]).expect("the first line");
+
+        // One line is left. A batch stops after its capacity check and
+        // before it reserves, and another batch takes the last line in
+        // that window.
+        let stopped = Arc::clone(&d);
+        let (pause, first) =
+            crate::test_races::stopped(move || stopped.publish_batch(&[u32_item(2)]));
+        let second = d.publish_batch(&[u32_item(3)]).expect("the second batch takes the last line");
+        assert_eq!(second, 1);
+        pause.release();
+        assert!(
+            crate::test_races::within_lost(|| first.is_finished()),
+            "the stopped batch returns"
+        );
+        let refused = first
+            .join()
+            .expect("the stopped batch")
+            .expect_err("the stopped batch finds the deque full");
+        assert_eq!(refused, PushError::Full);
+        let (head, tail, _) = d.snapshot_size();
+        assert_eq!(tail - head, 2, "no more lines are claimed than the deque holds");
     }
 
     #[test]
@@ -829,15 +850,16 @@ mod tests {
         }
 
         // Publisher: stage LINE_ITEMS, publish, repeat until n items.
+        let mut s = d.stager();
         let mut pushed = 0usize;
         while pushed < n {
             let want = LINE_ITEMS.min(n - pushed);
             for _ in 0..want {
-                d.stage(u32_item(pushed as u32)).expect("stage");
+                s.stage(u32_item(pushed as u32)).expect("stage");
                 pushed += 1;
             }
             loop {
-                match d.publish() {
+                match s.publish() {
                     Ok(_) => break,
                     Err(PushError::Full) => {
                         std::thread::yield_now();

@@ -16,6 +16,7 @@ who already knows the basics from the [Tutorial](../tutorial/).
 - [Tune the observation ring + sidecar scan interval](tune-sidecar/) - knobs for the substrate and the control-plane scan loop.
 - [Bridge two hosts (QUIC / TCP / Sens-O-Matic)](cross-host-bridge/) - connect rings across machines: certificates, the firewall step per OS, run commands, and the transport comparison.
 - [Tuning and overrides](tuning-overrides/) - every environment variable, Cargo feature, build recipe, and runtime probe in one place.
+- [Run the release gate](run-the-release-gate/) - the command that lints and tests every crate at its defaults and with every feature, what it leaves off on which host, and how to read its summary.
 
 The guides above are written from Rust. The bindings have their own,
 written from the language you are calling from:

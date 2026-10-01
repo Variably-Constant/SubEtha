@@ -36,18 +36,20 @@
 //! # Layout
 //!
 //! ```text
-//! +-----------------------------+
-//! | DequeHeader (64B aligned)   |
-//! |   magic, capacity, slot_bytes
-//! |   owner_pid (informational) |
-//! |   top: AtomicI64            |
-//! |   bottom: AtomicI64         |
-//! +-----------------------------+
-//! | Slot[0]  (slot_bytes)       |  marshaled T payload
-//! | Slot[1]                     |
-//! | ...                         |
-//! | Slot[capacity - 1]          |
-//! +-----------------------------+
+//! +-----------------------------------+
+//! | DequeHeader (64 bytes, one line)  |
+//! |   magic, capacity                 |
+//! |   slot_bytes, alignment           |
+//! |   owner_pid (informational)       |
+//! |   top: AtomicI64                  |
+//! |   bottom: AtomicI64               |
+//! |   epoch, layout_tag               |
+//! +-----------------------------------+
+//! | Slot[0]  (slot_bytes)             |  marshaled T payload
+//! | Slot[1]                           |
+//! | ...                               |
+//! | Slot[capacity - 1]                |
+//! +-----------------------------------+
 //! ```
 //!
 //! `capacity` is required to be a power of two so the slot-index

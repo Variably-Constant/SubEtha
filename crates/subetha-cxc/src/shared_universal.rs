@@ -38,16 +38,20 @@
 //!
 //! # Concurrency model
 //!
-//! - Reader and writer ops take an internal `RwLock<Backing<T>>` on
-//!   the handle (process-local; it guards the re-open race between two
-//!   ops in the same process).
-//! - Re-open is double-checked: re-read state.version under the
-//!   write lock; if another thread already re-opened, drop the write
-//!   lock and use the current backing.
+//! - The handle holds its backing behind a `SwapCell`. An op loads the
+//!   backing the shared state names, re-opening it first when a
+//!   migration has moved the state on, and holds that backing until it
+//!   returns. A re-open installs its backing unless another op already
+//!   installed the same one or a later one, so no op waits on another.
+//! - A migration builds the new backing from a snapshot, publishes it
+//!   with a CAS on the shared state and swaps it into the handle. It
+//!   then waits for the ops still holding the old backing to return and
+//!   copies over what they inserted after the snapshot, so an insert
+//!   made in this process during the migration is kept.
 //! - Migration is safe only from a single writer process. When two
-//!   processes migrate at once, both succeed locally and race on the
-//!   state CAS; the loser's new backing file is orphaned and can be
-//!   removed. Nothing here coordinates writers, so the single-writer
+//!   processes migrate at once, both build new backings and race on
+//!   the state CAS; the loser discards its backing and returns an
+//!   error. Nothing here coordinates writers, so the single-writer
 //!   constraint is the caller's to keep.
 
 use std::marker::PhantomData;
@@ -68,13 +72,14 @@ fn discard_half_built(p: &Path) {
         ),
     }
 }
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use subetha_core::SwapCell;
 use memmap2::{MmapMut, MmapOptions};
-use parking_lot::RwLock;
 
 use crate::shared_hash_map::{MapError, SharedHashMap};
-use crate::shared_vec::SharedVec;
+use crate::shared_vec::{SharedVec, VecError};
 
 pub const UNIVERSAL_MAGIC: u32 = 0x4150_5556;
 
@@ -129,6 +134,16 @@ impl From<MapError> for UniversalError {
         }
     }
 }
+impl From<VecError> for UniversalError {
+    fn from(e: VecError) -> Self {
+        match e {
+            VecError::Full => Self::Full,
+            VecError::LayoutMismatch => Self::LayoutMismatch,
+            VecError::IoError(kind) => Self::IoError(kind),
+            VecError::OutOfBounds | VecError::PayloadTooLarge | VecError::ReadOnly => Self::VecError,
+        }
+    }
+}
 
 #[repr(C, align(64))]
 pub struct UniversalHeader {
@@ -177,15 +192,63 @@ enum Backing<T: Copy + Eq + 'static> {
     Map(SharedHashMap<T, ()>),
 }
 
+impl<T: Copy + Eq + 'static> Backing<T> {
+    /// Every live value. Best-effort under concurrent writers.
+    fn values(&self) -> Vec<T> {
+        match self {
+            Backing::Vec(v) => v.snapshot(),
+            Backing::Map(m) => m.snapshot().into_iter().map(|(k, _)| k).collect(),
+        }
+    }
+
+    /// The values this backing holds that `before`, an earlier
+    /// [`values`](Self::values), did not: a Vec's appended tail, a
+    /// Map's new keys.
+    fn values_since(&self, before: &[T]) -> Vec<T>
+    where T: std::hash::Hash,
+    {
+        match self {
+            Backing::Vec(v) => v.snapshot().into_iter().skip(before.len()).collect(),
+            Backing::Map(m) => {
+                let seen: std::collections::HashSet<T> = before.iter().copied().collect();
+                m.snapshot().into_iter().map(|(k, _)| k).filter(|k| !seen.contains(k)).collect()
+            }
+        }
+    }
+
+    /// For Vec strategy push_back; for Map strategy insert(value, ()).
+    fn insert(&self, value: T) -> Result<(), UniversalError>
+    where T: std::hash::Hash,
+    {
+        match self {
+            Backing::Vec(v) => {
+                v.push_back(value)?;
+            }
+            Backing::Map(m) => {
+                m.insert(value, ())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A backing this handle opened, with the (version, generation) pair
+/// the shared state named when it was opened.
+struct Held<T: Copy + Eq + 'static> {
+    version: u32,
+    generation: u16,
+    backing: Backing<T>,
+}
+
 pub struct SharedUniversal<T: Copy + Eq + 'static> {
     base: PathBuf,
     capacity: usize,
     _state_file: std::fs::File,
     state_mmap: MmapMut,
-    /// Holds `(version, generation, Backing)`. Used to detect when
-    /// the shared state's (version, generation) pair has changed and
-    /// the local backing handle needs to be re-opened.
-    backing: RwLock<(u32, u16, Backing<T>)>,
+    /// The backing this handle holds. When the shared state's
+    /// (version, generation) pair differs from it, the next op
+    /// re-opens the backing the state names and swaps it in.
+    backing: SwapCell<Held<T>>,
     _phantom: PhantomData<T>,
     header_sidecar: subetha_core::HandshakeHeader,
     ring_sidecar: Box<subetha_core::ObservationRing>,
@@ -248,7 +311,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             base, capacity,
             _state_file: state_file,
             state_mmap: mmap,
-            backing: RwLock::new((version, generation, backing)),
+            backing: SwapCell::new(Held { version, generation, backing }),
             _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
@@ -277,7 +340,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             base, capacity,
             _state_file: state_file,
             state_mmap: mmap,
-            backing: RwLock::new((0, 0, Backing::Vec(vec))),
+            backing: SwapCell::new(Held { version: 0, generation: 0, backing: Backing::Vec(vec) }),
             _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
@@ -341,7 +404,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             base, capacity,
             _state_file: state_file,
             state_mmap: mmap,
-            backing: RwLock::new((version, generation, backing)),
+            backing: SwapCell::new(Held { version, generation, backing }),
             _phantom: PhantomData,
             header_sidecar: subetha_core::HandshakeHeader::new(),
             ring_sidecar: Box::new(subetha_core::ObservationRing::new()),
@@ -390,29 +453,35 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
         unpack(self.header().state.load(Ordering::Acquire)).1
     }
 
-    /// Re-open the local backing handle if the shared state's
-    /// (version, generation) pair differs from the locally cached
-    /// pair. Comparing both fields means a wrap-around (same version
-    /// at a new generation) also triggers re-open, preventing the
-    /// stale-reader race where a reused version points at new
-    /// content. Double-checked so concurrent ops don't trample each
-    /// other.
-    fn refresh_backing_if_stale(&self) -> Result<(), UniversalError> {
-        let (shared_v, shared_g, _) = unpack(self.header().state.load(Ordering::Acquire));
-        {
-            let g = self.backing.read();
-            if g.0 == shared_v && g.1 == shared_g { return Ok(()); }
+    /// The backing the shared state names, re-opened first when the
+    /// shared (version, generation) pair differs from the one held.
+    /// Comparing both fields means a wrap-around (same version at a new
+    /// generation) also triggers re-open, preventing the stale-reader
+    /// race where a reused version points at new content. A re-open is
+    /// installed unless another op already installed the same pair or
+    /// a later one; two ops that re-open at once each map the backing,
+    /// and the one not installed is dropped.
+    fn held(&self) -> Result<Arc<Held<T>>, UniversalError> {
+        let (shared_v, shared_g, shared_s) = unpack(self.header().state.load(Ordering::Acquire));
+        let held = self.backing.load_full();
+        if held.version == shared_v && held.generation == shared_g {
+            return Ok(held);
         }
-        let mut g = self.backing.write();
-        let (shared_v2, shared_g2, shared_s_byte2) =
-            unpack(self.header().state.load(Ordering::Acquire));
-        if g.0 == shared_v2 && g.1 == shared_g2 { return Ok(()); }
-        let strategy = Strategy::from_u8(shared_s_byte2).ok_or(UniversalError::InvalidStrategy)?;
-        let new_backing = Self::open_backing(
-            &self.base, shared_g2, shared_v2, strategy, self.capacity,
-        )?;
-        *g = (shared_v2, shared_g2, new_backing);
-        Ok(())
+        let strategy = Strategy::from_u8(shared_s).ok_or(UniversalError::InvalidStrategy)?;
+        let fresh = Arc::new(Held {
+            version: shared_v,
+            generation: shared_g,
+            backing: Self::open_backing(&self.base, shared_g, shared_v, strategy, self.capacity)?,
+        });
+        loop {
+            let current = self.backing.load_full();
+            if (current.generation, current.version) >= (shared_g, shared_v) {
+                return Ok(current);
+            }
+            if self.backing.compare_and_set(&current, Arc::clone(&fresh)).is_ok() {
+                return Ok(fresh);
+            }
+        }
     }
 
     /// Insert `value`. For Vec strategy this is push_back; for Map
@@ -420,16 +489,8 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     pub fn insert(&self, value: T) -> Result<(), UniversalError>
     where T: std::hash::Hash,
     {
-        self.refresh_backing_if_stale()?;
-        let g = self.backing.read();
-        let r: Result<(), UniversalError> = match &g.2 {
-            Backing::Vec(v) => {
-                v.push_back(value).map_err(|_| UniversalError::Full).map(|_| ())
-            }
-            Backing::Map(m) => {
-                m.insert(value, ()).map(|_| ()).map_err(Into::into)
-            }
-        };
+        let held = self.held()?;
+        let r = held.backing.insert(value);
         self.header().insert_count.fetch_add(1, Ordering::Relaxed);
         self.ring_sidecar.push_op(
             crate::sidecar_ops::universal::OP_INSERT,
@@ -443,9 +504,8 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     pub fn contains(&self, value: &T) -> Result<bool, UniversalError>
     where T: std::hash::Hash,
     {
-        self.refresh_backing_if_stale()?;
-        let g = self.backing.read();
-        let hit = match &g.2 {
+        let held = self.held()?;
+        let hit = match &held.backing {
             Backing::Vec(v) => v.snapshot().iter().any(|x| x == value),
             Backing::Map(m) => m.contains_key(value),
         };
@@ -459,9 +519,8 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
 
     /// Number of live entries.
     pub fn len(&self) -> Result<usize, UniversalError> {
-        self.refresh_backing_if_stale()?;
-        let g = self.backing.read();
-        Ok(match &g.2 {
+        let held = self.held()?;
+        Ok(match &held.backing {
             Backing::Vec(v) => v.len(),
             Backing::Map(m) => m.len(),
         })
@@ -477,9 +536,8 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     /// state between iterations. Not thread-safe with concurrent
     /// insert/remove from other threads.
     pub fn clear(&self) -> Result<(), UniversalError> {
-        self.refresh_backing_if_stale()?;
-        let g = self.backing.read();
-        match &g.2 {
+        let held = self.held()?;
+        match &held.backing {
             Backing::Vec(v) => v.clear(),
             Backing::Map(m) => m.clear(),
         }
@@ -489,12 +547,7 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
     /// Snapshot all live values into a `Vec<T>`. Best-effort under
     /// concurrent writers.
     pub fn snapshot(&self) -> Result<Vec<T>, UniversalError> {
-        self.refresh_backing_if_stale()?;
-        let g = self.backing.read();
-        Ok(match &g.2 {
-            Backing::Vec(v) => v.snapshot(),
-            Backing::Map(m) => m.snapshot().into_iter().map(|(k, _)| k).collect(),
-        })
+        Ok(self.held()?.backing.values())
     }
 
     /// Operation counts since creation. The writer's policy code
@@ -509,14 +562,16 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
 
     /// Force a migration to `target`. Snapshots the current backing,
     /// creates a new backing file at version+1, restores the snapshot,
-    /// then publishes the new (version, strategy) via Release CAS.
+    /// publishes the new (version, strategy) via Release CAS, and then
+    /// copies over what ops in this process inserted into the old
+    /// backing after the snapshot.
     ///
     /// # Concurrency
     ///
     /// **Single writer only.** Two processes calling `migrate_to`
     /// concurrently both build new backings and race on the CAS; the
-    /// loser orphans its backing file. Nothing here coordinates
-    /// writers, so the caller keeps to one.
+    /// loser discards its backing file and returns an error. Nothing
+    /// here coordinates writers, so the caller keeps to one.
     pub fn migrate_to(&self, target: Strategy) -> Result<(), UniversalError>
     where T: std::hash::Hash,
     {
@@ -547,8 +602,10 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
                 (0, next_g)
             }
         };
-        let snap = self.snapshot()?;
-        let mut g = self.backing.write();
+        let old = self.held()?;
+        let snap = old.backing.values();
+        #[cfg(test)]
+        crate::test_races::pause_point();
         let new_p = Self::backing_path(&self.base, new_g, new_v, target);
         // Build the new backing inside a closure so any error path
         // can clean up the partially-created file before returning.
@@ -577,19 +634,30 @@ impl<T: Copy + Eq + 'static> SharedUniversal<T> {
             }
         };
         let new_state = pack(new_v, new_g, target as u8);
-        match self.header().state.compare_exchange(
-            current_state, new_state, Ordering::AcqRel, Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                *g = (new_v, new_g, new_backing);
-                Ok(())
-            }
-            Err(_lost_race) => {
-                drop(new_backing);
-                discard_half_built(&new_p);
-                Err(UniversalError::VecError)
-            }
+        // A CAS that fails lost to another writer's migration, whose
+        // state is the one now published.
+        if self
+            .header()
+            .state
+            .compare_exchange(current_state, new_state, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            drop(new_backing);
+            discard_half_built(&new_p);
+            return Err(UniversalError::VecError);
         }
+        let fresh = Arc::new(Held { version: new_v, generation: new_g, backing: new_backing });
+        self.backing.store(Arc::clone(&fresh));
+        // An op that loaded the old backing before the swap may still be
+        // inserting into it. Once each such op has returned, `old` is held
+        // here alone, and what they inserted after the snapshot is copied.
+        while Arc::strong_count(&old) > 1 {
+            std::thread::yield_now();
+        }
+        for value in old.backing.values_since(&snap) {
+            fresh.backing.insert(value)?;
+        }
+        Ok(())
     }
 
     /// Local-policy migration trigger. If the observed `contains` ops
@@ -691,6 +759,29 @@ mod tests {
         let mut snap = u.snapshot().unwrap();
         snap.sort();
         assert_eq!(snap, vec![0, 1, 2, 3, 4]);
+        drop(u);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn an_insert_landing_after_the_migration_snapshot_is_kept() {
+        let base = tmp_base("late-insert");
+        cleanup(&base);
+        let u = std::sync::Arc::new(SharedUniversal::<u64>::create(&base, 64).unwrap());
+        for k in 0..5u64 { u.insert(k).unwrap(); }
+
+        // The migration stops once it has taken its snapshot, and an
+        // insert lands in that window.
+        let migrating = std::sync::Arc::clone(&u);
+        let (pause, migration) =
+            crate::test_races::stopped(move || migrating.migrate_to(Strategy::Map));
+        u.insert(99).unwrap();
+        pause.release();
+        migration.join().expect("the migration thread").expect("the migration");
+
+        assert_eq!(u.strategy(), Strategy::Map);
+        assert!(u.contains(&99).unwrap(), "the insert made during the migration is in the migrated container");
+        assert_eq!(u.len().unwrap(), 6);
         drop(u);
         cleanup(&base);
     }
@@ -871,15 +962,15 @@ mod tests {
         let synth_p = SharedUniversal::<u64>::backing_path(
             u.base.as_path(), 0, u32::MAX, Strategy::Vec,
         );
-        // Pre-create the synthetic backing file so refresh_backing
-        // can open it.
+        // Pre-create the synthetic backing file so the re-open can
+        // open it.
         let synth: SharedVec<u64> = SharedVec::create(&synth_p, 16).unwrap();
         drop(synth);
         u.header().state.store(
             pack(u32::MAX, 0, Strategy::Vec as u8),
             Ordering::Release,
         );
-        u.refresh_backing_if_stale().unwrap();
+        u.held().unwrap();
         // Now migrate: version wraps to 0; generation bumps to 1.
         u.migrate_to(Strategy::Map).unwrap();
         assert_eq!(u.strategy_version(), 0);
@@ -899,7 +990,6 @@ mod tests {
             pack(u32::MAX, u16::MAX, Strategy::Vec as u8),
             Ordering::Release,
         );
-        u.refresh_backing_if_stale().unwrap_or(());
         let r = u.migrate_to(Strategy::Map);
         assert_eq!(r.err(), Some(UniversalError::VersionExhausted));
         drop(u);
@@ -936,7 +1026,7 @@ mod tests {
         // Reader's local backing is at (v=0, g=0). Without the
         // generation check, it sees "v=0 == 0, no re-open
         // needed" and return stale results. With the generation
-        // check, refresh_backing_if_stale re-opens at (0, 1, Map).
+        // check, the reader's next op re-opens at (0, 1, Map).
         assert!(reader.contains(&99u64).unwrap());
         // Old keys are absent from the new Map backing (it was created
         // fresh with only 99).

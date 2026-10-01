@@ -35,6 +35,9 @@
 //! iteration, which under criterion's iteration count produces tens
 //! of thousands of OS threads and exhausts the kernel thread table.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::VecDeque;
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

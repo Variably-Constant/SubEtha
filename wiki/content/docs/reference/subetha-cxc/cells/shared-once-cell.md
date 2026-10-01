@@ -283,9 +283,9 @@ ensures it runs once across all of them.
   lose, cross-handle init visibility, get_or_init runs closure at
   most once, disk persistence survives reopen, payload too large
   at create, open rejects wrong payload size).
-- Sibling primitive: [SHARED_CELL.md](shared-cell/) - the
+- Sibling primitive: [Shared Cell](shared-cell/) - the
   multi-write SeqLock cell. SharedCell allows updates;
   SharedOnceCell is write-once.
-- Sibling primitive: [SHARED_LEADER_ELECTION.md](../ownership-types/shared-leader-election/) -
+- Sibling primitive: [Shared Leader Election](../ownership-types/shared-leader-election/) -
   for elections that need lease semantics rather than a single
   one-shot value.

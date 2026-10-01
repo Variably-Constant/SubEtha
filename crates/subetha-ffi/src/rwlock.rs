@@ -428,7 +428,7 @@ pub unsafe extern "C" fn subetha_rwlock_read_stats(handle: subetha_handle, out: 
 }
 
 /// Give the lock back and close this hold's handle, which names nothing
-/// afterwards. Another process waiting on the lock is free to take it as
+/// afterward. Another process waiting on the lock is free to take it as
 /// soon as this returns.
 ///
 /// This is the call to use to unlock. `subetha_handle_destroy` on a hold

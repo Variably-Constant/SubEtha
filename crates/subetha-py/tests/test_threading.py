@@ -26,6 +26,7 @@ import threading
 import pytest
 
 import subetha
+from subetha import sidecar
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 
@@ -230,6 +231,46 @@ def test_a_lease_is_held_by_one_thread_at_a_time(scratch):
 
     run_in_threads(work)
     assert lease.owner is None, "every hold must have been given back"
+
+
+def test_an_observed_object_counts_every_record_from_every_thread():
+    # Each thread also asks for scans, so the sidecar's own thread and
+    # several callers of scan_now reach the ring together while a Python
+    # policy is asked on the sidecar's thread.
+    obj = subetha.Adaptive()
+    accepted = [0] * THREADS
+    with obj.observe(lambda stats, tag: None) as registration:
+
+        def work(n):
+            for _ in range(PER_THREAD):
+                if obj.record(1):
+                    accepted[n] += 1
+            sidecar.scan_now()
+
+        run_in_threads(work)
+        sidecar.scan_now()
+        assert registration.stats().ops_observed == sum(accepted), (
+            "every record the ring accepted is counted once, however many "
+            "threads recorded and scanned"
+        )
+        assert registration.policy_errors == 0
+
+
+def test_one_thread_of_many_gets_the_registration():
+    obj = subetha.Adaptive()
+    won = []
+    refused = []
+
+    def work(n):
+        try:
+            won.append(obj.observe())
+        except ValueError:
+            refused.append(n)
+
+    run_in_threads(work)
+    assert len(won) == 1, "an object has one registration however many threads ask"
+    assert len(refused) == THREADS - 1
+    won[0].close()
 
 
 @pytest.mark.skipif(

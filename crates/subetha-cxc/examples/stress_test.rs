@@ -24,7 +24,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel as cbc;
-use parking_lot::Mutex;
 use subetha_core::Marshal;
 use subetha_cxc::{
     AdaptiveIpc, MmfFamily, MmfWorkloadShape, SharedRing,
@@ -175,14 +174,13 @@ fn tier2_mpmc_safety() -> Result<(), Box<dyn std::error::Error>> {
     let ring = Arc::new(
         SharedRing::create(&path, 65536).map_err(|e| format!("{e:?}"))?,
     );
-    let consumed_ids: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::with_capacity(TOTAL as usize)));
     let consumed_count = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
 
+    // Each consumer returns the ids it popped; the join collects them.
     let consumers: Vec<_> = (0..N_CONSUMERS).map(|_| {
         let ring_c = Arc::clone(&ring);
         let stop_c = Arc::clone(&stop);
-        let ids_c = Arc::clone(&consumed_ids);
         let count_c = Arc::clone(&consumed_count);
         thread::spawn(move || {
             let mut out = [0u8; PAYLOAD_BYTES];
@@ -196,7 +194,7 @@ fn tier2_mpmc_safety() -> Result<(), Box<dyn std::error::Error>> {
                     std::hint::spin_loop();
                 }
             }
-            ids_c.lock().extend(local_ids);
+            local_ids
         })
     }).collect();
 
@@ -221,9 +219,9 @@ fn tier2_mpmc_safety() -> Result<(), Box<dyn std::error::Error>> {
     }
     let elapsed = t0.elapsed();
     stop.store(true, Ordering::Release);
-    for c in consumers { c.join().unwrap(); }
+    let mut all_ids: Vec<u64> = Vec::with_capacity(TOTAL as usize);
+    for c in consumers { all_ids.extend(c.join().unwrap()); }
 
-    let all_ids = consumed_ids.lock().clone();
     let len = all_ids.len();
     let unique: HashSet<u64> = all_ids.into_iter().collect();
     let unique_count = unique.len();

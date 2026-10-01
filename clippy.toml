@@ -1,0 +1,18 @@
+# No lock type in SubEtha's source: shared state is atomics, Arc,
+# per-thread state or a lock-free structure. subetha-ffi allows this lint
+# crate-wide, since its handle table and per-handle guards stay locks.
+# A bench arm that measures against a lock-based baseline allows it on
+# that arm alone.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "std::sync::RwLock", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "std::sync::Condvar", reason = "no locks: park on an atomic word instead" },
+    { path = "parking_lot::Mutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "parking_lot::RwLock", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "parking_lot::Condvar", reason = "no locks: park on an atomic word instead" },
+    { path = "parking_lot::FairMutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "parking_lot::ReentrantMutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "lock_api::Mutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "lock_api::RwLock", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+    { path = "lock_api::ReentrantMutex", reason = "no locks: use atomics, Arc, per-thread state or a lock-free structure" },
+]

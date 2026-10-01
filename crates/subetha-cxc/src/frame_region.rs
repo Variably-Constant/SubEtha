@@ -51,7 +51,13 @@ struct FrameRegionHeader {
     magic: AtomicU64,
     block_size: u64,
     block_count: u64,
-    _pad_meta: [u8; 64 - 24],
+    /// Which laying-out of the region this is, drawn afresh, and nonzero,
+    /// each time this crate lays one out. An offset frame's descriptor
+    /// carries it, so a frame sent into a region that has since been
+    /// replaced under the same name is told apart from one sent into this
+    /// region. A zero is a region laid out by a maker that records none.
+    instance: u64,
+    _pad_meta: [u8; 64 - 32],
     /// Bump high-water mark (next never-yet-allocated block).
     bump_next: AtomicU32,
     _pad_bump: [u8; 64 - 4],
@@ -95,6 +101,16 @@ fn validate(block_size: usize, block_count: usize) -> Result<(), RingError> {
     Ok(())
 }
 
+/// A region instance no other laying-out draws: the standard hasher's
+/// per-process random keys over this process's id and the time. Never zero.
+fn fresh_instance() -> u64 {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    std::process::id().hash(&mut h);
+    std::time::SystemTime::now().hash(&mut h);
+    h.finish().max(1)
+}
+
 /// Lay out a fresh region. The magic is published last with `Release`, because
 /// attachers on every backing spin on it and must observe the cursors first.
 unsafe fn init_region(ptr: *mut u8, block_size: usize, block_count: usize) {
@@ -103,7 +119,8 @@ unsafe fn init_region(ptr: *mut u8, block_size: usize, block_count: usize) {
             magic: AtomicU64::new(0),
             block_size: block_size as u64,
             block_count: block_count as u64,
-            _pad_meta: [0; 64 - 24],
+            instance: fresh_instance(),
+            _pad_meta: [0; 64 - 32],
             bump_next: AtomicU32::new(0),
             _pad_bump: [0; 64 - 4],
             free_head: AtomicU64::new(pack(0, NIL)),
@@ -196,15 +213,61 @@ impl FrameRegion {
         Ok(Self::from_parts(RegionBacking::Shm(shm), raw_ptr, block_size, block_count))
     }
 
+    /// Open the named shared-memory region as it stands, taking its block
+    /// size and count from its header rather than from the caller: for a
+    /// handle adopting a region another handle made. Nothing is created,
+    /// so a region that is not there is `IoError(NotFound)`, and one whose
+    /// layout is not finished is `LayoutMismatch`.
+    pub(crate) fn open_shm_as_found(
+        name: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        sddl: Option<&str>,
+    ) -> Result<Self, RingError> {
+        let header = std::mem::size_of::<FrameRegionHeader>();
+        let mut head = crate::shm_file::ShmFile::open_named_secured(name, header, namespace, sddl)
+            .map_err(|e| RingError::IoError(e.kind()))?;
+        let (block_size, block_count) = Self::geometry_at(head.as_mut_slice().as_ptr())?;
+        drop(head);
+        let total = frame_region_file_size(block_size, block_count);
+        let shm = crate::shm_file::ShmFile::open_named_secured(name, total, namespace, sddl)
+            .map_err(|e| RingError::IoError(e.kind()))?;
+        Self::open_from_shm(shm, block_size, block_count)
+    }
+
+    /// As [`open_shm_as_found`](Self::open_shm_as_found), for the
+    /// file-backed region at `path`.
+    pub(crate) fn open_file_as_found(path: impl AsRef<Path>) -> Result<Self, RingError> {
+        let path = path.as_ref();
+        let file = crate::region_file::open_existing(path)?;
+        let header = std::mem::size_of::<FrameRegionHeader>();
+        if (file.metadata()?.len() as usize) < header {
+            return Err(RingError::LayoutMismatch);
+        }
+        let head = unsafe { MmapOptions::new().len(header).map(&file)? };
+        let (block_size, block_count) = Self::geometry_at(head.as_ptr())?;
+        drop(head);
+        Self::open(path, block_size, block_count)
+    }
+
+    /// The block size and count a finished region's header records.
+    fn geometry_at(ptr: *const u8) -> Result<(usize, usize), RingError> {
+        let h = unsafe { &*(ptr as *const FrameRegionHeader) };
+        if h.magic.load(Ordering::Acquire) != FRAME_REGION_MAGIC {
+            return Err(RingError::LayoutMismatch);
+        }
+        let (block_size, block_count) = (h.block_size as usize, h.block_count as usize);
+        validate(block_size, block_count)?;
+        Ok((block_size, block_count))
+    }
+
     /// Create-or-open a named ShmFs frame region. The first attacher
     /// CAS-initializes the layout and publishes the magic; racing
     /// attachers spin until it lands, so a late-joining consumer never
     /// wipes a region a producer already filled. This is the shared
     /// payload region the cross-process offset-frame path needs: the
-    /// producer create-or-opens it on the first offset `send_frame`,
-    /// and every consumer create-or-opens the same region on the first
-    /// offset `recv_frame` (the descriptor it popped implies the
-    /// producer already created it).
+    /// producer create-or-opens it on the first offset `send_frame`, and
+    /// a consumer only opens the region as it stands, so one that is gone
+    /// is an error rather than a fresh region read as the payload.
     pub fn create_or_open_shm(
         name: &str, block_size: usize, block_count: usize,
     ) -> Result<Self, RingError> {
@@ -290,6 +353,7 @@ impl FrameRegion {
                 let hdr = raw_ptr as *mut FrameRegionHeader;
                 (*hdr).block_size = block_size as u64;
                 (*hdr).block_count = block_count as u64;
+                (*hdr).instance = fresh_instance();
                 (*hdr).bump_next.store(0, Ordering::Relaxed);
                 (*hdr).free_head.store(pack(0, NIL), Ordering::Relaxed);
             }
@@ -308,6 +372,14 @@ impl FrameRegion {
             return Err(RingError::LayoutMismatch);
         }
         Ok(())
+    }
+
+    /// Give up a shared-memory region's name, so it outlives this handle:
+    /// see [`ShmFile::keep_name`](crate::shm_file::ShmFile::keep_name).
+    pub(crate) fn keep_name(&mut self) {
+        if let RegionBacking::Shm(shm) = &mut self._backing {
+            shm.keep_name();
+        }
     }
 
     fn from_parts(
@@ -334,6 +406,11 @@ impl FrameRegion {
     pub fn block_size(&self) -> usize { self.block_size }
     /// Number of blocks.
     pub fn block_count(&self) -> usize { self.block_count }
+
+    /// Which laying-out of the region this handle maps, drawn afresh each
+    /// time the region is laid out; zero only for a region whose maker
+    /// records none.
+    pub(crate) fn instance(&self) -> u64 { self.header().instance }
 
     fn header(&self) -> &FrameRegionHeader {
         unsafe { &*(self.raw_ptr as *const FrameRegionHeader) }

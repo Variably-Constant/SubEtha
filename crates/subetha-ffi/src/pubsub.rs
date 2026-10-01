@@ -302,7 +302,7 @@ pub unsafe extern "C" fn subetha_pubsub_create_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -314,7 +314,7 @@ pub unsafe extern "C" fn subetha_pubsub_create_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, pubsub_ring_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, pubsub_ring_file_size(cap), ns, sddl, true) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -349,7 +349,7 @@ pub unsafe extern "C" fn subetha_pubsub_open_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -361,7 +361,7 @@ pub unsafe extern "C" fn subetha_pubsub_open_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, pubsub_ring_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, pubsub_ring_file_size(cap), ns, sddl, false) {
             Ok(r) => r,
             Err(code) => return code,
         };

@@ -1,14 +1,19 @@
-//! Bench: all four MMF-deque variants against each other on the
+//! Bench: the MMF-deque variants against each other on the
 //! producer-fast workload shape.
 //!
 //! Contenders (all use single-drain-thread + K=64 items per iter):
 //!
 //! - [`SharedDequeLoh`]: LCRQ-on-LIFO Hybrid; hot path is
-//!   [`SharedDequeLoh::publish_batch`] (one Mutex acquire + one
-//!   `tail.fetch_add(K)` + K Release-stores).
+//!   [`SharedDequeLoh::publish_batch`] (one compare-and-swap on `tail`
+//!   reserving K slots + K Release-stores).
 //! - [`SharedDequeKhpd`]: publication-line; hot path is
-//!   [`SharedDequeKhpd::publish_batch`] (one Mutex acquire +
-//!   `K/LINE_ITEMS` publication lines).
+//!   [`SharedDequeKhpd::publish_batch`] (one compare-and-swap on `tail`
+//!   reserving `K/LINE_ITEMS` publication lines + one Release-store
+//!   per line).
+//! - [`SharedDequeFcl`]: Chase-Lev's counter-only protocol with three
+//!   items per cache-line slot; hot path is `publish_batch`.
+//! - [`SharedDequeKhl`]: `publish_batch(K=64)` pays 22 slot
+//!   Release-stores + one Release-store on an owner-private tail.
 //! - [`SharedDeque`]: Chase-Lev; per-item push (one Release-store on
 //!   `bottom` per call).
 //! - [`SharedDequeUrd`]: per-thief mailbox + WAITPKG or PAUSE-spin;
@@ -24,15 +29,14 @@
 //!
 //! # Bench-audit notes
 //!
-//! - All five contenders ferry an 8-byte payload (a `u64` in
-//!   little-endian) per item; the three byte-oriented variants share
-//!   the [`LineItem`] type so per-item marshal cost matches.
+//! - LOH, KHPD, FCL, KHL and URD publish each item as a 4-byte
+//!   [`LineItem`] (a `u32` id in little-endian); Chase-Lev and the
+//!   `Mutex<VecDeque<u64>>` baseline push a `u64`.
 //! - LOH uses its canonical hot-path API
 //!   [`SharedDequeLoh::publish_batch`] which bypasses the local LIFO
-//!   and pays exactly one Mutex acquire + one
-//!   `tail.fetch_add(K)` + K Release-stores per call. This is the
-//!   path that exercises the architectural lever; staging via
-//!   `push` would defeat the amortization.
+//!   and pays one compare-and-swap on `tail` + K Release-stores per
+//!   call. This is the path that exercises the architectural lever;
+//!   staging via `push` would defeat the amortization.
 //! - KHPD uses `publish_batch` similarly so the comparison reflects
 //!   each variant's canonical batch API.
 //! - URD's `publish_to(0, &batch)` is capped at `MAILBOX_ITEMS = 3`
@@ -47,6 +51,9 @@
 //!   the dedicated `shared_deque_urd` bench). In this single-thief
 //!   comparison URD's batched publish gives a meaningful read but
 //!   does not exercise its strongest win zone.
+
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -118,8 +125,8 @@ fn loh_producer_fast(c: &mut Criterion) {
                 // Canonical LOH producer-fast shape: build the K
                 // items in a caller-side buffer, then call
                 // publish_batch() once to migrate them with one
-                // Mutex acquire + one `tail.fetch_add(K)` + K
-                // Release-stores on per-slot sequence numbers.
+                // compare-and-swap on `tail` + K Release-stores on
+                // per-slot sequence numbers.
                 // The amortization lever is "one producer-counter
                 // atomic per K items"; publish_batch is the path
                 // that exercises it.

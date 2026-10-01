@@ -409,15 +409,15 @@ token in the payload so correlation is direct.
   MessageTransport / workload-shape transport selection paths).
 - Bench: `crates/subetha-cxc/benches/scheduler.rs` (submit,
   try_recv, watchdog_scan vs `mpsc::sync_channel`).
-- Underlying primitive: [SHARED_RING.md](../rings/shared-ring/) -
+- Underlying primitive: [Shared Ring](../rings/shared-ring/) -
   the Vyukov MPMC rings for submit + result.
-- Underlying primitive: [HEARTBEAT.md](heartbeat/) -
+- Underlying primitive: [Heartbeat Table](heartbeat/) -
   the heartbeat table workers register in.
-- Underlying primitive: [PASS_REGISTRY.md](pass-registry/) -
+- Underlying primitive: [Pass Registry](pass-registry/) -
   the in-process closure registry executed by the worker.
-- Composes with: [FAILOVER.md](failover/) -
+- Composes with: [Failover Watchdog](failover/) -
   `watchdog_scan` calls `FailoverWatchdog::scan` on the
   heartbeat table.
-- Composes with: [PROGRESS_TASK.md](progress-task/) -
+- Composes with: [Progress Task](progress-task/) -
   each Pass closure runs to completion; long-running passes
   may track their own progress via a separate ProgressTask.

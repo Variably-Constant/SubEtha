@@ -184,8 +184,8 @@ grows linearly with unique metadata, not with event count.
 - Bench: `crates/subetha-cxc/benches/shared_string_arena.rs`
   (intern short, intern 16-byte, get_bytes vs
   `Mutex<Vec<String>>` and `RwLock<Vec<String>>`).
-- Underlying primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Underlying primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the bump-pointer counter.
-- Sibling primitive: [SHARED_REGION.md](shared-region/) -
+- Sibling primitive: [Shared Region](shared-region/) -
   typed slot allocator with reuse; StringArena is the
   byte-stream variant without reuse.

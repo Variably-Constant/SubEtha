@@ -1,8 +1,8 @@
 //! Criterion bench: CapacityPubSubRing per-op latency and
 //! steady-state throughput (anon locale, varying N subscribers).
 //!
-//! Wraps PubSubRing (1P / NC absolute-position fan-out). The
-//! producer uses per-backing back-pressure to avoid wrapping any
+//! Wraps PubSubRing (absolute-position fan-out), benched with one
+//! producer. The producer uses per-backing back-pressure to avoid wrapping any
 //! backing (otherwise late-arriving subscribers would lose
 //! data). Per-iter: producer publishes BATCH items; every
 //! subscriber drains BATCH items via try_next, advancing through

@@ -288,10 +288,10 @@ contention between workers (fetch_add is lock-free).
   `cms_file_size(d, w)` sizes the backing file.
 - Bench: `crates/subetha-cxc/benches/shared_count_min_sketch.rs`
   (insert, estimate, storage witness vs `Mutex<HashMap>`).
-- Sibling primitive: [SHARED_BLOOM_FILTER.md](shared-bloom-filter/) -
+- Sibling primitive: [Shared Bloom Filter](shared-bloom-filter/) -
   presence-only variant; CMS adds frequency.
 - Sibling primitive:
-  [SHARED_HYPER_LOG_LOG.md](shared-hyper-log-log/) -
+  [Shared HyperLogLog](shared-hyper-log-log/) -
   cardinality estimate (distinct count); CMS is per-key
   frequency.
 - Original: Cormode + Muthukrishnan, "An Improved Data Stream

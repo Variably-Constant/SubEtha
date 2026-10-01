@@ -1,7 +1,7 @@
 //! Bench: where parking starts beating spinning on a full ring.
 //!
-//! `BlockingSpscRing::send_blocking` spins `PRE_PARK_SPIN` times and
-//! then parks on a waker. The alternative a caller can always write
+//! `BlockingSpscRing::send_blocking` spins the rounds its waker's plan
+//! sets and then parks on that waker. The alternative a caller can always write
 //! instead is a `try_push` retry loop, which never parks. Which one
 //! wins depends on how long the producer has to wait, which is set by
 //! how fast the consumer drains.
@@ -78,7 +78,7 @@ const PAYLOAD: &[u8] = b"0123456789abcdef";
 const DRAIN_WORK: &[u64] = &[0, 100, 1_000, 10_000, 100_000];
 
 /// A unit of consumer work. Deterministic, cheap, and impossible for
-/// the optimiser to remove because the result is handed to `black_box`.
+/// the optimizer to remove because the result is handed to `black_box`.
 #[inline(never)]
 fn burn(iters: u64) -> u64 {
     let mut x = 1u64;

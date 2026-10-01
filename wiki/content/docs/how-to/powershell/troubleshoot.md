@@ -51,15 +51,17 @@ $ring = Open-SubEthaRing -Path C:\ipc\events -Capacity 4096 -ErrorAction Stop
 
 ## Import problems
 
-**`Import-Module SubEtha` says the module is not found.** Check it
-installed where this host looks: `Get-Module -ListAvailable SubEtha`.
-Windows PowerShell 5.1 and PowerShell 7 have different module paths,
-and `Install-PSResource` from one does not necessarily put it where the
-other looks. `Save-PSResource` plus an explicit path avoids the
-question entirely.
+### `Import-Module SubEtha` says the module is not found
 
-**The import succeeds but the first cmdlet fails.** The managed shell
-and the native library load separately. Confirm both:
+Check it installed where this host looks:
+`Get-Module -ListAvailable SubEtha`. Windows PowerShell 5.1 and
+PowerShell 7 have different module paths, and `Install-PSResource` from
+one does not necessarily put it where the other looks.
+`Save-PSResource` plus an explicit path avoids the question entirely.
+
+### The import succeeds but the first cmdlet fails
+
+The managed shell and the native library load separately. Confirm both:
 
 ```powershell
 (Get-Command -Module SubEtha -CommandType Cmdlet).Count    # 135 if the shell bound
@@ -68,11 +70,61 @@ $a = New-SubEthaAtomic -Path (Join-Path $env:TEMP 'check') # exercises the nativ
 
 A module folder is only complete with `runtimes/<rid>/native/` present
 for the platform you are on: `subetha_pwrs.dll` for Windows x64,
-`libsubetha_pwrs.so` for Linux x64. A folder built on one platform
-carries one of them, which is what `cargo pwrs merge` exists to fix.
+`libsubetha_pwrs.so` for Linux x64 and FreeBSD x64, and
+`libsubetha_pwrs.dylib` for macOS arm64. The published module carries
+all four. A folder built on one platform carries only its own, which is
+what `cargo pwrs merge` exists to fix.
 
-**Windows PowerShell 5.1 cannot reach the gallery.** It needs TLS 1.2,
-which the gallery has required since April 2020:
+### Windows PowerShell 5.1 refuses the second of two PWRS modules
+
+In Windows PowerShell 5.1 the runtime of the first module built with
+PWRS serves every PWRS module imported after it, so whether the second
+imports depends on the `cargo-pwrs` that built the first.
+
+This module is built by `cargo-pwrs` 0.3.2, which needs the host table
+of 0.3.2's runtime. Imported after a module built by an older
+`cargo-pwrs`, 0.2.x through 0.3.1, it fails with:
+
+```
+pwrs_module_init failed with status 4 (runtime ABI 1)
+```
+
+Imported first, it serves the older module as well: the host table
+only grows, so a module built by an older `cargo-pwrs` loads on the
+newer runtime, as PWRS records in its
+[0.3.0 changelog](https://github.com/Variably-Constant/PWRS/blob/main/CHANGELOG.md).
+
+When one of two modules was built by `cargo-pwrs` 0.1.8 or earlier and
+the other by 0.2.0 or later, the one imported second fails if it
+declares classes or enums, which this module does, with:
+
+```
+The type initializer for 'Pwrs.Modules.<Name>.PwrsModule' threw an exception.
+```
+
+SubEtha 0.5.1 and every release before it were built by 0.1.x. PWRS
+measured that case in every import order and records it in its
+[0.2.0 changelog](https://github.com/Variably-Constant/PWRS/blob/main/CHANGELOG.md).
+PowerShell 7 gives each module its own runtime and imports them in any
+order. In 5.1, import SubEtha first, import the older module in a
+session of its own, or use a release of it built by the same
+`cargo-pwrs`.
+
+### A PowerShell 7 older than 7.4 cannot import it
+
+The import stops at a line naming the PowerShell and .NET it found:
+
+```
+SubEtha needs PowerShell 7.4 or later: its PowerShell 7 half is built against .NET 8, and this is PowerShell <version> on .NET <version>.
+```
+
+The PowerShell 7 half needs PowerShell 7.4 or later
+([how the binding works](../../../explanation/powershell-binding/#one-folder-two-hosts-four-platforms)
+says why). On Windows, Windows PowerShell 5.1 loads the other half.
+
+### Windows PowerShell 5.1 cannot reach the gallery
+
+It needs TLS 1.2, which the gallery has required since April 2020:
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -83,16 +135,18 @@ which the gallery has required since April 2020:
 The same module folder serves both hosts, and a script can still behave
 differently in each.
 
-**Timing.** The two hosts disagree about what is expensive. A method
-call costs 1907 ns in PowerShell 7 and 651 ns in Windows PowerShell; a
-property read is the other way round. A pipeline record costs 1712 ns
-and 7955 ns respectively, so a pipeline-heavy script that is acceptable
-in 7 can be five times worse in 5.1. See
-[Make it fast](../make-it-fast/).
+### Timing
 
-**Enums.** A `SubEtha.*` enum can be given by its type or by its name
-as a string, and the string form is the one that reads the same in both
-hosts:
+The two hosts disagree about what is expensive. A method call costs
+1907 ns in PowerShell 7 and 651 ns in Windows PowerShell; a property
+read is the other way round. A pipeline record costs 1712 ns and
+7955 ns respectively, so a pipeline-heavy script that is acceptable in
+7 can be five times worse in 5.1. See [Make it fast](../make-it-fast/).
+
+### Enums
+
+A `SubEtha.*` enum can be given by its type or by its name as a string,
+and the string form is the one that reads the same in both hosts:
 
 ```powershell
 $hits.FetchAdd(1, [SubEtha.MemoryOrder]::Relaxed)
@@ -119,7 +173,7 @@ share.
 
 ## A reader that sees nothing, or sees only some of it
 
-**Register the consumer before anything is produced.** A consumer
+Register the consumer before anything is produced. A consumer
 starts at the head, not at the beginning, so one registered after the
 writer has run sees nothing that was already there. Nothing reports
 this: the ring does not error, the send does not fail, and a reader
@@ -155,7 +209,7 @@ $ring.PushMany($work)
 
 The answer is how many registered, not a success flag, so a shortfall
 is a number you can report rather than a hang. Nothing detects the loss
-afterwards: `Lag` reads `0` for a consumer that missed everything,
+afterward: `Lag` reads `0` for a consumer that missed everything,
 because it is caught up with the head.
 
 `ProducerPosition()` read at the moment of registration is the other

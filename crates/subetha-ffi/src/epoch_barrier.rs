@@ -6,7 +6,7 @@
 //! between rounds stops being waited for once its slot goes stale. A
 //! caller passes the heartbeat handle it is already beating into, and the
 //! barrier holds its own reference to that table: destroying the heartbeat
-//! handle afterwards leaves the barrier working.
+//! handle afterward leaves the barrier working.
 //!
 //! The claim a barrier makes is ORDER, not duration. A process that
 //! arrives early does not pass until the late one gets there; nothing is
@@ -94,7 +94,7 @@ fn with_barrier(handle: subetha_handle, f: impl FnOnce(&EpochBarrierObject) -> i
 
 /// The heartbeat table a barrier is to count peers in, taken from the
 /// caller's handle. The barrier keeps its own reference, so the caller
-/// may destroy that handle afterwards.
+/// may destroy that handle afterward.
 fn heartbeat_table(handle: subetha_handle) -> Result<Arc<HeartbeatTable>, i32> {
     let mut taken = None;
     let code = with_kind(handle, SUBETHA_KIND_HEARTBEAT, |object| match object {

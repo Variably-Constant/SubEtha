@@ -21,7 +21,7 @@ use std::io;
 use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 use quinn::udp::{RecvMeta, Transmit, UdpSocketState};
@@ -62,7 +62,7 @@ pub struct SensDemux {
     hs_q: DemuxQueue,
     switch_signal: SwitchSignal,
     recv_counter: Arc<AtomicU64>,
-    sens_peer: Arc<Mutex<Option<SocketAddr>>>,
+    sens_peer: Arc<subetha_core::SwapCellOption<SocketAddr>>,
     /// Injected forward-loss percentage (0 = none), mirroring the standalone
     /// demux thread so the one-port path can drive the auto-switch under test.
     debug_loss: u32,
@@ -79,9 +79,9 @@ impl SensDemux {
             rlc_q: new_demux_queue(),
             rs_q: new_demux_queue(),
             hs_q: new_demux_queue(),
-            switch_signal: Arc::new(Mutex::new(None)),
+            switch_signal: Arc::new(subetha_core::SwapCellOption::empty()),
             recv_counter: Arc::new(AtomicU64::new(0)),
-            sens_peer: Arc::new(Mutex::new(None)),
+            sens_peer: Arc::new(subetha_core::SwapCellOption::empty()),
             debug_loss,
             rng: AtomicU64::new(seed ^ 0x5f3a_c001_d00d_1234),
             reported_unroutable: AtomicBool::new(false),
@@ -190,7 +190,7 @@ impl AsyncUdpSocket for DemuxQuicSocket {
                             && (next_rand(&self.demux.rng) % 100) < self.demux.debug_loss as u64;
                         if !drop {
                             let datagram = seg.to_vec();
-                            *self.demux.sens_peer.lock().unwrap() = Some(addr);
+                            self.demux.sens_peer.store(Some(Arc::new(addr)));
                             let routed = route_sens_inbound(
                                 datagram,
                                 addr,
@@ -268,8 +268,8 @@ pub fn one_port_server(
     let (endpoint, send_clone, demux) = build_endpoint(sock, server_config, &cfg)?;
     let recv = UnifiedSensReceiver::from_shared(
         send_clone,
-        Arc::clone(&demux.rlc_q),
-        Arc::clone(&demux.rs_q),
+        demux.rlc_q.clone(),
+        demux.rs_q.clone(),
         Arc::clone(&demux.switch_signal),
         Arc::clone(&demux.recv_counter),
         Arc::clone(&demux.sens_peer),
@@ -297,9 +297,9 @@ pub fn one_port_server_tls(
     let (endpoint, send_clone, demux) = build_endpoint(sock, server_config, &cfg)?;
     let recv = UnifiedSensReceiver::from_shared_tls(
         send_clone,
-        Arc::clone(&demux.rlc_q),
-        Arc::clone(&demux.rs_q),
-        Arc::clone(&demux.hs_q),
+        demux.rlc_q.clone(),
+        demux.rs_q.clone(),
+        demux.hs_q.clone(),
         Arc::clone(&demux.switch_signal),
         Arc::clone(&demux.recv_counter),
         Arc::clone(&demux.sens_peer),

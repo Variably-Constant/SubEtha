@@ -47,7 +47,7 @@ tree via a global seqlock; a single writer serializes `insert` /
   `Bound::Excluded` of the last key it received. Resumption is by key
   because a split moves the upper half of a node into a new node and
   promotes the median into the parent, so a saved node position can
-  name a different entry afterwards, or sit below one that has moved
+  name a different entry afterward, or sit below one that has moved
   above it. One call sees a consistent tree; a scan assembled from
   several calls is not a snapshot, and an entry inserted behind the
   cursor is not seen while one inserted ahead of it is.
@@ -87,6 +87,12 @@ Workload: `K=u32`, `V=u32`.
 | iter_ascending (100 keys) | 254.48 ns | 287.52 ns | 1.13x faster |
 | get_hit (100k keys, spread) | 173.40 ns | 108.67 ns | 1.60x slower |
 
+An earlier capture on the same host (2026-06-20) measured get_hit at
+20.57 ns against 25.85 ns (1.26x faster), get_miss at 19.45 ns
+against 28.00 ns (1.44x faster), iter_ascending (100) at 254.96 ns
+against 276.08 ns (1.08x faster), and get_hit at 100k keys at
+166.11 ns against 97.51 ns (1.70x slower).
+
 ### Reading the trade-offs
 
 1. **Small-N reads are level or better.** At 100 keys the tree is one
@@ -111,6 +117,20 @@ Workload: `K=u32`, `V=u32`.
 4. **The architectural lever is what `BTreeMap` cannot do**:
    cross-process visibility, lock-free multi-reader access, and a
    durable ordered map that survives process restart.
+
+### Why a B-tree and not a skip-list
+
+The first cross-process ordered map here was a SWMR skip-list over
+`SharedRegion` (MAX_HEIGHT levels, per-node next-pointer arrays).
+Measured head-to-head on the same host and workload as the earlier
+capture above, its reads lost decisively: get_hit 56.90 ns and
+get_miss 55.34 ns (2.84x / 1.91x slower than `Mutex<BTreeMap>`, where
+this tree was 1.26x / 1.44x faster), because a skip-list walk pays a
+position-independent `SharedRegion` lookup, a likely cache miss, per
+level, while the cache-blocked tree packs its keys contiguously and
+binary-searches inside one line. The skip-list was removed when this
+tree replaced it; the same SWMR write model and lock-free read model
+carry over.
 
 ### Rule 3b bench audit
 

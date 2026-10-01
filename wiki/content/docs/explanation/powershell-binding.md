@@ -27,8 +27,9 @@ and no second implementation of the semantics that can drift from the
 first.
 
 It also explains what the module cannot do. It runs where its native
-runs, so the shipped folder serves Windows x64 and Linux x64 and
-nothing else; a new platform is a compile, not a configuration.
+runs: the shipped folder carries natives for Windows x64, Linux x64,
+macOS arm64 and FreeBSD x64, and a new platform is a compile, not a
+configuration.
 
 ## Two layers, because calls and pipelines cost different things
 
@@ -42,15 +43,15 @@ two operations, in opposite orders, differing by more than tenfold.
 A surface that picked one shape for everything would be wrong in one
 host or the other. So the module splits by what the operation is for:
 
-- **Cmdlets obtain a structure.** This happens once. `New-SubEthaRing`
+- Cmdlets obtain a structure, which happens once. `New-SubEthaRing`
   creates the file when it is absent and attaches when it is present;
   `Open-SubEthaRing` insists it already exists. Being cmdlets, they get
   parameter binding, `-ErrorAction`, tab completion and help for free,
   and their cost is paid once rather than per item.
-- **Methods operate on it.** This happens constantly.
+- Methods operate on it, which happens constantly.
   `$ring.Send($producer, $bytes)` is one native call plus the host's
   method invocation, with no pipeline in the way.
-- **The pipeline moves items when the script is a pipeline.**
+- The pipeline moves items when the script is a pipeline.
   `Send-SubEthaItem` and `Receive-SubEthaItem` exist because some
   scripts genuinely read as pipelines, and paying a record's cost for
   that shape is a reasonable trade at modest rates.
@@ -132,19 +133,29 @@ wait rather than by polling around it.
 This is the one place where the two-layer division bends, and it bends
 for a reason the host imposes.
 
-## One folder, two hosts, two platforms
+## One folder, two hosts, four platforms
 
 The module ships a shell for each host and a native for each platform:
 
 ```
-net10.0/                    PowerShell 7 on .NET 10
-netstandard2.0/             Windows PowerShell 5.1
-runtimes/win-x64/native/    subetha_pwrs.dll
-runtimes/linux-x64/native/  libsubetha_pwrs.so
+net10.0/                      PowerShell 7
+netstandard2.0/               Windows PowerShell 5.1
+runtimes/win-x64/native/      subetha_pwrs.dll
+runtimes/linux-x64/native/    libsubetha_pwrs.so
+runtimes/osx-arm64/native/    libsubetha_pwrs.dylib
+runtimes/freebsd-x64/native/  libsubetha_pwrs.so
 ```
 
 The `.psm1` selects the shell for the host it is imported into and
 loads the native beside it. Nothing is chosen by the caller.
+
+Both shells are compiled against reference assemblies fetched from
+NuGet rather than against the PowerShell doing the build, so every
+machine builds the same bytes. The Windows PowerShell shell targets
+.NET Standard 2.0. The PowerShell 7 shell targets .NET 8 and the
+`System.Management.Automation` 7.4.0 reference, so it loads in
+PowerShell 7.4 and later. On an older PowerShell 7 the module's script
+stops the import with a line naming the PowerShell it needs.
 
 Only the native differs per platform, so each is built on its own
 machine and `cargo pwrs merge` folds the folders into one. The merge

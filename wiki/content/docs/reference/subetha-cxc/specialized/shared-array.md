@@ -149,4 +149,3 @@ let row = reader.get(37)?;
 ## References
 
 - Source: [shared_array.rs](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/src/shared_array.rs)
-- Page: [SHARED_ARRAY.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARRAY.md)

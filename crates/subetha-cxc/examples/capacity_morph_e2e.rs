@@ -103,7 +103,7 @@ fn main() {
     // Integrity: every item ID in 0..N_ITEMS appeared exactly
     // once. Sort-then-compare is the correct check for this design
     // because cross-backing order is not strictly preserved (items
-    // a producer pushed to old via a pre-swap ArcSwap snapshot can
+    // a producer pushed to old via a pre-swap state snapshot can
     // be consumed after items it pushed to new post-swap). Within
     // each backing the SPSC FIFO is preserved; sort proves "no
     // loss + no dup" which is the load-bearing invariant.
@@ -115,7 +115,7 @@ fn main() {
     // Reordering audit. With 1P/1C SPSC, global FIFO is
     // preserved across morphs (the single producer's pushes are
     // sequential, and the consumer drains stale backings oldest-
-    // first then active, so items pushed via a pre-swap ArcSwap
+    // first then active, so items pushed via a pre-swap state
     // snapshot are popped before items pushed via a post-swap
     // snapshot). Expected value: 0. A non-zero count here would
     // indicate a bug in the stale-list ordering, not a design

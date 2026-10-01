@@ -961,7 +961,7 @@ mod tests {
 
     /// A window wider than one density class still protects its oldest
     /// symbols. This is what a reach-shaped density silently broke: the
-    /// controller widens the window towards `WINDOW_MAX` to span a long
+    /// controller widens the window toward `WINDOW_MAX` to span a long
     /// burst, and a repair that reaches only sixteen back makes that
     /// widening do nothing.
     #[test]

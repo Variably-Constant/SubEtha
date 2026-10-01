@@ -17,7 +17,6 @@
 //!     cargo run --release --example async_ring_demo
 
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
@@ -31,58 +30,42 @@ const RING_CAPACITY: usize = 16;
 const PRODUCER_PAUSE: Duration = Duration::from_micros(300);
 const PRODUCER_BATCH: u64 = 8;
 
-/// Per-task waker counter; lets us assert that the future returned
-/// Pending at least once (the async unlock).
+/// A waker that unparks the thread driving the future, and a count of
+/// the future's `Pending` returns, so the demo can assert it suspended at
+/// least once (the async unlock).
 struct CountingWaker {
     pending_returns: AtomicU64,
-    woken: std::sync::Mutex<bool>,
-    cv: std::sync::Condvar,
+    thread: thread::Thread,
 }
 
 impl Wake for CountingWaker {
     fn wake(self: Arc<Self>) {
-        let mut g = self.woken.lock().unwrap();
-        *g = true;
-        self.cv.notify_one();
+        self.thread.unpark();
     }
 }
 
-fn block_on<F: Future>(mut fut: F, counter: &Arc<CountingWaker>) -> F::Output {
-    // Re-arm the wake flag so each call's first poll always runs.
-    // Without this, the wake flag stays false after the previous
-    // call drained it, and the loop blocks on the condvar forever
-    // because the new future has not been polled yet (so no one
-    // is going to wake it).
-    *counter.woken.lock().unwrap() = true;
-
+fn block_on<F: Future>(fut: F, counter: &Arc<CountingWaker>) -> F::Output {
+    let mut fut = std::pin::pin!(fut);
     let waker: Waker = Arc::clone(counter).into();
     let mut cx = Context::from_waker(&waker);
-    // SAFETY: future is on the stack and is never moved after this point.
-    let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
     loop {
-        {
-            let mut g = counter.woken.lock().unwrap();
-            while !*g {
-                g = counter.cv.wait(g).unwrap();
-            }
-            *g = false;
-        }
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return v,
             Poll::Pending => {
                 counter.pending_returns.fetch_add(1, Ordering::Relaxed);
-                continue;
+                // A spurious return from park re-polls, which finds the
+                // future still pending and parks again.
+                thread::park();
             }
         }
     }
 }
 
+/// A counter for the calling thread, which is the one `block_on` parks.
 fn fresh_counter() -> Arc<CountingWaker> {
     Arc::new(CountingWaker {
         pending_returns: AtomicU64::new(0),
-        // Start true so the first poll runs without an initial wake.
-        woken: std::sync::Mutex::new(true),
-        cv: std::sync::Condvar::new(),
+        thread: thread::current(),
     })
 }
 

@@ -387,16 +387,16 @@ ensures progress even when leaders crash.
   (acquire_release, with_lease, read_as_owner held,
   write_as_owner held, beat, am_i_owner vs `std::sync::Mutex`
   and `parking_lot::Mutex`).
-- Sibling primitive: [SHARED_CELL.md](../cells/shared-cell/) -
+- Sibling primitive: [Shared Cell](../cells/shared-cell/) -
   unconditional SeqLock cell; OwnerLease is the
   exclusive-ownership specialization.
 - Sibling primitive:
-  [SHARED_LEADER_ELECTION.md](shared-leader-election/) -
+  [Shared Leader Election](shared-leader-election/) -
   pure leadership without payload; OwnerLease adds the
   protected resource.
 - Sibling primitive:
-  [SHARED_RW_LOCK.md](../locks/shared-rw-lock/) - shared-readers /
+  [Shared RW Lock](../locks/shared-rw-lock/) - shared-readers /
   exclusive-writer; OwnerLease is the always-exclusive case.
-- Composes with: [HEARTBEAT.md](../coordination-types/heartbeat/) - external
+- Composes with: [Heartbeat Table](../coordination-types/heartbeat/) - external
   heartbeat tables can drive `tick_epoch`; the lease's own
   heartbeat is internal.

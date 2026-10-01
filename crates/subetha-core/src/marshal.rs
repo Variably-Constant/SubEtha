@@ -32,11 +32,12 @@
 //!
 //! # Auto-impls
 //!
-//! Safe blanket impls are provided for the primitive integer and
-//! floating-point types, `bool`, `()`, and `[T; N]` where `T:
-//! Marshal`. These cover the common case (move a `u64` job ID, an
-//! `[u8; 48]` argument blob, a `(u32, u32)` pair) without requiring
-//! any unsafe code at the call site.
+//! Impls are provided for the fixed-width integer types from `u8`/`i8`
+//! to `u128`/`i128`, `f32`, `f64`, `bool`, `()`, `[T; N]` where
+//! `T: Marshal + Copy + Default`, and pairs `(A, B)` of `Marshal` types.
+//! These cover the common case (move a `u64` job ID, an `[u8; 48]`
+//! argument blob, a `(u32, u32)` pair) without requiring any unsafe code
+//! at the call site.
 //!
 //! # Connection to `pass_registry`
 //!

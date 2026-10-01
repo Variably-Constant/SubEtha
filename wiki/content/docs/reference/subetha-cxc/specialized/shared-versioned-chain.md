@@ -193,11 +193,11 @@ version for consistent reads.
 - Bench: `crates/subetha-cxc/benches/shared_versioned_chain.rs`
   (push, read_at, current, len vs `Mutex<Vec>` scan).
 - Sibling primitive:
-  [SHARED_HANDLE_TABLE.md](../arenas/shared-handle-table/) -
+  [Shared Handle Table](../arenas/shared-handle-table/) -
   same Treiber free-list pattern; HandleTable is the keyed
   variant, VersionedChain is the versioned-list variant.
-- Sibling primitive: [SHARED_TIME_POINT.md](shared-time-point/) -
+- Sibling primitive: [Shared Time Point](shared-time-point/) -
   16-slot tile of versioned values; VersionedChain is the
   unbounded-history linked-list variant.
-- Composes with: [SHARED_FENCE_CLOCK.md](../locks/shared-fence-clock/) -
+- Composes with: [Shared Fence Clock](../locks/shared-fence-clock/) -
   HLCs provide the version source for cross-process MVCC.

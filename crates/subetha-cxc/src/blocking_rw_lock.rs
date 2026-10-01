@@ -123,8 +123,6 @@ pub struct BlockingRWLock {
     wakeup: Arc<WakeupAtom>,
 }
 
-const PRE_PARK_SPIN: u32 = 32;
-
 impl BlockingRWLock {
     /// Create a blocking rwlock. Lays out three files under one
     /// base path: `<base>.rwlock.bin` for the state atom,
@@ -191,7 +189,7 @@ impl BlockingRWLock {
                 std::mem::forget(g);
                 return Ok(BlockingReadGuard { lock: self });
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.waker.spin_rounds() {
                 if let Ok(g) = self.inner.try_read_lock() {
                     std::mem::forget(g);
                     return Ok(BlockingReadGuard { lock: self });
@@ -220,7 +218,7 @@ impl BlockingRWLock {
                 std::mem::forget(g);
                 return Ok(BlockingReadGuard { lock: self });
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.waker.spin_rounds() {
                 if let Ok(g) = self.inner.try_read_lock() {
                     std::mem::forget(g);
                     return Ok(BlockingReadGuard { lock: self });
@@ -262,7 +260,7 @@ impl BlockingRWLock {
                 std::mem::forget(g);
                 return Ok(BlockingWriteGuard { lock: self });
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.waker.spin_rounds() {
                 if let Ok(g) = self.inner.try_write_lock() {
                     std::mem::forget(g);
                     return Ok(BlockingWriteGuard { lock: self });
@@ -291,7 +289,7 @@ impl BlockingRWLock {
                 std::mem::forget(g);
                 return Ok(BlockingWriteGuard { lock: self });
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.waker.spin_rounds() {
                 if let Ok(g) = self.inner.try_write_lock() {
                     std::mem::forget(g);
                     return Ok(BlockingWriteGuard { lock: self });
@@ -325,7 +323,7 @@ impl BlockingRWLock {
     /// Public because a caller that does not keep the guard has to do
     /// this itself. A binding that hands a hold out to another language
     /// releases through [`inner`](Self::inner) at a moment of its own
-    /// choosing; without this call afterwards, a thread parked in one
+    /// choosing; without this call afterward, a thread parked in one
     /// of the `*_park*` forms sleeps until its deadline even though the
     /// lock is free, because nothing told it the lock had changed
     /// hands.

@@ -47,20 +47,18 @@ on the target.
   points are `with_content_prefix` (returns
   `Box<UmbraOwner<T>>`), `with_hash_prefix` (same), and
   `from_arc` (returns `ArcUmbra<T>`).
-- **`with_content_prefix` reads `T`'s first 4 bytes in native
-  byte order.** On a little-endian host the prefix is the
-  low-address 4 bytes; on big-endian it is the high-address 4
-  bytes. The same `T` value produces different prefixes on hosts
-  of opposite endianness. Persistence and cross-host workflows
-  must use `with_hash_prefix` or `from_raw` with an explicit
-  deterministic hash.
+- **`with_content_prefix` takes the first 4 bytes of `T`'s
+  `Marshal` encoding, and needs `T: Marshal`.** The encoding is
+  little-endian on every host, so the same value gives the same
+  prefix everywhere. A type with no `Marshal` encoding does not
+  compile there, since its padding bytes hold no value to read.
 - **`with_hash_prefix` uses `std::collections::hash_map::DefaultHasher`,
-  truncated to the low 32 bits.** `DefaultHasher` may be
-  randomized per process in some Rust versions. Two processes
-  hashing the same content may compute different prefixes; this
-  is not a content-addressing-stable hash.
-- **Prefix is 4 bytes (32 bits).** Birthday-bound collision
-  probability is ~50% at ~65 K distinct prefixes. Treat
+  truncated to the low 32 bits.** `DefaultHasher::new()` is not
+  randomized, but its algorithm may change between Rust releases,
+  so builds from different compilers may compute different
+  prefixes; this is not a content-addressing-stable hash.
+- **Prefix is 4 bytes (32 bits).** Some pair of prefixes collides
+  with ~50% probability at about 77,000 distinct values. Treat
   prefix-equality as a candidate-filter, not a definitive
   content-match.
 - **`UmbraOwner<T>` is returned wrapped in a `Box`.** Both
@@ -102,12 +100,10 @@ pub struct UmbraPointer<T> {
 }
 ```
 
-The pointer is laid out so the target occupies bytes 0..8 (the
-natural pointer-alignment slot) and the prefix occupies bytes
-8..12 with explicit `_pad` filling the 16-byte slot. SIMD scans
-over an array of `UmbraPointer<T>` see consistent prefix-byte
-positions at offset 8 in every slot, enabling a packed-quadword
-gather on the prefix half-register.
+The target occupies bytes 0..8 and the prefix bytes 8..12, with
+an explicit zeroed `_pad` in bytes 12..16. A scan that loads each
+slot into a 16-byte register finds the prefix in the same lanes
+of every slot.
 
 `UmbraOwner<T>` is the RAII wrapper for the Box-heap path: it
 owns the pointed-to allocation, with `Drop` that reclaims it via
@@ -156,9 +152,10 @@ Reach for `UmbraPointer<T>` (via `UmbraOwner` or `ArcUmbra`) when:
 
 Reach for something else when:
 
-- The payload is small (a few bytes). The deref is free; the
-  prefix scan is overhead. See the cache_pressure bench loss
-  (0.69x) below for the quantified case.
+- The payload is small and cache-resident and the scans mostly
+  miss: in the benches below, a full miss over cache-resident
+  `u64` candidates measured 1.04x against dereferencing them,
+  within noise.
 - The workload accesses elements **sequentially with high hit
   rate** (e.g. `Vec<T>` iteration where every element is
   processed). The shortcircuit never fires; the prefix becomes
@@ -188,12 +185,11 @@ flowchart LR
     class Q pad
 ```
 
-The explicit `_pad: u32` field is what gives `UmbraPointer<T>`
-its 16-byte size regardless of `T`. Without it, Rust would size
-the struct to `sizeof(ptr) + sizeof(u32) = 12` bytes (with
-4-byte trailing alignment to the next u32 boundary), which would
-make every slot 12 bytes - awkward for SIMD scans because slots
-would not be 16-aligned in an array.
+`#[repr(C, align(16))]` fixes the size and alignment at 16 bytes
+for every `T`, so the slots of an array stay 16-aligned for SIMD
+loads. The explicit `_pad: u32` field makes bytes 12..16 part of
+the value rather than padding, so every byte of a slot is
+initialized and a whole-slot load reads no padding.
 
 The pointer occupies bytes 0..8 (its natural 8-byte alignment
 slot); the prefix sits at bytes 8..12. A SIMD scan that loads
@@ -225,7 +221,7 @@ flowchart TD
 
 | Construction | Prefix derivation | Lifetime owner | When to use |
 |---|---|---|---|
-| `with_content_prefix(T)` | First 4 bytes of `T`'s representation, in native byte order | `Box<UmbraOwner<T>>` | T's first 4 bytes are a meaningful key (row ID, packet header, etc.) and you do not need cross-host portability |
+| `with_content_prefix(T)` | First 4 bytes of `T`'s `Marshal` encoding, little-endian on every host | `Box<UmbraOwner<T>>` | `T: Marshal` and its first 4 encoded bytes are a meaningful key (row ID, packet header, etc.) |
 | `with_hash_prefix(T)` | `DefaultHasher::finish() as u32` (low 32 bits of u64 output) | `Box<UmbraOwner<T>>` | Near-uniform random prefix for HashMap-style rejection; T is unique enough that collision is rare |
 | `from_arc(Arc<T>, prefix: u32)` | Caller-supplied | `ArcUmbra<T>` (Arc keeps target alive) | You already have an Arc; you want shared ownership; you supply the prefix from your own hash function |
 | `from_raw(prefix, *const T)` | Caller-supplied | None (caller manages) | Hot-path construction over an existing pointer; unsafe |
@@ -262,9 +258,10 @@ itself stays dense (one cache line covers 4 slots); only the
 prefix-hit path pays the cost of loading the target's bytes.
 
 When the prefix is content-derived and the target is
-unpredictable (scattered heap allocations, no prefetch), this
-turns into a multi-x speedup. When the target is small or always
-in cache, the shortcircuit adds overhead without saving anything.
+unpredictable (scattered heap allocations, no prefetch), the
+measured gain was 1.36x (see `scattered_miss` below). When every
+entry is consumed, the shortcircuit adds a compare per entry and
+skips no deref.
 
 ## API at a glance
 
@@ -274,7 +271,7 @@ in cache, the shortcircuit adds overhead without saving anything.
 | Method | Signature | Notes |
 |---|---|---|
 | `from_raw` (unsafe) | `const unsafe fn(prefix: u32, target: *const T) -> Self` | Caller responsible for target lifetime and prefix derivation |
-| `with_content_prefix` | `fn(value: T) -> Box<UmbraOwner<T>>` | Heap-allocates value via Box; prefix is first 4 bytes |
+| `with_content_prefix` | `fn(value: T) -> Box<UmbraOwner<T>> where T: Marshal` | Heap-allocates value via Box; prefix is the first 4 bytes of its `Marshal` encoding |
 | `with_hash_prefix` | `fn(value: T) -> Box<UmbraOwner<T>> where T: Hash` | Heap-allocates value via Box; prefix is DefaultHasher u32 |
 | `from_arc` | `fn(value: Arc<T>, prefix: u32) -> ArcUmbra<T>` | Caller supplies the prefix; Arc keeps target alive |
 | `prefix` | `const fn(&self) -> u32` | Returns the 4-byte content prefix |
@@ -353,8 +350,8 @@ assert_eq!(hits, 1);
 // Box-owned variant. The Box<UmbraOwner<T>> manages the target
 // lifetime; drop the Box, the inner Box is freed.
 let owner = UmbraPointer::with_content_prefix(0xCAFE_BABE_DEAD_BEEF_u64);
-// On little-endian: first 4 bytes of u64 are 0xEF 0xBE 0xAD 0xDE
-// -> u32 = 0xDEAD_BEEF.
+// The Marshal encoding is little-endian, so on every host the first
+// 4 bytes are 0xEF 0xBE 0xAD 0xDE -> u32 = 0xDEAD_BEEF.
 assert_eq!(owner.prefix(), 0xDEAD_BEEF);
 assert_eq!(*owner.value(), 0xCAFE_BABE_DEAD_BEEF_u64);
 ```
@@ -367,94 +364,79 @@ Baseline: a `Vec<Arc<T>>` of 1024 entries, scanned in a loop with
 deref.
 
 Bench: `crates/subetha-pointers/benches/umbra_pointer.rs`. Measured
-on Windows 11 / Zen+ R7 2700, criterion at `--measurement-time 2
---warm-up-time 1 --sample-size 30` (middle estimate of each
-[low, mid, high] triple).
+on Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built for the
+x86-64 baseline, with Criterion's defaults (3 s warm-up, 100 samples
+over 5 s; middle estimate of each [low, mid, high] triple), while other
+work kept 3.4 to 3.5 of the machine's 24 hardware threads busy.
 
 | Workload | native_arc | umbra_prefix | Ratio |
 |---|---:|---:|---:|
-| `scan_late_match` (match at last index, 1024 entries) | 771 ns | **736 ns** | **1.05x umbra wins** |
-| `scan_full_miss` (no match, full scan) | **667 ns** | 686 ns | 0.97x (parity; native marginally ahead) |
-| `scan_cache_pressure` (forced sum reduction over all 1024) | **496 ns** | 717 ns | 0.69x (baseline wins; honest loss) |
-| `scattered_miss` (64-byte payloads, scattered heap, shuffled access) | 1.50 us | **1.24 us** | **1.21x umbra wins** |
+| `scan_late_match` (match at last index, 1024 entries) | 510 ns | **383 ns** | **1.33x umbra wins** |
+| `scan_full_miss` (no match, full scan) | 423 ns | 406 ns | 1.04x (parity; the intervals overlap) |
+| `scan_cache_pressure` (native sums all 1024; umbra checks all 1024 prefixes) | **357 ns** | 730 ns | 0.49x (native faster; the arms differ, see below) |
+| `scattered_miss` (64-byte payloads, scattered heap, shuffled access) | 984 ns | **724 ns** | **1.36x umbra wins** |
 
 ### Why each result lands where it does
 
 <details>
-<summary><b>scan_late_match: umbra wins 1.05x</b></summary>
+<summary><b>scan_late_match: umbra wins 1.33x</b></summary>
 
 The match is at index N-1 (last entry). Both paths scan all 1024
 candidates.
 
 The native path dereferences every Arc to read its u64 payload
-and compare. The Arcs were allocated sequentially so the heap
-allocator likely interleaved them on adjacent cache lines, but
-each deref still touches a separate Arc-allocation address.
+and compare. The umbra path checks `matches_prefix` (one 32-bit
+compare) before any deref: 1023 of the 1024 candidates fail the
+prefix check and are skipped, and only the last one is
+dereferenced.
 
-The umbra path checks `matches_prefix` (one register compare)
-before any deref. 1023 of the 1024 candidates fail the prefix
-check and skip; only the last one dereferences. That deref hits
-the same Arc allocation the native path would have hit, but it
-happens once instead of 1024 times.
-
-The 1.05x ratio reflects the savings: 1023 saved derefs at a
-fraction of a nanosecond each, largely offset by the umbra's
-slightly larger per-candidate fixed cost (16-byte slot load +
-prefix-bit extract).
+The Arcs were allocated one after another, and each arm's data is
+tens of kilobytes, inside the L2 cache. Skipping 1023 of the 1024
+derefs takes the scan from 510 ns to 383 ns. The umbra path's slots
+are 32-byte `ArcUmbra`s: a 16-byte `UmbraPointer` and the `Arc`,
+padded to the pointer's 16-byte alignment.
 
 </details>
 
 <details>
-<summary><b>scan_full_miss: parity (native marginally ahead, 0.97x)</b></summary>
+<summary><b>scan_full_miss: parity (umbra marginally ahead, 1.04x)</b></summary>
 
 No candidate matches; both paths scan all 1024.
 
 The native path dereferences every Arc. The umbra path checks
 every prefix; none match, so it skips every deref.
 
-In principle the umbra path should save more here than in
-`scan_late_match` (zero derefs vs one), but in the shipped bench the two
-paths land within measurement noise of each other and the native
-path is marginally faster (667 ns vs 686 ns). The compiler
-auto-vectorizes the native u64 compare in a tight loop, and the
-small `u64` payload sits in the same cache line as the Arc header
-on warm caches, so there is no cold-deref to skip. For `u64`
-payloads in warm caches the prefix layer does not pay back; its
-value appears only when the deref is genuinely expensive (see
-`scattered_miss`).
+The two land within measurement noise of each other, the umbra
+path marginally ahead (406 ns against 423 ns, with the two
+intervals overlapping). With the data inside the L2 cache, a
+skipped deref of a `u64` saves about what the prefix compare
+costs. The prefix layer pays back when the deref is expensive
+(see `scattered_miss`).
 
 </details>
 
 <details>
-<summary><b>scan_cache_pressure: native wins (umbra 0.69x, the honest loss)</b></summary>
+<summary><b>scan_cache_pressure: native faster (umbra 0.49x), with arms that differ</b></summary>
 
-This workload forces a sum reduction over all 1024 payloads.
-Every entry is consumed - there is no miss to skip.
+The two arms do different work. The native path sums `**arc`
+for every entry, dereferencing all 1024. The umbra path checks
+`matches_prefix` for every entry against a prefix that matches
+none and dereferences nothing, and it re-reads that prefix
+through `black_box` on every iteration, which the native loop
+does not do. The 0.49x measures this harness, not the prefix
+layer alone; the other three workloads give both arms the same
+per-iteration `black_box`.
 
-The native path sums `**arc` for every entry. With sequential
-heap layout and warm caches, this is a fast tight loop.
-
-The umbra path checks `matches_prefix` for every entry against
-a guaranteed-miss prefix, counting matches. The compare-and-
-branch loop does N work and produces a constant result (0
-matches).
-
-But the prefix scan does 16-byte-stride reads while the native
-deref does 8-byte-stride reads over a flatter Vec<Arc<u64>>.
-The native loop's smaller working set fits better in L1 and
-auto-vectorizes more cleanly.
-
-**The architectural lesson:** Umbra's shortcircuit is a
-miss-rate-amortizer. If your workload never misses (full
-consumption), the prefix layer is overhead that does not pay
-back. Use a plain `Vec<T>` or `Vec<Arc<T>>` for full-consumption
-scans; reach for `UmbraPointer` only when most candidates can
-be rejected.
+What holds regardless of the harness: the shortcircuit saves
+only the derefs it skips. A workload that consumes every entry
+skips none, so the prefix check is pure overhead there. Use a
+plain `Vec<T>` or `Vec<Arc<T>>` for full-consumption scans, and
+reach for `UmbraPointer` when most candidates can be rejected.
 
 </details>
 
 <details>
-<summary><b>scattered_miss: umbra wins 1.21x (the design-point regime)</b></summary>
+<summary><b>scattered_miss: umbra wins 1.36x (the design-point regime)</b></summary>
 
 64-byte `CacheLineBlob` payloads. Heap allocations are
 interleaved with 4 KB scratch boxes to force scatter so
@@ -462,41 +444,34 @@ consecutive Arcs land on separate cache lines. Access order is
 shuffled (bit-reversed indices) so the hardware prefetcher
 cannot predict the next address.
 
-Native: 1.50 us. The deref for each entry touches a cold cache
+Native: 984 ns. The deref for each entry touches a cold cache
 line; even though only `marker` (the first u64) is read, the
 cache miss still costs a stall per access, partially overlapped
 by out-of-order execution.
 
-Umbra: 1.24 us. The prefix scan loads 16-byte slots from a
-contiguous Vec<ArcUmbra>, which is prefetcher-friendly because
-the Vec itself is sequential. Misses on the prefix compare are
-rare; derefs are zero (no prefix matches the query).
+Umbra: 724 ns. The prefix scan reads 32-byte `ArcUmbra` slots
+from one 32 KB Vec, in the same shuffled order, and dereferences
+nothing (no prefix matches the query). The Vec fits in the L2
+cache, while each native deref goes to its own allocation between
+4 KB spacers.
 
-The 1.21x ratio is the largest umbra win of the four workloads
-(this is the design point - expensive scattered derefs). It is
-still bounded because the cache miss on the Arc target is
-partially overlapped with the next prefix-load. The savings would
-widen with:
-
-- Larger payloads (1 KB+) so the cache miss on deref is more
-  costly to amortize
-- Higher hit rates on the prefix (so the prefix scan itself
-  benefits from skipping more compare loop iterations)
-- Older CPUs with weaker out-of-order execution
+The 1.36x ratio is the largest umbra win of the four workloads;
+expensive scattered derefs are the case the prefix is for.
 
 </details>
 
 ## Where Umbra wins, where it loses
 
-Two-axis decision matrix:
+What the four workloads measured:
 
-| | Small payload (<32 B) | Large payload (>=64 B) |
+| | `u64` payload, cache-resident | 64-byte payload, scattered |
 |---|---|---|
-| **High miss rate** (most candidates rejected) | Umbra is parity-to-marginal (0.97x-1.05x); for small in-cache `u64` the skipped deref barely pays for the prefix check | Umbra wins (1.21x in the shipped scattered bench; more with even larger payloads); the canonical design point |
-| **Low miss rate** (most candidates accessed) | Native wins (0.69x is the loss case); the prefix is dead overhead | Native wins for sequential access; Umbra still helps for scattered access via cache-line-stride dense scan |
+| **Most candidates rejected** | Parity to umbra 1.33x: 1.04x (`scan_full_miss`), 1.33x (`scan_late_match`) | Umbra 1.36x (`scattered_miss`) |
+| **Every entry consumed** | Not measured by a matched pair (`scan_cache_pressure`'s arms differ) | Not measured |
 
-The "low miss rate, small payload" cell is the failure mode -
-avoid `UmbraPointer` there. Everything else is a candidate.
+A workload that consumes every entry skips no derefs, so the
+prefix check can only add cost there; avoid `UmbraPointer` for
+it.
 
 ## Use case patterns
 
@@ -511,8 +486,7 @@ each Entry to do the full key comparison.
 For typical hash distributions, the bucket chain has 1 to 4
 entries, and the expected number of derefs per lookup drops
 from "all entries in bucket" to "1 entry" (the actual key, when
-it exists in the map). For dense maps with chain length over 4,
-the per-entry savings compound.
+it exists in the map). The saving grows with chain length.
 
 </details>
 
@@ -523,18 +497,28 @@ Triple stores hash subjects, properties, and objects into
 prefix-derived buckets. Dedup during ingest:
 
 ```rust
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+// The prefix with_hash_prefix stores: the low 32 bits of the
+// DefaultHasher hash.
+fn prefix_of<T: Hash>(value: &T) -> u32 {
+    let mut h = DefaultHasher::new();
+    value.hash(&mut h);
+    h.finish() as u32
+}
+
 for triple in ingest_stream {
-    let prefix = hash_subject(&triple.subject) as u32;
-    if !subjects.iter().any(|s| s.matches_prefix(prefix)
-                              && s.value() == &triple.subject) {
-        // new subject; allocate via with_hash_prefix
-        subjects.push(*UmbraPointer::with_hash_prefix(triple.subject.clone()));
+    let prefix = prefix_of(&triple.subject);
+    if !subjects.iter().any(|s| s.prefix() == prefix && s.value() == &triple.subject) {
+        subjects.push(UmbraPointer::with_hash_prefix(triple.subject.clone()));
     }
 }
 ```
 
-Most candidates miss; the prefix scan answers in 1 to 2 ns per
-candidate without dereferencing the full subject byte string.
+Most candidates miss on the prefix and are never dereferenced;
+the `scan_full_miss` bench above scanned about 0.67 ns per
+candidate.
 
 </details>
 
@@ -549,9 +533,8 @@ indexed by a deterministic content-hash prefix. Lookup:
 3. On hit, dereference and compare full bytes (defensive against
    the 4-byte birthday-bound collision).
 
-For caches small enough to scan linearly (~1000 entries), this
-is faster than a HashMap because of cache-line-dense scanning;
-for larger caches, layer with a coarser bucket index.
+A linear scan suits a cache of about a thousand entries; for a
+larger one, layer it under a coarser bucket index.
 
 </details>
 
@@ -563,7 +546,8 @@ A graph walker visits nodes by raw pointer. Each node is a
 lines. Wrap each pointer in an `ArcUmbra<T>` with a node-id-
 derived prefix; the walk first checks the prefix and only
 dereferences nodes whose id matches the current frontier
-predicate. Reduces the cold-cache-miss count in the worst case.
+predicate, so a node that fails the check costs no load of its
+cold line.
 
 </details>
 
@@ -583,21 +567,21 @@ predicate. Reduces the cold-cache-miss count in the worst case.
    pointer slot. Wrap in `Box<[u8]>`, `Arc<str>`, or similar at
    the application layer.
 
-4. **`with_content_prefix` byte order is native.**
-   Little-endian and big-endian hosts produce different prefixes
-   for the same `T`. Persistence and IPC must not rely on
-   `with_content_prefix` for prefix stability.
+4. **`with_content_prefix` needs `T: Marshal`.** The prefix is the
+   first 4 bytes of the value's `Marshal` encoding, which is
+   little-endian on every host, so the same value gives the same
+   prefix everywhere.
 
 5. **`with_hash_prefix` uses `DefaultHasher`.** Not
-   cryptographically strong; not stable across Rust versions;
-   may be randomized per process in some Rust versions. Use
-   `from_raw` with an explicit hash for stable
+   cryptographically strong and not stable across Rust versions.
+   Use `from_raw` with an explicit hash for stable
    content-addressing.
 
-6. **Prefix is 4 bytes (32 bits).** Birthday-bound collision at
-   ~50% probability around ~65 K distinct prefixes; expected
-   collisions for any pair of entries at ~1 in 4 billion. The
-   prefix is a candidate-filter, not an equality test.
+6. **Prefix is 4 bytes (32 bits).** Some pair of prefixes
+   collides with ~50% probability at about 77,000 distinct
+   values; any given pair collides with probability 1 in 2^32
+   (about 1 in 4.3 billion). The prefix is a candidate-filter,
+   not an equality test.
 
 7. **`UmbraOwner<T>` does not implement `Clone`.** Owning the
    target by `Box` means there is no shared-ownership path;
@@ -607,17 +591,16 @@ predicate. Reduces the cold-cache-miss count in the worst case.
    heap-allocate via `Box::new`.** There is no in-place
    variant. The Box is reclaimed when `UmbraOwner` drops.
 
-9. **`PhantomData<T>` not `PhantomData<*const T>`.** This means
-   `UmbraPointer<T>` is `Send` when `T: Send` and `Sync` when
-   `T: Sync`, matching the auto-trait behavior for `Box<T>` /
-   `Arc<T>`. Callers needing different variance must construct
-   wrappers.
+9. **`Send` and `Sync` come from explicit impls.** The raw
+   `*const T` field alone would make `UmbraPointer<T>` neither;
+   `unsafe impl`s make it `Send` when `T: Send` and `Sync` when
+   `T: Sync`, matching `Box<T>`.
 
 10. **No `Hash`, `PartialEq`, `Eq`, `PartialOrd`, `Ord` impls.**
-    The crate explicitly chose not to derive these because the
-    "correct" equality is application-dependent (prefix-only,
-    prefix + deref, identity-only). Callers using
-    `UmbraPointer` as a map key must implement these manually.
+    Which equality is right depends on the application
+    (prefix only, prefix and value, or identity), so a caller
+    using `UmbraPointer` as a map key implements these on a
+    wrapper.
 
 ## Common pitfalls
 
@@ -625,9 +608,9 @@ predicate. Reduces the cold-cache-miss count in the worst case.
 <summary><b>Pitfall 1: assuming prefix equality implies content equality</b></summary>
 
 ```rust
-// WRONG: 32-bit prefix collides at the birthday bound.
+// Wrong: a 32-bit prefix collides at the birthday bound.
 if a.ptr().prefix_eq(b.ptr()) {
-    return true;  // BUG: false positives possible
+    return true;  // false positives possible
 }
 ```
 
@@ -635,7 +618,7 @@ A 4-byte prefix is a candidate filter. Confirm with a full
 content compare on hit:
 
 ```rust
-// CORRECT
+// Right: the prefix filters, the value decides.
 if a.ptr().prefix_eq(b.ptr()) && a.value() == b.value() {
     return true;
 }
@@ -644,17 +627,14 @@ if a.ptr().prefix_eq(b.ptr()) && a.value() == b.value() {
 </details>
 
 <details>
-<summary><b>Pitfall 2: <code>with_content_prefix</code> for cross-host data</b></summary>
+<summary><b>Pitfall 2: <code>with_content_prefix</code> on a type with no <code>Marshal</code> encoding</b></summary>
 
-The prefix is derived in native byte order. A little-endian host
-writing `0xDEAD_BEEF_CAFE_BABE` as a u64 produces prefix
-`0xCAFE_BABE` (low 4 bytes); a big-endian host produces
-`0xDEAD_BEEF`. Persistence or IPC across host architectures will
-mismatch.
-
-Use `with_hash_prefix` (consistent within a single process run)
-or, for full stability, `from_raw` with an explicit byte-order-
-independent hash like Blake3 or FNV-1a.
+The prefix comes from the value's `Marshal` encoding, so
+`with_content_prefix` compiles only for `T: Marshal`: the integers,
+floats, `bool`, arrays and pairs of those, and types that implement
+it themselves. A struct with padding bytes has no such encoding and
+is refused at compile time. Use `with_hash_prefix` for a `Hash` type,
+or `from_raw` / `from_arc` with a prefix of your own.
 
 </details>
 
@@ -684,14 +664,14 @@ fn stable_prefix<T: AsRef<[u8]>>(v: &T) -> u32 {
 <summary><b>Pitfall 4: using <code>UmbraPointer</code> on warm-cache small-payload scans</b></summary>
 
 If every entry in the scan is consumed (no early-out), the
-prefix layer is pure overhead. The `scan_cache_pressure` bench
-shows the 0.69x loss case (native wins ~1.45x).
+prefix layer is pure overhead: it skips no derefs and adds a
+compare per entry.
 
-Decision rule: only use `UmbraPointer` when the expected miss
-rate is high (above 50%) and the deref cost is non-trivial
-(payload at least one cache line, or scattered heap allocation).
-For full-consumption sequential scans of small payloads, use
-`Vec<T>` directly.
+Use `UmbraPointer` when most candidates are rejected and the
+deref is expensive (a payload of a cache line or more, or
+scattered heap allocations), the case `scattered_miss` measured
+at 1.36x. For full-consumption sequential scans of small
+payloads, use `Vec<T>` directly.
 
 </details>
 
@@ -699,16 +679,14 @@ For full-consumption sequential scans of small payloads, use
 <summary><b>Pitfall 5: forgetting that <code>with_*_prefix</code> returns <code>Box</code></b></summary>
 
 ```rust
-// Pattern that LOOKS right but allocates ownership inside Box:
 let owner = UmbraPointer::with_content_prefix(42u64);
-// owner is Box<UmbraOwner<u64>>, not UmbraOwner<u64>.
-// To dereference twice (once through Box, once through value):
+// owner is Box<UmbraOwner<u64>>, not UmbraOwner<u64>; method
+// calls auto-deref through the Box.
 let v: &u64 = owner.value();
 ```
 
-The Box wrapping is an implementation choice; the API method
-calls auto-deref through the Box so most call sites do not
-notice. The lifetime is tied to the outer Box.
+Method calls auto-deref through the Box, so most call sites do
+not notice it. The target lives as long as the outer Box.
 
 </details>
 

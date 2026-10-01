@@ -201,11 +201,11 @@ adapts the transport choice in production.
 - Bench: `crates/subetha-cxc/benches/shared_topology_map.rs`
   (record_send, fan_out, recommend, read_recommendation vs
   `Mutex<HashMap>`).
-- Sibling primitive: [SHARED_RING.md](../rings/shared-ring/) -
+- Sibling primitive: [Shared Ring](../rings/shared-ring/) -
   PointToPoint transport.
 - Sibling primitive:
-  [SHARED_BROADCAST_RING.md](../rings/shared-broadcast-ring/) -
+  [Shared Broadcast Ring](../rings/shared-broadcast-ring/) -
   BroadcastTree transport.
 - Sibling primitive:
-  [SHARED_LEADER_ELECTION.md](../ownership-types/shared-leader-election/) -
+  [Shared Leader Election](../ownership-types/shared-leader-election/) -
   coordinator selection for the recommendation engine.

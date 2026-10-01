@@ -72,7 +72,7 @@ __all__ = [
 _LOOP_TAKES_THE_DESCRIPTOR = sys.platform != "win32"
 
 # How long each underlying wait runs before it comes back to be retried.
-# A cancelled await cannot interrupt a wait already in progress, so this
+# A canceled await cannot interrupt a wait already in progress, so this
 # also bounds how long cancellation takes to take effect.
 _SLICE_SECONDS = 0.25
 
@@ -81,7 +81,7 @@ async def _until(attempt, timeout):
     """Run `attempt(slice)` on a thread until it answers, or time runs out.
 
     `attempt` returns None to mean "nothing yet, ask again". Splitting
-    the wait into slices is what lets a cancelled await stop within a
+    the wait into slices is what lets a canceled await stop within a
     slice rather than at the far end of the caller's whole timeout.
     """
     loop = asyncio.get_running_loop()

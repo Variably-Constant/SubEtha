@@ -193,6 +193,44 @@ impl HolderTable {
         s.state.store(HOLDER_FREE, Ordering::Release);
     }
 
+    /// Free `slot` only while it still holds what the caller observed:
+    /// process `pid` and payload `payload`. A claimant that has told a
+    /// stale claim from a live one by its payload, such as a holder's
+    /// process creation time when the pid now names another process,
+    /// frees it this way without freeing a holder that claimed the slot
+    /// since. Returns whether it freed the slot.
+    ///
+    /// The pid goes to zero first, which marks the slot mid-claim: a reap
+    /// leaves it alone, and no claim can start while its state is held.
+    /// The state is then freed only if it is still `payload`; otherwise
+    /// the pid is put back.
+    pub fn release_if(&self, slot: usize, pid: u32, payload: u64) -> bool {
+        if pid == 0 || payload == HOLDER_FREE || payload == HOLDER_RESERVED {
+            return false;
+        }
+        let s = self.slot(slot);
+        if s.owner_pid
+            .compare_exchange(pid, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        if s.state
+            .compare_exchange(payload, HOLDER_FREE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return true;
+        }
+        // The same process holds the slot under another payload. The pid
+        // goes back unless a claim that followed the holder's own release
+        // has already stamped its own.
+        let _restored = s
+            .owner_pid
+            .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        false
+    }
+
     /// The payload a slot holds, or `None` if it is free or still
     /// forming.
     pub fn payload(&self, slot: usize) -> Option<u64> {
@@ -304,6 +342,39 @@ mod tests {
         assert_eq!(t.claim(9), Some(0), "the released slot is reused");
     }
 
+    /// A claim a claimant has found stale is freed given the pid and
+    /// payload it observed.
+    #[test]
+    fn a_stale_claim_is_freed_given_the_pair_observed() {
+        let b = backing(1);
+        let t = &b.table;
+        assert_eq!(t.claim(7), Some(0));
+        let pid = t.slot(0).owner_pid.load(Ordering::Acquire);
+        assert!(t.release_if(0, pid, 7), "the observed pair frees the slot");
+        assert_eq!(t.payload(0), None);
+        assert_eq!(t.slot(0).owner_pid.load(Ordering::Acquire), 0);
+        assert_eq!(t.claim(9), Some(0), "the freed slot is claimable");
+    }
+
+    /// A pair another claimant has replaced frees nothing: a new payload
+    /// under the same process, or the old payload under another process.
+    #[test]
+    fn a_replaced_pair_leaves_the_new_holder_in_place() {
+        let b = backing(1);
+        let t = &b.table;
+        assert_eq!(t.claim(7), Some(0));
+        let pid = t.slot(0).owner_pid.load(Ordering::Acquire);
+        t.release(0);
+        assert_eq!(t.claim(9), Some(0));
+        assert!(!t.release_if(0, pid, 7), "a new payload stays held");
+        assert_eq!(t.payload(0), Some(9));
+        assert_eq!(t.slot(0).owner_pid.load(Ordering::Acquire), pid, "and keeps its pid");
+        t.slot(0).owner_pid.store(pid.wrapping_add(1), Ordering::Release);
+        t.slot(0).state.store(7, Ordering::Release);
+        assert!(!t.release_if(0, pid, 7), "the same payload under another process stays held");
+        assert_eq!(t.payload(0), Some(7));
+    }
+
     #[test]
     fn a_full_table_refuses() {
         let b = backing(2);
@@ -385,23 +456,27 @@ mod tests {
     #[test]
     fn concurrent_claims_never_hand_two_callers_one_slot() {
         let b = std::sync::Arc::new(backing(64));
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        std::thread::scope(|s| {
-            for _ in 0..8 {
-                let b = std::sync::Arc::clone(&b);
-                let seen = std::sync::Arc::clone(&seen);
-                s.spawn(move || {
-                    let mut mine = Vec::new();
-                    for p in 1..=8u64 {
-                        if let Some(i) = b.table.claim(p) {
-                            mine.push(i);
+        // Each claimer keeps the slots it won and hands them back on join.
+        let mut all: Vec<usize> = std::thread::scope(|s| {
+            let claimers: Vec<_> = (0..8)
+                .map(|_| {
+                    let b = std::sync::Arc::clone(&b);
+                    s.spawn(move || {
+                        let mut mine = Vec::new();
+                        for p in 1..=8u64 {
+                            if let Some(i) = b.table.claim(p) {
+                                mine.push(i);
+                            }
                         }
-                    }
-                    seen.lock().unwrap().extend(mine);
-                });
-            }
+                        mine
+                    })
+                })
+                .collect();
+            claimers
+                .into_iter()
+                .flat_map(|claimer| claimer.join().expect("a claimer ended by panic"))
+                .collect()
         });
-        let mut all = seen.lock().unwrap().clone();
         let total = all.len();
         all.sort_unstable();
         all.dedup();

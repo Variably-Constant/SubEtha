@@ -39,19 +39,24 @@
 //! ## Insert
 //! 1. Hash key (FNV-1a; a hash of 0 is remapped to 1, since 0 marks
 //!    a slot whose contents are not yet published).
-//! 2. Probe from `hash % capacity`, linearly.
+//! 2. Read the header's `removals` count, then probe from
+//!    `hash % capacity`, linearly.
 //! 3. At each slot:
-//!    - **Empty**: CAS state Empty → Occupied. On success, SeqLock-
-//!      write `(K, V)`, and only then store the hash as the publish; bump
-//!      `count`. Return Inserted.
+//!    - **Empty**: the key is absent. CAS the first tombstone passed,
+//!      else this Empty, to Occupied. If `removals` has moved since step
+//!      2, give the slot back as a tombstone and start again; otherwise
+//!      SeqLock-write `(K, V)`, and only then store the hash as the
+//!      publish; bump `count`. Return Inserted.
 //!    - **Occupied & hash 0**: a writer holds the slot and has not
-//!      published it. Spin until the hash lands, then compare.
-//!    - **Occupied & hash matches & key matches**: SeqLock-update V
-//!      (state unchanged). Return Updated.
+//!      published it. Spin until the hash lands, then compare; a claim
+//!      given back is a tombstone.
+//!    - **Occupied & hash matches & key matches**: take the slot's lock,
+//!      confirm it is still the key's published entry, write V, release
+//!      (state unchanged). Return Updated. An entry removed in between
+//!      sends the probe back to step 2.
 //!    - **Occupied & no match**: probe next slot.
 //!    - **Tombstone**: track the first one and keep probing (a later
-//!      slot may hold the key). A probe ending at Empty claims the
-//!      tracked tombstone in preference to the Empty.
+//!      slot may hold the key).
 //!
 //! ## Get
 //! 1. Hash key, probe linearly.
@@ -62,8 +67,9 @@
 //!
 //! ## Remove
 //! 1. Find key (same probe).
-//! 2. CAS state Occupied → Tombstone, clear the hash to 0.
-//!    `count.fetch_sub(1)`.
+//! 2. Take the slot's lock and confirm it is still the key's published
+//!    entry; bump `removals`, CAS state Occupied → Tombstone, clear the
+//!    hash to 0, release. `count.fetch_sub(1)`.
 //!
 //! # Concurrency
 //!
@@ -71,12 +77,25 @@
 //! the payload lands under the SeqLock, then the hash lands as the
 //! Release. A prober that finds a slot Occupied with hash 0 has
 //! caught a writer between its claim and its publish, and waits
-//! rather than concluding the slot holds a different key - which is
-//! what keeps two racing writers from planting one key in two
-//! slots. The state byte's CAS decides who owns a slot for its
-//! claim; the SeqLock version is claimed by CAS even→odd for every
-//! write, so two writers updating one key take turns rather than
-//! overlapping. Readers never observe a torn key+value.
+//! rather than concluding the slot holds a different key. The state
+//! byte's CAS decides who owns a slot for its claim; the SeqLock
+//! version is claimed by CAS even→odd for every write, so two writers
+//! updating one key take turns rather than overlapping. Readers never
+//! observe a torn key+value.
+//!
+//! Every write to a published entry (an update, `swap`,
+//! `compare_exchange`, `remove`) takes the slot's lock and confirms
+//! the state, hash and key under it, so it acts on the entry it
+//! matched or on nothing, and a value leaves the map exactly once.
+//!
+//! One key holds one slot. Two inserts of a new key that walk the
+//! same chain meet at its first Empty or first tombstone, unless a
+//! remove opens a slot one of them has already passed: the other can
+//! then claim that slot while the first claims further on. A remove
+//! therefore bumps `removals` before its tombstone lands, and an
+//! insert whose claim finds the count moved since its walk began gives
+//! the claim back and walks again, which brings it to the other's
+//! entry.
 //!
 //! # Capacity and load factor
 //!
@@ -123,7 +142,11 @@ pub struct MapHeader {
     /// Bumped by `remove`, zeroed by `compact`. Used by callers
     /// (e.g. `SharedLRUCache`) to decide when to compact.
     pub tombstones: AtomicU64,
-    _pad: [u8; 32],
+    /// Removes so far, each counted before its tombstone lands. An insert
+    /// of a new key reads it before its walk and again after its claim,
+    /// and gives the claim back when it moved.
+    pub removals: AtomicU64,
+    _pad: [u8; 24],
 }
 
 #[repr(C, align(64))]
@@ -179,9 +202,34 @@ enum Placed<V> {
 /// One probe pass's verdict.
 enum Probe<V> {
     Placed(Placed<V>),
-    /// A tombstone claim went to another writer; probe again.
+    /// A claim went to another writer or was given back, or the key's
+    /// entry was removed under the probe; probe again.
     Restart,
     Full,
+}
+
+/// What an occupied slot says about the key a probe is placing.
+enum Found<V> {
+    /// The slot holds the key: its value, the one replaced when the probe
+    /// overwrites.
+    Here(V),
+    /// The slot holds another key.
+    Elsewhere,
+    /// The slot stopped being occupied while the probe waited on it, a
+    /// claim given back or a remove, and is a tombstone the probe may take.
+    Vacated,
+    /// The slot held the key when the probe matched its hash and no longer
+    /// did under its lock.
+    Moved,
+}
+
+/// How a claim on a free slot ended.
+enum Claim {
+    Placed,
+    /// Another writer took the slot first.
+    Lost,
+    /// A remove landed during the walk, so the slot was given back.
+    GaveBack,
 }
 
 /// FNV-1a 64-bit over a byte slice. Deterministic across processes
@@ -531,11 +579,13 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         }
     }
 
-    /// The one probe both inserts share: find `key`'s slot or claim one
-    /// for it. With `overwrite`, a present key takes `value`; without it,
-    /// a present key is left alone and its value returned. A tombstone
-    /// claim that another writer wins restarts the probe, because what
-    /// that writer placed may be this very key.
+    /// The one probe every insert shares: find `key`'s slot or claim one
+    /// for it. With `overwrite`, a present key takes `value` and the value
+    /// it had is returned; without it, a present key is left alone and its
+    /// value returned. The probe starts again when a tombstone claim goes
+    /// to another writer, since what that writer placed may be this very
+    /// key; when a claim is given back; and when the key's entry is
+    /// removed between its hash matching and its lock.
     fn place(&self, key: K, value: V, overwrite: bool) -> Result<Placed<V>, MapError> {
         let h = Self::hash_key(&key);
         let start = self.wrap(h as usize);
@@ -552,118 +602,154 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     /// tombstone seen so a probe that ends at an Empty claims the
     /// tombstone in preference to the Empty.
     fn probe_once(&self, h: u64, start: usize, key: &K, value: &V, overwrite: bool) -> Probe<V> {
+        // Compared again once a slot is claimed; see `claim`. The walk's
+        // loads are SeqCst so they fall in one order with the claims and
+        // with the count's reads and bumps.
+        let removals = self.header().removals.load(Ordering::SeqCst);
         let mut first_tombstone: Option<usize> = None;
         for i in 0..self.capacity {
             let idx = self.wrap(start + i);
             let slot = self.slot(idx);
-            let state = slot.state.load(Ordering::Acquire);
+            let mut state = slot.state.load(Ordering::SeqCst);
             if state == SLOT_EMPTY {
                 // End of the chain: the key is absent. Claim the tracked
                 // tombstone, else this Empty.
                 if let Some(tomb_idx) = first_tombstone {
-                    return if self.try_claim_tombstone(tomb_idx, h, key, value) {
-                        Probe::Placed(Placed::New)
-                    } else {
-                        Probe::Restart
+                    return match self.claim(tomb_idx, SLOT_TOMBSTONE, removals, h, key, value) {
+                        Claim::Placed => Probe::Placed(Placed::New),
+                        Claim::Lost | Claim::GaveBack => Probe::Restart,
                     };
                 }
-                if slot
-                    .state
-                    .compare_exchange(SLOT_EMPTY, SLOT_OCCUPIED, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    self.publish_claimed(idx, h, key, value);
-                    self.header().count.fetch_add(1, Ordering::AcqRel);
-                    return Probe::Placed(Placed::New);
+                match self.claim(idx, SLOT_EMPTY, removals, h, key, value) {
+                    Claim::Placed => return Probe::Placed(Placed::New),
+                    Claim::GaveBack => return Probe::Restart,
+                    // The Empty went to another writer; see what it became.
+                    Claim::Lost => state = slot.state.load(Ordering::SeqCst),
                 }
-                // The Empty went to another writer; see what it became.
-                let now = slot.state.load(Ordering::Acquire);
-                if now == SLOT_OCCUPIED {
-                    if let Some(existing) = self.present(idx, h, key, value, overwrite) {
-                        return Probe::Placed(Placed::Existing(existing));
-                    }
-                } else if now == SLOT_TOMBSTONE && first_tombstone.is_none() {
+            }
+            if state == SLOT_TOMBSTONE {
+                // Remember the first and keep probing, since a later slot
+                // may hold the key.
+                if first_tombstone.is_none() {
                     first_tombstone = Some(idx);
                 }
                 continue;
             }
-            if state == SLOT_OCCUPIED {
-                if let Some(existing) = self.present(idx, h, key, value, overwrite) {
-                    return Probe::Placed(Placed::Existing(existing));
+            match self.present(idx, h, key, value, overwrite) {
+                Found::Here(existing) => return Probe::Placed(Placed::Existing(existing)),
+                Found::Moved => return Probe::Restart,
+                Found::Vacated => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
                 }
-                continue;
-            }
-            // A tombstone: remember the first, keep probing, since a
-            // later slot may hold the key.
-            if first_tombstone.is_none() {
-                first_tombstone = Some(idx);
+                Found::Elsewhere => {}
             }
         }
         // Every slot walked with no key and no Empty: the tracked
         // tombstone is the last chance.
         match first_tombstone {
-            Some(tomb_idx) if self.try_claim_tombstone(tomb_idx, h, key, value) => {
-                Probe::Placed(Placed::New)
-            }
-            Some(_) => Probe::Restart,
+            Some(tomb_idx) => match self.claim(tomb_idx, SLOT_TOMBSTONE, removals, h, key, value) {
+                Claim::Placed => Probe::Placed(Placed::New),
+                Claim::Lost | Claim::GaveBack => Probe::Restart,
+            },
             None => Probe::Full,
         }
     }
 
-    /// Whether the occupied slot `idx` holds `key`, waiting out a writer
-    /// still publishing it. On a match returns the value found there,
-    /// after replacing it when `overwrite` is set.
-    fn present(&self, idx: usize, h: u64, key: &K, value: &V, overwrite: bool) -> Option<V> {
-        if self.published_hash(self.slot(idx)) != h {
-            return None;
+    /// What the occupied slot `idx` says about `key`, waiting out a writer
+    /// still publishing it. With `overwrite`, a slot holding the key takes
+    /// `value` under the slot's lock, once the lock shows the slot still
+    /// holds the key: a remove and another key's claim can land between
+    /// the hash matching and the lock.
+    fn present(&self, idx: usize, h: u64, key: &K, value: &V, overwrite: bool) -> Found<V> {
+        let slot = self.slot(idx);
+        match self.published_hash(slot) {
+            HASH_UNSET => return Found::Vacated,
+            published if published != h => return Found::Elsewhere,
+            _ => {}
         }
-        let (k, existing) = self.read_payload(idx);
-        if k != *key {
-            return None;
+        if !overwrite {
+            let (k, existing) = self.read_payload(idx);
+            return if k == *key { Found::Here(existing) } else { Found::Elsewhere };
         }
-        if overwrite {
-            self.write_payload(idx, key, value);
-        }
-        Some(existing)
+        let held = self.lock_slot(slot);
+        let (k, existing) = unsafe { self.read_payload_locked(idx) };
+        let found = if k != *key {
+            Found::Elsewhere
+        } else if !self.holds(slot, h) {
+            Found::Moved
+        } else {
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            unsafe { self.copy_payload(idx, key, value) };
+            Found::Here(existing)
+        };
+        self.unlock_slot(slot, held);
+        found
     }
 
-    /// Claim a tombstone slot for a new insert. Returns true on
-    /// success, false if another writer stole the slot via CAS.
-    ///
-    /// On success: writes hash + payload, increments live count,
-    /// decrements tombstone counter via defensive CAS-loop (the
-    /// counter cannot underflow under the single-writer contract,
-    /// but the loop tolerates concurrent races defensively).
+    /// Whether a slot is a published entry with hash `h`. Read under the
+    /// slot's lock, a true answer holds until the lock is released, since
+    /// a remove takes the lock before it tombstones.
     #[inline]
-    fn try_claim_tombstone(&self, tomb_idx: usize, h: u64, key: &K, value: &V) -> bool {
-        let tomb_slot = self.slot(tomb_idx);
-        if tomb_slot.state.compare_exchange(
-            SLOT_TOMBSTONE, SLOT_OCCUPIED,
-            Ordering::AcqRel, Ordering::Acquire,
-        ).is_err() {
-            return false;
+    fn holds(&self, slot: &MapSlot, h: u64) -> bool {
+        slot.state.load(Ordering::Acquire) == SLOT_OCCUPIED && slot.hash.load(Ordering::Acquire) == h
+    }
+
+    /// Claim the free slot `idx`, found in state `from`, for a new entry,
+    /// and publish the entry unless a remove has landed since the walk
+    /// began. That remove may have opened a slot the walk passed while
+    /// another key held it, where another insert of this key can land
+    /// without passing this claim, so the claim is given back as a
+    /// tombstone and the probe walks again.
+    fn claim(&self, idx: usize, from: u8, removals: u64, h: u64, key: &K, value: &V) -> Claim {
+        let slot = self.slot(idx);
+        if slot
+            .state
+            .compare_exchange(from, SLOT_OCCUPIED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Claim::Lost;
         }
-        // A tombstone written by this code already carries HASH_UNSET;
-        // one left by an older map file still names the removed key,
-        // so it is cleared here before the payload lands.
-        tomb_slot.hash.store(HASH_UNSET, Ordering::Release);
-        self.publish_claimed(tomb_idx, h, key, value);
+        if from == SLOT_TOMBSTONE {
+            // A tombstone written by this code already carries HASH_UNSET;
+            // one left by an older map file still names the removed key,
+            // so it is cleared here before the payload lands.
+            slot.hash.store(HASH_UNSET, Ordering::Release);
+        }
+        if self.header().removals.load(Ordering::SeqCst) != removals {
+            slot.state.store(SLOT_TOMBSTONE, Ordering::SeqCst);
+            if from == SLOT_EMPTY {
+                self.header().tombstones.fetch_add(1, Ordering::AcqRel);
+            }
+            return Claim::GaveBack;
+        }
+        self.publish_claimed(idx, h, key, value);
         self.header().count.fetch_add(1, Ordering::AcqRel);
-        // Defensive saturating decrement: bounded retry loop that
-        // never underflows past zero. Under the single-writer
-        // contract the counter is structurally > 0 here (we just
-        // converted a tombstone slot), but the loop tolerates any
-        // race that violates that assumption.
+        if from == SLOT_TOMBSTONE {
+            self.release_tombstone();
+        }
+        Claim::Placed
+    }
+
+    /// Count one tombstone fewer, for one claimed back into an entry. The
+    /// loop never takes the count below zero, whatever raced it there.
+    fn release_tombstone(&self) {
         loop {
             let cur = self.header().tombstones.load(Ordering::Acquire);
-            if cur == 0 { break; }
-            if self.header().tombstones.compare_exchange(
-                cur, cur - 1, Ordering::AcqRel, Ordering::Acquire,
-            ).is_ok() {
+            if cur == 0 {
+                break;
+            }
+            if self
+                .header()
+                .tombstones
+                .compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 break;
             }
         }
-        true
     }
 
     /// Look up a key. Returns `None` if absent.
@@ -705,7 +791,8 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
     /// and nothing was written. Two callers racing on one absent key
     /// resolve to exactly one `Ok(None)`; the other reads the winner's
     /// value, because a slot claimed but not yet published is waited on
-    /// rather than mistaken for a different key.
+    /// rather than mistaken for a different key, and a claim is given back
+    /// when a remove lands during its walk.
     pub fn insert_if_absent(&self, key: K, value: V) -> Result<Option<V>, MapError> {
         let r = self.insert_if_absent_inner(key, value);
         self.ring_sidecar.push_op(
@@ -719,6 +806,25 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         match self.place(key, value, false)? {
             Placed::New => Ok(None),
             Placed::Existing(existing) => Ok(Some(existing)),
+        }
+    }
+
+    /// Insert or replace, returning what was replaced: `Ok(None)` when the
+    /// key was absent and this call placed it, `Ok(Some(old))` when it
+    /// replaced `old`. The old value is read and overwritten under the
+    /// slot's lock, so no other writer lands between them, and a value
+    /// leaves the map exactly once, through `swap`,
+    /// [`remove`](Self::remove) or a [`compare_exchange`](Self::compare_exchange)
+    /// that succeeds.
+    pub fn swap(&self, key: K, value: V) -> Result<Option<V>, MapError> {
+        let r = self.place(key, value, true);
+        self.ring_sidecar.push_op(
+            crate::sidecar_ops::hash_map::OP_INSERT,
+            if matches!(r, Err(MapError::Full)) { 1 } else { 0 },
+        );
+        match r? {
+            Placed::New => Ok(None),
+            Placed::Existing(old) => Ok(Some(old)),
         }
     }
 
@@ -742,6 +848,8 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             if state != SLOT_OCCUPIED || self.published_hash(slot) != h {
                 continue;
             }
+            #[cfg(test)]
+            crate::test_races::pause_point();
             let held = self.lock_slot(slot);
             // Under the lock the payload is stable: read it directly.
             let (k, current) = unsafe { self.read_payload_locked(idx) };
@@ -749,9 +857,10 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
                 self.unlock_slot(slot, held);
                 continue;
             }
-            // A remover may have tombstoned the slot between the state
-            // load and the lock; the entry is gone, not mismatched.
-            if slot.state.load(Ordering::Acquire) != SLOT_OCCUPIED {
+            // A remove may have taken the entry between the hash matching
+            // and the lock, and another writer claimed the slot since; the
+            // entry is gone, not mismatched.
+            if !self.holds(slot, h) {
                 self.unlock_slot(slot, held);
                 return Err(MapError::KeyAbsent);
             }
@@ -801,7 +910,9 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
         r.is_some()
     }
 
-    /// Remove a key. Returns the value if present.
+    /// Remove a key. Returns the value if present: the one the entry held
+    /// when it went, since the value is read and the entry tombstoned
+    /// under the slot's lock.
     pub fn remove(&self, key: &K) -> Option<V> {
         let r = self.remove_inner(key);
         self.ring_sidecar.push_op(
@@ -819,25 +930,46 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
             let slot = self.slot(idx);
             let state = slot.state.load(Ordering::Acquire);
             if state == SLOT_EMPTY { return None; }
-            if state == SLOT_OCCUPIED && self.published_hash(slot) == h {
-                let (k, v) = self.read_payload(idx);
-                if k == *key {
-                    if slot.state.compare_exchange(
-                        SLOT_OCCUPIED, SLOT_TOMBSTONE,
-                        Ordering::AcqRel, Ordering::Acquire,
-                    ).is_ok() {
-                        // A tombstone names no key, so a later claim of
-                        // this slot is seen as forming from its first
-                        // instant rather than as the removed entry.
-                        slot.hash.store(HASH_UNSET, Ordering::Release);
-                        self.header().count.fetch_sub(1, Ordering::AcqRel);
-                        self.header().tombstones.fetch_add(1, Ordering::AcqRel);
-                        return Some(v);
-                    }
-                    // Another remover won; key is gone.
-                    return None;
-                }
+            if state != SLOT_OCCUPIED || self.published_hash(slot) != h {
+                continue;
             }
+            let held = self.lock_slot(slot);
+            let (k, v) = unsafe { self.read_payload_locked(idx) };
+            if k != *key {
+                self.unlock_slot(slot, held);
+                continue;
+            }
+            // Another remove took the entry between the hash matching and
+            // the lock.
+            if !self.holds(slot, h) {
+                self.unlock_slot(slot, held);
+                return None;
+            }
+            #[cfg(test)]
+            crate::test_races::pause_point();
+            // Counted before the tombstone lands, so an insert of a new key
+            // whose walk passed this entry sees the count move before it
+            // publishes.
+            self.header().removals.fetch_add(1, Ordering::SeqCst);
+            // Under the lock this fails only against a remove from a
+            // process of an earlier release, which takes no lock.
+            let tombstoned = slot
+                .state
+                .compare_exchange(SLOT_OCCUPIED, SLOT_TOMBSTONE, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok();
+            if tombstoned {
+                // A tombstone names no key, so a later claim of this slot
+                // is seen as forming from its first instant rather than as
+                // the removed entry.
+                slot.hash.store(HASH_UNSET, Ordering::Release);
+            }
+            self.unlock_slot(slot, held);
+            if !tombstoned {
+                return None;
+            }
+            self.header().count.fetch_sub(1, Ordering::AcqRel);
+            self.header().tombstones.fetch_add(1, Ordering::AcqRel);
+            return Some(v);
         }
         None
     }
@@ -973,6 +1105,7 @@ impl<K: Copy + Eq + 'static, V: Copy + 'static> SharedHashMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_races::{settle, stopped, PARK};
     use std::sync::Arc;
     use std::thread;
 
@@ -1578,5 +1711,202 @@ mod tests {
         }
         assert!(reads > 0);
         drop(m);
+    }
+
+    /// Two inserts of one new key, racing a remove in the key's chain,
+    /// place it once. The chain runs X at the key's home, the tombstone Y
+    /// left, a slot a writer has claimed and not yet published, then
+    /// Empty. A walks past X and waits on the claimed slot; X is removed;
+    /// B walks the tombstone X left and waits there too; the claimed slot
+    /// is then published as a third key. A has tracked the tombstone after
+    /// X and B the one X left, so each reaches Empty with a free slot of
+    /// its own and no claim of the other's behind it; only the removal
+    /// count sends one of them back to find the other's entry.
+    #[test]
+    fn inserts_of_one_key_racing_a_remove_in_its_chain_place_it_once() {
+        use std::sync::Barrier;
+        let p = tmp("ifabsent-across-remove");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        let key = 1u64;
+        let home = |k: u64| m.wrap(SharedHashMap::<u64, u64>::hash_key(&k) as usize);
+        let s = home(key);
+        let mut sharing = (2u64..).filter(|&k| home(k) == s);
+        let (x, y, z) = (sharing.next().unwrap(), sharing.next().unwrap(), sharing.next().unwrap());
+        m.insert(x, 10).unwrap();
+        m.insert(y, 20).unwrap();
+        assert_eq!(m.remove(&y), Some(20), "y sat after x and leaves its tombstone there");
+        let claimed = m.wrap(s + 2);
+        m.slot(claimed)
+            .state
+            .compare_exchange(SLOT_EMPTY, SLOT_OCCUPIED, Ordering::AcqRel, Ordering::Acquire)
+            .expect("the slot after the tombstone is free");
+
+        let start = |value: u64| {
+            let m = Arc::clone(&m);
+            let running = Arc::new(Barrier::new(2));
+            let go = Arc::clone(&running);
+            let insert = thread::spawn(move || {
+                go.wait();
+                m.insert_if_absent(key, value).unwrap()
+            });
+            running.wait();
+            thread::sleep(PARK);
+            insert
+        };
+        let a = start(100);
+        assert_eq!(m.remove(&x), Some(10));
+        let b = start(200);
+        m.publish_claimed(claimed, SharedHashMap::<u64, u64>::hash_key(&z), &z, &30);
+        m.header().count.fetch_add(1, Ordering::AcqRel);
+
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert_eq!(
+            [a, b].iter().filter(|r| r.is_none()).count(),
+            1,
+            "exactly one insert places the key: A got {a:?}, B got {b:?}"
+        );
+        let winner = if a.is_none() { 100 } else { 200 };
+        assert_eq!(a.or(b), Some(winner), "the other insert reads the winner's value");
+        assert_eq!(m.snapshot().iter().filter(|(k, _)| *k == key).count(), 1, "the key holds one slot");
+        assert_eq!(m.get(&key), Some(winner));
+    }
+
+    /// A remove that has matched its key and not yet tombstoned it holds
+    /// the slot's lock, so a compare_exchange of the key waits on it and
+    /// then finds the entry gone: the value leaves the map once, through
+    /// the remove. A remove that tombstoned outside the lock would let the
+    /// compare_exchange land inside its window and hand the value back a
+    /// second time.
+    #[test]
+    fn a_remove_stopped_before_its_tombstone_holds_off_a_compare_exchange() {
+        let p = tmp("remove-vs-exchange");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        m.insert(7, 100).unwrap();
+        let (pause, remove) = stopped({
+            let m = Arc::clone(&m);
+            move || m.remove(&7)
+        });
+        let exchange = {
+            let m = Arc::clone(&m);
+            thread::spawn(move || m.compare_exchange(&7, 100, 200))
+        };
+        settle(&exchange);
+        assert!(!exchange.is_finished(), "the compare_exchange waits on the slot lock the stopped remove holds");
+        pause.release();
+        assert_eq!(remove.join().unwrap(), Some(100), "the remove hands back the value the entry held when it went");
+        assert_eq!(exchange.join().unwrap(), Err(MapError::KeyAbsent), "the compare_exchange finds the entry gone");
+        assert_eq!(m.get(&7), None);
+        assert_eq!(m.len(), 0);
+    }
+
+    /// A compare_exchange that has matched its hash and not yet taken the
+    /// slot's lock finds, under the lock, whether the slot still holds its
+    /// key: a remove of the key and another key's claim of the slot, not
+    /// yet published, land in between, and the claim leaves the key's
+    /// bytes in place. A compare_exchange that checked only the slot's
+    /// state under the lock would match those bytes and report the swap on
+    /// an entry already removed.
+    #[test]
+    fn a_compare_exchange_stopped_before_its_lock_finds_no_entry_after_a_remove_and_a_claim() {
+        let p = tmp("exchange-vs-claim");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        let home = |k: u64| m.wrap(SharedHashMap::<u64, u64>::hash_key(&k) as usize);
+        let a = 1u64;
+        let b = (2u64..).find(|&k| home(k) == home(a)).unwrap();
+        m.insert(a, 100).unwrap();
+        let (pause, exchange) = stopped({
+            let m = Arc::clone(&m);
+            move || m.compare_exchange(&a, 100, 200)
+        });
+        assert_eq!(m.remove(&a), Some(100));
+        let slot = home(a);
+        m.slot(slot)
+            .state
+            .compare_exchange(SLOT_TOMBSTONE, SLOT_OCCUPIED, Ordering::AcqRel, Ordering::Acquire)
+            .expect("the remove left a's slot a tombstone");
+        pause.release();
+        assert_eq!(exchange.join().unwrap(), Err(MapError::KeyAbsent), "the compare_exchange finds the entry gone");
+        m.publish_claimed(slot, SharedHashMap::<u64, u64>::hash_key(&b), &b, &20);
+        m.header().count.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(m.get(&a), None);
+        assert_eq!(m.get(&b), Some(20));
+        assert_eq!(m.len(), 1);
+    }
+
+    /// A swap that has matched its key and not yet written holds the slot's
+    /// lock, so a remove of the key waits on it and takes the value the
+    /// swap put there, and the swap hands back the one it replaced: each
+    /// value leaves the map once. An update that wrote outside the lock
+    /// would let the remove take the old value inside its window, then
+    /// write the new one into the tombstone, where it never leaves.
+    #[test]
+    fn a_swap_stopped_before_its_write_holds_off_a_remove() {
+        let p = tmp("swap-vs-remove");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        m.insert(7, 100).unwrap();
+        let (pause, swap) = stopped({
+            let m = Arc::clone(&m);
+            move || m.swap(7, 200)
+        });
+        let remove = {
+            let m = Arc::clone(&m);
+            thread::spawn(move || m.remove(&7))
+        };
+        settle(&remove);
+        assert!(!remove.is_finished(), "the remove waits on the slot lock the stopped swap holds");
+        pause.release();
+        let swapped = swap.join().unwrap();
+        assert!(swapped == Ok(Some(100)), "the swap hands back the value it replaced: {swapped:?}");
+        assert_eq!(remove.join().unwrap(), Some(200), "the remove hands back the value the swap put there");
+        assert_eq!(m.get(&7), None);
+        assert_eq!(m.len(), 0);
+    }
+
+    /// An update of a key that has matched it and not yet written holds
+    /// the slot's lock, so a remove of the key and an insert of another
+    /// key into the slot the remove leaves wait on it: the update lands on
+    /// its own key's entry, and the other key's entry only ever holds the
+    /// other key. An update that wrote outside the lock would let the
+    /// remove and the insert land inside its window, then write its key's
+    /// bytes under the other key's hash, where neither key is found again.
+    #[test]
+    fn an_update_stopped_before_its_write_holds_off_another_keys_claim_of_its_slot() {
+        let p = tmp("update-vs-reclaim");
+        let m: Arc<SharedHashMap<u64, u64>> = Arc::new(SharedHashMap::create(&p, 16).unwrap());
+        let home = |k: u64| m.wrap(SharedHashMap::<u64, u64>::hash_key(&k) as usize);
+        let a = 1u64;
+        let b = (2u64..).find(|&k| home(k) == home(a)).unwrap();
+        m.insert(a, 10).unwrap();
+        let (pause, update) = stopped({
+            let m = Arc::clone(&m);
+            move || m.insert(a, 11).unwrap()
+        });
+        let reclaim = {
+            let m = Arc::clone(&m);
+            thread::spawn(move || {
+                let removed = m.remove(&a);
+                m.insert(b, 20).unwrap();
+                removed
+            })
+        };
+        settle(&reclaim);
+        assert!(!reclaim.is_finished(), "the remove waits on the slot lock the stopped update holds");
+        pause.release();
+        assert_eq!(update.join().unwrap(), InsertOutcome::Updated);
+        assert_eq!(reclaim.join().unwrap(), Some(11), "the remove takes the value the update wrote");
+        assert_eq!(m.get(&a), None);
+        assert_eq!(m.get(&b), Some(20));
+        for i in 0..m.capacity() {
+            let slot = m.slot(i);
+            if slot.state.load(Ordering::Acquire) == SLOT_OCCUPIED {
+                let k = m.read_payload(i).0;
+                assert_eq!(
+                    slot.hash.load(Ordering::Acquire),
+                    SharedHashMap::<u64, u64>::hash_key(&k),
+                    "slot {i} holds key {k} under another key's hash"
+                );
+            }
+        }
+        assert_eq!(m.len(), 1);
     }
 }

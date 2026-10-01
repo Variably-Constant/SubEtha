@@ -26,7 +26,8 @@ guarantees:
   [Vyukov MPMC ring](../shared-ring/) where producers contend on
   one `producer_seq` CAS but the consumer uses the
   `try_pop_spsc` fast path to skip the consumer-side CAS.
-  **Preserves global FIFO across all producers**. Reach for this
+  **Preserves global FIFO across all producers**, because every
+  push gets a monotonic `producer_seq`. Reach for this
   when total ordering is a correctness requirement, not a
   performance choice.
 
@@ -53,6 +54,12 @@ flowchart TB
     class R0,R1,R2,R3 ring
     class C cons
 ```
+
+Construction returns N independent producer handles plus one
+consumer handle, each producer owning one Lamport SPSC ring. The
+consumer keeps a round-robin cursor and drains the producer rings in
+order, advancing the cursor past the ring it just drained so every
+producer gets its turn.
 
 ### Per-op cost
 
@@ -86,7 +93,9 @@ pub fn open_pool(
 ```
 
 File-backed mode creates one MMF per producer ring at
-`<path_prefix>.{i}.bin`.
+`<path_prefix>.{i}.bin`: the prefix is appended to, so passing
+`/tmp/inbox` yields `/tmp/inbox.0.bin`, `/tmp/inbox.1.bin`, and so
+on through `.{n_producers - 1}.bin`.
 
 ## `SharedRingMpscFifo` (single Vyukov ring)
 
@@ -105,6 +114,27 @@ type is `!Sync + !Clone`).
 - **Pop**: 1 Relaxed load on `consumer_seq` + 1 Acquire load on
   the slot's sequence + 1 Relaxed store on `consumer_seq` + 1
   Release store on `slot.sequence`. No consumer-side CAS.
+
+### Constructor API
+
+```rust
+pub fn create_anon_pool(
+    n_producers: usize,
+    capacity: usize,
+) -> Result<(Vec<MpscFifoProducer>, MpscFifoConsumer), RingError>;
+
+pub fn create_pool(
+    path: impl AsRef<Path>,
+    n_producers: usize,
+    capacity: usize,
+) -> Result<(Vec<MpscFifoProducer>, MpscFifoConsumer), RingError>;
+
+pub fn open_pool(
+    path: impl AsRef<Path>,
+    n_producers: usize,
+    expected_capacity: usize,
+) -> Result<(Vec<MpscFifoProducer>, MpscFifoConsumer), RingError>;
+```
 
 File-backed mode uses one MMF (not N), so the on-disk layout
 matches a plain `SharedRing` and the file can be opened from
@@ -130,6 +160,26 @@ dipping below crossbeam by N=4) because producer-side CAS
 contention scales with producer count. The composed primitive
 holds its class at every N because each producer pushes to its
 own ring with zero CAS.
+
+An earlier capture of the same shootout on the same host:
+
+| N producers -> 1 consumer | `SharedRingMpsc` (composed) | `SharedRingMpscFifo` (single) | `crossbeam_channel::bounded` | `SharedRing` (Vyukov as MPSC) |
+|---|---:|---:|---:|---:|
+| **N=2** | **22.29 M items/s** | 19.45 M items/s | 11.10 M items/s | 13.81 M items/s |
+| **N=4** | **14.00 M items/s** | 6.88 M items/s | 7.40 M items/s | 5.00 M items/s |
+| **N=8** | **15.26 M items/s** | 3.10 M items/s | 6.98 M items/s | 2.70 M items/s |
+
+The comparison is held to:
+
+- **Fair contenders**: `crossbeam_channel::bounded` (producers share
+  one sender, the consumer is the sole receiver) and `SharedRing`
+  (Vyukov MPMC run as MPSC with one consumer thread). Same payload
+  size (16 bytes), same capacity (4096), same per-producer load
+  (250,000 items), same busy-spin loop.
+- **Best-of-5 trials with one warmup pass**, for stability against
+  Windows scheduler noise.
+- **Producer count varied (N=2, 4, 8)** to show the crossover, not
+  one shape.
 
 ### Picking between them
 
@@ -178,6 +228,51 @@ for w in workers { w.join().unwrap(); }
 collector.join().unwrap();
 ```
 
+Per-worker FIFO holds; across workers the order is the consumer's
+round-robin.
+
+## Worked example: a totally ordered event log
+
+`SharedRingMpscFifo` when every event takes a monotonic sequence
+number:
+
+```rust
+use subetha_cxc::SharedRingMpscFifo;
+use subetha_cxc::shared_ring::PAYLOAD_BYTES;
+
+let (producers, consumer) = SharedRingMpscFifo::create_anon_pool(4, 1024)?;
+
+// Producers race; whichever wins the producer_seq CAS gets the
+// next sequence number. The consumer drains in commit order.
+let emitters: Vec<_> = producers.into_iter().map(|p| {
+    std::thread::spawn(move || {
+        for _ in 0..1000 {
+            let mut buf = [0u8; PAYLOAD_BYTES];
+            buf[0] = b'E';
+            while p.try_push(&buf).is_err() {
+                std::hint::spin_loop();
+            }
+        }
+    })
+}).collect();
+
+let log = std::thread::spawn(move || {
+    let mut out = [0u8; PAYLOAD_BYTES];
+    let mut seen = 0;
+    while seen < 4000 {
+        if consumer.try_pop(&mut out).is_ok() {
+            seen += 1;
+            // Global order is kept by the shared producer_seq.
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+});
+
+for e in emitters { e.join().unwrap(); }
+log.join().unwrap();
+```
+
 ## Known limitations
 
 ### `SharedRingMpsc` (composed)
@@ -186,9 +281,11 @@ collector.join().unwrap();
   at the consumer based on round-robin drain order. Use
   `SharedRingMpscFifo` for global FIFO.
 - **N files in file-backed mode**: cross-process attach has to
-  open all N files in parallel via `open_pool`.
+  open all N files in parallel via `open_pool`; there is no
+  single-file open shape.
 - **Memory scales with N**: each producer ring carries its own
-  header (192 B) + capacity * 64 B payload.
+  header (192 B) + capacity * 64 B payload. At 64 producers and
+  capacity 1024 that is about 4 MB of ring storage.
 
 ### `SharedRingMpscFifo` (single ring)
 
@@ -196,10 +293,12 @@ collector.join().unwrap();
   past N=4 the composed primitive is strictly better.
 - **No stuck-slot recovery on the typed handle**: the underlying
   `SharedRing` exposes `heal_stuck_slot` but the
-  `MpscFifoConsumer` wrapper does not surface it.
+  `MpscFifoConsumer` wrapper does not surface it. Where recovery
+  is needed, build on the Vyukov `SharedRing` directly.
 - **Single MMF on disk**: another process opening the same file
   via `SharedRing::open` can act as a competing consumer and
-  break the SPSC contract on the consumer side.
+  break the SPSC contract on the consumer side. Use it only where
+  the deployment enforces the single consumer.
 
 ## References
 

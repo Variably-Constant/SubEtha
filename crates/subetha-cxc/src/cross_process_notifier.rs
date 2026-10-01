@@ -24,8 +24,10 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+
+use subetha_core::SwapCell;
 
 use crate::shm_file::{ShmFile, ShmNamespace};
 
@@ -61,15 +63,6 @@ impl From<io::Error> for NotifyError {
     }
 }
 
-/// A lock whose poisoning is irrelevant: the data under it is a list of
-/// handles a panicking thread cannot have left half-written.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    match m.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 /// Where a ring's notifiers are named and its record kept.
 #[derive(Clone)]
 pub enum NotifyPlace {
@@ -84,9 +77,12 @@ pub enum NotifyPlace {
 }
 
 impl NotifyPlace {
-    fn native_name(&self, index: u32) -> String {
+    /// The name of notifier `index`. A shared-memory ring's notifiers on
+    /// Windows are named in the object directory of its namespace, which
+    /// for an AppContainer is the OS's answer and can fail.
+    fn native_name(&self, index: u32) -> io::Result<String> {
         match self {
-            NotifyPlace::File(base) => native_name_for_path(base, index),
+            NotifyPlace::File(base) => Ok(native_name_for_path(base, index)),
             NotifyPlace::Shm { name, namespace, .. } => native_name_for_shm(name, *namespace, index),
         }
     }
@@ -100,13 +96,10 @@ fn native_name_for_path(base: &Path, index: u32) -> String {
 }
 
 #[cfg(windows)]
-fn native_name_for_shm(name: &str, namespace: ShmNamespace, index: u32) -> String {
-    let prefix = match namespace {
-        ShmNamespace::Session => "Local",
-        ShmNamespace::Machine => "Global",
-    };
+fn native_name_for_shm(name: &str, namespace: ShmNamespace, index: u32) -> io::Result<String> {
+    let directory = crate::shm_file::object_directory(namespace)?;
     let cleaned: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
-    format!("{prefix}\\subetha_{cleaned}_notify_{index}")
+    Ok(format!("{directory}\\subetha_{cleaned}_notify_{index}"))
 }
 
 /// Unix notifiers are FIFOs on the filesystem: beside a file-backed ring,
@@ -119,12 +112,12 @@ fn native_name_for_path(base: &Path, index: u32) -> String {
 }
 
 #[cfg(unix)]
-fn native_name_for_shm(name: &str, _namespace: ShmNamespace, index: u32) -> String {
+fn native_name_for_shm(name: &str, _namespace: ShmNamespace, index: u32) -> io::Result<String> {
     let cleaned: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
-    std::env::temp_dir()
+    Ok(std::env::temp_dir()
         .join(format!("subetha_{cleaned}_notify_{index}"))
         .to_string_lossy()
-        .into_owned()
+        .into_owned())
 }
 
 #[cfg(windows)]
@@ -208,6 +201,10 @@ impl NotifyRecordHandle {
         Ok(Self { backing: RecordBacking::File { _file: file, mmap } })
     }
 
+    /// The record in the region `{name}_notify`, made by whichever set
+    /// reaches it first. Its name outlives every set, as the file-backed
+    /// record does, so a set made after the maker has gone finds the
+    /// notifiers attached through it rather than a fresh record.
     fn shm(name: &str, namespace: ShmNamespace, sddl: Option<&str>) -> Result<Self, NotifyError> {
         let mut shm = ShmFile::create_or_open_named_secured(
             &format!("{name}_notify"),
@@ -215,6 +212,7 @@ impl NotifyRecordHandle {
             namespace,
             sddl,
         )?;
+        shm.keep_name();
         let ptr = shm.as_mut_slice().as_mut_ptr();
         // SAFETY: the region is 64 zeroed bytes on creation; an existing
         // region carries the magic and is left as it is.
@@ -256,6 +254,43 @@ impl NotifyRecordHandle {
         paths.push(record_path);
         paths
     }
+
+    /// The notifier FIFOs a shared-memory record named `name` has handed
+    /// out, for an unlink: the path of every index the record gave, which
+    /// a consumer that died without detaching leaves behind. Nothing on
+    /// Windows, where a notifier is an event that goes with its last
+    /// handle, and nothing when there is no record. The record itself is
+    /// the region `{name}_notify`, removed by name.
+    pub fn shm_fifo_paths_under(name: &str, namespace: ShmNamespace) -> Vec<PathBuf> {
+        if cfg!(windows) {
+            return Vec::new();
+        }
+        let size = std::mem::size_of::<NotifyRecord>();
+        let mut record = match ShmFile::open_named_in(&format!("{name}_notify"), size, namespace) {
+            Ok(record) => record,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                eprintln!("subetha: notifier record {name}_notify not read: {e}");
+                return Vec::new();
+            }
+        };
+        let bytes = record.as_mut_slice();
+        if u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != NOTIFY_MAGIC {
+            return Vec::new();
+        }
+        let next = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let mut paths = Vec::new();
+        for index in 0..next {
+            match native_name_for_shm(name, namespace, index) {
+                Ok(path) => paths.push(PathBuf::from(path)),
+                Err(e) => {
+                    eprintln!("subetha: the notifiers of {name} cannot be named for an unlink: {e}");
+                    break;
+                }
+            }
+        }
+        paths
+    }
 }
 
 /// The FIFOs of the indexes `0..next` under `base`; none on Windows,
@@ -280,8 +315,10 @@ enum WriteEnd {
     Anon(Arc<AnonSignal>),
 }
 
-// SAFETY: a FIFO file and an event handle are usable from any thread.
+// SAFETY: a FIFO file and an event handle are usable from any thread,
+// and signaling takes `&self`, so two threads may signal one end at once.
 unsafe impl Send for WriteEnd {}
+unsafe impl Sync for WriteEnd {}
 
 impl WriteEnd {
     /// Signal the notifier; false when it is gone and should be dropped.
@@ -349,8 +386,13 @@ impl Drop for AnonSignal {
 }
 
 /// The anonymous notifiers of one set, shared with each notifier so a
-/// detach removes its own signal side whichever is dropped first.
-type AnonRegistry = Arc<Mutex<Vec<(u32, Arc<AnonSignal>)>>>;
+/// detach removes its own signal side whichever is dropped first. The
+/// list is copied on write.
+type AnonRegistry = Arc<SwapCell<Vec<(u32, Arc<AnonSignal>)>>>;
+
+/// The write ends a set signals, by notifier index. The list is copied
+/// on write; a signal walks the list it loaded.
+type WriteEnds = SwapCell<Vec<(u32, Arc<WriteEnd>)>>;
 
 /// The producers' side: everything attached to one ring, signaled on
 /// every push.
@@ -358,7 +400,7 @@ pub struct NotifierSet {
     place: Option<NotifyPlace>,
     record: Arc<NotifyRecordHandle>,
     /// Write ends by notifier index, as of `scanned`.
-    cache: Mutex<Vec<(u32, WriteEnd)>>,
+    cache: WriteEnds,
     scanned: AtomicU64,
     anon: AnonRegistry,
 }
@@ -369,9 +411,9 @@ impl NotifierSet {
         Self {
             place: None,
             record: Arc::new(NotifyRecordHandle::anon()),
-            cache: Mutex::new(Vec::new()),
+            cache: SwapCell::new(Vec::new()),
             scanned: AtomicU64::new(0),
-            anon: Arc::new(Mutex::new(Vec::new())),
+            anon: Arc::new(SwapCell::new(Vec::new())),
         }
     }
 
@@ -380,9 +422,9 @@ impl NotifierSet {
         Ok(Self {
             place: Some(NotifyPlace::File(base.as_ref().to_path_buf())),
             record: Arc::new(NotifyRecordHandle::file(base.as_ref())?),
-            cache: Mutex::new(Vec::new()),
+            cache: SwapCell::new(Vec::new()),
             scanned: AtomicU64::new(0),
-            anon: Arc::new(Mutex::new(Vec::new())),
+            anon: Arc::new(SwapCell::new(Vec::new())),
         })
     }
 
@@ -391,9 +433,9 @@ impl NotifierSet {
         Ok(Self {
             place: Some(NotifyPlace::Shm { name: name.to_owned(), namespace, sddl: sddl.map(str::to_owned) }),
             record: Arc::new(NotifyRecordHandle::shm(name, namespace, sddl)?),
-            cache: Mutex::new(Vec::new()),
+            cache: SwapCell::new(Vec::new()),
             scanned: AtomicU64::new(0),
-            anon: Arc::new(Mutex::new(Vec::new())),
+            anon: Arc::new(SwapCell::new(Vec::new())),
         })
     }
 
@@ -410,42 +452,62 @@ impl NotifierSet {
         if generation != self.scanned.load(Ordering::Acquire) {
             self.rescan(generation);
         }
-        let mut signaled = 0;
-        let mut cache = lock(&self.cache);
-        cache.retain(|(_, end)| {
-            let ok = end.signal();
-            if ok {
-                signaled += 1;
-            }
-            ok
-        });
-        signaled
+        let ends = self.cache.load_full();
+        let gone: Vec<u32> = ends
+            .iter()
+            .filter(|(_, end)| !end.signal())
+            .map(|(index, _)| *index)
+            .collect();
+        if !gone.is_empty() {
+            // Drop the ends that are gone, keeping any the list gained
+            // since this signal loaded it.
+            self.cache.rcu(|cur| {
+                cur.iter().filter(|(index, _)| !gone.contains(index)).cloned().collect::<Vec<_>>()
+            });
+        }
+        ends.len() - gone.len()
     }
 
     /// Open the write end of every notifier index the record has handed
     /// out and that still exists. The old write ends go first: on Windows
     /// a handle of ours would keep a detached notifier's event alive and
-    /// the rescan would find it again.
+    /// the rescan would find it again. A signal still walking the old
+    /// list holds it, so the rescan waits for each such signal to return
+    /// and then drops the list, closing its ends.
     fn rescan(&self, generation: u64) {
-        lock(&self.cache).clear();
+        let old = self.cache.swap(Arc::new(Vec::new()));
+        while Arc::strong_count(&old) > 1 {
+            std::thread::yield_now();
+        }
+        drop(old);
         let record = self.record.record();
         let next = record.next_index.load(Ordering::Acquire);
         let mut fresh = Vec::new();
         match &self.place {
             None => {
-                for (index, signal) in lock(&self.anon).iter() {
-                    fresh.push((*index, WriteEnd::Anon(Arc::clone(signal))));
+                for (index, signal) in self.anon.load().iter() {
+                    fresh.push((*index, Arc::new(WriteEnd::Anon(Arc::clone(signal)))));
                 }
             }
             Some(place) => {
                 for index in 0..next {
-                    if let Some(end) = open_write_end(&place.native_name(index)) {
-                        fresh.push((index, end));
+                    let name = match place.native_name(index) {
+                        Ok(name) => name,
+                        Err(e) => {
+                            // Every notifier of the place is named in the
+                            // directory that did not resolve, so none of
+                            // them can be reached.
+                            eprintln!("subetha: this ring's notifiers cannot be named for signaling: {e}");
+                            break;
+                        }
+                    };
+                    if let Some(end) = open_write_end(&name) {
+                        fresh.push((index, Arc::new(end)));
                     }
                 }
             }
         }
-        *lock(&self.cache) = fresh;
+        self.cache.store(Arc::new(fresh));
         self.scanned.store(generation, Ordering::Release);
     }
 
@@ -457,7 +519,11 @@ impl NotifierSet {
             None => {
                 let (read, signal) = create_anon()?;
                 let signal = Arc::new(signal);
-                lock(&self.anon).push((index, Arc::clone(&signal)));
+                self.anon.rcu(|list| {
+                    let mut next = Vec::clone(list);
+                    next.push((index, Arc::clone(&signal)));
+                    next
+                });
                 NotifierInner::Anon { read, registry: Arc::clone(&self.anon) }
             }
             Some(place) => NotifierInner::Named(create_named(place, index)?),
@@ -591,7 +657,9 @@ impl Drop for Notifier {
     fn drop(&mut self) {
         match &self.inner {
             NotifierInner::Anon { registry, .. } => {
-                lock(registry).retain(|(index, _)| *index != self.index);
+                registry.rcu(|list| {
+                    list.iter().filter(|(index, _)| *index != self.index).cloned().collect::<Vec<_>>()
+                });
             }
             NotifierInner::Named(named) => {
                 #[cfg(unix)]
@@ -639,7 +707,7 @@ fn create_anon() -> Result<(NativeRead, AnonSignal), NotifyError> {
 #[cfg(unix)]
 fn create_named(place: &NotifyPlace, index: u32) -> Result<NamedNotifier, NotifyError> {
     use std::os::unix::fs::OpenOptionsExt;
-    let path = PathBuf::from(place.native_name(index));
+    let path = PathBuf::from(place.native_name(index)?);
     let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|e| NotifyError::Io(io::ErrorKind::InvalidInput, e.to_string()))?;
     // SAFETY: c_path is a NUL-terminated path.
@@ -761,7 +829,7 @@ fn create_named(place: &NotifyPlace, index: u32) -> Result<NamedNotifier, Notify
         NotifyPlace::Shm { sddl, .. } => sddl.as_deref(),
         NotifyPlace::File(_) => None,
     };
-    let event = create_event(Some(&place.native_name(index)), sddl)?;
+    let event = create_event(Some(&place.native_name(index)?), sddl)?;
     Ok(NamedNotifier { read: NativeRead::Event(event) })
 }
 
@@ -798,6 +866,32 @@ mod tests {
 
     fn tmp(name: &str) -> crate::test_paths::TmpFile {
         crate::test_paths::TmpFile::new(format!("subetha-notify-{name}-{}", std::process::id()))
+    }
+
+    /// A shared-memory record's name, unique to this run, removed when the
+    /// test ends however it ends, so a run leaves nothing in the host's
+    /// shared memory. Bound before the sets, it drops after them.
+    struct ShmRecord(String);
+
+    impl ShmRecord {
+        fn named(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the wall clock is after the epoch")
+                .as_nanos();
+            Self(format!("subetha_notify_{tag}_{}_{:x}", std::process::id(), nanos & 0xffff_ffff))
+        }
+    }
+
+    impl Drop for ShmRecord {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            if let Err(e) = crate::shm_file::unlink_named(&format!("{}_notify", self.0), ShmNamespace::Session)
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                eprintln!("the test record {}_notify could not be removed: {e}", self.0);
+            }
+        }
     }
 
     #[test]
@@ -851,14 +945,32 @@ mod tests {
 
     #[test]
     fn a_shared_memory_notifier_is_signaled_across_sets() {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let name = format!("subetha_notify_test_{}_{:x}", std::process::id(), nanos & 0xffff_ffff);
-        let consumer_set = NotifierSet::shm(&name, ShmNamespace::Session, None).unwrap();
-        let producer_set = NotifierSet::shm(&name, ShmNamespace::Session, None).unwrap();
+        let name = ShmRecord::named("test");
+        let consumer_set = NotifierSet::shm(&name.0, ShmNamespace::Session, None).unwrap();
+        let producer_set = NotifierSet::shm(&name.0, ShmNamespace::Session, None).unwrap();
         let notifier = consumer_set.attach().unwrap();
         assert_eq!(producer_set.signal(), 1);
         assert!(notifier.wait(1000));
         drop(notifier);
         assert_eq!(producer_set.signal(), 0);
+    }
+
+    /// A shared-memory record outlives the set that made it: a set made
+    /// after the maker has gone reads the notifiers attached through the
+    /// record and signals them. A fresh record in its place would count
+    /// nothing attached and hand the next consumer an index already taken.
+    #[test]
+    fn a_shared_memory_record_outlives_the_set_that_made_it() {
+        let name = ShmRecord::named("outlive");
+        let maker = NotifierSet::shm(&name.0, ShmNamespace::Session, None).unwrap();
+        let consumer_set = NotifierSet::shm(&name.0, ShmNamespace::Session, None).unwrap();
+        let notifier = consumer_set.attach().unwrap();
+        drop(maker);
+        let later = NotifierSet::shm(&name.0, ShmNamespace::Session, None).unwrap();
+        assert_eq!(later.attached(), 1, "the later set reads the record the notifier attached through");
+        assert_eq!(later.signal(), 1, "the later set reaches the notifier");
+        assert!(notifier.wait(1000));
+        drop(notifier);
+        assert_eq!(later.signal(), 0);
     }
 }

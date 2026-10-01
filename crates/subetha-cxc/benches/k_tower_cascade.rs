@@ -19,6 +19,9 @@
 //! - storage density: bytes per logical key in a populated cascade
 //! - position-independence witness (size of cascade vs raw pointer)
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hint::black_box;

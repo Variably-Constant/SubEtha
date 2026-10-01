@@ -31,7 +31,10 @@ protocol into an MMF makes the same primitive serve cross-thread
   in every address space). `u8` / `u16` / `u32` / `u64` / `u128`
   and their signed / floating-point counterparts have `Marshal`
   auto-impls; arrays and 2-tuples of `Marshal` types compose
-  automatically.
+  automatically. A closure that captures pointers cannot be stored
+  directly; it travels through the
+  [pass registry](../coordination-types/pass-registry/) as a
+  `(closure_id, args)` pair whose `args` are `Marshal`.
 - **Slot width** is `T::PAYLOAD_BYTES` rounded up to 8-byte
   alignment (minimum 8 bytes per slot).
 - **Capacity must be a power of two** so the slot-index computation
@@ -152,6 +155,58 @@ The `Marshal` trait is in `subetha-core`; user-defined types
 become storable in `SharedDeque` by `unsafe impl Marshal for ...`
 (the trait is `unsafe` because the position-independence contract
 is the implementer's responsibility).
+
+| Method | Role | Notes |
+|---|---|---|
+| `SharedDeque::create` | owner | create the MMF-backed deque at a fixed capacity |
+| `SharedDeque::open_as_thief` | thief | attach a second thread or process to steal from the owner |
+| `push` / `pop` | owner | bottom-end push / pop, no CAS on the fast path |
+| `push_batch` / `push_batch_with` | owner | bulk bottom-end push |
+| `steal` | thief | top-end steal, one CAS |
+| `approx_len` | any | lock-free size estimate (top and bottom may move under it) |
+| `capacity` | any | the fixed slot count set at create time |
+| `flush` | owner | msync the backing for durability |
+
+Errors surface as `DequeError`. Capacity is fixed at create time and
+must be a power of two (`create` returns `DequeError::InvalidCapacity`
+otherwise); the paper's resizing variant is a different primitive
+shape and is not what this implements.
+
+## Layout
+
+```text
++-----------------------------------+
+| DequeHeader (64 bytes, one line)  |
+|   magic, capacity                 |
+|   slot_bytes, alignment           |
+|   owner_pid                       |
+|   top: AtomicI64                  |
+|   bottom: AtomicI64               |
+|   epoch, layout_tag               |
++-----------------------------------+
+| Slot[0]  (slot_bytes)             |  marshaled T payload
+| Slot[1]  ...                      |
++-----------------------------------+
+```
+
+The header is exactly one 64-byte cache line, held there by a
+compile-time assertion, so the owner's `bottom` stores and a thief's
+`top` CAS travel one line's coherence path. `owner_pid` records the
+creating process and the protocol never reads it; `epoch` starts at 0
+and `SharedDeque` never advances it. A typed deque declares
+`align_of::<T>()` as its `alignment` and 0 as its `layout_tag`, and a
+raw attacher refuses a region whose alignment or tag differs from the
+layout it declares.
+
+## When to reach for it
+
+Use a `SharedDeque` when one producer (the owner) generates work that
+many consumers drain, and you want the owner's enqueue to stay almost
+free while consumers balance themselves by stealing: in-process worker
+pools, or cross-process worker fleets that attach to the owner's file.
+For symmetric many-to-many handoff where every participant both
+produces and consumes, reach for a ring instead
+([`SharedRingMpmc`](shared-ring-mpmc/)).
 
 ## See also
 

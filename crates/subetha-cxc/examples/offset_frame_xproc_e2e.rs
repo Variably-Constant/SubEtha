@@ -67,6 +67,7 @@ fn main() -> Result<(), BoxErr> {
         let status = std::process::Command::new(&self_exe)
             .arg("worker").arg(&name).arg("--big").status()?;
         drop(ring);
+        remove_names(&name);
         let ok = status.success();
         println!("\nRESULT offset_frame_xproc --big: worker_exit={} -> {}",
             status.code().unwrap_or(-1),
@@ -92,6 +93,7 @@ fn main() -> Result<(), BoxErr> {
     let status = std::process::Command::new(&self_exe)
         .arg("worker").arg(&name).status()?;
     drop(ring);
+    remove_names(&name);
 
     let ok = status.success();
     println!(
@@ -104,6 +106,15 @@ fn main() -> Result<(), BoxErr> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Remove the ring's names once the worker is done: they outlive every
+/// handle, the payload region the first offset frame made included.
+fn remove_names(name: &str) {
+    let removed = AdaptiveRing::unlink_shmfs(name, 1);
+    if removed.failed != 0 {
+        eprintln!("parent: shmfs region '{name}' not fully removed: {:?}", removed.first_failure);
+    }
 }
 
 fn worker(name: &str, big: bool) -> Result<(), BoxErr> {

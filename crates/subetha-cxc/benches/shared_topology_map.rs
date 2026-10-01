@@ -17,6 +17,9 @@
 //! Plus the MMF version is cross-process; the in-process baseline
 //! is not.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::Mutex;

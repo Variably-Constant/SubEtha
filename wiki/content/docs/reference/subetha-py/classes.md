@@ -5,7 +5,7 @@ weight: 10
 
 # Every class, in full
 
-All 91 classes the extension exports, with every method,
+All 94 classes the extension exports, with every method,
 its full signature and what it answers. Generated from the type
 stub by `crates/subetha-py/tools/export_reference.py`; the stub is
 held against the compiled module by `tests/test_surface.py`, so a
@@ -25,11 +25,24 @@ Each description here is the opening paragraph of the method's
 doc comment. Many carry more than that, on what an answer means
 or what the call does not do, and `help()` shows all of it.
 
-All 687 methods carry a description.
+All 728 methods carry a description.
 
 ## Contents
 
-[`AdaptiveQueue`](#adaptivequeue), [`Arena`](#arena), [`Atomic`](#atomic), [`BTreeMap`](#btreemap), [`BitVec`](#bitvec), [`BlockedBloomFilter`](#blockedbloomfilter), [`BloomFilter`](#bloomfilter), [`BroadcastRing`](#broadcastring), [`Capacity`](#capacity), [`CapacityRing`](#capacityring), [`CausalClock`](#causalclock), [`Cell`](#cell), [`Channel`](#channel), [`Clock`](#clock), [`Condvar`](#condvar), [`CountMinSketch`](#countminsketch), [`Deque`](#deque), [`EpochBarrier`](#epochbarrier), [`Epochs`](#epochs), [`FenceClock`](#fenceclock), [`FineBloom`](#finebloom), [`Forecast`](#forecast), [`FrameRegion`](#frameregion), [`Graph`](#graph), [`HandleTable`](#handletable), [`HashMap`](#hashmap), [`Heartbeat`](#heartbeat), [`Histogram`](#histogram), [`Hold`](#hold), [`HolderTable`](#holdertable), [`HyperLogLog`](#hyperloglog), [`KvMap`](#kvmap), [`LamportConsumer`](#lamportconsumer), [`LamportProducer`](#lamportproducer), [`LaneClaim`](#laneclaim), [`LanedMap`](#lanedmap), [`LanedPin`](#lanedpin), [`LazyValue`](#lazyvalue), [`LeaderElection`](#leaderelection), [`LeaseHold`](#leasehold), [`LinkedList`](#linkedlist), [`LocaleRing`](#localering), [`LossBursts`](#lossbursts), [`LossKind`](#losskind), [`LruCache`](#lrucache), [`MapPin`](#mappin), [`MpmcConsumer`](#mpmcconsumer), [`MpmcProducer`](#mpmcproducer), [`MpscConsumer`](#mpscconsumer), [`MpscProducer`](#mpscproducer), [`Notifier`](#notifier), [`NotifierSet`](#notifierset), [`OrderedReceiver`](#orderedreceiver), [`OwnerLease`](#ownerlease), [`PathChanges`](#pathchanges), [`Periodicity`](#periodicity), [`PermitHold`](#permithold), [`PubSub`](#pubsub), [`QosPolicy`](#qospolicy), [`QosSnapshot`](#qossnapshot), [`QuicBridgeClient`](#quicbridgeclient), [`QuicBridgeServer`](#quicbridgeserver), [`RWLock`](#rwlock), [`RateLimiter`](#ratelimiter), [`Region`](#region), [`ReorderWindow`](#reorderwindow), [`Reservoir`](#reservoir), [`Ring`](#ring), [`RoundTripShape`](#roundtripshape), [`Semaphore`](#semaphore), [`SensReceiver`](#sensreceiver), [`SensSender`](#senssender), [`SharedArc`](#sharedarc), [`Slab`](#slab), [`SlabPin`](#slabpin), [`SpscRing`](#spscring), [`Stack`](#stack), [`Subscriber`](#subscriber), [`TcpBridgeClient`](#tcpbridgeclient), [`TcpBridgeServer`](#tcpbridgeserver), [`TimePointTile`](#timepointtile), [`Timing`](#timing), [`TinyBloom`](#tinybloom), [`TopologyMap`](#topologymap), [`Tower`](#tower), [`Universal`](#universal), [`Vec`](#vec), [`VersionChain`](#versionchain), [`VersionedMap`](#versionedmap), [`VersionedSlab`](#versionedslab), [`WorkQueue`](#workqueue)
+[`Adaptive`](#adaptive), [`AdaptiveQueue`](#adaptivequeue), [`Arena`](#arena), [`Atomic`](#atomic), [`BTreeMap`](#btreemap), [`BitVec`](#bitvec), [`BlockedBloomFilter`](#blockedbloomfilter), [`BloomFilter`](#bloomfilter), [`BroadcastRing`](#broadcastring), [`Capacity`](#capacity), [`CapacityRing`](#capacityring), [`CausalClock`](#causalclock), [`Cell`](#cell), [`Channel`](#channel), [`Clock`](#clock), [`Condvar`](#condvar), [`CountMinSketch`](#countminsketch), [`Deque`](#deque), [`EpochBarrier`](#epochbarrier), [`Epochs`](#epochs), [`FenceClock`](#fenceclock), [`FineBloom`](#finebloom), [`Forecast`](#forecast), [`FrameRegion`](#frameregion), [`Graph`](#graph), [`HandleTable`](#handletable), [`HashMap`](#hashmap), [`Heartbeat`](#heartbeat), [`Histogram`](#histogram), [`Hold`](#hold), [`HolderTable`](#holdertable), [`HyperLogLog`](#hyperloglog), [`InstanceStats`](#instancestats), [`KvMap`](#kvmap), [`LamportConsumer`](#lamportconsumer), [`LamportProducer`](#lamportproducer), [`LaneClaim`](#laneclaim), [`LanedMap`](#lanedmap), [`LanedPin`](#lanedpin), [`LazyValue`](#lazyvalue), [`LeaderElection`](#leaderelection), [`LeaseHold`](#leasehold), [`LinkedList`](#linkedlist), [`LocaleRing`](#localering), [`LossBursts`](#lossbursts), [`LossKind`](#losskind), [`LruCache`](#lrucache), [`MapPin`](#mappin), [`MpmcConsumer`](#mpmcconsumer), [`MpmcProducer`](#mpmcproducer), [`MpscConsumer`](#mpscconsumer), [`MpscProducer`](#mpscproducer), [`Notifier`](#notifier), [`NotifierSet`](#notifierset), [`OrderedReceiver`](#orderedreceiver), [`OwnerLease`](#ownerlease), [`PathChanges`](#pathchanges), [`Periodicity`](#periodicity), [`PermitHold`](#permithold), [`PubSub`](#pubsub), [`QosPolicy`](#qospolicy), [`QosSnapshot`](#qossnapshot), [`QuicBridgeClient`](#quicbridgeclient), [`QuicBridgeServer`](#quicbridgeserver), [`RWLock`](#rwlock), [`RateLimiter`](#ratelimiter), [`Region`](#region), [`Registration`](#registration), [`ReorderWindow`](#reorderwindow), [`Reservoir`](#reservoir), [`Ring`](#ring), [`RoundTripShape`](#roundtripshape), [`Semaphore`](#semaphore), [`SensReceiver`](#sensreceiver), [`SensSender`](#senssender), [`SharedArc`](#sharedarc), [`Slab`](#slab), [`SlabPin`](#slabpin), [`SpscRing`](#spscring), [`Stack`](#stack), [`Subscriber`](#subscriber), [`TcpBridgeClient`](#tcpbridgeclient), [`TcpBridgeServer`](#tcpbridgeserver), [`TimePointTile`](#timepointtile), [`Timing`](#timing), [`TinyBloom`](#tinybloom), [`TopologyMap`](#topologymap), [`Tower`](#tower), [`Universal`](#universal), [`Vec`](#vec), [`VersionChain`](#versionchain), [`VersionedMap`](#versionedmap), [`VersionedSlab`](#versionedslab), [`WorkQueue`](#workqueue)
+
+## Adaptive
+
+| Attribute | Type |
+|---|---|
+| `tag` | `int` |
+
+| Method | Kind | What it does |
+|---|---|---|
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
+| `record(self, op_kind: int, latency_ticks: int=0, contended: bool=False, empty: bool=False) -> bool` | method | Record one operation of kind `op_kind` that took `latency_ticks`, in whatever unit the policy reads. Kinds 1 to 6 are counted apart, 7 and above share one count, and 0 is unspecified. `contended` marks an operation that took a slow path, which is what `contention_rate` counts, and `empty` one that found nothing. False when the ring did not take it: before the object is observed, or while the ring is full. |
+| `set_tag(self, tag: int) -> None` | method | Move the tag from the caller's own code. |
+| `__init__(self) -> None` | method | A fresh object at tag 0. It records nothing until it is observed. |
 
 ## AdaptiveQueue
 
@@ -53,7 +66,7 @@ All 687 methods carry a description.
 | `send_for(self, item: bytes, timeout: float | None=None) -> bool` | method | Wait until the item can be sent, or until `timeout` seconds have passed. Answers False on a timeout. |
 | `send_many(self, items: Sequence[bytes]) -> int` | method | Send a run of items as one batch, which is also what tells the queue the traffic comes in batches and may be worth a different shape. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
-| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. Whatever shape it changed into inside the block is the one it is still in afterwards, and anything queued stays queued. |
+| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. Whatever shape it changed into inside the block is the one it is still in afterward, and anything queued stays queued. |
 | `__init__(self, path: str, capacity: int=1024, senders: int=1, readers: int=1, ordering: str='per_producer', auto_order: float | None=None) -> None` | method | `capacity` is the number of items in flight, rounded up to a power of two. `senders` and `readers` are where it starts; what it becomes is decided by the traffic. |
 
 ## Arena
@@ -73,6 +86,7 @@ All 687 methods carry a description.
 | `intern(self, value: str) -> int | None` | method | Intern a string and return the reference that names it, or `None` when the arena is full. |
 | `intern_bytes(self, value: bytes) -> int | None` | method | Intern bytes that need not be text. |
 | `intern_many(self, values: Sequence[str]) -> list[int]` | method | Intern a run of strings in one crossing, stopping at the first the arena cannot take. Returns the references it managed. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity_bytes: int) -> Arena` | staticmethod | Attach to an arena that already exists, able to intern into it. Raises `OSError` when it is not there. `capacity_bytes` must be the one it was created with. |
 | `open_read_only(path: str, capacity_bytes: int) -> Arena` | staticmethod | Attach for reading only, so `intern` cannot be called and `writable` answers `False`. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
@@ -91,6 +105,7 @@ All 687 methods carry a description.
 | `fetch_sub(self, value: int=1, order: str='seq_cst') -> int` | method | Subtract, and answer what the value was before. Taking more than the value holds wraps round to the top, which is what a counter going below zero means here. |
 | `fetch_xor(self, value: int, order: str='seq_cst') -> int` | method | Flip every bit that is set in `value`, and answer what the value was before. |
 | `load(self, order: str='seq_cst') -> int` | method | Read the value. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str) -> Atomic` | staticmethod | Attach to an atomic that already exists, leaving its value alone. |
 | `store(self, value: int, order: str='seq_cst') -> None` | method | Write the value, discarding whatever was there without reading it. Use `swap` when the previous value matters, or `compare_exchange` when the write should land only if nobody else got there first. |
 | `swap(self, value: int, order: str='seq_cst') -> int` | method | Put `value` in and answer what was there, in one step nothing else can get between. |
@@ -134,6 +149,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `clear(self, index: int) -> bool` | method | Clear bit `index` and report what it was. |
 | `get(self, index: int) -> bool` | method | Whether bit `index` is set, without changing it. An index past the capacity is an `OSError`. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity_bits: int) -> BitVec` | staticmethod | Attach to a bit vector that already exists, raising `OSError` when it does not. `capacity_bits` must be the one it was created with. |
 | `set(self, index: int) -> bool` | method | Set bit `index` and report what it was. |
 | `set_range(self, lo: int, hi: int) -> None` | method | Set every bit from `lo` up to but not including `hi`, in one call rather than one per bit. |
@@ -157,6 +173,7 @@ All 687 methods carry a description.
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the bits without this; flushing is about surviving a machine that stops. |
 | `insert(self, item: bytes) -> None` | method | Add an item, setting its bits inside a single cache-line block. |
 | `insert_many(self, items: Sequence[bytes]) -> int` | method | Add a run of items in one crossing. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, bits: int, hashes: int) -> BlockedBloomFilter` | staticmethod | Attach to a filter another holder made, with the size and hash count it was made with. |
 | `reset(path: str, bits: int, hashes: int) -> BlockedBloomFilter` | staticmethod | Empty the filter and remake it at this size, throwing away everything in it. |
 | `suggest(items: int, false_positive_rate: float) -> tuple[int, int]` | staticmethod | The size and hash count for holding `items` with no more than `false_positive_rate` of wrong yeses. Hand both to the constructor. |
@@ -180,6 +197,7 @@ All 687 methods carry a description.
 | `contains_many(self, items: Sequence[bytes]) -> list[bool]` | method | Look a run of items up in one crossing. |
 | `insert(self, item: bytes) -> None` | method | Add an item. |
 | `insert_many(self, items: Sequence[bytes]) -> None` | method | Insert a run of items in one crossing. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, n_bits: int, n_hashes: int) -> BloomFilter` | staticmethod | Attach to a filter that already exists, raising `OSError` when it does not. `n_bits` and `n_hashes` must be the ones it was created with, because together they decide which bits an item touches. |
 | `suggest_config(n_items: int, false_positive_rate: float) -> tuple[int, int]` | staticmethod | The bits and hash count for `n_items` at a false-positive rate of `p`, so a caller sizes the filter from what it means rather than from arithmetic it has to do itself. |
 | `__contains__(self, item: bytes) -> bool` | method | `False` means it is definitely absent. `True` means it is probably present, at about `false_positive_rate`. |
@@ -197,6 +215,7 @@ All 687 methods carry a description.
 | Method | Kind | What it does |
 |---|---|---|
 | `lag(self, consumer: int) -> int | None` | method | How many items are waiting for a consumer, or `None` when the id names no live consumer of this ring. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> BroadcastRing` | staticmethod | Attach to a broadcast ring that already exists, raising `OSError` when it does not. `capacity` must be the one it was created with. |
 | `push(self, item: bytes) -> bool` | method | Publish one item, which every registered consumer will see. |
 | `push_many(self, items: Sequence[bytes]) -> int` | method | Publish a run of items, stopping at the first that will not fit, and answer how many landed. A count below what was handed in means the rest were not published and are still the caller's to keep. |
@@ -231,8 +250,11 @@ All 687 methods carry a description.
 |---|---|
 | `capacity` | `int` |
 | `inversions` | `int` |
+| `managed` | `bool` |
 | `ordering_mode` | `str | None` |
 | `pin_generation` | `int` |
+| `sidecar_morphs` | `int` |
+| `sidecar_prewarms` | `int` |
 | `stale_pops` | `int` |
 | `stamped` | `bool` |
 | `warm_capacity` | `int | None` |
@@ -242,7 +264,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `clear_warm(self) -> None` | method | Drop the prewarmed backing, giving back its memory and its file. |
 | `morph_to(self, capacity: int) -> None` | method | Resize. Items already in the ring stay readable through the old backing until they have been taken, so nothing in flight is lost. |
-| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False) -> CapacityRing` | staticmethod | `stamped` must match how the ring was created: a stamped ring carries ordering stamps and attaching to one as unstamped reads the wrong shape. |
+| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False, managed: bool=False, scan_interval_us: int | None=None) -> CapacityRing` | staticmethod | `stamped` must match how the ring was created: a stamped ring carries ordering stamps and attaching to one as unstamped reads the wrong shape. `managed` and `scan_interval_us` are this handle's own, as on the constructor. |
 | `prewarm(self, capacity: int) -> None` | method | Build a backing of `capacity` ahead of needing it, so the morph that switches to it does not pay for the allocation. |
 | `recv(self, consumer: int) -> bytes | None` | method | Take the next item for `consumer`, or `None` when there is nothing to take. |
 | `recv_many(self, consumer: int, max_items: int) -> list[bytes]` | method | Take up to `max_items` for `consumer` in one crossing, stopping early when the ring runs dry. An empty list means there was nothing, which is the same answer `recv` gives as `None`. |
@@ -252,8 +274,8 @@ All 687 methods carry a description.
 | `send_many(self, producer: int, items: Sequence[bytes]) -> int` | method | Send a run of items from one producer, stopping at the first that will not fit, and answer how many landed. A count short of what was handed in means the rest were not sent and are still the caller's to hold. |
 | `set_ordering_mode(self, mode: str) -> None` | method | Set the ordering discipline across the current backing and every superseded one still draining, so a reader walking both applies one discipline. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
-| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. A prewarmed backing is still held afterwards, and a producer or consumer position taken inside is still registered: `clear_warm` gives back the first, and nothing gives back the second. |
-| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False) -> None` | method | The capacity must be a power of two and at least two, which the ring arithmetic relies on. |
+| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. A prewarmed backing is still held afterward, and a producer or consumer position taken inside is still registered: `clear_warm` gives back the first, and nothing gives back the second. |
+| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False, managed: bool=False, scan_interval_us: int | None=None) -> None` | method | The capacity must be a power of two and at least two, which the ring arithmetic relies on. |
 
 ## CausalClock
 
@@ -351,6 +373,7 @@ All 687 methods carry a description.
 | `insert(self, item: bytes) -> None` | method | Record one occurrence of `item`. |
 | `insert_many(self, items: Sequence[bytes]) -> int` | method | Record one occurrence of each item in one crossing, and answer how many were handed in. Nothing here can refuse, so the count is always the length of the sequence. |
 | `insert_n(self, item: bytes, count: int) -> None` | method | Add `count` occurrences at once rather than calling `insert` that many times. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, depth: int, width: int) -> CountMinSketch` | staticmethod | Attach to a sketch that already exists, raising `OSError` when it does not. `depth` and `width` must be the ones it was created with, because together they decide which cells an item touches. |
 | `reset(self) -> None` | method | Zero every cell and the insert total, so the sketch is empty again. Every process mapping the file sees it. |
 | `suggest_config(epsilon: float, delta: float) -> tuple[int, int]` | staticmethod | The depth and width for an error of `epsilon` with confidence `delta`, so a caller sizes the sketch from what it needs. |
@@ -387,6 +410,7 @@ All 687 methods carry a description.
 
 | Method | Kind | What it does |
 |---|---|---|
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, heartbeat: Heartbeat, grace_epochs: int=3) -> EpochBarrier` | staticmethod | Attach to a barrier that already exists, raising `OSError` when it does not. The heartbeat table and the grace period are this participant's own, given here the same way they are at creation. |
 | `snapshot(self) -> tuple[int, int]` | method | The epoch and how many have arrived at it, read together so the two cannot disagree. |
 | `wait(self, epoch: int, timeout: float | None=None, quorum: int | None=None) -> bool` | method | Arrive at `epoch` and wait for everyone else, or for `timeout` seconds. Returns `True` when the barrier opened and `False` on a timeout. The interpreter is detached while waiting. |
@@ -422,6 +446,7 @@ All 687 methods carry a description.
 | `get_local(self, slot: int) -> tuple[int, int]` | method | This participant's current reading, without moving it. |
 | `global_fence(self) -> tuple[int, int]` | method | The latest reading across every live participant: every event any of them has recorded is at or before this. |
 | `merge(self, slot: int, physical_us: int, logical: int) -> tuple[int, int]` | method | Fold a reading received from elsewhere into this participant's clock, which is what makes the ordering hold across processes. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> FenceClock` | staticmethod | Attach to a clock that already exists, raising `OSError` when it does not. `capacity` must be the one it was created with. |
 | `register(self, pid: int | None=None) -> int` | method | Take a participant slot. Every tick and merge names one. |
 | `tick(self, slot: int) -> tuple[int, int]` | method | Move this participant's clock on and return the new reading. |
@@ -494,6 +519,7 @@ All 687 methods carry a description.
 | `flush_async(self) -> None` | method | Start writing the mapping back to its file and return at once, without waiting for the write to land. Nothing is on disk yet when this returns; `flush` is the form that waits. |
 | `neighbors(self, source: int) -> list[tuple[int, int, int]]` | method | Everything reachable in one step from a node, as the edge index, the node it leads to and what the edge carries. |
 | `node_value(self, node: int) -> int | None` | method | What a node carries, or None when there is no such node. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, max_nodes: int, max_edges: int) -> Graph` | staticmethod | Attach to a graph another holder made, with the sizes it was made with. |
 | `out_degree(self, source: int) -> int | None` | method | How many edges lead out of a node, or None when there is no such node. |
 | `remove_edge(self, source: int, edge: int) -> int | None` | method | Take an edge out of a node's edges, answering what it carried, or None when that node has no such edge. |
@@ -517,6 +543,7 @@ All 687 methods carry a description.
 | `get_many(self, handles: Sequence[int]) -> list[bytes | None]` | method | Several values in one crossing, each None where the handle no longer names anything. |
 | `insert(self, value: bytes) -> int` | method | Put a value in and get its handle. Raises when the table is full. |
 | `insert_many(self, values: Sequence[bytes]) -> list[int]` | method | Put a run of values in, answering their handles in order. Stops at the first one that does not fit, so a short answer means the table filled. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> HandleTable` | staticmethod | Attach to a table another holder made, with the capacity it was made with. |
 | `remove(self, handle: int) -> bytes | None` | method | Take a value out, answering it, or None when the handle no longer names anything. |
 | `reset(path: str, capacity: int) -> HandleTable` | staticmethod | Empty the table and remake it at this capacity. |
@@ -543,6 +570,7 @@ All 687 methods carry a description.
 | `get_many(self, keys: Sequence[bytes]) -> list[bytes | None]` | method | Look a run of keys up in one call, answering `None` per key that is absent. |
 | `insert(self, key: bytes, value: bytes) -> str | None` | method | Insert or replace. Returns `"inserted"` or `"updated"`, and `None` when the map is full. |
 | `insert_many(self, pairs: Sequence[tuple[bytes, bytes]]) -> int` | method | Insert a run of pairs, stopping at the first the map refuses. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int, key_size: int, value_size: int) -> HashMap` | staticmethod | Attach to a map that already exists, raising `OSError` when it does not. The capacity and both widths must be the ones it was created with. |
 | `remove(self, key: bytes) -> bytes | None` | method | Remove a key and return what it held, or `None` if it held nothing. |
 | `__contains__(self, key: bytes) -> bool` | method | Whether the key is present, without bringing its value back over the boundary. Cheaper than `get` when the value is not wanted. |
@@ -561,6 +589,7 @@ All 687 methods carry a description.
 | Method | Kind | What it does |
 |---|---|---|
 | `beat(self, slot: int) -> None` | method | Say this slot is still alive. A slot that stops beating for longer than the grace period counts as dead. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> Heartbeat` | staticmethod | Attach to a heartbeat table that already exists, raising `OSError` when it does not. `capacity` must be the one it was created with. |
 | `register(self, pid: int | None=None) -> int` | method | Take a slot. A full table raises rather than answering `None`: it is a configuration that cannot serve this process, not an answer to a question. |
 | `snapshot(self, slot: int) -> dict[str, int] | None` | method | What a slot currently says about itself, or `None` when nothing holds it. |
@@ -580,6 +609,7 @@ All 687 methods carry a description.
 | Method | Kind | What it does |
 |---|---|---|
 | `count(self, bucket: int) -> int` | method | How many values fell in one bucket, by its index. A bucket past `n_buckets` is an `OSError`. Use `counts` when you want them all: it costs one crossing rather than one per bucket. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, boundaries: Sequence[int]) -> Histogram` | staticmethod | Attach to a histogram that already exists, raising `OSError` when it does not. `boundaries` must be the ones it was created with: they are the bucket edges written into the file, so a different list reads the counts against the wrong edges. |
 | `percentile(self, p: float) -> int` | method | The value at percentile `p`, from the bucket boundaries, so it is as precise as the buckets are. |
 | `record(self, value: int) -> int` | method | Record one value and return the bucket it fell in. |
@@ -628,9 +658,34 @@ All 687 methods carry a description.
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the registers without this; flushing is about surviving a machine that stops. |
 | `insert(self, item: bytes) -> None` | method | Record having seen `item`. |
 | `insert_many(self, items: Sequence[bytes]) -> int` | method | Insert a run of items in one crossing, which is what this structure is usually fed: a stream rather than single items. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, precision: int=14) -> HyperLogLog` | staticmethod | Attach to a counter that already exists, raising `OSError` when it does not. `precision` must be the one it was created with, because it sets how many registers the file holds. |
 | `reset(self) -> None` | method | Zero every register, so the counter is empty again and `estimate` answers nothing seen. Every process mapping the file sees it. |
 | `__init__(self, path: str, precision: int=14) -> None` | method | `precision` sets the trade between memory and accuracy: 4 is the smallest the format allows and 16 the largest. |
+
+## InstanceStats
+
+| Attribute | Type |
+|---|---|
+| `N_OP_KINDS` | `int` |
+| `MAX_TRACKED_THREADS_PER_KIND` | `int` |
+| `contention_ops` | `int` |
+| `last_drain_us` | `int` |
+| `migrations_triggered` | `int` |
+| `op_kind_counts` | `list[int]` |
+| `ops_observed` | `int` |
+| `per_op_kind_distinct_count` | `list[int]` |
+| `per_op_kind_distinct_threads` | `list[list[int]]` |
+| `total_latency_ticks` | `int` |
+
+| Method | Kind | What it does |
+|---|---|---|
+| `average_latency_ticks(self) -> int` | method | `total_latency_ticks` over `ops_observed`, and 0 before any observation. |
+| `contention_rate(self) -> float` | method | `contention_ops` over `ops_observed`, and 0.0 before any observation. |
+| `distinct_threads_for(self, kind: int) -> int` | method | Distinct producer threads seen for `kind`. |
+| `is_multi_thread_for(self, kind: int) -> bool` | method | Whether `kind` was seen from two producer threads or more. |
+| `op_kind_total(self) -> int` | method | The per-kind counts summed. |
+| `ratio_of(self, kind: int, total_kinds: Sequence[int]) -> float` | method | The count of `kind` over the counts of `total_kinds` summed, and 0.0 while those are all zero. |
 
 ## KvMap
 
@@ -758,6 +813,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `am_i_leader(self, pid: int | None=None) -> bool` | method | Whether `pid` holds the role right now, defaulting to this process. This only asks. `beat` is what keeps a claim alive, and asking never renews one. |
 | `beat(self, pid: int | None=None) -> bool` | method | Say the leader is still alive. `False` means this process is not the leader any more, which is the answer a former leader needs. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str) -> LeaderElection` | staticmethod | Attach to an election that already exists, raising `OSError` when it does not. |
 | `step_down(self, pid: int | None=None) -> bool` | method | Give the role up so another process can take it without waiting out the grace period. |
 | `tick_epoch(self) -> int` | method | Step the global epoch and answer the new value, not the old one. |
@@ -808,23 +864,26 @@ All 687 methods carry a description.
 | `inversions` | `int` |
 | `locale` | `str` |
 | `locale_generation` | `int` |
+| `managed` | `bool` |
 | `ordering_mode` | `str | None` |
+| `sidecar_migrations` | `int` |
 | `stamped` | `bool` |
 
 | Method | Kind | What it does |
 |---|---|---|
-| `migrate_to(self, locale: str) -> None` | method | Move the ring to another locale, carrying what is already in it. On a stamped ring the transfer keeps the order every sender saw; on an unstamped one the drain can interleave senders, as a shape change can. |
-| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False) -> LocaleRing` | staticmethod | Attach to a ring another holder created. The counts, the capacity and `stamped` must all be the ones it was created with. |
+| `migrate_to(self, locale: str) -> None` | method | Move the ring to another locale, carrying what is already in it. On a stamped ring the transfer keeps the order every sender saw; on an unstamped one the drain can interleave senders, as a shape change can. On a managed ring the move is also what its sidecar is asked to keep, so the sidecar holds the ring there. |
+| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False, managed: bool=False, scan_interval_us: int | None=None) -> LocaleRing` | staticmethod | Attach to a ring another holder created. The counts, the capacity and `stamped` must all be the ones it was created with; `managed` and `scan_interval_us` are this handle's own, as on the constructor. |
 | `recv(self, consumer: int) -> bytes | None` | method | Take the next item for `consumer`, or `None` when there is nothing to take. |
 | `recv_many(self, consumer: int, max_items: int) -> list[bytes]` | method | Take up to `max_items` for `consumer` in one crossing, stopping early when the ring runs dry. An empty list means there was nothing, which is the same answer `recv` gives as `None`. |
 | `register_consumer(self) -> int` | method | Take a consumer position, which every `recv` names. Registered on all three backings at once, like a producer, so a migration does not lose it. |
 | `register_producer(self) -> int` | method | Register on all three backings at once, so the registration is there whichever locale is live. |
+| `request_locale(self, locale: str) -> None` | method | Ask a managed ring's sidecar to move the ring to `locale`, one of `anon`, `file` or `shmfs`. The sidecar moves it on a later scan, once 250 ms have passed since its last move. A strict ring has no sidecar to ask and raises; `migrate_to` moves it. |
 | `send(self, producer: int, item: bytes) -> bool` | method | Send one item from `producer` into whichever locale is live. `False` means the ring is full, which is an answer rather than a failure; an item too long for a slot raises. |
 | `send_many(self, producer: int, items: Sequence[bytes]) -> int` | method | Send a run of items from one producer, stopping at the first that will not fit, and answer how many landed. A count short of what was handed in means the rest were not sent and are still the caller's to hold. |
 | `set_ordering_mode(self, mode: str) -> None` | method | Set the ordering discipline on all three backings, so a migration does not change the discipline underneath a reader. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
 | `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. The ring stays in whichever locale it was migrated to, and a position taken inside the block is still registered. |
-| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False) -> None` | method | The capacity must be a power of two and at least two, which the ring arithmetic relies on. All three backings are built here, so a later migration has somewhere to go without allocating. |
+| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamped: bool=False, managed: bool=False, scan_interval_us: int | None=None) -> None` | method | The capacity must be a power of two and at least two, which the ring arithmetic relies on. All three backings are built here, so a later migration has somewhere to go without allocating. |
 
 ## LossBursts
 
@@ -998,6 +1057,7 @@ All 687 methods carry a description.
 | `flush_async(self) -> None` | method | Ask for the lease's file to reach the disk without waiting. |
 | `held_by_me(self, pid: int | None=None) -> bool` | method | Whether this process holds it. |
 | `hold(self, grace_epochs: int=0, pid: int | None=None) -> LeaseHold` | method | Take the lease for the length of a block, giving it back when the block ends including on the way out of an exception. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str) -> OwnerLease` | staticmethod | Attach to a lease that already exists, failing if it does not. |
 | `read(self, pid: int | None=None) -> bytes | None` | method | The value, readable only by the process holding the lease. None when this process does not hold it. |
 | `release(self, pid: int | None=None) -> bool` | method | Give the lease back, answering False if this process did not hold it. |
@@ -1121,6 +1181,7 @@ All 687 methods carry a description.
 
 | Method | Kind | What it does |
 |---|---|---|
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str) -> RWLock` | staticmethod | Attach to a lock that already exists, raising `OSError` when it does not. Attaching takes nothing: `read` and `write` are what take a hold. |
 | `read(self) -> Hold` | method | Take the read hold, waiting for it. Other readers may hold it at the same time; a writer may not. |
 | `read_for(self, timeout: float) -> Hold | None` | method | Take the read hold, giving up after `timeout` seconds and answering None. |
@@ -1141,6 +1202,7 @@ All 687 methods carry a description.
 | Method | Kind | What it does |
 |---|---|---|
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the token count without this. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int, refill_per_second: int) -> RateLimiter` | staticmethod | Attach to a limiter that already exists, raising `OSError` when it does not. The capacity and refill rate must be the ones it was created with. |
 | `reset(self) -> None` | method | Refill the bucket to full, which is the opposite of what the name suggests: this hands out capacity rather than taking it away. |
 | `try_acquire(self, n: int=1) -> bool` | method | Take `n` tokens if they are there. `False` means they were not, which is an answer rather than a failure. |
@@ -1161,6 +1223,23 @@ All 687 methods carry a description.
 | `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. A `memoryview` taken inside the block stays valid after it, because the view holds its own reference to the region and the export count is what keeps the mapping under it. |
 | `__init__(self, path: str, capacity: int, slot_size: int, alignment: int=1, tag: int=0) -> None` | method | Obtain the region at `path` holding `capacity` slots of `slot_size` bytes, creating it when the file does not exist. |
 | `__len__(self) -> int` | method | How many slots are allocated. |
+
+## Registration
+
+| Attribute | Type |
+|---|---|
+| `closed` | `bool` |
+| `id` | `int` |
+| `last_policy_error` | `BaseException | None` |
+| `policy_errors` | `int` |
+| `tag` | `int` |
+
+| Method | Kind | What it does |
+|---|---|---|
+| `close(self) -> None` | method | Unregister from the sidecar. Returns once no scan is inside the registration, and the object can then be observed again. |
+| `stats(self) -> InstanceStats` | method | What the sidecar has drained from the object so far, as its last scan left it. `subetha.sidecar.scan_now()` drains what is waiting. |
+| `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
+| `__exit__(self, *args: object) -> bool` | method | Unregister as the block ends, and let an exception through. |
 
 ## ReorderWindow
 
@@ -1192,6 +1271,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the sample without this; flushing is about surviving a machine that stops. |
 | `flush_async(self) -> None` | method | Start writing the mapping back to its file and return at once, without waiting for the write to land. Nothing is on disk yet when this returns; `flush` is the form that waits. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> Reservoir` | staticmethod | Attach to a reservoir another holder made. The capacity must be the one it was made with. |
 | `record(self, value: bytes) -> int | None` | method | Offer one value. Answers the place it was kept in, or None when the sample kept what it already had there instead. Neither answer is a failure: refusing is how the sample stays unbiased. |
 | `record_many(self, values: Sequence[bytes]) -> int` | method | Offer a run of values in one crossing, and say how many were kept. |
@@ -1208,10 +1288,12 @@ All 687 methods carry a description.
 |---|---|
 | `approx_len` | `int` |
 | `capacity` | `int` |
+| `managed` | `bool` |
 | `max_consumers` | `int` |
 | `max_producers` | `int` |
 | `morph_refusals` | `int` |
 | `shape` | `str` |
+| `sidecar_morphs` | `int` |
 | `stamped` | `bool` |
 | `stamps` | `str | None` |
 | `total_capacity` | `int` |
@@ -1219,7 +1301,8 @@ All 687 methods carry a description.
 | Method | Kind | What it does |
 |---|---|---|
 | `is_empty(self) -> bool` | method | Whether the ring looked empty when asked. Read without stopping the producers, so it is a sighting rather than a promise: a send can land the instant after. Treat `None` from `recv` as the real answer, and use this for reporting. |
-| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamps: str | None=None) -> Ring` | staticmethod | Attach to a ring another holder created. `stamps` must be the kind it was created with. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this ring with the process's sidecar; see `Registration`. |
+| `open(path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamps: str | None=None, managed: bool=False, scan_interval_us: int | None=None) -> Ring` | staticmethod | Attach to a ring another holder created. `stamps` must be the kind it was created with; `managed` and `scan_interval_us` are this handle's own, as on the constructor. |
 | `ordered_receiver(self, consumer: int) -> OrderedReceiver` | method | A reader that hands items back in the order their senders made them, rather than the order they happened to arrive in. |
 | `recv(self, consumer: int) -> bytes | None` | method | Receive one item as `consumer`, or `None` when the ring is empty. |
 | `recv_frame(self, consumer: int) -> bytes | None` | method | Receive a framed payload, or `None` when there is none waiting. |
@@ -1232,7 +1315,7 @@ All 687 methods carry a description.
 | `send_many(self, producer: int, items: Sequence[bytes]) -> int` | method | Send a run of items, stopping at the first refusal. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
 | `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. Producer and consumer positions taken inside the block are still registered after it, and items still in the ring stay there for whoever attaches next. |
-| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamps: str | None=None) -> None` | method | The constructor asserts that there is at least one producer and one consumer, so both are refused here first. |
+| `__init__(self, path: str, capacity: int, max_producers: int=1, max_consumers: int=1, stamps: str | None=None, managed: bool=False, scan_interval_us: int | None=None) -> None` | method | The constructor asserts that there is at least one producer and one consumer, so both are refused here first. |
 
 ## RoundTripShape
 
@@ -1260,6 +1343,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `acquire(self) -> PermitHold` | method | Take a permit, waiting for one. The interpreter is detached while this waits. |
 | `acquire_for(self, timeout: float) -> PermitHold | None` | method | Take a permit, giving up after `timeout` seconds and answering None. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, max_permits: int) -> Semaphore` | staticmethod | Attach to a semaphore that already exists, raising `OSError` when it does not. `max_permits` must be the one it was created with, and attaching takes no permit: `acquire` is what does. |
 | `try_acquire(self) -> PermitHold | None` | method | Take a permit if one is free, or answer `None`. Only an exhausted semaphore answers `None`; anything else raises. |
 | `__init__(self, path: str, initial: int, max_permits: int | None=None) -> None` | method | The constructor asserts that the initial count fits the maximum, so that is refused here first rather than reaching Python as a panic. |
@@ -1439,6 +1523,7 @@ All 687 methods carry a description.
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the points without this; flushing is about surviving a machine that stops. |
 | `flush_async(self) -> None` | method | Start writing the mapping back to its file and return at once, without waiting for the write to land. Nothing is on disk yet when this returns; `flush` is the form that waits. |
 | `insert(self, version: int, value: bytes) -> int` | method | Write a value at a version and get the place it went in. Raises when all sixteen places are taken. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str) -> TimePointTile` | staticmethod | Attach to a tile another holder made. |
 | `remove(self, lane: int) -> None` | method | Empty one place. |
 | `reset(path: str) -> TimePointTile` | staticmethod | Empty the tile and remake it. |
@@ -1500,6 +1585,7 @@ All 687 methods carry a description.
 |---|---|---|
 | `fan_in(self, receiver: int) -> int` | method | How many different places send to this one. |
 | `fan_out(self, sender: int) -> int` | method | How many different places this one sends to. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, participants: int) -> TopologyMap` | staticmethod | Attach to a topology another holder made, with the participant count it was made with. |
 | `publish_recommendation(self) -> str` | method | Work the shape out and write it down, so every process reads the same one. Answers what was published. |
 | `published_recommendation(self) -> str` | method | The shape last published, which may not be what the counts suggest now. |
@@ -1549,12 +1635,13 @@ All 687 methods carry a description.
 | `insert(self, value: int) -> None` | method | Add a value to the set. |
 | `insert_many(self, values: Sequence[int]) -> int` | method | Add a run of values in one crossing. |
 | `migrate_to(self, strategy: str) -> None` | method | Move the set to `list` or `map` by hand. Moving it to where it already is does nothing. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> Universal` | staticmethod | Attach to a set another holder made, with the capacity it was made with. |
 | `reset(path: str, capacity: int) -> Universal` | staticmethod | Empty the set and remake it at this capacity. |
 | `snapshot(self) -> list[int]` | method | Everything in the set, in one crossing. |
 | `__contains__(self, value: int) -> bool` | method | Whether the value is in the set. Exact, not probabilistic: unlike the filters, a `True` here is a fact. |
 | `__enter__(self) -> Self` | method | Answer the same object, so a `with` block can give it a name. |
-| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. Whatever strategy it migrated to inside the block is the one it is still in afterwards. |
+| `__exit__(self, *args: object) -> bool` | method | Leave the block without closing anything, and let an exception through. Whatever strategy it migrated to inside the block is the one it is still in afterward. |
 | `__init__(self, path: str, capacity: int) -> None` | method | The set lives in files beside the path given, one per way of storing it. |
 | `__len__(self) -> int` | method | How many values the set holds. It can raise, unlike most `len` implementations, because reading the count means reading the mapping and that can fail. |
 
@@ -1596,6 +1683,7 @@ All 687 methods carry a description.
 | `clear(self) -> None` | method | Throw away every version. |
 | `flush(self) -> None` | method | Ask the operating system to write the mapping back to its file, and wait for it. Another process mapping the same file sees the versions without this; flushing is about surviving a machine that stops. |
 | `flush_async(self) -> None` | method | Start writing the mapping back to its file and return at once, without waiting for the write to land. Nothing is on disk yet when this returns; `flush` is the form that waits. |
+| `observe(self, policy: _Policy | None=None) -> Registration` | method | Register this object with the process's sidecar; see `Registration`. |
 | `open(path: str, capacity: int) -> VersionChain` | staticmethod | Attach to a chain another holder made, with the capacity it was made with. |
 | `push(self, version: int, value: bytes) -> None` | method | Write a new version. The version number must be above the one already at the front, which is what keeps the history in order. |
 | `read_at(self, version: int) -> bytes | None` | method | The value as it stood at `version`, or None when nothing had been written by then. |

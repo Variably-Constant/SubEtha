@@ -98,6 +98,9 @@ cross-process, and cross-host.
 
 ## What it looks like
 
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
 ```rust
 use subetha_cxc::AutoIpc;
 
@@ -112,6 +115,39 @@ assert_eq!(v, 42);
 chan.send_blocking(&42, None)?;   // parks the thread
 chan.send_async(&42).await?;      // suspends the task, any executor
 ```
+{{< /tab >}}
+
+{{< tab name="Python" >}}
+```python
+import os
+import tempfile
+
+import subetha
+
+chan = subetha.Channel(os.path.join(tempfile.gettempdir(), "events.bin"), capacity=64)
+
+chan.send(b"42")                  # False when full, never waits
+assert chan.recv() == b"42"       # None when empty
+
+chan.send_for(b"42", timeout=1)   # waits up to a second for room
+assert chan.recv_for(timeout=1) == b"42"
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+Import-Module SubEtha
+$chan = New-SubEthaChannel -Path (Join-Path ([IO.Path]::GetTempPath()) 'events.bin') -Capacity 64
+
+$null = $chan.Send('42')                            # False when full, never waits
+[Text.Encoding]::UTF8.GetString($chan.Recv())       # 42; Recv answers $null when empty
+
+$null = $chan.SendFor('42', 1)                      # waits up to a second for room
+[Text.Encoding]::UTF8.GetString($chan.RecvFor(1))   # 42
+```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 One handle answers all three call styles. Sync, blocking, and async are
 not separate types; you pick per call. The async future is a plain

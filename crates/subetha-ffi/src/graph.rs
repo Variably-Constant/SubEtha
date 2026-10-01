@@ -16,7 +16,7 @@
 //! # What it refuses, and why each refusal keeps the graph sound
 //!
 //! An edge to a node index nothing allocated is refused, because a
-//! dangling edge is indistinguishable from a live one afterwards.
+//! dangling edge is indistinguishable from a live one afterward.
 //! Removing an edge from a node that does not own it is refused, because
 //! freeing it would leave the chain that does own it pointing at a free
 //! slot. Removing a node is not offered at all: every edge pointing at it

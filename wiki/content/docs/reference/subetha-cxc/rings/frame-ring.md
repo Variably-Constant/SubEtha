@@ -41,7 +41,8 @@ shape (SPSC / MPSC / MPMC / Vyukov), with a producer override, see the
    that the raw SPSC ring earns. Each slot is
    `[class:u8][_pad:3][len:u32][ inline-bytes | region_off:u64 ]`.
 2. **Payload region** - a bip-buffer byte ring with absolute-monotonic
-   `region_head` / `region_tail` cursors. Records spill here only when
+   `region_head` / `region_tail` cursors and a skip-pad on wrap.
+   Records spill here only when
    they exceed the inline budget; the descriptor then carries the
    region offset instead of the bytes.
 
@@ -51,8 +52,9 @@ shape (SPSC / MPSC / MPMC / Vyukov), with a producer override, see the
   discipline (`send` is the sole producer, `recv` the sole consumer);
   `FrameRing` is `Send + Sync` and does not enforce it at the type
   level (unlike the typed `SharedRingSpsc` pair).
-- **`slot_size >= 16`** (the descriptor header is 8 bytes; the offset
-  form needs 8 more). Inline budget is `slot_size - 8`.
+- **`slot_size >= 16`** (`MIN_SLOT_SIZE`: the descriptor header,
+  `DESC_HEADER_BYTES`, is 8 bytes; the offset form needs 8 more).
+  Inline budget is `slot_size - 8`.
 - **`capacity` and `region_bytes` are powers of two**, each at least 2.
   A region payload is capped at `region_bytes / 2` so a skip-pad on an
   empty region can never report a false `Full`.
@@ -90,6 +92,44 @@ producer wrote, because it cannot know the layout otherwise.
 report the constructed geometry. `inline_budget()` is the one worth
 reading at runtime: it is what `send` compares against to choose a
 layout, so it is the threshold a caller sizes its records around.
+
+## API surface
+
+```rust
+impl FrameRing {
+    pub fn create_anon(capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+    pub fn create(path: impl AsRef<Path>, capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+    pub fn reset(path: impl AsRef<Path>, capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+    pub fn open(path: impl AsRef<Path>, capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+    pub fn create_from_shm(shm: ShmFile, capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+    pub fn open_from_shm(shm: ShmFile, capacity: usize, slot_size: usize, region_bytes: usize) -> Result<Self, RingError>;
+
+    pub fn send(&self, payload: &[u8]) -> Result<FrameClass, RingError>; // LayoutHint::Auto
+    pub fn send_as(&self, payload: &[u8], hint: LayoutHint) -> Result<FrameClass, RingError>;
+    pub fn recv(&self) -> Result<Vec<u8>, RingError>;
+    pub fn recv_into(&self, out: &mut Vec<u8>) -> Result<FrameClass, RingError>;
+
+    pub fn inline_budget(&self) -> usize; // slot_size - 8
+    pub fn max_payload(&self) -> usize;   // region_bytes / 2
+    pub fn capacity(&self) -> usize;
+    pub fn slot_size(&self) -> usize;
+    pub fn region_bytes(&self) -> usize;
+    pub fn approx_len(&self) -> usize;
+}
+
+pub enum FrameClass { Inline, Offset }
+pub enum LayoutHint { Auto, ForceInline, ForceOffset }
+```
+
+`FrameRegion` is a different region: the concurrent fixed-block region
+the [AdaptiveRing frame path](../shared-ring-adaptive/#the-payload-size-axis)
+spills into, shared by every shape. Any number of producers `alloc` a
+block and any number of consumers `free` one, in any order, through a
+Treiber-stack free list with an ABA counter plus a bump high-water
+mark, the same allocator `SharedRegion` ships with a block size chosen
+at runtime (`create_anon` / `create` / `open` / `create_from_shm` /
+`open_from_shm`). `FrameRing`'s own region is the single-producer
+bip-buffer above.
 
 ## Worked example
 
@@ -136,7 +176,10 @@ region (the always-arena baseline); `raw.spsc` is the fixed 64-byte
 
 Read the shape, not the absolute numbers: consecutive runs on the same
 machine move these by a factor approaching two, and the table is one
-captured sweep.
+captured sweep. An earlier capture of the same sweep on the same host
+measured `frame.auto` against `frame.offset` at 16.9 vs 27.0 ns for
+16 B, 18.8 vs 31.8 ns for 32 B and 29.7 vs 33.7 ns for 56 B, the
+inline path ahead by 1.13-1.69x.
 
 The inline fast path beats the always-region path 1.25-1.79x for records
 up to the 56-byte inline budget - that band is the whole point of the
@@ -166,7 +209,8 @@ any size at all.
 
 ## References
 
-- Source: `crates/subetha-cxc/src/frame_ring.rs`.
+- Source: `crates/subetha-cxc/src/frame_ring.rs`,
+  `crates/subetha-cxc/src/frame_region.rs`.
 - Bench: `crates/subetha-cxc/examples/frame_payload_sweep.rs`.
 - All-shapes form: the
   [AdaptiveRing frame path](../shared-ring-adaptive/#the-payload-size-axis).

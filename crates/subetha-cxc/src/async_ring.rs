@@ -17,9 +17,9 @@
 //!
 //! 1. First poll calls `try_*` on the inner ring. If immediately
 //!    ready, return `Poll::Ready`.
-//! 2. Otherwise, spawn a std::thread that calls the blocking
-//!    counterpart (`recv_blocking` / `send_blocking`) with the
-//!    caller-supplied timeout. Park the rust Waker.
+//! 2. Otherwise, register the task's `Waker` and spawn a std::thread
+//!    that calls the blocking counterpart (`recv_blocking` /
+//!    `send_blocking`) with the caller-supplied timeout.
 //! 3. When the blocking call returns, store the result + fire the
 //!    Waker.
 //! 4. Next poll observes the stored result and returns `Poll::Ready`.
@@ -44,13 +44,15 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::task::{Context, Poll, Waker};
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::blocking_spsc_ring::{BlockingError, BlockingSpscRing};
 use crate::shared_ring::RingError;
+use crate::waker_slot::WakerSlot;
 
 /// Wrapper providing `.recv(timeout).await` and `.send(timeout).await`.
 pub struct AsyncSpscRing {
@@ -71,7 +73,7 @@ impl AsyncSpscRing {
     pub fn recv(&self, timeout: Duration) -> AsyncRecv {
         AsyncRecv {
             ring: Arc::clone(&self.inner),
-            state: Arc::new(Mutex::new(SlotState::Pending)),
+            state: Arc::new(Handoff::new()),
             timeout,
             spawned: false,
         }
@@ -81,7 +83,7 @@ impl AsyncSpscRing {
     pub fn send(&self, payload: Vec<u8>, timeout: Duration) -> AsyncSend {
         AsyncSend {
             ring: Arc::clone(&self.inner),
-            state: Arc::new(Mutex::new(SlotState::Pending)),
+            state: Arc::new(Handoff::new()),
             timeout,
             payload: Some(payload),
             spawned: false,
@@ -92,15 +94,46 @@ impl AsyncSpscRing {
     pub fn inner(&self) -> &Arc<BlockingSpscRing> { &self.inner }
 }
 
-/// Shared state between the async future and its worker thread.
-enum SlotState<T> {
-    Pending,
-    Ready(T),
-    Parked(Waker),
+/// What the worker thread hands the future: its result, stored once,
+/// and the awaiting task's `Waker`. The worker stores the result and then
+/// wakes; the future registers and then looks for the result, so a result
+/// that lands between the future's first look and its registration is
+/// found by the second look.
+struct Handoff<T> {
+    /// Null until the worker stores its boxed result.
+    result: AtomicPtr<T>,
+    waker: WakerSlot,
 }
 
-type RecvSlot = Arc<Mutex<SlotState<Result<Vec<u8>, BlockingError>>>>;
-type SendSlot = Arc<Mutex<SlotState<Result<(), BlockingError>>>>;
+impl<T> Handoff<T> {
+    fn new() -> Self {
+        Self { result: AtomicPtr::new(ptr::null_mut()), waker: WakerSlot::new() }
+    }
+
+    /// The worker's one store of its result, then the wake.
+    fn finish(&self, value: T) {
+        self.result.store(Box::into_raw(Box::new(value)), Ordering::Release);
+        self.waker.wake();
+    }
+
+    /// The result, once the worker has stored it; the first caller to see
+    /// it takes it.
+    fn take(&self) -> Option<T> {
+        let p = self.result.swap(ptr::null_mut(), Ordering::Acquire);
+        // SAFETY: a non-null pointer came from `Box::into_raw` in `finish`,
+        // and the swap hands it to exactly one caller.
+        (!p.is_null()).then(|| *unsafe { Box::from_raw(p) })
+    }
+}
+
+impl<T> Drop for Handoff<T> {
+    fn drop(&mut self) {
+        drop(self.take());
+    }
+}
+
+type RecvSlot = Arc<Handoff<Result<Vec<u8>, BlockingError>>>;
+type SendSlot = Arc<Handoff<Result<(), BlockingError>>>;
 
 /// Future returned by [`AsyncSpscRing::recv`].
 pub struct AsyncRecv {
@@ -129,20 +162,13 @@ impl Future for AsyncRecv {
             }
         }
 
-        let mut guard = this.state.lock().unwrap();
-        match &mut *guard {
-            SlotState::Ready(_) => {
-                let taken = std::mem::replace(&mut *guard, SlotState::Pending);
-                match taken {
-                    SlotState::Ready(r) => return Poll::Ready(r),
-                    _ => unreachable!(),
-                }
-            }
-            SlotState::Pending | SlotState::Parked(_) => {
-                *guard = SlotState::Parked(cx.waker().clone());
-            }
+        if let Some(r) = this.state.take() {
+            return Poll::Ready(r);
         }
-        drop(guard);
+        this.state.waker.register(cx.waker());
+        if let Some(r) = this.state.take() {
+            return Poll::Ready(r);
+        }
 
         if !this.spawned {
             this.spawned = true;
@@ -155,7 +181,7 @@ impl Future for AsyncRecv {
                     buf.truncate(n);
                     buf
                 });
-                finish_slot(&state, r);
+                state.finish(r);
             });
         }
 
@@ -187,20 +213,13 @@ impl Future for AsyncSend {
             }
         }
 
-        let mut guard = this.state.lock().unwrap();
-        match &mut *guard {
-            SlotState::Ready(_) => {
-                let taken = std::mem::replace(&mut *guard, SlotState::Pending);
-                match taken {
-                    SlotState::Ready(r) => return Poll::Ready(r),
-                    _ => unreachable!(),
-                }
-            }
-            SlotState::Pending | SlotState::Parked(_) => {
-                *guard = SlotState::Parked(cx.waker().clone());
-            }
+        if let Some(r) = this.state.take() {
+            return Poll::Ready(r);
         }
-        drop(guard);
+        this.state.waker.register(cx.waker());
+        if let Some(r) = this.state.take() {
+            return Poll::Ready(r);
+        }
 
         if !this.spawned {
             this.spawned = true;
@@ -210,7 +229,7 @@ impl Future for AsyncSend {
             let payload = this.payload.take().expect("payload taken twice");
             std::thread::spawn(move || {
                 let r = ring.send_blocking(&payload, Some(timeout));
-                finish_slot(&state, r);
+                state.finish(r);
             });
         }
 
@@ -218,64 +237,11 @@ impl Future for AsyncSend {
     }
 }
 
-fn finish_slot<T>(state: &Arc<Mutex<SlotState<T>>>, value: T) {
-    let waker_to_fire = {
-        let mut guard = state.lock().unwrap();
-        let prev = std::mem::replace(&mut *guard, SlotState::Ready(value));
-        match prev {
-            SlotState::Parked(w) => Some(w),
-            _ => None,
-        }
-    };
-    if let Some(w) = waker_to_fire {
-        w.wake();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::Wake;
-
-    /// Minimal hand-rolled block-on for tests: poll the future,
-    /// park on a condvar when it returns Pending, re-poll when
-    /// the waker fires.
-    struct TestWaker {
-        woken: std::sync::Mutex<bool>,
-        cv: std::sync::Condvar,
-    }
-    impl Wake for TestWaker {
-        fn wake(self: Arc<Self>) {
-            let mut g = self.woken.lock().unwrap();
-            *g = true;
-            self.cv.notify_one();
-        }
-    }
-
-    fn block_on<F: Future>(mut fut: F) -> F::Output {
-        let waker_inner = Arc::new(TestWaker {
-            woken: std::sync::Mutex::new(true),
-            cv: std::sync::Condvar::new(),
-        });
-        let waker: Waker = Arc::clone(&waker_inner).into();
-        let mut cx = Context::from_waker(&waker);
-        // SAFETY: future stays on the stack; we never move it again.
-        let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
-        loop {
-            {
-                let mut g = waker_inner.woken.lock().unwrap();
-                while !*g {
-                    g = waker_inner.cv.wait(g).unwrap();
-                }
-                *g = false;
-            }
-            match fut.as_mut().poll(&mut cx) {
-                Poll::Ready(v) => return v,
-                Poll::Pending => continue,
-            }
-        }
-    }
+    use crate::reactor::block_on;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn recv_returns_immediately_when_ring_has_item() {

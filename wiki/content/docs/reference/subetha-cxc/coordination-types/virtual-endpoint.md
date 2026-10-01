@@ -140,11 +140,13 @@ a bridge client for the remote address).
 
 ## References
 
-- Source: `crates/subetha-cxc/src/virtual_endpoint.rs` (367 lines, 7
-  unit tests: bind+lookup, rebind-bumps-generation, pin-invalidates-on-rebind,
-  pin-invalidates-on-unbind, plus attach / remote-target / multi-endpoint
-  coverage). The registry is process-local (`RwLock<HashMap>` + atomic
-  generation), not MMF-backed; `virtual_endpoint` is a `pub mod`.
+- Source: `crates/subetha-cxc/src/virtual_endpoint.rs` (7 unit tests:
+  bind+lookup, rebind-bumps-generation, pin-invalidates-on-rebind,
+  pin-invalidates-on-unbind, plus attach / remote-target / locale-chain
+  coverage). The registry is process-local, not MMF-backed: a `HashMap` a
+  bind or unbind replaces whole through a `SwapCell`, so a lookup never
+  waits on one, plus an atomic generation. `virtual_endpoint` is a
+  `pub mod`.
 - [`LocaleAdaptiveRing`](../../rings/locale-adaptive-ring/) - the
   local-target type that PinnedEndpoint chains into.
 - [`QuicBridgeClient` / `QuicBridgeServer`](../../bridges/quic-bridge/),

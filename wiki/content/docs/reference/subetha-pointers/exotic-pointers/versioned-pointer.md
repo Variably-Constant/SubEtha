@@ -129,11 +129,13 @@ pub struct VectorClockPointer<T, const N: usize> {
 }
 ```
 
-`VersionedChain<T>` - linked-list of historical versions:
+`VersionedChain<T>` - linked-list of historical versions, its head
+swapped atomically (a push installs its node with a compare-and-swap,
+and a read walks from the head it loaded):
 
 ```rust
 pub struct VersionedChain<T: Clone> {
-    head: parking_lot::RwLock<Option<Arc<VersionNode<T>>>>,
+    head: SwapCellOption<VersionNode<T>>,
 }
 ```
 
@@ -227,7 +229,7 @@ flowchart TD
 
 `merge(received, local_physical)` takes the max physical and
 bumps logical when physical ties; this is the canonical HLC
-receiver-side update used by CockroachDB / Spanner / Yugabyte.
+receiver-side update used by CockroachDB and YugabyteDB.
 
 ## Vector clocks and concurrent detection
 
@@ -266,7 +268,7 @@ flowchart LR
 `read_at(snapshot_version)` walks newest-first until it finds
 a node with `version <= snapshot_version`. O(depth-from-head)
 linear walk. The architectural value is not speed (BTreeMap
-beats this by ~44-104x; see bench) but **persistent historical
+beats this by ~22-50x at depths 50-100; see bench) but **persistent historical
 lineage**: cloning an `Arc<VersionNode>` retains the entire
 chain at that point, allowing snapshot forks that BTreeMap
 cannot express without a full copy.
@@ -397,36 +399,37 @@ assert_eq!(chain.read_at(0), None);      // pre-history read returns None
 
 Bench: `crates/subetha-pointers/benches/versioned_bloom.rs`
 (`versioned_*`, `hlc_*`, `vector_clock_*` groups). Measured on
-Windows 11 / Zen+ R7 2700, criterion at `--measurement-time 2
---warm-up-time 1 --sample-size 30` (middle estimate of each
-[low, mid, high] triple). All workloads scan 1024 entries unless
-noted.
+Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built for the
+x86-64 baseline, with Criterion's defaults (3 s warm-up, 100 samples
+over 5 s; middle estimate of each [low, mid, high] triple), while
+other work kept 3.8 of the machine's 24 hardware threads busy. All
+workloads scan 1024 entries unless noted.
 
-### Visibility scan: VersionedPointer is free vs raw u64
+### Visibility scan: VersionedPointer costs 1.30x a raw u64 compare
 
 | Workload | Time | Per-entry | Ratio |
 |---|---:|---:|---:|
-| `versioned.visibility_scan/native_u64_compare` | 562 ns | 0.55 ns | baseline |
-| `versioned.visibility_scan/versioned_pointer` | 555 ns | 0.54 ns | **parity** |
+| `versioned.visibility_scan/native_u64_compare` | 455 ns | 0.44 ns | baseline |
+| `versioned.visibility_scan/versioned_pointer` | 592 ns | 0.58 ns | 1.30x slower |
 
-The `Arc<T>` wrapping adds no measurable cost to the visibility
-check. The architectural value is type-level safety (callers
-cannot accidentally compare versions from different MVCC
-instances) and lifetime management; bench shows the runtime
-cost is zero.
+On this host the visibility check through `VersionedPointer` costs
+about 0.13 ns more per entry than the raw `u64` compare. The
+architectural value is type-level safety (callers cannot
+accidentally compare versions from different MVCC instances) and
+lifetime management.
 
-### Chain time-travel: BTreeMap wins on cost, chain wins on lineage
+### Chain time-travel: BTreeMap wins below the head, chain wins at the head and on lineage
 
 100-element chain / BTreeMap. Time-travel reads at three depths:
 
-| Workload | Chain | BTreeMap | BTreeMap wins by |
+| Workload | Chain | BTreeMap | Faster |
 |---|---:|---:|---:|
-| `read_at_head` (depth 1) | 42 ns | 21 ns | 2.0x |
-| `read_at_mid` (depth 50) | 732 ns | 17 ns | **44x** |
-| `read_at_root` (depth 100) | 1422 ns | 14 ns | **104x** |
+| `read_at_head` (depth 1) | 11.1 ns | 12.8 ns | chain 1.15x |
+| `read_at_mid` (depth 50) | 184.8 ns | 8.4 ns | **BTreeMap 22.1x** |
+| `read_at_root` (depth 100) | 375.1 ns | 7.5 ns | **BTreeMap 50.2x** |
 
 `VersionedChain::read_at` walks newest-to-oldest via Arc-clone;
-each hop is ~14 ns. `BTreeMap::range(..=snap).next_back()` is
+each hop is about 3.6 ns. `BTreeMap::range(..=snap).next_back()` is
 an O(log n) range-tree descent.
 
 **The architectural value of VersionedChain isn't read cost** -
@@ -444,20 +447,20 @@ tick). Snapshot HLC(8, 32) lands mid-tick.
 
 | Workload | Time | Per-entry | Visible count |
 |---|---:|---:|---:|
-| `hlc.tie_breaking_scan/native_tuple_compare` | 1.31 us | 1.28 ns | correct (~544) |
-| `hlc.tie_breaking_scan/hlc_pointer` | 983 ns | 0.96 ns | correct (~544) |
-| `hlc.tie_breaking_scan/single_u64_lossy` | 556 ns | 0.54 ns | **wrong** (576 - overcounts by 32) |
+| `hlc.tie_breaking_scan/native_tuple_compare` | 651 ns | 0.64 ns | correct (~544) |
+| `hlc.tie_breaking_scan/hlc_pointer` | 563 ns | 0.55 ns | correct (~544) |
+| `hlc.tie_breaking_scan/single_u64_lossy` | 405 ns | 0.40 ns | **wrong** (576 - overcounts by 32) |
 
-`hlc_pointer` is **1.33x faster than the tuple baseline** (same
+`hlc_pointer` is **1.16x faster than the tuple baseline** (same
 data, different layout - HLC's compile-time-known field layout
 gives the compiler more inlining opportunity).
 
 The `single_u64_lossy` row is the **correctness diagnostic**:
 it uses only the physical timestamps and misclassifies all 32
-events at the snapshot's tick as "visible." Speed is 1.77x
+events at the snapshot's tick as "visible." Speed is 1.39x
 faster than HLC but the answer is wrong. The architectural
 value of HLC is the logical counter that breaks tied physical
-timestamps; collapsing to a single u64 saves ~43% cost and loses
+timestamps; collapsing to a single u64 saves ~28% cost and loses
 30+ events per query at tied ticks.
 
 ### Vector clock causal classification: pays cost to detect concurrent
@@ -467,11 +470,11 @@ concurrent relations.
 
 | Workload | Time | Per-pair | Capability |
 |---|---:|---:|---|
-| `vector_clock.causal_classify/native_max_compare` | 1.79 us | 1.74 ns | Loses concurrency detection |
-| `vector_clock.causal_classify/vector_clock_cmp` | 3.92 us | 3.83 ns | detects concurrent (None) |
-| `vector_clock.causal_classify/vector_clock_pointer_read_at` | 5.55 us | 5.42 ns | scan + read filter |
+| `vector_clock.causal_classify/native_max_compare` | 766 ns | 0.75 ns | Loses concurrency detection |
+| `vector_clock.causal_classify/vector_clock_cmp` | 1.73 us | 1.69 ns | detects concurrent (None) |
+| `vector_clock.causal_classify/vector_clock_pointer_read_at` | 2.26 us | 2.21 ns | scan + read filter |
 
-`vector_clock_cmp` is **2.20x slower than native_max_compare**.
+`vector_clock_cmp` is **2.26x slower than native_max_compare**.
 The native compare reduces each clock to its max element and
 compares those; this imposes a total order on logically
 concurrent events (overcounts ordered relationships by
@@ -500,7 +503,7 @@ snapshots until garbage-collected.
 <details>
 <summary><b>Pattern 2: distributed event log with HLC ordering</b></summary>
 
-CockroachDB / Spanner-style: every event is tagged with
+CockroachDB-style: every event is tagged with
 `HlcVersionedPointer<Event>` at creation time. The HLC's
 physical component reflects approximate wall-clock; the
 logical counter resolves ties. Cross-node reads use the
@@ -572,16 +575,19 @@ suffixes consume new memory.
 7. **`VersionedChain` is unbounded.** No compaction or GC;
    every push is retained until the chain is dropped. Memory
    grows linearly with version count. Read cost at depth D is
-   ~14 ns * D (linear walk).
+   ~3.6 ns * D (linear walk).
 
 8. **`VersionedChain::read_at` is O(depth-from-head).** BTreeMap
-   beats it by ~44-104x on read perf at depth 50-100. Choose
+   beats it by ~22-50x on read perf at depth 50-100. Choose
    based on architectural need (lineage retention vs read
    speed), not raw throughput.
 
-9. **`VersionedChain::push` takes a write lock** (parking_lot
-   RwLock). Concurrent writers serialize; readers are
-   lock-free. For high-write-rate workloads, partition across
+9. **`VersionedChain::push` retries under contention.** It
+   installs the new node with one compare-and-set on the head; a
+   push that loses to another rebuilds its node on the new head
+   and tries again, and two pushes racing with the same or
+   crossing versions panic in whichever lands second. Readers
+   take no lock. For high-write-rate workloads, partition across
    multiple chains.
 
 10. **`HybridLogicalClock` ordering is a manual `impl Ord`**
@@ -653,8 +659,8 @@ high update rate, either:
 <details>
 <summary><b>Pitfall 4: time-travel performance assumptions</b></summary>
 
-The bench shows BTreeMap is ~44-104x faster than VersionedChain
-for time-travel reads. If your workload doesn't need
+The bench shows BTreeMap is ~22-50x faster than VersionedChain
+for time-travel reads below the head. If your workload doesn't need
 **persistent lineage** (the ability to fork an entire chain
 by cloning one Arc), use BTreeMap instead.
 

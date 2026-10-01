@@ -24,8 +24,8 @@ fn build_umbras() -> (Vec<ArcUmbra<u64>>, u32, u64) {
     let mut target_value = 0u64;
     for i in 0..N as u64 {
         let arc = Arc::new(i);
-        // Use the low 32 bits of the value as the prefix - simulates
-        // a content-derived prefix where most prefixes are distinct.
+        // The value's low 32 bits are the prefix, a content-derived
+        // prefix that is distinct for every candidate.
         let prefix = i as u32;
         let u = UmbraPointer::from_arc(arc, prefix);
         if (i as usize) == N - 1 {
@@ -109,16 +109,13 @@ fn scan_full_miss(c: &mut Criterion) {
 }
 
 // =========================================================
-// Cache discipline: how many cache lines are touched per scan?
-// Native_arc must touch every Arc's heap allocation (N cache lines).
-// Umbra touches only the contiguous Vec of UmbraPointer slots
-// (N/4 cache lines at 16B per slot, one cache line = 4 slots).
+// Cache lines touched per scan: native_arc dereferences every Arc's
+// heap allocation; umbra reads only the contiguous Vec of 32-byte
+// ArcUmbra slots (a 16-byte UmbraPointer and the Arc, padded to the
+// pointer's 16-byte alignment), two per cache line.
 // =========================================================
 
 fn scan_cache_pressure(c: &mut Criterion) {
-    // Build N umbras and N arcs but interleave the heap allocations
-    // so each Arc's target lives on a separate cache line. Realistic
-    // for typical small-heap-object workloads.
     let arcs: Vec<Arc<u64>> = (0..N as u64).map(Arc::new).collect();
     let miss: u64 = N as u64 + 9999;
     c.bench_function("umbra_ptr.scan_cache_pressure/native_arc_full_deref", |b| {
@@ -127,7 +124,6 @@ fn scan_cache_pressure(c: &mut Criterion) {
             for arc in arcs.iter() {
                 sum = sum.wrapping_add(**arc);
             }
-            // miss never matches; force the loop to complete.
             black_box(sum.wrapping_add(miss))
         });
     });
@@ -151,17 +147,16 @@ fn scan_cache_pressure(c: &mut Criterion) {
 }
 
 // =========================================================
-// Scattered large targets - the workload where Umbra's prefix
-// shortcircuit actually wins. Each target is a full cache line,
-// allocated separately, then the access order is shuffled so the
-// prefetcher cannot pre-load.
+// Scattered large targets: each target is a cache line of payload,
+// allocated between 4 KiB spacers, and both arms visit them in
+// bit-reversed index order so the prefetcher cannot run ahead.
 // =========================================================
 
 fn scan_scattered_cache_miss(c: &mut Criterion) {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    // 64-byte payload guarantees each deref touches a full cache line.
+    // A 64-byte payload: one cache line per target.
     #[derive(Clone)]
     #[allow(dead_code)]
     struct CacheLineBlob {
@@ -185,10 +180,10 @@ fn scan_scattered_cache_miss(c: &mut Criterion) {
         UmbraPointer::from_arc(a, prefix)
     }).collect();
 
-    // Shuffle the access pattern so prefetching fails.
+    // Visit in bit-reversed index order so the prefetcher cannot
+    // follow.
     let access_order: Vec<usize> = {
         let mut order: Vec<usize> = (0..N).collect();
-        // Simple pseudo-shuffle via byte reversal of index.
         order.sort_by_key(|&i| (i as u32).reverse_bits());
         order
     };

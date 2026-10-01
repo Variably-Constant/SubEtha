@@ -27,6 +27,7 @@ What a caller should know before reaching for any of it:
 
 from . import _subetha
 from ._subetha import (
+    Adaptive,
     AdaptiveQueue,
     Arena,
     Atomic,
@@ -59,6 +60,7 @@ from ._subetha import (
     Hold,
     HolderTable,
     HyperLogLog,
+    InstanceStats,
     KvMap,
     Lagged,
     LamportConsumer,
@@ -92,6 +94,7 @@ from ._subetha import (
     RWLock,
     RateLimiter,
     Region,
+    Registration,
     ReorderWindow,
     Reservoir,
     Ring,
@@ -129,6 +132,7 @@ from ._subetha import (
 )
 
 __all__ = [
+    "Adaptive",
     "AdaptiveQueue",
     "Arena",
     "Atomic",
@@ -161,6 +165,7 @@ __all__ = [
     "Hold",
     "HolderTable",
     "HyperLogLog",
+    "InstanceStats",
     "KvMap",
     "Lagged",
     "LamportConsumer",
@@ -194,6 +199,7 @@ __all__ = [
     "RWLock",
     "RateLimiter",
     "Region",
+    "Registration",
     "ReorderWindow",
     "Reservoir",
     "Ring",

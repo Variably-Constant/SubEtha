@@ -512,7 +512,8 @@ pub unsafe extern "C" fn subetha_capacity_subscriber_next_wait(
     })
 }
 
-/// Where the subscriber stands: the backing's index in the chain into
+/// Where the subscriber stands: the generation of the backing it reads (0
+/// for the ring's first backing, one more for each morph after it) into
 /// `out_backing` and the position within it into `out_position`; either
 /// may be null.
 ///

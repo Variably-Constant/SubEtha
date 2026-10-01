@@ -9,20 +9,21 @@
 //! | [`HlcVersionedPointer<T>`] | (u64 physical, u64 logical) | Distributed (CockroachDB-style HLC) |
 //! | [`VectorClockPointer<T, N>`] | `[u64; N]` per-node | Per-node causal ordering (Riak-style) |
 //!
-//! Plus a [`VersionedChain<T>`] linked-list of `VersionedNode<T>`s
-//! that retains all historical versions for time-travel queries.
+//! Plus a [`VersionedChain<T>`], a linked list of version nodes that
+//! retains all historical versions for time-travel queries.
 //!
-//! # The K_temporal / K_cascade interplay
+//! # Nested versions
 //!
 //! `VersionedPointer<T>` is a single-version snapshot.
-//! `VersionedPointer<VersionedPointer<T>>` is the K_cascade = 2 case:
-//! outer carries coarse (physical) time, inner carries fine (logical)
-//! counter. This is exactly the Hybrid Logical Clock pattern that
-//! CockroachDB and Spanner use - here exposed as a first-class
-//! typed primitive via [`HlcVersionedPointer<T>`].
+//! `VersionedPointer<VersionedPointer<T>>` nests two: the outer
+//! carries a coarse (physical) time, the inner a fine (logical)
+//! counter. That is the Hybrid Logical Clock pattern CockroachDB uses,
+//! exposed here as [`HlcVersionedPointer<T>`].
 
 use std::cmp::Ordering;
 use std::sync::Arc;
+
+use subetha_core::SwapCellOption;
 
 // =========================================================
 // Monotonic VersionedPointer<T>
@@ -106,12 +107,8 @@ impl<T> PartialOrd for VersionedPointer<T> {
 /// Hybrid Logical Clock: (physical timestamp, logical counter) pair.
 /// Combines wall-clock time (microsecond resolution typical) with a
 /// per-node monotonic counter that breaks ties between events
-/// recorded in the same physical instant.
-///
-/// This is the K_cascade = 2 case of versioning: the outer level
-/// (physical) is coarse; the inner level (logical) refines tied
-/// physical timestamps. Same architectural pattern as Umbra prefix
-/// + actual content, applied to time.
+/// recorded in the same physical instant: the physical level is
+/// coarse, and the logical level refines tied physical timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HybridLogicalClock {
     pub physical: u64,
@@ -299,8 +296,13 @@ impl<T, const N: usize> VectorClockPointer<T, N> {
 /// Linked list of `(version, value)` nodes ordered newest-first.
 /// Time-travel reads walk the chain until they find a version <=
 /// the query snapshot.
+///
+/// The head is swapped atomically: a push builds its node over the head
+/// it read and installs it with a compare-and-swap, retrying against a
+/// head another push installed first, and a read walks the nodes of the
+/// head it loaded while pushes go on.
 pub struct VersionedChain<T: Clone> {
-    head: parking_lot::RwLock<Option<Arc<VersionNode<T>>>>,
+    head: SwapCellOption<VersionNode<T>>,
 }
 
 struct VersionNode<T> {
@@ -311,29 +313,37 @@ struct VersionNode<T> {
 
 impl<T: Clone> VersionedChain<T> {
     pub fn new() -> Self {
-        Self { head: parking_lot::RwLock::new(None) }
+        Self { head: SwapCellOption::empty() }
     }
 
     /// Add a new version to the head. `new_version` must strictly
-    /// exceed the current head's version.
+    /// exceed the current head's version; two pushes racing with the
+    /// same or crossing versions panic in whichever lands second.
     pub fn push(&self, value: T, new_version: u64) {
-        let mut h = self.head.write();
-        if let Some(cur) = h.as_ref() {
-            assert!(
-                new_version > cur.version,
-                "MVCC chain version must be strictly monotonic: {} -> {}",
-                cur.version, new_version
-            );
+        loop {
+            let head = self.head.load_full();
+            if let Some(head) = &head {
+                assert!(
+                    new_version > head.version,
+                    "MVCC chain version must be strictly monotonic: {} -> {}",
+                    head.version, new_version
+                );
+            }
+            let node = Arc::new(VersionNode {
+                version: new_version,
+                value: value.clone(),
+                older: head.clone(),
+            });
+            if self.head.compare_and_set(head.as_ref(), Some(node)).is_ok() {
+                return;
+            }
         }
-        let older = h.take();
-        *h = Some(Arc::new(VersionNode { version: new_version, value, older }));
     }
 
     /// Read the value visible at `snapshot_version`. Walks back
     /// through history until a node with version <= snapshot is found.
     pub fn read_at(&self, snapshot_version: u64) -> Option<T> {
-        let h = self.head.read();
-        let mut cur = h.clone();
+        let mut cur = self.head.load_full();
         while let Some(node) = cur {
             if node.version <= snapshot_version {
                 return Some(node.value.clone());
@@ -345,13 +355,12 @@ impl<T: Clone> VersionedChain<T> {
 
     /// Current (latest) version and value.
     pub fn current(&self) -> Option<(u64, T)> {
-        self.head.read().as_ref().map(|n| (n.version, n.value.clone()))
+        self.head.load().map(|n| (n.version, n.value.clone()))
     }
 
     /// Chain length (number of retained versions).
     pub fn len(&self) -> usize {
-        let h = self.head.read();
-        let mut cur = h.clone();
+        let mut cur = self.head.load_full();
         let mut n = 0;
         while let Some(node) = cur {
             n += 1;
@@ -360,7 +369,7 @@ impl<T: Clone> VersionedChain<T> {
         n
     }
 
-    pub fn is_empty(&self) -> bool { self.head.read().is_none() }
+    pub fn is_empty(&self) -> bool { self.head.load().is_none() }
 }
 
 impl<T: Clone> Default for VersionedChain<T> {

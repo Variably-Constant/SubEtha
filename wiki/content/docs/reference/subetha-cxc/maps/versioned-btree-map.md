@@ -196,6 +196,13 @@ mid-write sees none of them and a scan pinned after `publish` sees them
 all. If the writer dies first, `void_epoch` on each map undoes its
 stamps before the ticket is freed.
 
+```rust
+let t = map.epochs().begin()?;
+map.insert_at(key, value, t.epoch())?;
+pairings.insert_at(pair, id, t.epoch())?;
+t.publish();
+```
+
 ---
 
 ## Known limitations
@@ -245,3 +252,6 @@ stamps before the ticket is freed.
 - Sibling primitive:
   [Shared Versioned Chain](../../specialized/shared-versioned-chain/) -
   MVCC per chain rather than per ordered map.
+- Composed over it: [Laned Versioned Map](../laned-versioned-map/) - n
+  of these as single-writer lanes over one epoch table, so n statements
+  write one index at once.

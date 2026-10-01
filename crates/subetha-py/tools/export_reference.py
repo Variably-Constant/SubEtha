@@ -1,4 +1,5 @@
-"""Generate the complete Python reference from the type stub.
+"""Generate the complete Python reference from the type stub, and the
+`subetha.sidecar` module's table from that module's source.
 
 The stub at python/subetha/__init__.pyi declares every class, method and
 signature the extension exports, and tests/test_surface.py holds it
@@ -22,6 +23,7 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 STUB = HERE.parent / "python" / "subetha" / "__init__.pyi"
+SIDECAR = HERE.parent / "python" / "subetha" / "sidecar.py"
 RUST = HERE.parent / "src" / "lib.rs"
 
 
@@ -296,7 +298,7 @@ def main() -> int:
             "# Module functions, attributes and exceptions",
             "",
             "What `import subetha` gives you besides the classes. Generated",
-            "from the type stub by",
+            "from the type stub and `python/subetha/sidecar.py` by",
             "`crates/subetha-py/tools/export_reference.py`.",
             "",
         ]
@@ -305,6 +307,22 @@ def main() -> int:
             for f in sorted(functions, key=lambda n: n.name):
                 desc = first_line(f) or rust_functions.get(f.name, "")
                 out.append(f"| `{signature(f)}` | {desc} |")
+            out.append("")
+        sidecar = ast.parse(SIDECAR.read_text(encoding="utf-8"))
+        public = [n for n in sidecar.body if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")]
+        if public:
+            out += [
+                "## The sidecar module",
+                "",
+                "`from subetha import sidecar` reaches the process's sidecar as a",
+                "whole. An object registers with it through its own `observe`,",
+                "which returns a `Registration`.",
+                "",
+                "| Function | What it does |",
+                "|---|---|",
+            ]
+            for f in sorted(public, key=lambda n: n.name):
+                out.append(f"| `sidecar.{signature(f)}` | {first_line(f)} |")
             out.append("")
         if assignments:
             out += ["## Attributes", "", "| Attribute | Type |", "|---|---|"]

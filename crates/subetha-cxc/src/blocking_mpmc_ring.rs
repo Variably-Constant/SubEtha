@@ -35,8 +35,6 @@ use crate::cross_process_waker::{
 use crate::shared_ring::RingError;
 use crate::spsc_ring::SpscRingCore;
 
-const PRE_PARK_SPIN: u32 = 32;
-
 /// Factory for an MPMC grid of N SPSC rings partitioned across M
 /// consumers, every blocking call backed by a cross-process waker.
 pub struct BlockingMpmcRing;
@@ -296,7 +294,7 @@ impl BlockingMpmcProducer {
                 Err(RingError::Full) => {}
                 Err(e) => return Err(BlockingError::Ring(e)),
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.own_waker.spin_rounds() {
                 if self.ring.try_push(payload).is_ok() {
                     let new_seq = self
                         .subset_total_published
@@ -363,7 +361,7 @@ impl BlockingMpmcConsumer {
                 Err(RingError::Empty) => {}
                 Err(e) => return Err(BlockingError::Ring(e)),
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.own_waker.spin_rounds() {
                 if let Ok(n) = self.try_pop_inner(out) {
                     return Ok(n);
                 }

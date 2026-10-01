@@ -798,7 +798,7 @@ mod tests {
             .expect("dispatch_batch");
         assert_eq!(chosen, DequeVariant::Khpd);
         let khpd = dispatcher.khpd().expect("khpd");
-        let (_, tail, _, _) = khpd.snapshot_size();
+        let (_, tail, _) = khpd.snapshot_size();
         assert_eq!(tail, 2);
     }
 
@@ -816,7 +816,7 @@ mod tests {
             .expect("dispatch_batch");
         assert_eq!(chosen, DequeVariant::Loh);
         let loh = dispatcher.loh().expect("loh");
-        let (_, tail, _, _) = loh.snapshot_size();
+        let (_, tail, _) = loh.snapshot_size();
         assert_eq!(tail, 200);
     }
 

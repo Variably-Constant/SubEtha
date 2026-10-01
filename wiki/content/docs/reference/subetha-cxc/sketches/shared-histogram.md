@@ -22,10 +22,11 @@ on top).
 > `Mutex<Vec<u64>>` 15.73 ns (**1.20x faster**). count at
 > **1.70 ns** vs 16.94 ns (**9.96x faster** - lock-free
 > atomic load vs full lock cycle). percentile p99 at 95.81 ns.
-> Architectural lever: each bucket's counter is its own cache
-> line so concurrent recorders into different buckets never
-> contend; the mutex baseline serializes everything regardless
-> of bucket.
+> Architectural lever: each bucket has its own `AtomicU64`
+> counter (eight packed per 64-byte cache line), so concurrent
+> recorders into different buckets contend at most on a shared
+> cache line, never on a global lock the way the mutex baseline
+> serializes every record regardless of bucket.
 
 **Constraints (read first):**
 
@@ -34,7 +35,8 @@ on top).
 - **Boundaries fixed at create**: ascending; verified at open.
 - **K boundaries -> K+1 buckets**: bucket 0 = `v < b0`,
   bucket i = `b{i-1} <= v < bi`, bucket N = `v >= b{N-1}`.
-- **Per-bucket AtomicU64 counters**: independent cache lines.
+- **Per-bucket AtomicU64 counters**: 8 bytes each, packed
+  contiguously (eight counters per 64-byte cache line).
 - **`fetch_add(1, AcqRel)`** per record; lock-free, no spin.
 - **`percentile(p)`** walks buckets accumulating counts +
   linear interpolation. Granularity = bucket width.
@@ -98,9 +100,10 @@ record value 500 (bucket 3).
    one atomic fetch_add vs mutex lock + indexing + increment +
    unlock.
 2. **count 9.96x faster**: one atomic load vs full lock cycle.
-3. **Concurrent recording win is multiplied** (not measured
-   here): different buckets = different cache lines = no
-   contention. Mutex baseline serializes ALL recorders.
+3. **Concurrent recording takes no lock** (not measured here):
+   recorders into different buckets share at most a cache line,
+   eight counters to a line. The mutex baseline serializes every
+   recorder.
 4. **percentile p99 at 96 ns**: linear walk + interpolation;
    granularity is bucket width.
 
@@ -118,9 +121,10 @@ record value 500 (bucket 3).
 - **Cross-process recording**: N processes each record into the
   same histogram via lock-free fetch_add; observers query
   percentiles without locks.
-- **Concurrent recording into different buckets scales
-  linearly**: distinct cache lines mean no contention.
-  Mutex baseline serializes all recorders.
+- **Concurrent recording into different buckets takes no
+  lock**: recorders contend at most on a shared cache line
+  (eight counters to a line). The mutex baseline serializes all
+  recorders.
 - **Latency dashboard pattern**: cheap concurrent recording +
   cheap observer reads makes real-time p99 monitoring
   feasible.
@@ -219,13 +223,13 @@ dynamic range with bounded memory.
 - Bench: `crates/subetha-cxc/benches/shared_histogram.rs` (record,
   count, percentile_p99 vs `Mutex<Vec<u64>>`).
 - Sibling primitive:
-  [SHARED_COUNT_MIN_SKETCH.md](shared-count-min-sketch/) -
+  [Shared Count-Min Sketch](shared-count-min-sketch/) -
   per-key frequency estimate (probabilistic); Histogram is
   per-bucket exact count.
 - Sibling primitive:
-  [SHARED_HYPER_LOG_LOG.md](shared-hyper-log-log/) -
+  [Shared HyperLogLog](shared-hyper-log-log/) -
   cardinality estimate (distinct count).
 - Sibling primitive:
-  [SHARED_RESERVOIR_SAMPLER.md](shared-reservoir-sampler/) -
+  [Shared Reservoir Sampler](shared-reservoir-sampler/) -
   uniform random sample; Histogram is the aggregate-by-
   bucket variant.

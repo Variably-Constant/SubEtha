@@ -20,9 +20,7 @@ import pathlib
 import re
 import sys
 
-VECTORS = pathlib.Path(
-    r"E:\Projects\SubEtha\crates\subetha-cxc\vectors\rlc.txt"
-)
+VECTORS = pathlib.Path(__file__).resolve().parent.parent / "vectors" / "rlc.txt"
 
 TAPS = [
     0x01, 0x02, 0x03, 0x05, 0x07, 0x0B, 0x0D, 0x11,

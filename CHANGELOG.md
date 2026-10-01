@@ -9,6 +9,771 @@ heading links to the commit that cut it.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-01
+
+### Added
+
+- The Python package and the PowerShell module reach the process's
+  sidecar as Rust and the C ABI do. Twenty-six structures, and a new
+  `Adaptive` object, register with it through `observe()` in Python
+  and `Observe()` in PowerShell, which return a registration reading
+  the sidecar's `InstanceStats` and the object's tag; closing it, or
+  its collection, unregisters the object. A registration may carry a
+  policy, a Python callable or a PowerShell ScriptBlock taking the
+  stats and the current tag, which the sidecar asks on its scan thread
+  after every scan that drained something new; one that raises or
+  answers anything but a tag is counted, and its exception or error
+  record kept. `Adaptive` is an object of the caller's own: it records
+  the caller's operations and runs at the tag its policy answers.
+  `subetha.sidecar`, and `Get-SubEthaSidecar`, `Set-SubEthaSidecar`
+  and `Invoke-SubEthaSidecarScan`, read the instance count, move the
+  cap and scan now. `Ring`, `CapacityRing` and `LocaleRing` take
+  `managed` / `-Managed`, which starts the ring's own sidecar at
+  `scan_interval_us` / `-ScanIntervalUs` (for a `Ring`, 250
+  microseconds when not given; the other two need it), and report the
+  morphs, prewarms and migrations that sidecar made; a managed
+  `LocaleRing` moves where `request_locale` / `RequestLocale` asks.
+  See the
+  [Python](https://variably-constant.github.io/SubEtha/docs/reference/subetha-py/)
+  and
+  [PowerShell](https://variably-constant.github.io/SubEtha/docs/reference/subetha-pwrs/)
+  references and
+  [Write a custom Policy](https://variably-constant.github.io/SubEtha/docs/how-to/custom-policy/).
+
+- `subetha_cxc::adaptive_ring::SCAN_INTERVAL_DEFAULT_US`, 250: the
+  shape sidecar's cadence when a managed ring's caller names none. The
+  C ABI's `SUBETHA_SCAN_INTERVAL_DEFAULT_US` is held equal to it at
+  compile time.
+
+- `FailoverWatchdog::watch_ring` hands the watchdog `SharedRing`s to
+  heal. Each `scan` heals a slot a producer claimed and never
+  published when the previous scan found it stuck at the same position
+  and some registered process's last beat is more than `grace_epochs`
+  behind; `ReclaimReport::healed_slots` lists what the scan healed and
+  `heal_errors` any heal a ring refused. A publish takes nanoseconds,
+  so a live producer is not mid-publish across a scan interval.
+  `ReclaimReport` gains the two fields and `FailoverWatchdog` a private
+  one, so neither is built with a struct literal any more.
+
+- `SwapCell<T>` in `subetha-core` holds one `Arc<T>` that any thread
+  reads, replaces, or replaces only while the cell still holds the
+  value it expects. A read changes no reference count, and a replaced
+  value is dropped when its last reader lets go. `SwapCellOption<T>` is
+  the same cell over an `Option<Arc<T>>`. See
+  [SwapCell](https://variably-constant.github.io/SubEtha/docs/reference/subetha-core/swap-cell/).
+
+- `HolderTable::release_if` and `SharedHolderTable::release_if` free a
+  slot only while it still holds the process and payload the caller
+  observed. A claimant that finds a claim stale, its pid now naming
+  another process as a creation time in the payload shows, frees it
+  without freeing a holder that claimed the slot since, which
+  `release` and a pid-only `reap_dead` cannot do.
+
+- Blocking waits take their spin, monitor and park lengths from the
+  host's measured costs. The first blocking wait in a process starts a
+  background thread that measures, for each class of core, the
+  counter's rate, a spin hint's cost and how soon a monitor wait can
+  return, and for each load band it meets, the wake latency of a spin,
+  the monitor and the park. A wait then spins to the monitor's break-even and
+  monitor-waits to the park's, or spins to the park's break-even where
+  the host has no monitor; a band not yet measured keeps 0.5.1's fixed
+  ladder. The facts are cached per user, so a later process measures
+  nothing, and `wait_calibration::report()` says what was measured,
+  where it came from and what it cost. `SUBETHA_WAIT_CALIBRATION=off`
+  keeps the fixed ladder and measures nothing, and
+  `SUBETHA_PRE_PARK_SPIN` sets the spin's rounds. The calibrated wait
+  is held within 2x of the better of a pure spin and a pure park at
+  every gap from 1 to 1024 us and below the spin summed: 0.78 to 1.83
+  times the better fixed arm on an Ubuntu guest with no monitor
+  family, 0.80 to 1.90 on a FreeBSD guest, and on a Windows 11 / Ryzen
+  9 7900X host with 23.85 to 24.00 of its 24 logical processors busy
+  with other work it cost 0.47 to 0.81 of the fixed ladder summed over
+  the gaps. See
+  [Wait calibration](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/coordination-types/wait-calibration/).
+
+- `examples/wait_verdict.rs` runs the comparison the calibrated wait is
+  held to: each arm in a process of its own, a pure spin, a pure park,
+  the fixed ladder and the calibrated plan, at gaps of 1 to 1024 us on
+  an anonymous ring and on a file-backed ring across two processes, with
+  spin controls, load readings and a co-runner pass on the waiter's SMT
+  sibling. Each gap is read round by round, and reads undecided when its
+  rounds fall on both sides of the bound; `wait_verdict --read <file>`
+  prints a saved run's verdict again.
+
+- `SharedHashMap::swap` and `RawHashMap::swap` insert or replace a key
+  and hand back the value they replaced, read and overwritten under the
+  slot's lock, so a value leaves the map exactly once: through `swap`,
+  `remove`, or a `compare_exchange` that succeeds.
+
+- `RawArena`: power-of-two blocks carved from one shared file, handed
+  to a writer, published, retired under a `SharedEpochs` epoch and
+  reused once no pin can see them. Each class of block has a free
+  bitmap and a retired bitmap, so no step can lose a block or list it
+  twice, and `collect` walks the block headers with the caller's roots
+  to recover what a process that died left behind: an unbuilt chunk, a
+  half-written block, a replaced block nobody retired. See
+  [Raw Arena](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/arenas/raw-arena/).
+
+- `SharedNamedValues`: byte values of any size under case-insensitive
+  names, over a `RawHashMap`, a `RawArena` and a `SharedEpochs` table in
+  three files of one stem. A name keeps the spelling it was first
+  written with; two names whose 128-bit hashes collide are refused,
+  never merged. See
+  [Shared Named Values](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/maps/shared-named-values/).
+
+- AppContainers. `ShmNamespace::AppContainer(sid)` names a region in an
+  AppContainer's named-object directory from outside the container, and a
+  process inside it reaches the region with `ShmNamespace::Session`, since
+  inside a container `Local\` is that directory. `ContainerSid` holds the
+  SID inline, so the namespace stays `Copy`; it parses from `S-1-15-2-...`
+  and, on Windows, derives from the container's name. An `AdaptiveRing`
+  and its `NotifierSet` created in that namespace put every region and
+  event there, including a producer slot grown later, the payload region
+  of the first offset frame, and the notifier events. The directory exists
+  only while a process of the container runs, so the creator starts it
+  suspended, creates, and resumes it. On Windows 11 / Ryzen 9 7900X a
+  process started in a container attaches a ring and a notifier created
+  that way, is signaled, and receives a frame from a slot grown after it
+  attached and one carried by a payload region made after it attached;
+  with the ring created in the session namespace instead, the attach fails
+  with `LayoutMismatch`. Through the C ABI the namespace is
+  `SUBETHA_SHM_APPCONTAINER`, with the SID in `shm_container_sid`, a field
+  added at the end of `subetha_ring_options`. See
+  [Shm File](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/specialized/shm-file/#appcontainers).
+
+- `ShmFile::create_named_secured` for the creator of a region,
+  `ShmFile::open_named_in` / `open_named_secured` for a region that must
+  already exist, `ShmFile::owns_name`, and `ShmFile::keep_name`, which
+  gives a handle's name up so its drop leaves the region for whatever
+  removes it by name; `PeerDirectory::create_shm_secured` and
+  `PeerDirectory::open_shm_secured` the same for the peer directory.
+
+- `AdaptiveRing::unlink_shmfs` and `unlink_shmfs_in` remove every name a
+  shm-backed ring holds, the per-producer backings it grew included, as
+  `unlink` removes a file-backed ring's files, and `UnlinkReport::remove_shm`
+  removes one name into a report. `with_last_holder` takes holds on a
+  shm-backed ring too, with its holder table in the ring's namespace. Through
+  the C ABI, `subetha_ring_unlink_shm` removes the ring's names, its two
+  wakers, its notifier record and the notifier FIFOs a consumer that died
+  left behind, and `max_holders` accepts a shared-memory ring. See
+  [the ring's lifetime](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/rings/shared-ring-adaptive/#lifetime).
+
+- PowerShell: the `shm:` drive. `$shm:name = value` publishes a value
+  every process of the user reads as `$shm:name`, live, outliving the
+  session, in PowerShell 7 and Windows PowerShell 5.1 alike. Booleans,
+  integers, singles, doubles, strings, byte arrays and DateTimes come
+  back as their own type; anything else comes back as remoting returns
+  it, through CLIXML at depth 2. `Get-ChildItem shm:` lists the names,
+  `Remove-Item shm:name` or assigning `$null` removes one, and
+  `New-PSDrive -PSProvider SubEthaShm -Root <directory>` opens the
+  files of another directory. See
+  [The shm: drive](https://variably-constant.github.io/SubEtha/docs/reference/subetha-pwrs/shm-drive/).
+
+- On Windows a waiter on a file- or shm-backed `CrossProcessWaker`, and
+  so every cross-process blocking ring, channel, condvar, lock and
+  semaphore wait, sleeps in the kernel once its monitor budget runs out,
+  on a named event the waker sets. An idle waiter was charged a
+  processor for as long as it waited, 0.953 to 1.008 of a core, and is
+  now charged 0.000 to 0.003; a round trip with a 100 microsecond hold
+  pays 4.0 microseconds more at p50. Measured on Windows 11 / Ryzen 9
+  7900X. A waiter re-checks its slot at least every 20 ms, so a wake
+  whose event is never set still ends the wait. The waker's tests pass
+  on Windows 11 ARM64 (Azure Cobalt 100) too, with the monitor tier on
+  and off. No processor with WAITPKG has run them: under Intel SDE's
+  Sapphire Rapids model the waker takes the `UMONITOR`/`UMWAIT` path,
+  and SDE does not execute `UMONITOR`.
+
+- The release gate, `cargo run -p xtask -- gate`, lints and tests every
+  crate at its defaults and with every feature it declares, each crate
+  in a build of its own, and runs the Python package's suite as it
+  ships and with every feature. The gates before it built no
+  feature-gated code: none of the C API's transports, the Python bridge
+  classes, or subetha-cxc's `tls`, `tcp-tls-bridge`, `residue-fec`,
+  `wire-locale`, `linux-futex-raw` and benchmark features, and not
+  subetha-cxc with no features at all. That is how the C bridge servers
+  and the `wire-locale` link fixed below shipped broken in 0.5.1. The
+  C suite's `transports` feature runs it against a library carrying
+  every transport. What the gate leaves off, on which host and why, is
+  in [Run the release gate](https://variably-constant.github.io/SubEtha/docs/how-to/run-the-release-gate/).
+
+- The macOS module workflow runs the Pester suite under a watchdog
+  before `cargo pwrs test`, which prints a host's output only once the
+  host exits, so a test that never returned named nothing: one run sat
+  silent for 45 minutes. Each test is printed as it finishes. A suite
+  still running after 600 s has its threads sampled and its UDP sockets
+  listed before it is stopped, and the file it stopped in runs again by
+  itself. The job ends at 30 minutes.
+
+- `SensOMaticRlcSender::retransmits()` counts the source symbols the
+  sender sent again, whether a NAK asked, the RTO on a stalled
+  cumulative ACK, or the end-of-stream tail.
+
+### Changed
+
+- On a managed locale ring, `subetha_locale_ring_migrate` also sets
+  the locale the ring's sidecar is asked to keep, as
+  `subetha_locale_ring_request` does, so the sidecar holds the ring
+  where it was moved instead of moving it back to the locale last
+  requested. The Python and PowerShell managed locale rings do the
+  same from `migrate_to` / `MigrateTo`.
+
+- The PowerShell module is built with PoWerRuSt and cargo-pwrs 0.3.2,
+  which compile its PowerShell 7 half against .NET 8 and PowerShell
+  7.4's references whichever pwsh does the build, so it imports in
+  PowerShell 7.4 and later where 0.5.1 needed 7.6, and building it from
+  source needs Rust 1.98. In Windows PowerShell 5.1, where the first
+  PWRS module a session imports serves every later one, import it
+  before a module built by an older cargo-pwrs: after one built by 0.2.x
+  through 0.3.1 it fails with `pwrs_module_init` status 4, and after one
+  built by 0.1.8 or earlier with a type initializer error, as the
+  troubleshoot page describes. All 227 Pester tests pass on Windows x64 in pwsh 7.6.6
+  and Windows PowerShell 5.1, on Linux x64 in pwsh 7.6.5, 7.5.11 and
+  7.4.20, on macOS arm64 in pwsh 7.6.5, and on FreeBSD x64 in pwsh
+  7.5.5.
+
+- `subetha-pointers`' capabilities carry the lifetime of the memory
+  they were made from: `ReadableCapability<'a, T>` and
+  `WritableCapability<'a, T>`. `WritableCapability::from_slice_mut`
+  returns the capability alone, and `WritableCapability::narrow` takes
+  `&mut self`, reborrowing it. `OwnedReadableCapability::cap` and
+  `OwnedWritableCapability::cap` lend a `ReadableCapability` borrowing
+  the owner, `OwnedWritableCapability::cap_mut` lends a
+  `WritableCapability`, and neither owner dereferences to a
+  capability. `CapabilityError` gains `Misaligned`.
+  `UmbraPointer::with_content_prefix` requires `T: Marshal` and takes
+  its prefix from the value's `Marshal` encoding, which is
+  little-endian on every host.
+
+- `subetha-sidecar` holds no lock. A node's registrations sit in slots
+  claimed and freed with compare-and-swaps, a node's scan thread is the
+  only consumer of its instances' observation rings, and `scan_now` asks
+  that thread for a scan and waits for it rather than draining a ring
+  itself. `unregister` waits only for a scan or stats read inside that
+  instance's own registration, and `stats` reads a whole snapshot the
+  scan publishes. Called from a node's scan thread, `scan_now` does not
+  wait on that node; after the sidecar stops its threads it returns at
+  once. `VersionedChain` swaps its head atomically, and the Python
+  `Condvar.wait_for` keeps its predicate's first error without a lock.
+  Neither crate depends on `parking_lot` any more.
+
+- `subetha-cxc`'s async paths hold no lock. The `Waker` a task
+  registers on a `Channel`, an `AdaptiveIpc`, a `WakerRing` or a
+  reactive ring sits in a slot of its own ordered by one atomic word,
+  where a wake that lands mid-registration is handed to the registrant,
+  and `AsyncSpscRing`'s worker
+  thread hands its result to the future through one atomic pointer.
+  `TaskPool` and `RingExecutor` keep each task's run state in one atomic
+  word: a wake that lands while a worker polls the task is queued by
+  that worker when the poll returns, so no task is polled by two workers
+  at once and no worker waits on another's poll. `TaskPool`'s ready
+  queue is an unbounded lock-free queue of subetha-cxc's own, with idle
+  workers parked beside it, and `AdaptiveIpc` keeps the surplus of a KHL
+  slot steal in one.
+
+- The pass registry keeps its handlers in a copy-on-write map: a
+  dispatch takes the handler it finds and runs it holding nothing, and
+  a registration swaps in a new map. `PassHandler` is an
+  `Arc<dyn Fn(&[u8]) -> PassResult + Send + Sync>` where it was a
+  `Box`, so `register` and `unregister` return an `Arc`.
+
+- `SharedDequeKhpd` stages through a `KhpdStager` from `stager()`, a
+  buffer its holder mutates through `&mut self`: `stage` and `publish`
+  are the stager's, and the deque's `snapshot_size` returns
+  `(head, tail, ring_size)` without a pending count. `SharedDequeLoh`
+  stages through a `LohStager` the same way, with `push`, `flush` and
+  `pop_local`, and its `snapshot_size` drops the LIFO length. Every
+  publish on either deque reserves with a compare-and-swap on `tail`.
+
+- `BlockingSpscRing`'s phase estimator, `SharedUniversal`'s backing
+  handle and the wait calibrator's records hold no lock. The consumer
+  takes the estimator for the length of a wait-path update, a
+  `SharedUniversal` handle swaps a re-opened backing in whole, and the
+  calibration thread replaces a record whole.
+
+- `subetha-cxc`'s transports hold no lock. `DemuxQueue` is a struct
+  over the same lock-free queue, where it was an
+  `Arc<Mutex<VecDeque<...>>>`: clones share one queue, and its `push`,
+  `pop`, `len` and `is_empty` take the place of locking, so a demux
+  reader pushes and a receiver pops without either waiting. A listening
+  Sens-O-Matic receiver's TLS
+  handshakes run in a table its demux thread owns, which publishes the
+  completed peers' keys for the poll side. Virtual endpoint bindings,
+  the cross-process notifier's registries and the unified endpoint's
+  peer and code-switch fields are swapped whole. The io_uring datagram
+  backend receives and sends through separate rings, each held by one
+  caller at a time: a receive that finds its ring held reads
+  `WouldBlock`, and a send that finds its ring held goes through the
+  socket directly. The NIC-bypass backend holds its wire the same way,
+  and a caller that finds it held reads `WouldBlock`, which it treats as
+  it treats a full socket buffer.
+
+- `subetha-cxc`'s capacity rings and `AdaptiveRing`'s growth hold no
+  lock. A capacity morph publishes its new state with one
+  compare-and-swap against the state it read, and a morph that loses the
+  swap decides again from the winner's state, so concurrent morphs each
+  land in turn. `PubSubRing` takes any number of producers: a publish
+  claims its position with one atomic add, and waits only when it has
+  come a full lap round to a slot whose earlier item has not landed.
+  `CapacityPubSubRing` links its backings and a subscriber holds the
+  backing it reads; `CapacityPubSubSubscriber::backing_idx` is that
+  backing's generation, 0 for the first and one more per morph, which
+  `subetha_capacity_subscriber_position` reports too. `AdaptiveRing`'s
+  shared-memory growth lays out a per-producer pair or attaches one
+  already laid out, so threads and processes growing at once share one
+  layout, and `create_shmfs` removes the pairs an earlier ring grew
+  under the same name.
+
+- No crate but `subetha-ffi` holds a lock. A `clippy.toml` at the
+  repository root disallows the `std::sync`, `parking_lot` and
+  `lock_api` lock types, and `subetha-ffi` allows them crate-wide, its
+  handle table and per-handle guards serializing the calls C makes on
+  one handle from several threads. The benches that measure against a
+  lock-based baseline, and the C ABI's integration tests, which take
+  turns at the library's process-wide init, allow them per file.
+  `subetha-cxc` no longer depends on `parking_lot`.
+
+- No crate depends on `arc-swap`. Every value a SubEtha crate swaps
+  whole sits in a `SwapCell`, and `subetha-ffi` depends on
+  `subetha-core`.
+
+- The 64 per-primitive pages under `crates/subetha-cxc/docs/pointers/`,
+  which the published `subetha-cxc` package carried, are gone. Each
+  primitive's page in the
+  [subetha-cxc reference](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/)
+  carries what they held that it did not, and every link that named a
+  pointer page names that page.
+
+- `InstanceStats::last_seen_us_ago` is `last_drain_us`. It holds the
+  microseconds from an instance's registration to the last scan that
+  drained it, which the old name read as a time since.
+
+- A process that used the global sidecar no longer writes
+  "[subetha-sidecar atexit] shutdown complete" to stderr as it exits. The
+  exit hook still stops and joins the scan threads, and writes only when
+  one of them ended by panic.
+
+- `BloomFine::SUGGESTED_CAPACITY` is 32, where it was 64: at 64 keys a
+  `BloomFine` passes about 31% of absent keys by the standard estimate,
+  and at 32 about 2.5%. Python's `FineBloom.suggested_capacity` and the
+  PowerShell filter's `SuggestedCapacity()` report the new value.
+
+- The `Blocking*` rings, `BlockingSemaphore` and `BlockingRWLock` spin
+  the rounds of the process's wait plan before they park, where they
+  spun 32. `CrossProcessWaker::wait` runs the plan's monitor phase, and
+  `CrossProcessWaker::wait_with_plan` takes a plan of the caller's.
+
+- Every dependency requires its newest stable release. Three of them
+  reach what a consumer builds: `subetha-cxc` takes `windows-sys` 0.61
+  on Windows, where it took 0.59; `rcgen` 0.14 behind the `quic-bridge`
+  and `tls` features, where it took 0.13; and `xsk-rs` 0.11 behind
+  `wire-locale`, where it took 0.8. The rest raise a floor within the
+  version already required, or move a benchmark or test dependency:
+  `criterion` 0.8, `cbindgen` 0.29, `ipc-channel` 0.23, `rtrb` 0.4 and
+  `iceoryx2` 0.10. No release SubEtha requires needs a Rust newer than
+  1.89, and the workspace's minimum stays 1.96.
+
+- `AdaptiveRing::open_shmfs`, `open_shmfs_in` and `open_shmfs_secured`
+  attach and make nothing: a ring that is not there is
+  `RingError::IoError(NotFound)`, where the attach made empty regions of
+  its own and reported `LayoutMismatch`. Through the C ABI,
+  `subetha_ring_open_shm`, `subetha_vyukov_open_shm`,
+  `subetha_pubsub_open_shm` and `subetha_broadcast_open_shm` return
+  `SUBETHA_E_RING_IO` for a ring that is not there, where they returned
+  `SUBETHA_E_RING_LAYOUT_MISMATCH`. `create_shmfs` and its peers report a
+  region they could not make as `IoError` with the OS error's kind, where
+  they reported `PayloadTooLarge`.
+
+- A shm-backed `AdaptiveRing`'s names outlive every handle, as a
+  file-backed ring's files do, whichever handle made them: the creator's
+  backings, a per-producer backing a peer grew, the payload region of the
+  first oversized frame and the ordering region, and through the C ABI the
+  ring's wakers and notifier record. `unlink_shmfs`,
+  `subetha_ring_unlink_shm` or the last holder removes them, where on Unix
+  each went when a handle dropped. A `NotifierSet::shm` record outlives
+  its sets the same way. A `LocaleAdaptiveRing` removes its shared-memory
+  backing's names when it drops, as it removes its files, and a capacity
+  ring's shared-memory generations go when it drops them. On Windows a
+  section goes with its last handle either way.
+
+- `ShmNamespace` gains the `AppContainer` variant, so a `match` that names
+  every variant needs an arm for it, and `subetha_ring_options` gains
+  `shm_container_sid` at its end, so a C consumer rebuilds against the new
+  header. `LastHolderError::ShmNotSupported` is gone, since a shm-backed
+  ring now takes holds, so a `match` that names it loses that arm.
+
+- The wiki's performance figures for the failover watchdog, the pass
+  registry, the KHPD and LOH deques, the adaptive ring's dispatch, the
+  async conventions and fan-out, the Umbra, Bloom, Versioned, KStep,
+  CHERI capability and RASP pointers, and the ring throughput matrix
+  (a full sweep, every family) are measured again, on an AMD Ryzen 9
+  7900X under Windows 11, with each page naming its host and the load
+  during the run. Several conclusions change with them, and each page
+  says what was measured: the watchdog's single-threaded scan is slower
+  than a `Vec<Mutex<u64>>` baseline on this host, a `VersionedPointer`
+  visibility check costs more than a raw `u64` compare, and the RASP
+  validators beat a native checked read.
+
+- `Send-SubEthaItem` works out once, when the pipeline begins, whether
+  it is sending to a `BroadcastRing`, rather than asking every item's
+  target for its type name.
+
+- The workspace crates, the Python package and the PowerShell module
+  name Mark Newton as author, and the module's copyright reads the same.
+
+### Fixed
+
+- A Windows process in which `subetha-sidecar` ran from a DLL, as it
+  does under the Python package and the PowerShell module, ended with
+  0xC0000409 on its way out: the sidecar's exit handler runs at the
+  DLL's detach, after the process exit has already ended the scan
+  threads, and joining an ended thread panicked. The handler returns
+  at once when the loader reports the process is shutting down
+  (`RtlDllShutdownInProgress`).
+
+- A consumer that registered on a `CapacityBroadcastRing` while a
+  morph was building its backing had no slot on that backing: the
+  morph mirrored the consumers it had counted before, so nothing pushed
+  after the morph reached the late consumer, and the next consumer to
+  register was handed the same index. The wrapper now hands out
+  consumer indices itself, and a backing a morph makes active claims
+  every index handed out so far before anything is pushed into it,
+  read from it or handed out through `pin_current_capacity` or
+  `ring_handle`. A consumer that registers after a morph reads past
+  the stale backings it has no slot on.
+
+- A producer that registered on a `CapacityAdaptiveRing` while a morph
+  was building its backing was not registered on that backing: the
+  morph mirrored the counts it had read before, so the new backing
+  could be a single-producer ring with two producers sending into it.
+  A morph now carries each registered producer and consumer id onto
+  its backing under the same id, and a backing a morph makes active
+  carries every registration its predecessor took since, before
+  anything registers on it, sends into it, receives from it or pins
+  it; a registration that lands on a backing already carried from is
+  made again on the backing in place.
+
+- Two processes creating a `SharedHolderTable` on an empty or missing
+  file together could both lay it out, each deciding from the length it
+  read, so a claim one made was cleared by the other's layout and both
+  held the slot. The creators now elect one layout with a
+  compare-and-swap on the table's magic and the rest wait for it; one
+  that has not finished within five seconds, such as one a process died
+  during, is refused as `IoError(TimedOut)`, and `reset` recovers the
+  file. A create asking for more slots than the file's table holds is
+  refused as `LayoutMismatch` and leaves the file as it is, where it
+  laid a new, empty table over the old one.
+
+- `Bloom64` and `BloomFine` passed absent keys at up to 1.65 times
+  their estimated false-positive rate. Every bit index was sliced from
+  a single multiply, whose low bits depend only on the key's low bits,
+  so sequential keys collided: `Bloom64` holding 16 keys passed 26.4%
+  of 10,000 absent keys against an estimate of 16.0%, and `BloomFine`
+  holding 64 passed 42.3% against 31.2%. The hash now goes through
+  MurmurHash3's 64-bit finalizer before it is sliced, and the same
+  filters pass 16.9% and 26.3%. A filter's bits differ from those an
+  earlier version built for the same keys, so rebuild from its keys a
+  filter carried as bits, such as one passed to Python's
+  `TinyBloom.from_bits` or PowerShell's `New-SubEthaTinyBloom -Bits`.
+
+- `AdaptiveIpc` could drop a batch shape from the filter `maybe_promote`
+  consults. A batched send read the filter, added its shape and wrote
+  the filter back, so a shape another sender recorded between the read
+  and the write was overwritten. A send now ORs its shape's bits into
+  the filter in one atomic operation.
+
+- Two publishes on a `SharedDequeLoh` racing for its last free slots
+  could both pass the capacity check and both reserve. The one past
+  the capacity then waited for a slot no thief had freed, forever when
+  none came, where it should have returned `Full`. A reservation is a
+  compare-and-swap that checks the capacity against the tail it
+  replaces.
+
+- `SharedUniversal::migrate_to` lost an insert another thread of the
+  same process made after the migration's snapshot: the new backing
+  held the snapshot, and the insert stayed in the old one. The
+  migration swaps the new backing in, waits for the ops still holding
+  the old one to return, and copies what they inserted after the
+  snapshot. An insert into a Vec backing reports the backing's
+  failures other than a full vec as `LayoutMismatch`, `IoError` or
+  `VecError`, where it reported every one as `Full`.
+
+- Two `PubSubRing` publishes at once could take the same position: one
+  item overwrote the other and the head counted one publish. Each
+  publish now claims a position of its own.
+
+- `CapacityPubSubRing::gc` reclaimed a backing a subscriber had not
+  finished reading, and a reclaim shifted every subscriber's place in the
+  chain, so a subscriber lost the rest of its backing or everything
+  published after the reclaim. A subscriber holds its backing, and gc
+  passes only backings nothing but the chain holds.
+
+- `subetha-pointers`' capabilities could outlive their memory from
+  safe code. `ReadableCapability::from_slice` and
+  `WritableCapability::from_slice_mut` returned a capability holding a
+  raw pointer and no lifetime, so a capability kept past its slice
+  read or wrote freed memory; `from_slice_mut` also handed back the
+  `&mut` slice beside the capability, and `WritableCapability::narrow`
+  made a second writable capability over the same region. A
+  capability now borrows its memory for its whole life, a writable
+  one has one user at a time, and a `new` or `narrow` at an address
+  misaligned for `T` returns `Misaligned` rather than a capability
+  whose read is undefined behavior. `UmbraPointer::with_content_prefix`
+  read the first four bytes of any `T` as initialized, padding
+  included. `RaspBatch`'s AVX2 and AVX-512 checks compared addresses
+  as signed numbers, so an entry whose base and pointer straddle 2^63,
+  which `push_raw` accepts, was valid to the scalar check and invalid
+  to the SIMD ones; they compare unsigned. Without the change, on the
+  Windows host (Ryzen 9 7900X), a `u64` capability was made and
+  narrowed one byte past a `u64`, the dispatched `RaspBatch` count was
+  0 where the scalar count was 16, and all four compile-fail examples
+  compiled.
+
+- A primitive's observation ring takes pushes from any number of
+  threads at once. Each instance owns one ring and every thread that
+  operates on the instance pushes into it, but a push claimed its slot
+  by reading the ring's tail and storing it back, so two threads
+  pushing together wrote one slot, both reported success, and a record
+  could be read while another thread was still writing it. With eight
+  threads filling an armed ring together on the Windows host (Ryzen 9
+  7900X), 694 of 4,096 accepted observations came out, and a sidecar's
+  counts of ops and producer threads fell short by as much. A push now
+  claims its slot with a compare-and-swap and publishes the record
+  through the slot's sequence number, so every accepted observation is
+  popped once and whole, and an armed ring's buffer stays 96 KiB.
+
+- `AdaptiveRing::unlink` removes a file-backed ring's holders region last,
+  after the peer directory, and a last holder removes it after whatever
+  the layer above keeps beside the ring, as the shared-memory path already
+  did. The holders region is what a process arriving mid-teardown reads to
+  decide whether the ring is still held; `unlink` removed it fifth, before
+  the per-producer backings and the peer directory, and a last holder
+  removed the layer above's files after it.
+
+- On Windows a shared-memory `AdaptiveRing` keeps the regions one handle
+  makes after that handle leaves, and says so when it cannot. A section
+  lasts only while some handle holds it, and a per-producer pair a peer
+  grew, or the payload region its first oversized frame made, was held
+  only by the peer until another handle's next call opened it. On the
+  Windows host (Ryzen 9 7900X), with the peer gone before then, an attach
+  failed with `IoError(NotFound)`, and the owner's `recv_frame` of the
+  peer's frame made an empty region of its own and returned 3,000 zero
+  bytes as the payload, with no error. Now:
+  - every `AdaptiveRingSidecar` scan opens what other handles have
+    published, as the handle's own next call does, so a managed handle
+    holds them between calls, and a `LocaleAdaptiveRingSidecar` does the
+    same for its shared-memory backing;
+  - the handle that makes the payload region moves the topology epoch,
+    and every other handle opens the region at its next sync;
+  - a receiver opens the payload region and never makes one, so a frame
+    whose region is gone is `IoError(NotFound)`;
+  - an offset frame names the laying-out of the payload region its
+    payload went into, from a value the region's header now carries in
+    padding it already had, so a frame sent into a region that has since
+    been replaced under the same name is `IoError(NotFound)`, not a read
+    of the new region's block; a zero from a region or a sender that
+    records none is accepted as before;
+  - a published pair whose every handle closed is laid out again empty by
+    the next handle to look for it, an attach included, so the producer
+    slot it serves keeps working, and the loss is written to stderr;
+  - a handle that cannot open a published pair writes that to stderr once
+    for each change of topology, where it retried silently on every call.
+  On Unix a pair's name outlives its handles, and a missing one was
+  removed while the ring was in use, so it is not made again. Without
+  the change, a sidecar opened neither a grown pair nor the payload
+  region within 30 s, and a frame sent into a payload region since
+  replaced under the same name was read as the 3,000 bytes a later
+  sender had put in the new region: on the Windows host when the region
+  went with its maker, and on the FreeBSD and Ubuntu guests when its name
+  was removed while the ring was in use.
+
+- On Unix a shared-memory ring's names no longer go with the first handle
+  to drop. Every `ShmFile` dropped unlinked its name, so once one attached
+  process let go, a process attaching afterward found nothing: on the
+  FreeBSD and Ubuntu guests an `AdaptiveRing` attach after another
+  attacher had left got `LayoutMismatch`, and a `ShmFile` open after an
+  opener had dropped got `NotFound`. A `ShmFile` handle owns its name when
+  it made the region, which it learns from an exclusive create, or when a
+  creator made it with `create_named_secured`, and only the owner unlinks.
+  A shm-backed `AdaptiveRing` keeps every name it makes, whichever handle
+  makes it, so a peer that grew the ring or made its payload region takes
+  nothing with it either: with each name its maker's, on both guests an
+  attach after the peer that grew the ring had left got `NotFound`, and a
+  later receiver of an offset frame read 3,000 zero bytes where the
+  payload was, once the peer that made the payload region had left.
+  Windows keeps a name until the last handle closes and needed no change.
+
+- An `AdaptiveRing` handle on shared-memory backings no longer lays out
+  afresh a region another handle built. When a producer registered past
+  the ring's initial count, every other handle opened the new
+  per-producer backing on its next operation by initializing it, which
+  dropped whatever had already been sent into it. Turning ordering
+  stamps on in an attached handle rebuilt the creator's ordering region
+  the same way, resetting its mode, counters and watermarks and writing
+  the attacher's stamp kind over the creator's. Both are now opened as
+  they stand, and an attached handle asking for a different stamp kind
+  is refused with `LayoutMismatch`, as a file-backed ring already was.
+
+- Attaching to a file-backed structure that several callers reach
+  together no longer fails with `Access is denied` on Windows. Every
+  attacher created and removed the election marker on its way to a
+  region that was already published, and NTFS refuses a create of a
+  name whose removal is in flight, although the name is gone once the
+  removal returns: eight threads creating, closing and removing one
+  name 200 times each were refused 58 to 66 times, whether or not a
+  handle stayed open across the removal. An attacher now looks at the
+  region before it touches the marker, and a marker create refused
+  that way is tried again after another look, for up to the five
+  seconds an attacher gives a builder. Eight threads attaching to one
+  region 200 times each were refused 32, 15 and 34 times in three runs
+  before the change and none after, on Windows 11 / Ryzen 9 7900X.
+
+- `SharedHashMap` and `RawHashMap` writers no longer race one another
+  on a slot. An update, a `compare_exchange` or a `remove` matched its
+  key under a read and then wrote, so a remove of that key, or another
+  key's claim of the slot the remove left, could land in between: a
+  value was handed back twice or never, and one key's bytes could sit
+  under another key's hash, where neither was found again. Two inserts
+  of one new key, racing a remove in the key's chain, could each place
+  it. Every write to a published entry now takes the slot's lock and
+  re-checks the state, hash and key under it, and an insert of a new
+  key gives its claim back and walks again when a remove landed during
+  its walk.
+
+- A `LocaleAdaptiveRing` leaves no files behind when it drops. Its drop
+  removed the file backing's rings but not its peer directory, nor the
+  per-producer pairs registration grew past the construction hint, so a
+  ring created later under the same base path attached to that
+  directory with every claim the dropped ring held, and its first
+  `register_producer` panicked: the file backing handed out the next
+  free id while the new anonymous backing handed out 0. The drop now
+  removes every file `AdaptiveRing::unlink` names for the file backing.
+
+- `bench_throughput`, the example the ring throughput matrix is measured
+  with, keeps each run's file-backed ring in a directory of the run's
+  own under the temp directory and removes it when the run ends. It
+  named those files by process id and left them in place, so a run
+  whose process got a reused id attached to an earlier run's ring, and
+  one of another capacity was refused as `LayoutMismatch`.
+
+- A `LocaleAdaptiveRing` handle from `open`, as `subetha_locale_ring_open`
+  and the Python and PowerShell bindings' open paths make, registers
+  producers and consumers beside other handles. Each handle's anonymous
+  backing numbered its registrations from 0 while the shared file and
+  shared-memory backings handed out the next free id, so a handle's
+  first registration after another handle's panicked. The id is now
+  claimed on the file backing, whose peer directory every handle on the
+  base path shares, and carried onto the other two backings under the
+  same id.
+
+- A Sens-O-Matic RLC receiver delivered a stream from the first source id
+  it read. When a stream's first datagrams were lost before the receiver
+  read them, it started above them, its first ACK released them at the
+  sender, and they were never delivered. On FreeBSD one netisr thread
+  queues all loopback traffic in 256 packets and drops the rest, and
+  under the release gate's parallel load the test suite delivered
+  streams from items 3, 23, 45, 53 and 95 and lost a peer's first item.
+  A window now starts at item 0 once it holds it or a repair covers it.
+  Otherwise it asks the sender with NAK rounds naming 0, the ids just
+  below the lowest one seen, and that lowest id last. The sender resends
+  that last id only after every lower id it still holds, so two rounds
+  in which it came back with nothing below start the window there, which
+  is how a restarted receiver joins a stream partway through. A window
+  admitted by challenge finds its start the same way; one that a
+  restarted receiver admitted started at 0 and waited for items its
+  sender had already released. The wire format is unchanged. Six new
+  tests cover a lost head with and without its repairs and over the
+  unified endpoint, a restarted receiver with one peer and with an
+  admitted second, and the probe's own NAK; all six fail without this
+  change.
+
+- A blocking ring could lose a wake. A producer stores its ring's head
+  and then reads the waker's parked mask; a consumer sets its mask bit
+  and then re-checks the ring. x86 and ARM64 both let each of those
+  loads complete before the store ahead of it, so the producer could
+  find no parked bit while the consumer found no item, and the consumer
+  slept beside the item until its timeout. A wake scan now starts with a
+  SeqCst fence and a park ends with one. With two processes echoing
+  frames over a pair of file-backed `BlockingSpscRing`s, 20 runs of
+  2,000 frames each with no hold on Windows 11 / Ryzen 9 7900X, 7 runs
+  lost a wake without the fences and none with them. 0.5.1 lost a wake
+  in 5 of 15 runs of the same round trip with holds of 0, 100
+  microseconds and 1 ms. On the send path the fences cost nothing that
+  host resolves: 10.114 ns against 10.118 ns per push-and-pop pair.
+
+- The shared condvar page said a second `open` of the same file in one
+  process misses wakes on Windows. No platform's park for a file-backed
+  condvar is keyed by virtual address, so it works; it costs a second
+  mapping.
+
+- 0.5.1 said the PowerShell module works on FreeBSD x64. Its PowerShell
+  7 half was built on PowerShell 7.6 and references .NET 10, so it does
+  not import in FreeBSD's PowerShell 7.5.5, nor in PowerShell 7.4.20 or
+  7.5.11 on Linux; the FreeBSD figures came from a module built on
+  FreeBSD.
+
+- The install, explanation and troubleshoot pages listed the win-x64
+  and linux-x64 natives. The published folder has carried osx-arm64 and
+  freebsd-x64 as well since 0.5.1.
+
+- `QuicBridgeClient::run` wrote a line of UDP counts to stderr each
+  time it finished, so every caller's stderr carried it, the C, Python
+  and PowerShell bridges included. It now writes nothing when it
+  succeeds.
+
+- `QuicBridgeClient::run` could fail with a lost connection after the
+  server had received every item. The server closed the connection as
+  soon as it had read the items its header declared, and that close
+  could reach the client ahead of the acknowledgment of the client's
+  last data. The server now reads the stream to its end, refuses one
+  that carries more than its header declared, and waits for the client
+  to close; the client closes once its data is acknowledged. Over 200
+  rounds of the PowerShell module's round trip on Linux x86-64, 4
+  failed that way in PowerShell 7.4.20 and 3 in 7.6.5 before, and none
+  in either after. `run` now returns after QUIC's closing period, three
+  probe timeouts, which is what delivers the close when the caller's
+  runtime ends with the call, as the C API's does. The 200 rounds took
+  26 s in place of 4 s in 7.4.20 and 52 s in place of 7 s in 7.6.5.
+
+- The PowerShell pages said every call on a module object is serialized
+  and left out what that costs: a call that waits holds its object until
+  it returns, so a second call on the same object from another thread
+  waits behind it. A server's `LocalAddr()` asked for after its
+  `AcceptOne` has started in another runspace waits for a client that
+  cannot be made without that port. The module's QUIC round-trip test
+  did exactly that, and the macOS arm64 run of the release candidate
+  printed nothing for 45 minutes after its suite started. On Linux
+  x86-64, with `AcceptOne` given 1.5 s to start first, `LocalAddr()` was
+  still waiting 10 s later and returned 1 ms after a client made by
+  other means ended `AcceptOne`. The pages now say so, and the test
+  reads the port before `AcceptOne` starts.
+
+- The C API's QUIC bridge server could not be made:
+  `subetha_quic_bridge_server` bound its endpoint with no runtime
+  entered, which quinn refuses, so every call answered
+  `SUBETHA_E_RING_IO`. The TCP bridge server could be made but never
+  received: it bound its listener on a runtime that ended with the
+  constructor and accepted on another. Each server now keeps the runtime
+  it bound in and runs every accept on it. The C suite carries 40 items
+  end to end through each bridge; on FreeBSD x64 with the transports
+  built, it failed 176 checks before and passes after.
+
+- With `wire-locale` on, a shared library linking subetha-cxc failed to
+  link on Linux: libxdp-sys's make build compiles libxdp's static
+  objects without `-fPIC`, and the link stopped at a `R_X86_64_PC32`
+  relocation against `stderr`. subetha-cxc now selects libxdp-sys's cc
+  build, which compiles them position-independent. On Linux x86-64,
+  `cargo build -p subetha-ffi --features subetha-cxc/wire-locale`
+  failed before and links after, and subetha-cxc's 1,527 tests pass
+  with every feature on, `wire-locale` among them.
+
+- `Sidecar::scan_now` could drain an observation ring while the node's
+  own scan thread drained it too, although a ring has one consumer, so
+  observations were counted twice or replayed and a slot could be read
+  while its producer rewrote it. Each node's scans now take turns. With
+  four threads calling `scan_now` beside the node's thread while one
+  producer pushed 200,000 observations, the sidecar counted 535,879 to
+  627,373 of them before and 200,000 after, on Linux x86-64.
+
 ## [0.5.1] - 2026-09-21
 
 ### Added
@@ -128,7 +893,7 @@ says what the old answers were and why they were wrong.
   succeeds, the ring does not error, and a reader that started late is
   indistinguishable from one that is slow. Publishing only once the
   readers are here is the only thing that closes the window, because
-  afterwards there is nothing left to detect. All four answer how many
+  afterward there is nothing left to detect. All four answer how many
   consumers are present when the wait ends rather than failing on a
   shortfall, and all four refuse a wait without end.
 
@@ -276,7 +1041,7 @@ says what the old answers were and why they were wrong.
   `Semaphore.acquire_for`, and the channel's `recv_for` and `send_for`
   sleep rather than spin and give up at their deadline. Only the
   bounded forms are exposed: an unbounded park sleeps until something
-  signals it, which against a peer that releases without signalling
+  signals it, which against a peer that releases without signaling
   would never wake.
 - The sensing plane: `LossKind`, `LossBursts`, `Timing`,
   `RoundTripShape`, `Periodicity`, `Capacity`, `Forecast` and
@@ -826,7 +1591,7 @@ says what the old answers were and why they were wrong.
 - The stream receiver stays past the last stream for as long as a sender
   is allowed to wait on one. It is the only thing that acknowledges a
   stream and it acknowledges only from inside its poll loop, so a
-  shorter stay ends the only source of acknowledgement while a sender is
+  shorter stay ends the only source of acknowledgment while a sender is
   still owed one, and what reaches that sender is indistinguishable from
   a peer that stopped responding. `STREAM_LINGER_MS` is defined as
   `STREAM_FINISH_MS` rather than as its own number, so the two cannot
@@ -1033,10 +1798,10 @@ says what the old answers were and why they were wrong.
 
 ### Changed
 
-- **The sliding-window RLC takes its coefficients from a published table
+- The sliding-window RLC takes its coefficients from a published table
   of sixty-four constants rather than from a generator that derives them
   per repair. This changes the wire and 0.3.0 does not interoperate with
-  0.2.x on the RLC repair path.** A repair names its generator in the
+  0.2.x on the RLC repair path. A repair names its generator in the
   high nibble of `dt` - free, because the density occupies 0..=15 - so a
   decoder reads the choice off the stream rather than from its own
   configuration. A repair naming generator 0, which is what 0.2.x sends,
@@ -1765,7 +2530,8 @@ deployment.
 - `subetha`: the umbrella crate re-exporting the four.
 - The Hugo wiki and the measured six-platform performance record.
 
-[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.5.1...HEAD
+[Unreleased]: https://github.com/Variably-Constant/SubEtha/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/Variably-Constant/SubEtha/compare/0.5.1...0.6.0
 [0.5.1]: https://github.com/Variably-Constant/SubEtha/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/Variably-Constant/SubEtha/compare/0.4.1...0.5.0
 [0.4.1]: https://github.com/Variably-Constant/SubEtha/compare/0.4.0...0.4.1

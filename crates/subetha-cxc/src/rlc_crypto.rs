@@ -61,7 +61,7 @@ pub fn self_signed_cert_for(names: &[&str]) -> Result<(Vec<u8>, Vec<u8>), String
     }
     let subjects: Vec<String> = names.iter().map(|s| s.to_string()).collect();
     let ck = rcgen::generate_simple_self_signed(subjects).map_err(|e| e.to_string())?;
-    Ok((ck.cert.der().to_vec(), ck.key_pair.serialize_der()))
+    Ok((ck.cert.der().to_vec(), ck.signing_key.serialize_der()))
 }
 
 /// Build a TLS server config (TLS 1.3, ring, RLC ALPN) from a cert + key DER.

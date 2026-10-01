@@ -6,7 +6,7 @@ weight: 23
 # CapacityAdaptiveRing + PinnedCapacity
 
 ![Rust](https://img.shields.io/badge/Rust-1.96+-orange?logo=rust)
-![Layout](https://img.shields.io/badge/Layout-ArcSwap_RingState-green)
+![Layout](https://img.shields.io/badge/Layout-SwapCell_RingState-green)
 ![Axis](https://img.shields.io/badge/axis-capacity--morph-brightgreen)
 
 Runtime-resizable wrapper around
@@ -19,7 +19,7 @@ morphs the *capacity* itself: callers (or the bundled
 [`CapacityAdaptiveRingSidecar`](#sidecar--hysteresis-gated-policy))
 call `morph_capacity_to(new_pow2)`, the substrate allocates a fresh
 underlying `AdaptiveRing` at the new size, atomically swaps a single
-`ArcSwap<RingState>` that holds both the new active backing and the
+`SwapCell<RingState>` that holds both the new active backing and the
 stale-list of post-morph backings still draining, and bumps a pin
 generation so outstanding handles invalidate.
 
@@ -33,11 +33,11 @@ generation so outstanding handles invalidate.
 
 ## Hot path: zero locks
 
-Both `try_send` and `try_recv` do exactly one Acquire load on an
-`ArcSwap<Arc<RingState>>` and then delegate to the underlying
+Both `try_send` and `try_recv` do exactly one load of a
+`SwapCell<RingState>` and then delegate to the underlying
 `AdaptiveRing`. There is no mutex on the steady-state path. The
 combined `(active, stale)` snapshot is atomic for free because both
-fields live inside the single `RingState` that the ArcSwap protects.
+fields live inside the single `RingState` that the `SwapCell` holds.
 
 ```text
 try_send  -> state.load().active.try_send(producer_id, payload)
@@ -49,7 +49,7 @@ try_recv  -> state = state.load()
 
 For absolute production speed when the shape is stable and the
 capacity is stable, call
-[`pin_current_capacity()`](#pinned-handoff--native-primitive-speed)
+[`pin_current_capacity()`](#pinned-handoff-native-primitive-speed)
 once and hot-loop on the inner native primitive via PinnedRing's
 shape-specific `*_try_push` / `*_try_pop` (see the
 [throughput results](../throughput-results/) for the actual numbers
@@ -71,18 +71,18 @@ the pinned path hits).
 |---|---|
 | `ring.current_capacity() -> usize` | Acquire-load the active capacity (lockstep with the active backing). |
 | `ring.pin_generation() -> u64` | Acquire-load the current pin generation. |
-| `ring.register_producer() / register_consumer() -> Result<usize, AdaptiveError>` | Mirror the active backing's registration. |
-| `ring.try_send(producer_id, payload) -> Result<(), RingError>` | Hot-path push. One ArcSwap load + native dispatch. |
-| `ring.try_recv(consumer_id, out) -> Result<usize, RingError>` | Hot-path pop. One ArcSwap load + stale-walk + native dispatch. |
+| `ring.register_producer() / register_consumer() -> Result<usize, AdaptiveError>` | Register on the active backing. The id stays the registrant's across morphs (see below). |
+| `ring.try_send(producer_id, payload) -> Result<(), RingError>` | Hot-path push. One SwapCell load + native dispatch. |
+| `ring.try_recv(consumer_id, out) -> Result<usize, RingError>` | Hot-path pop. One SwapCell load + stale-walk + native dispatch. |
 | `ring.morph_capacity_to(new_capacity) -> Result<(), CapacityMorphError>` | Capacity-only morph. Delegates to `morph_to_config` with `capacity: Some(..)`. |
 | `ring.morph_to_config(&RingConfig) -> Result<(), CapacityMorphError>` | Compound morph: change any subset of {shape, capacity, locale} in one transition (see below). |
-| `ring.prewarm(capacity) -> Result<(), CapacityMorphError>` | Speculatively build the next backing off the morph lock (current locale). |
+| `ring.prewarm(capacity) -> Result<(), CapacityMorphError>` | Speculatively build the next backing off the morph's critical path (current locale). |
 | `ring.prewarm_config(&RingConfig) -> Result<(), CapacityMorphError>` | Prewarm at a target (capacity, locale); shape is ignored in the warm key. |
 | `ring.warm_capacity() -> Option<usize>` / `ring.warm_hits() -> u64` / `ring.clear_warm()` | Warm-cache introspection + drop (see below). |
 | `ring.stale_pops() -> u64` | Items popped from stale (post-morph) backings rather than the active one - transition-cost observability. |
 | `ring.is_stamped() -> bool` / `ring.ordering_mode() -> Option<OrderingMode>` / `ring.set_ordering_mode(mode) -> Result<(), RingError>` / `ring.inversions() -> u64` | Ordering-stamps surface (see below). |
-| `ring.pin_current_capacity() -> PinnedCapacity<'_>` | Capture the current backing for a hot loop (pin generation captured for validity polling). |
-| `ring.ring_handle() -> Arc<AdaptiveRing>` | Direct access to the active inner backing (snapshot at call time). |
+| `ring.pin_current_capacity() -> PinnedCapacity<'_>` | Capture the current backing, settled, for a hot loop (pin generation captured for validity polling). |
+| `ring.ring_handle() -> Arc<AdaptiveRing>` | Direct access to the active inner backing, settled (snapshot at call time). |
 
 `PinnedCapacity` exposes `ring() -> &Arc<AdaptiveRing>`, `capacity() -> usize`,
 `generation() -> u64`, and `is_still_valid() -> bool`. `CapacityMorphError` has
@@ -101,22 +101,24 @@ active alike). This is what rules out the two-consumer-on-one-SPSC
 race that any drain-based morph has to defend against.
 
 ```text
-1. Take morph_lock (serializes concurrent morphs).
+1. Load old_state (active, stale, capacity, locale) and settle it.
 2. Validate: new_capacity is pow2 >= 2.
-3. If old_capacity == new_capacity (and shape + locale unchanged): no-op return.
+3. If capacity, shape and locale are all at target: no-op return.
 4. Warm-cache probe: if a prewarmed backing matches the target
-   (capacity, locale), consume it (bump warm_hits) and skip
-   allocation; otherwise bump morph_seq and allocate a fresh
-   AdaptiveRing at new_capacity in the target locale (anon / file / shmfs).
+   (capacity, locale), consume it and skip allocation; otherwise
+   bump morph_seq and allocate a fresh AdaptiveRing at new_capacity
+   in the target locale (anon / file / shmfs).
 5. When the wrapper is stamped, seed the new region's ordering
    counters from the old one (keeps stamps monotone across the swap).
-6. Mirror producer/consumer counts onto the new backing.
+6. Carry the registered producer and consumer ids onto the new
+   backing, each under the same id.
 7. Mirror the SHAPE explicitly via new.morph_to(old.current_shape()).
-8. Bump pin_generation -> all outstanding PinnedCapacity handles
-   invalidate on their next is_still_valid() poll.
-9. Build new_state = RingState {
+8. Build new_state = RingState {
        active: new,
        stale: prune(old_state.stale) ++ [old.active],
+       capacity: new_capacity,
+       locale: target locale,
+       settled: false,
    }
    The prune drops a prior-stale entry that is fully empty (the
    shape-aware AdaptiveRing::is_empty() check) and that the stale
@@ -125,17 +127,34 @@ race that any drain-based morph has to defend against.
    two morphs; its snapshot holds the state, which holds the backing,
    so an entry a snapshot can still reach keeps a count above one and
    stays on the list until that push has landed and been drained.
-10. state.store(new_state) -> single atomic publish.
-11. capacity_atom.store(new_capacity, Release) -> observable
-    capacity tracks active.
-12. Release morph_lock.
+9. Compare-and-swap state from old_state to new_state -> single
+   atomic publish. If another morph swapped first, the backing built
+   here drops and the morph goes back to 1 against that state.
+10. Bump pin_generation -> all outstanding PinnedCapacity handles
+    invalidate on their next is_still_valid() poll.
 ```
 
-Subscribers reading the wrapper via `state.load()` between step 1
-and step 10 see the old state (full snapshot of pre-morph
+Subscribers reading the wrapper via `state.load()` before step 9
+see the old state (full snapshot of pre-morph
 `(active=old, stale=prior_stale)`). Subscribers reading after step
-10 see the new state. The single atomic publish is what gives FIFO
+9 see the new state. The single atomic publish is what gives FIFO
 correctness across the morph for free.
+
+## Registrations across a morph
+
+A registration made on the old backing after step 6 read its ids is
+not lost. The new state is **settled** before anything registers on,
+sends into, receives from or pins it: the settle seals the backing
+the morph replaced, then carries every id registered there onto the
+new backing. A registration checks the seal once it has claimed its
+id. Either it finds the backing sealed, takes the id back and
+registers again on the backing in place, or the settle that sealed it
+sees the id and carries it. So a producer that registered while a
+morph was under way is counted on the new backing, which is never
+left a single-producer ring with two producers sending into it. A
+carried producer whose per-producer ring cannot be made on the new
+backing keeps its claim, so the shape still counts it, and is named
+on stderr; its sends there are refused.
 
 ## FIFO correctness: spin-on-stale-mid-claim
 
@@ -177,8 +196,8 @@ ring.morph_to_config(&RingConfig {
 })?;
 ```
 
-One compound morph builds one fresh backing at the combined target, mirrors
-registrations once, applies the target shape to the empty backing once, bumps
+One compound morph builds one fresh backing at the combined target, carries
+the registered ids once, applies the target shape to the empty backing once, bumps
 the pin generation once, and appends the displaced active to the stale list
 once - however many axes changed. A sequential walk of the same axes pays each
 of those costs per axis. Two special cases short-circuit: every axis already at
@@ -229,11 +248,13 @@ observed on the active backing (continuous across morphs via the counter seed).
   `PinnedCapacity` handles observe the generation bump on the next
   `is_still_valid()` call. Hot loops sample at whatever cadence
   fits their latency budget; the substrate does not push.
-- **Morph is serialized.** A single in-flight morph at a time;
-  concurrent callers of `morph_capacity_to` are mutex-serialized
-  so the state build + swap is atomic with respect to other morphs.
-  Producer / consumer hot-path ops are not serialized against the
-  morph - they keep dispatching via the ArcSwap.
+- **Morphs land one after another.** A morph publishes its state
+  with a compare-and-swap against the state it read, so two
+  concurrent callers of `morph_capacity_to` never both build on one
+  state: the one that loses decides again from the winner's state.
+  Nothing takes a lock. Producer / consumer hot-path ops are not
+  serialized against the morph - they keep dispatching via the
+  `SwapCell`.
 - **Consumer is sole reader of every backing.** Producers only
   write to active; morphs never read from any backing. The
   per-backing SPSC/MPSC/MPMC contract stays intact across morphs
@@ -260,7 +281,7 @@ for _ in 0..1_000_000 {
 
 The pinned hot path approaches native primitive speed (see
 [throughput results](../throughput-results/) - `capacity-pinned-*`
-rows). The unpinned path pays one ArcSwap load + empty-stale-iter +
+rows). The unpinned path pays one SwapCell load + empty-stale-iter +
 AdaptiveRing dispatch per call (still lock-free; just a few extra
 nanoseconds).
 
@@ -415,7 +436,7 @@ delivered cleanly.
 
 - Workloads where the queueing depth is known up-front and never
   changes. Plain `AdaptiveRing` at the right capacity is cheaper
-  (one less ArcSwap load on the hot path).
+  (one less SwapCell load on the hot path).
 - Workloads that need the lowest possible per-op latency and
   cannot grab a pin. The unpinned dispatch adds a few ns vs a
   direct `AdaptiveRing` call. The pinned path matches native

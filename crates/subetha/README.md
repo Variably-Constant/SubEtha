@@ -1,6 +1,6 @@
 # subetha
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha/LICENSE-MIT)
 [![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/)
 
 **Cross-Context Channel (CXC) for Rust.** Kernel-bypass IPC - lock-free,
@@ -16,9 +16,10 @@ the kernel page-aliases between participants. The same typed
 disk; the default ring picks and changes its own shape (SPSC to MPMC and
 back) under live producers and consumers without losing an item.
 
-Measured 80-528x faster than the fastest kernel IPC mechanism on every
-platform tested (Windows, WSL2, Linux, FreeBSD, macOS) and 4.8-8.8x
-faster than iceoryx2's zero-copy shared memory. The full benchmark set,
+Measured 126-499x faster than the fastest kernel IPC mechanism on every
+platform tested (Windows, WSL2, Linux, FreeBSD, macOS and an EPYC VPS)
+and 4.9-11.5x faster than iceoryx2's zero-copy shared memory where it
+builds. The full benchmark set,
 dot plots, and methodology live in the
 [GitHub README](https://github.com/Variably-Constant/SubEtha#readme).
 
@@ -36,7 +37,7 @@ each member as a module:
 
 ```toml
 [dependencies]
-subetha = "0.3"
+subetha = "0.6"
 ```
 
 ```rust
@@ -78,4 +79,4 @@ Full reference at the wiki:
 
 ## License
 
-MIT. See [LICENSE-MIT](LICENSE-MIT).
+MIT. See [LICENSE-MIT](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha/LICENSE-MIT).

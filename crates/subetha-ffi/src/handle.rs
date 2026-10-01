@@ -470,7 +470,7 @@ impl Drop for Slot {
 ///   a destroy only recycles the index.
 /// - The object is held by the call this thread published before it read
 ///   the slot's state. A destroy marks the slot closing, waits out every
-///   call that began before that, and frees the object only afterwards,
+///   call that began before that, and frees the object only afterward,
 ///   so a borrow that published and then read the state as live holds an
 ///   object no destroy can take away underneath it.
 pub(crate) struct Borrowed {

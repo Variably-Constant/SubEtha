@@ -344,7 +344,7 @@ pub extern "C" fn subetha_live_handles() -> u64 {
 /// thread waiting inside it (those calls return `SUBETHA_E_DESTROYED`),
 /// waits for every call in flight to leave, then drops the object, joining
 /// any thread it owns. A poisoned handle is destroyed the same way. The
-/// handle names nothing afterwards, and can never name anything again.
+/// handle names nothing afterward, and can never name anything again.
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_handle_destroy(handle: subetha_handle) -> i32 {
     entry(|| {

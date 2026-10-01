@@ -2,6 +2,8 @@
 //! list, the slab, the ordered map and the hash map, and the pooled
 //! rings for many producers.
 
+use std::sync::Arc;
+
 use pwrs::prelude::*;
 
 use subetha_cxc::mpmc_ring::{MpmcConsumer as SubethaMpmcConsumer, MpmcProducer as SubethaMpmcProducer, SharedRingMpmc};
@@ -18,6 +20,7 @@ use subetha_cxc::spsc_ring::SPSC_PAYLOAD_BYTES;
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, size};
 use crate::primitives::layout;
+use crate::sidecar::{observe, Registration};
 
 assert_send!(Arena, LinkedList, Slab, BTreeMap, HashMap, MpscProducer, MpscConsumer, MpmcProducer, MpmcConsumer);
 
@@ -36,7 +39,7 @@ pub struct Arena {
     /// Whether this handle may intern.
     pub writable: bool,
     #[psfield(skip)]
-    inner: SharedStringArena,
+    inner: Arc<SharedStringArena>,
 }
 
 /// How an arena is opened.
@@ -58,13 +61,19 @@ impl Arena {
         }
         .map_err(|e| open_err("the arena", &path, e))?;
         let writable = inner.is_writable();
-        Ok(Self { path, capacity_bytes, writable, inner })
+        Ok(Self { path, capacity_bytes, writable, inner: Arc::new(inner) })
     }
 }
 
 /// The operations of a `SubEtha.Arena`.
 #[psmethods]
 impl Arena {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// The bytes interned so far.
     pub fn used_bytes(&self) -> PsResult<u64> {
         Ok(self.inner.used_bytes() as u64)
@@ -753,7 +762,7 @@ pub struct HashMap {
     /// The bytes one value holds.
     pub value_size: u64,
     #[psfield(skip)]
-    inner: RawHashMap,
+    inner: Arc<RawHashMap>,
 }
 
 impl HashMap {
@@ -762,7 +771,7 @@ impl HashMap {
         let ks = size(key_size, "the key size")?;
         let vs = size(value_size, "the value size")?;
         let inner = if open { RawHashMap::open(&path, cap, ks, vs) } else { RawHashMap::create(&path, cap, ks, vs) }.map_err(|e| open_err("the map", &path, e))?;
-        Ok(Self { path, capacity, key_size, value_size, inner })
+        Ok(Self { path, capacity, key_size, value_size, inner: Arc::new(inner) })
     }
 
     fn read(&self, key: &[u8]) -> PsResult<Option<PsObject>> {
@@ -778,6 +787,12 @@ impl HashMap {
 /// The operations of a `SubEtha.HashMap`.
 #[psmethods]
 impl HashMap {
+    /// Registers this object with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// How many entries are in it.
     pub fn count(&self) -> PsResult<u64> {
         Ok(self.inner.len() as u64)

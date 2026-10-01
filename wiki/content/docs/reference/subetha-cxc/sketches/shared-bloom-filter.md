@@ -355,14 +355,14 @@ item independent of key size". A 10M-URL Bloom at 1% FPR is
 - Bench: `crates/subetha-cxc/benches/shared_bloom_filter.rs` (insert,
   contains hit, contains miss, batch insert 1000, batch contains
   1000, storage witness vs `Mutex<HashSet<Vec<u8>>>`).
-- Underlying primitive: [SHARED_BIT_VEC.md](shared-bit-vec/) -
+- Underlying primitive: [Shared Bit Vec](shared-bit-vec/) -
   the lock-free `fetch_or` bit array the Bloom is layered over.
 - Sibling primitive:
-  [SHARED_COUNT_MIN_SKETCH.md](shared-count-min-sketch/) -
+  [Shared Count-Min Sketch](shared-count-min-sketch/) -
   counting frequency variant; Bloom answers "have we seen this?",
   CMS answers "how many times?".
 - Sibling primitive:
-  [SHARED_HYPER_LOG_LOG.md](shared-hyper-log-log/) -
+  [Shared HyperLogLog](shared-hyper-log-log/) -
   cardinality-estimation variant; Bloom answers membership, HLL
   answers "how many distinct?".
 - Original paper: Burton H. Bloom, "Space/Time Trade-offs in Hash

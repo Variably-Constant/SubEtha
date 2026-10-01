@@ -12,20 +12,18 @@
 //! | 6      | 64 * sizeof(T)             | Cache-line stride              |
 //! | 12     | 4096 * sizeof(T)           | Page-aligned stride            |
 //!
-//! K_step is the pointer-side form of a per-element bit-width axis
-//! (`K_inner`): it controls the granularity of iteration. The advantage over a
-//! runtime `stride: usize` is that K_step is a const-encoded shift
-//! amount; the compiler can fold `<< k_step` into address generation
-//! and SIMD ops know the stride at codegen time.
+//! K_step is the pointer-side form of the `K_stride` axis: it sets the
+//! granularity of iteration. The stride is `sizeof(T) << k_step`, one
+//! shift per pointer, and element `i` sits `i * stride` bytes past the
+//! base.
 //!
 //! # Architectural rationale
 //!
 //! BLAS GEMM iterates over matrix rows and columns with potentially
 //! different strides. NumPy's strided arrays do the same in higher
-//! dimensions. Today these are all encoded as runtime `stride: usize`
-//! fields - the compiler has to emit IMUL for each step. With KStep
-//! the stride is `1 << k_step` so the codegen is SHL (one cycle),
-//! and the compiler can hoist the shift amount as an immediate.
+//! dimensions. Both keep a runtime `stride: usize` field that can hold
+//! any value. A KStep stride is always a power-of-two multiple of
+//! `sizeof(T)`, carried in a `u8`.
 
 use std::marker::PhantomData;
 
@@ -71,7 +69,7 @@ impl<T> KStepPointer<T> {
     }
 
     /// Cache-line strided pointer (K_step chosen so stride >= 64
-    /// bytes). Walks every 64/sizeof(T) elements.
+    /// bytes). Walks every `1 << k_step` elements.
     ///
     /// # Safety
     ///

@@ -4,7 +4,7 @@
 //!
 //! This is the deeper async shape than [`crate::waker_ring`]. There the
 //! ring carries message bytes and the future lives in a heap queue
-//! (`Mutex<VecDeque>` in [`crate::task_pool`]). Here the future's
+//! (the lock-free queue in [`crate::task_pool`]). Here the future's
 //! `Arc<Task>` handle is the ring payload: a worker pops a handle,
 //! reconstructs the `Arc`, polls it; a `wake()` pushes the handle back
 //! into a ring. Scheduling = a ring push; running = a ring pop.
@@ -38,15 +38,17 @@
 //!
 //! # Handle / refcount discipline
 //!
-//! A task is in its home ring at most once, gated by a `scheduled`
-//! flag:
-//!  - `spawn` / `wake` flip `scheduled` false->true and push one
-//!    `Arc::into_raw` handle. A redundant wake (flag already true) drops
-//!    its clone instead of double-pushing.
-//!  - a worker pops a handle, `Arc::from_raw` reclaims that ref, clears
-//!    `scheduled`, and polls. `Ready` drops the future and the run-ref;
-//!    `Pending` drops the run-ref, leaving the future's stashed waker
-//!    clone as the liveness anchor until the next wake re-pushes.
+//! A task's run state is one atomic word, which keeps a task in its home
+//! ring at most once and lets one worker at a time poll it:
+//!  - `spawn`, and a wake that finds the task idle, push one
+//!    `Arc::into_raw` handle. A wake that finds the task queued or
+//!    finished drops its clone instead of double-pushing; one that lands
+//!    while a worker polls the task leaves a mark, and that worker pushes
+//!    the handle when its poll returns.
+//!  - a worker pops a handle, `Arc::from_raw` reclaims that ref, and
+//!    polls. `Ready` drops the future and the run-ref; `Pending` drops
+//!    the run-ref, leaving the future's stashed waker clone as the
+//!    liveness anchor until the next wake re-pushes.
 //!
 //! Because each live task occupies at most one slot of its home shard,
 //! a shard sized to `>= peak tasks homed there` never returns `Full`;
@@ -55,6 +57,7 @@
 //! liveness/home correlation) spins until a stealer drains the shard,
 //! which is deadlock-free whenever more than one worker runs.
 
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -62,33 +65,40 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Wake, Waker};
 use std::thread::JoinHandle;
 
-use parking_lot::Mutex;
-
+use crate::run_state::RunState;
 use crate::shared_ring::{SharedRing, PAYLOAD_BYTES};
 
-/// One scheduled unit of work. The future is `Option`-wrapped so a
-/// completed task drops its future and any later (spurious) wake that
-/// re-pushes the handle finds `None` and skips it.
+/// One scheduled unit of work.
 struct Task {
-    future: Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>,
+    /// Polled only by the worker that popped the task's handle, until
+    /// that poll returns; `None` once the future has completed.
+    future: UnsafeCell<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>,
     /// This task's home ready-ring shard; it always schedules here.
     home: Arc<SharedRing>,
     /// Live count of not-yet-complete tasks, shared with the executor;
     /// decremented exactly once when this task first returns `Ready`.
     pending: Arc<AtomicUsize>,
-    /// True while a handle for this task sits in its home ring. Gates
-    /// the at-most-one-handle-per-task invariant.
-    scheduled: AtomicBool,
+    /// Idle, queued, being polled, or finished. Gates the
+    /// at-most-one-handle-per-task invariant.
+    state: RunState,
 }
 
+// SAFETY: `future` is reached only by the worker between `RunState::start`
+// and the `pause` or `finish` that ends its poll, and the run state lets one
+// worker at a time hold the task that way. The other fields are `Sync`.
+unsafe impl Sync for Task {}
+
 impl Task {
-    /// Enqueue this task into its home ready shard, at most once. A
-    /// second caller while a handle is already queued drops its clone
-    /// instead of pushing a duplicate.
+    /// Wake the task: push a handle into its home ready shard when the
+    /// run state names this caller as the one to queue it.
     fn schedule(self: &Arc<Self>) {
-        if self.scheduled.swap(true, Ordering::AcqRel) {
-            return;
+        if self.state.wake() {
+            self.enqueue();
         }
+    }
+
+    /// Push one handle into the home ready shard.
+    fn enqueue(self: &Arc<Self>) {
         let raw = Arc::into_raw(Arc::clone(self)) as usize as u64;
         let mut buf = [0u8; PAYLOAD_BYTES];
         buf[..8].copy_from_slice(&raw.to_le_bytes());
@@ -198,10 +208,10 @@ impl RingExecutor {
         let home_idx =
             self.next_home.fetch_add(1, Ordering::Relaxed) % self.shards.len();
         let task = Arc::new(Task {
-            future: Mutex::new(Some(Box::pin(future))),
+            future: UnsafeCell::new(Some(Box::pin(future))),
             home: Arc::clone(&self.shards[home_idx]),
             pending: Arc::clone(&self.pending),
-            scheduled: AtomicBool::new(false),
+            state: RunState::new(),
         });
         task.schedule();
     }
@@ -255,22 +265,32 @@ impl RingExecutor {
 }
 
 /// Poll one task handle popped from a ready shard. Reclaims the ref the
-/// producer transferred into the ring, polls once, and on completion
-/// drops the future and decrements the live count.
+/// producer transferred into the ring and polls once. On completion it
+/// drops the future and decrements the live count; when a wake landed
+/// during the poll it pushes the handle again.
 fn run_handle(raw: usize) {
+    // SAFETY: `raw` came from `Arc::into_raw` in `enqueue`, and popping
+    // it from the ring hands that reference to this worker.
     let task = unsafe { Arc::from_raw(raw as *const Task) };
-    // Allow a wake during this poll to re-schedule the task.
-    task.scheduled.store(false, Ordering::Release);
-
-    let mut guard = task.future.lock();
-    if let Some(fut) = guard.as_mut() {
+    task.state.start();
+    let finished = {
+        // SAFETY: `start` made this worker the only one polling the task
+        // until the `pause` or `finish` below, and this borrow ends first.
+        let slot = unsafe { &mut *task.future.get() };
+        let future = slot.as_mut().expect("a queued task has not finished");
         let waker = Waker::from(Arc::clone(&task));
         let mut cx = Context::from_waker(&waker);
-        if fut.as_mut().poll(&mut cx).is_ready() {
-            *guard = None;
-            drop(guard);
-            task.pending.fetch_sub(1, Ordering::AcqRel);
+        let finished = future.as_mut().poll(&mut cx).is_ready();
+        if finished {
+            *slot = None;
         }
+        finished
+    };
+    if finished {
+        task.state.finish();
+        task.pending.fetch_sub(1, Ordering::AcqRel);
+    } else if task.state.pause() {
+        task.enqueue();
     }
     // Dropping `task` releases the run-ref. If the poll returned
     // Pending, the future's stashed waker clone keeps the task alive
@@ -309,6 +329,7 @@ fn worker_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_state::{PollProbe, WokenMidPoll};
     use std::sync::atomic::AtomicU64;
 
     /// A future that re-schedules itself `left` times before completing,
@@ -382,6 +403,26 @@ mod tests {
         }
         exec.wait_idle();
         assert_eq!(done.load(Ordering::Acquire), 4_000);
+        exec.shutdown();
+    }
+
+    #[test]
+    fn a_task_woken_during_its_poll_runs_again_and_never_in_two_polls_at_once() {
+        // Two workers, one task: every poll of the task wakes it and then
+        // stays in the poll, so the other worker, sweeping the shards, is
+        // free to take the task if a wake during a poll pushed its handle.
+        let exec = RingExecutor::new(2, 16);
+        let probe = Arc::new(PollProbe::default());
+        exec.spawn(WokenMidPoll { probe: Arc::clone(&probe), polls_left: 8 });
+        crate::test_races::within_lost(|| {
+            exec.pending() == 0 || probe.overlaps.load(Ordering::Acquire) > 0
+        });
+        assert_eq!(
+            probe.overlaps.load(Ordering::Acquire),
+            0,
+            "no poll of the task started while another was running"
+        );
+        assert_eq!(exec.pending(), 0, "the task completes");
         exec.shutdown();
     }
 

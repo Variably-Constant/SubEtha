@@ -19,8 +19,13 @@ futex-shaped `send_blocking` / `recv_blocking`. Wraps the
 "../coordination-types/cross-process-waker" >}}) instances (one
 for each side). The hot path (`try_push` / `try_pop`) is
 identical to the bare SPSC ring; the blocking calls add a
-pre-park spin and a kernel park backed by shared `futex` on
-Linux, `WaitOnAddress` on Windows.
+pre-park spin, a hardware monitor wait where the processor has
+one, and a kernel park backed by shared `futex` on Linux, and on
+Windows by `WaitOnAddress` for an anonymous ring or a named park
+event for a file- or shm-backed one. The spin and the monitor
+wait last as long as the process's
+[wait plan]({{< ref "../coordination-types/wait-calibration" >}})
+sets.
 
 > **The "SPSC + futex slot" primitive.** Producer's `try_push`
 > wakes the consumer-side waker after every successful publish.
@@ -31,17 +36,17 @@ Linux, `WaitOnAddress` on Windows.
 
 ## Constraints
 
-- **Single producer, single consumer**, enforced at compile time
-  by the inner `SpscRingCore` not being `Sync` and the wrapper
-  holding it through `Arc<SpscRingCore>`.
-- **Payload up to `SPSC_PAYLOAD_BYTES = 64` bytes per slot**;
+- One producer and one consumer, enforced at compile time by the
+  inner `SpscRingCore` not being `Sync` and the wrapper holding it
+  through `Arc<SpscRingCore>`.
+- A slot holds a payload of up to `SPSC_PAYLOAD_BYTES = 64` bytes;
   shorter pushes zero-fill the slot tail. Pops require an
   out-buffer of at least 64 bytes and always return the full 64
   (the slot stores no length prefix - framing is the payload
   format's job).
-- **Capacity must be a power of 2**.
-- **In-process anonymous** (`create_anon`) or **cross-process
-  file-backed** (`create` / `open`).
+- Capacity must be a power of 2.
+- A ring is in-process and anonymous (`create_anon`) or
+  cross-process and file-backed (`create` / `open`).
 
 ## Operations
 
@@ -100,7 +105,7 @@ wins only for an **in-process** consumer whose producer contends for cores
 
 Two ways to use it:
 
-- **Automatic**, toggled on the ring: `set_phase_locking(true)` makes
+- Automatic, toggled on the ring: `set_phase_locking(true)` makes
   `recv_blocking` run the predictor. A consumer-local estimator engages only
   after `PHASE_MIN_SUSTAINED_WAITS` (8) consecutive empty-ring waits on a
   regular cadence, and leaves "wait mode" after `PHASE_EXIT_FAST_RUN` (64)
@@ -109,7 +114,7 @@ Two ways to use it:
   `phase_locking_enabled()`, `phase_in_wait_mode()`, `phase_engaged()`, and
   the sticky `phase_predictive_catches()` (count of items caught by the
   guard-band spin - the syscall-free path).
-- **Explicit**, caller-owned estimator: `recv_phase_locked(out, &mut
+- Explicit, with a caller-owned estimator: `recv_phase_locked(out, &mut
   PhaseEstimator, guard_band, timeout, &mut PhaseRecvStats)`. Pass the same
   estimator across calls so it accumulates cadence; `PhaseRecvStats` counts
   how each item was caught (`fast_catches`, `predictive_parks`,
@@ -162,10 +167,10 @@ file-backed MMF).
 
 ## E2E proof
 
-- **Windows intra-process:** 50000 items in ~1.74s, 3124 consumer
+- Windows, intra-process: 50000 items in ~1.74s, 3124 consumer
   parks observed (~6.2% of recvs).
-- **Linux/WSL cross-process** (two binaries via file-backed MMF):
-  50000 items in ~0.55s, 288 to 323 cross-process parks per run
+- Linux/WSL, cross-process between two binaries over a file-backed
+  MMF: 50000 items in ~0.55s, 288 to 323 cross-process parks per run
   (~0.6% of recvs). Both processes exit `rc=0` across the
   back-to-back sweep.
 

@@ -341,7 +341,7 @@ pub unsafe extern "C" fn subetha_semaphore_acquire(handle: subetha_handle, timeo
 
 /// Give the permit `token` names back. Another process waiting on the
 /// semaphore is free to take it as soon as this returns, and the token
-/// names nothing afterwards.
+/// names nothing afterward.
 ///
 /// A token given back twice is refused rather than returning a permit the
 /// semaphore never lent, and so is a token from a permit that ended whose

@@ -13,7 +13,6 @@ description = "Exotic pointer types for the CXC / SubEtha IPC stack: content-pre
 
 [dependencies]
 subetha-core = { workspace = true }
-parking_lot = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

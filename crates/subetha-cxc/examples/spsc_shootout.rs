@@ -8,7 +8,7 @@
 //! so we can iterate fast without Criterion's measurement framing.
 //!
 //! Reports total elapsed + per-item ns + items/s for each variant
-//! plus the ratio against the SHARED_RING.md baseline.
+//! plus the ratio against the `crossbeam_channel` baseline.
 //!
 //! Run with:
 //!     cargo run --release --example spsc_shootout

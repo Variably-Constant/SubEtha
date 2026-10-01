@@ -26,8 +26,10 @@ each process's mapping in its address space.
 
 - **Cross-process / MMF-backed.** Requires a writable backing file
   path. For in-process workloads that never cross a process
-  boundary, prefer a typed-arena crate; the offset encoding buys
-  nothing without a second address space.
+  boundary, prefer a typed-arena crate or one of the
+  `subetha-pointers` exotic pointer types (for example
+  `UmbraPointer`); the offset encoding buys nothing without a second
+  address space.
 - **`T: Copy + 'static`.** No `Drop` glue runs on `free`. Types
   with destructors (`String`, `Vec`, `Box`) cannot live in a slot
   directly.

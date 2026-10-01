@@ -188,10 +188,10 @@ before potentially migrating to SharedHashMap.
 - Bench: `crates/subetha-cxc/benches/shared_vec.rs` (push, get,
   len vs `Mutex<Vec>` and `RwLock<Vec>`).
 - Consumer:
-  [SHARED_UNIVERSAL.md](shared-universal/) - Vec backing
+  [Shared Universal](shared-universal/) - Vec backing
   for insert-heavy phase.
-- Sibling primitive: [SHARED_HASH_MAP.md](../maps/shared-hash-map/) -
+- Sibling primitive: [Shared Hash Map](../maps/shared-hash-map/) -
   keyed cross-process map.
-- Sibling primitive: [SHARED_REGION.md](../arenas/shared-region/) -
+- Sibling primitive: [Shared Region](../arenas/shared-region/) -
   typed slot allocator with reuse; Vec is the simpler
   append-only variant.

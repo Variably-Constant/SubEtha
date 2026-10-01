@@ -181,7 +181,7 @@ registered is lost to it and nothing reports that: the push succeeds,
 the ring does not error, and a reader that started late looks exactly
 like one that is slow. Across processes the window is however long
 starting one takes. Publishing only once the readers are here is what
-closes it, because afterwards there is nothing left to detect.
+closes it, because afterward there is nothing left to detect.
 
 It does not promise that consumers stay: it answers about the moment
 it returns, and a consumer counted there can unregister immediately
@@ -224,6 +224,12 @@ implementing the same protocol shape.
 | push uncontended | **50.1 ns** | 172.6 ns | **3.4x faster** |
 | recv (paired with push) | **44.0 ns** | 121.0 ns | **2.7x faster** |
 | lag observer | **1.06 ns** | 49.2 ns | **46x faster** |
+
+An earlier capture on the same host (2026-06-02, Criterion with
+`--sample-size=15 --warm-up-time=1 --measurement-time=2`) measured
+push at 37.77 ns against 169.54 ns (4.49x faster), recv at 48.07 ns
+against 118.65 ns (2.47x faster) and the lag observer at 1.06 ns
+against 48.85 ns (46.3x faster).
 
 ### Reading the trade-offs
 
@@ -445,11 +451,11 @@ coordinator only blocks if ALL caches fall behind.
   persistence).
 - Bench: `crates/subetha-cxc/benches/shared_broadcast_ring.rs`
   (push, recv, lag vs `Mutex<VecDeque>` + cursors).
-- Sibling primitive: [SHARED_RING.md](shared-ring/) -
+- Sibling primitive: [Shared Ring](shared-ring/) -
   MPMC (each slot consumed once); BroadcastRing is the SPMC
   variant.
-- Underlying primitive: [SHARED_CELL.md](../cells/shared-cell/) -
+- Underlying primitive: [Shared Cell](../cells/shared-cell/) -
   per-slot SeqLock cell.
-- Sibling primitive: [PRIORITY_FANOUT.md](../coordination-types/priority-fanout/) -
+- Sibling primitive: [Priority Fanout](../coordination-types/priority-fanout/) -
   fan-out by priority (MPMC per priority); BroadcastRing is
   fan-out by subscriber.

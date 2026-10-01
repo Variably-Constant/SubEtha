@@ -9,7 +9,7 @@
 //!
 //! What is here is the thinnest possible Rust over that C. The
 //! declarations below are written against this crate's own header, and
-//! the only judgement in this file is about pointers and lengths.
+//! the only judgment in this file is about pointers and lengths.
 //!
 //! The test beside it drives these against
 //! `crates/subetha-cxc/vectors/rlc.txt`, which the first implementation

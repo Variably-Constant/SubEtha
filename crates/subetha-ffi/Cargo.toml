@@ -49,8 +49,8 @@ tcp-tls-bridge = ["tcp-bridge", "tls", "subetha-cxc/tcp-tls-bridge"]
 tls = ["subetha-cxc/tls"]
 
 [dependencies]
+subetha-core = { workspace = true }
 subetha-cxc = { workspace = true }
-arc-swap = { workspace = true }
 parking_lot = { workspace = true }
 
 # A current-thread runtime for strict mode, which drives a bridge on the
@@ -65,10 +65,10 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 # that it is in flight with a plain store. Already in the tree by way of
 # memmap2.
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc = "0.2.189"
 
 [dev-dependencies]
-cbindgen = "0.28"
+cbindgen = "0.29.4"
 criterion = { workspace = true }
 
 [[bench]]

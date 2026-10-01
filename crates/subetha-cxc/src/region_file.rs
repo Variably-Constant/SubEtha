@@ -83,7 +83,7 @@ mod tests {
     }
 
     /// A region can be removed while this process still has it mapped,
-    /// and the mapping keeps working afterwards. This is the property
+    /// and the mapping keeps working afterward. This is the property
     /// the whole last-holder design rests on, and the one Windows does
     /// not give a file opened the default way.
     #[test]

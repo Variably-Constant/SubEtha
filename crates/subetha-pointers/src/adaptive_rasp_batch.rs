@@ -2,15 +2,11 @@
 //! checked pointers, designed for high-throughput SIMD batch
 //! validation.
 //!
-//! Where `RaspPointer<T>` is an array-of-structures (AoS) 16-byte
-//! pointer that fits in one XMM register, `RaspBatch<T>` flips the
-//! layout: instead of storing the four fields (ptr, base, length,
-//! perms) packed in 16 bytes per pointer, it stores N pointers as
-//! four parallel `Vec`s. Each field's values are contiguous in
-//! memory, so SIMD batch validation can load 4 consecutive ptrs
-//! into one YMM register via a single `vmovdqu` - no GPR→SIMD
-//! domain crossings, no per-call ABI prologue overhead, and the
-//! `vpcmpgtq` packed-quadword compare runs at its design speed.
+//! Rather than packing each pointer's four fields (ptr, base,
+//! length, perms) together, `RaspBatch<T>` stores N pointers as four
+//! parallel `Vec`s. Each field's values are contiguous in memory, so
+//! SIMD batch validation can load 4 consecutive ptrs into one YMM
+//! register via a single `vmovdqu`, with no GPR→SIMD domain crossings.
 //!
 //! # Memory layout
 //!
@@ -29,22 +25,19 @@
 //! `check_read_all_avx2` validates the entire batch by processing 4
 //! consecutive entries per loop iteration:
 //!
-//! 1. `vmovdqu ymm0, [ptrs+offset]`    - 4 u64 ptrs into one YMM
-//! 2. `vmovdqu ymm1, [bases+offset]`   - 4 u64 bases into one YMM
-//! 3. `vpcmpgtq ymm2, ymm1, ymm0`      - parallel "base > ptr" check
-//! 4. `vmovdqu xmm3, [lengths+offset]` - 4 u32 lengths into one XMM
-//! 5. `vpmovzxdq ymm3, xmm3`           - zero-extend to 4 u64 lanes
-//! 6. `vpaddq ymm4, ymm1, ymm3`        - region_end = base + length
-//! 7. `vpaddq ymm5, ymm0, [size_t]`    - `access_end = ptr + size_of::<T>()`
-//! 8. `vpcmpgtq ymm6, ymm5, ymm4`      - parallel "access_end > region_end"
-//! 9. `vmovdqu xmm7, [perms+offset]`   - 4 u32 perms
-//! 10. permission + sealed checks via SIMD masks
+//! 1. `vmovdqu` - 4 u64 ptrs, then 4 u64 bases, into YMM registers
+//! 2. `vpmovzxdq` - 4 u32 lengths zero-extended to 4 u64 lanes
+//! 3. `vpaddq` - `region_end = base + length` and
+//!    `access_end = ptr + size_of::<T>()`
+//! 4. `vpxor` + `vpcmpgtq` - "base > ptr" and "access_end >
+//!    region_end" as unsigned compares (the sign bit flipped first,
+//!    since `vpcmpgtq` compares signed)
+//! 5. `vmovdqu` - 4 u32 perms; permission + sealed checks via SIMD
+//!    masks
 //!
-//! Total: ~12 SIMD instructions per 4 pointers = 3 instructions per
-//! pointer. The AoS path's ~30 instructions per 4 pointers (12
-//! `vmovq` GPR→SIMD crossings + 6 `vpunpcklqdq` + 3 `vinserti128` +
-//! 2 `vpcmpgtq`) is folded into 12 contiguous-load + arithmetic
-//! instructions with zero domain crossings.
+//! The AVX-512F path does the same for 8 entries with the unsigned
+//! `vpcmpuq`. Every path gives the scalar check's answer for every
+//! entry the batch accepts.
 
 use std::marker::PhantomData;
 
@@ -84,9 +77,10 @@ pub enum RaspError {
 /// Structure-of-arrays storage for bounds-checked pointers.
 ///
 /// `T` is a phantom type; each entry refers to an externally-owned
-/// `[T]` region. The caller is responsible for keeping the regions
-/// alive for the lifetime of the batch. Use `push_from_slice` with
-/// the returned slice as a borrow anchor.
+/// `[T]` region. The batch holds addresses, not borrows: the checks
+/// read only the recorded fields, and reading through an entry
+/// ([`RaspBatch::read_at`]) is `unsafe`, requiring its region to
+/// still be alive.
 pub struct RaspBatch<T> {
     ptrs: Vec<u64>,
     bases: Vec<u64>,
@@ -143,9 +137,9 @@ impl<T> RaspBatch<T> {
     pub fn is_empty(&self) -> bool { self.ptrs.is_empty() }
     pub fn capacity(&self) -> usize { self.ptrs.capacity() }
 
-    /// Push a new pointer from a borrowed slice. The returned slice
-    /// is the lifetime anchor; the batch's pointer is valid only as
-    /// long as the anchor is held.
+    /// Push a new pointer from a borrowed slice, which comes back
+    /// beside the index. The entry stays readable through `read_at`
+    /// only while the slice's memory does.
     pub fn push_from_slice<'a>(
         &mut self,
         slice: &'a [T],
@@ -308,6 +302,9 @@ impl<T> RaspBatch<T> {
         let size_t_vec = _mm256_set1_epi64x(size_t as i64);
         let read_bit_vec = _mm_set1_epi32(RaspPermission::Read as i32);
         let zero128 = _mm_setzero_si128();
+        // AVX2 compares 64-bit lanes as signed; flipping the sign bit of
+        // both operands makes the compare an unsigned one.
+        let sign = _mm256_set1_epi64x(i64::MIN);
 
         let mut count_in_simd = 0u32;
         for c in 0..chunks {
@@ -327,14 +324,20 @@ impl<T> RaspBatch<T> {
                 _mm_loadu_si128(self.perms.as_ptr().add(off) as *const __m128i)
             };
 
-            // Lower bound: base > ptr → fail
-            let cmp_lower = _mm256_cmpgt_epi64(v_bases, v_ptrs);
+            // Lower bound: base > ptr (unsigned) → fail
+            let cmp_lower = _mm256_cmpgt_epi64(
+                _mm256_xor_si256(v_bases, sign),
+                _mm256_xor_si256(v_ptrs, sign),
+            );
 
-            // Upper bound: access_end > region_end → fail
+            // Upper bound: access_end > region_end (unsigned) → fail
             let v_lengths_u64 = _mm256_cvtepu32_epi64(lengths_xmm);
             let v_region_end = _mm256_add_epi64(v_bases, v_lengths_u64);
             let v_access_end = _mm256_add_epi64(v_ptrs, size_t_vec);
-            let cmp_upper = _mm256_cmpgt_epi64(v_access_end, v_region_end);
+            let cmp_upper = _mm256_cmpgt_epi64(
+                _mm256_xor_si256(v_access_end, sign),
+                _mm256_xor_si256(v_region_end, sign),
+            );
 
             // Sealed: high bit of u32 perms (sign bit). _mm_movemask_ps
             // emits one bit per 4-byte lane from the sign bit. So a
@@ -417,16 +420,16 @@ impl<T> RaspBatch<T> {
                 _mm256_loadu_si256(self.perms.as_ptr().add(off) as *const __m256i)
             };
 
-            // Lower bound: base > ptr fails. Returns __mmask8 directly,
-            // one bit per lane.
-            let oob_lower_mask: u8 = _mm512_cmpgt_epi64_mask(v_bases, v_ptrs);
+            // Lower bound: base > ptr (unsigned) fails. Returns __mmask8
+            // directly, one bit per lane.
+            let oob_lower_mask: u8 = _mm512_cmpgt_epu64_mask(v_bases, v_ptrs);
 
-            // Upper bound: access_end > region_end fails.
+            // Upper bound: access_end > region_end (unsigned) fails.
             let v_lengths_u64 = _mm512_cvtepu32_epi64(lengths_ymm);
             let v_region_end = _mm512_add_epi64(v_bases, v_lengths_u64);
             let v_access_end = _mm512_add_epi64(v_ptrs, size_t_vec);
             let oob_upper_mask: u8 =
-                _mm512_cmpgt_epi64_mask(v_access_end, v_region_end);
+                _mm512_cmpgt_epu64_mask(v_access_end, v_region_end);
 
             // Sealed: high bit of each u32 in perms. movemask_ps reads
             // bit 31 of each 32-bit lane and emits an 8-bit mask for
@@ -506,6 +509,8 @@ impl<T> RaspBatch<T> {
         let size_t_vec = _mm256_set1_epi64x(size_t as i64);
         let read_bit_vec = _mm_set1_epi32(RaspPermission::Read as i32);
         let zero128 = _mm_setzero_si128();
+        // Sign-bit flip for unsigned compares, as in `count_valid_avx2`.
+        let sign = _mm256_set1_epi64x(i64::MIN);
 
         for c in 0..chunks {
             let off = c * 4;
@@ -523,11 +528,17 @@ impl<T> RaspBatch<T> {
                 _mm_loadu_si128(self.perms.as_ptr().add(off) as *const __m128i)
             };
 
-            let cmp_lower = _mm256_cmpgt_epi64(v_bases, v_ptrs);
+            let cmp_lower = _mm256_cmpgt_epi64(
+                _mm256_xor_si256(v_bases, sign),
+                _mm256_xor_si256(v_ptrs, sign),
+            );
             let v_lengths_u64 = _mm256_cvtepu32_epi64(lengths_xmm);
             let v_region_end = _mm256_add_epi64(v_bases, v_lengths_u64);
             let v_access_end = _mm256_add_epi64(v_ptrs, size_t_vec);
-            let cmp_upper = _mm256_cmpgt_epi64(v_access_end, v_region_end);
+            let cmp_upper = _mm256_cmpgt_epi64(
+                _mm256_xor_si256(v_access_end, sign),
+                _mm256_xor_si256(v_region_end, sign),
+            );
 
             let sealed_mask4 =
                 _mm_movemask_ps(_mm_castsi128_ps(perms_xmm)) as u32;
@@ -604,12 +615,12 @@ impl<T> RaspBatch<T> {
                 _mm256_loadu_si256(self.perms.as_ptr().add(off) as *const __m256i)
             };
 
-            let oob_lower_mask: u8 = _mm512_cmpgt_epi64_mask(v_bases, v_ptrs);
+            let oob_lower_mask: u8 = _mm512_cmpgt_epu64_mask(v_bases, v_ptrs);
             let v_lengths_u64 = _mm512_cvtepu32_epi64(lengths_ymm);
             let v_region_end = _mm512_add_epi64(v_bases, v_lengths_u64);
             let v_access_end = _mm512_add_epi64(v_ptrs, size_t_vec);
             let oob_upper_mask: u8 =
-                _mm512_cmpgt_epi64_mask(v_access_end, v_region_end);
+                _mm512_cmpgt_epu64_mask(v_access_end, v_region_end);
 
             let sealed_mask8 =
                 _mm256_movemask_ps(_mm256_castsi256_ps(perms_ymm)) as u32 & 0xFF;

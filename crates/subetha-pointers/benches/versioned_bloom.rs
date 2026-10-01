@@ -1,12 +1,11 @@
 //! Bench: VersionedPointer, VersionedChain, BloomPointer,
 //! BloomCascade, HlcVersionedPointer, VectorClockPointer.
 //!
-//! Measures the architectural-claim case for each primitive:
-//! visibility checks for VersionedPointer / HlcVersionedPointer,
-//! time-travel reads through VersionedChain, miss-rate amortization
-//! for BloomPointer and BloomCascade, and causal-vs-concurrent
-//! classification for VectorClock. (The upstream merkle_ptr group is
-//! omitted; that type is not part of this crate.)
+//! Measures each primitive on the case it is for: visibility checks
+//! for VersionedPointer / HlcVersionedPointer, time-travel reads
+//! through VersionedChain, miss-rate amortization for BloomPointer
+//! and BloomCascade, and causal-vs-concurrent classification for
+//! VectorClock.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -136,14 +135,14 @@ fn bloom_skip_vs_deref(c: &mut Criterion) {
 }
 
 // =========================================================
-// BloomCascade at the transition regime (32 keys per subset):
-// saturates Bloom64 but fits BloomFine. Native vs single-level
-// vs two-level cascade.
+// BloomCascade at the transition regime (32 keys per subset,
+// BloomFine's suggested capacity): saturates Bloom64 but fits
+// BloomFine. Native vs single-level vs two-level cascade.
 // =========================================================
 
 fn bloom_cascade_layered(c: &mut Criterion) {
     const N: usize = 1024;
-    const KEYS_PER_SUBSET: u64 = 32;  // saturates Bloom64, fits BloomFine
+    const KEYS_PER_SUBSET: u64 = 32;
     let mut native: Vec<Arc<Vec<u64>>> = Vec::with_capacity(N);
     let mut single: Vec<BloomPointer<Vec<u64>>> = Vec::with_capacity(N);
     let mut cascades: Vec<BloomCascade<Vec<u64>>> = Vec::with_capacity(N);
@@ -329,12 +328,13 @@ fn vector_clock_causal_classification(c: &mut Criterion) {
 }
 
 // =========================================================
-// BloomCascade at BloomFine SUGGESTED_CAPACITY (64 keys/subset).
+// BloomCascade at 64 keys per subset, twice BloomFine's suggested
+// capacity.
 // =========================================================
 
 fn bloom_skip_vs_deref_large(c: &mut Criterion) {
     const N: usize = 128;
-    const KEYS_PER_SUBSET: u64 = 64;  // == BloomFine::SUGGESTED_CAPACITY
+    const KEYS_PER_SUBSET: u64 = 64;
     let mut native: Vec<Arc<Vec<u64>>> = Vec::with_capacity(N);
     let mut cascades: Vec<BloomCascade<Vec<u64>>> = Vec::with_capacity(N);
     for i in 0..N as u64 {
@@ -368,9 +368,9 @@ fn bloom_skip_vs_deref_large(c: &mut Criterion) {
 }
 
 // =========================================================
-// Expensive-deref workload: Vec<String>::contains over 16
-// 32-char strings (cache-miss per byte compare) vs Bloom's
-// u64 hash + 4 bit tests staying in L1.
+// Expensive-deref workload: Vec<String>::contains over 8 32-byte
+// strings, each its own heap allocation, vs the Bloom check's one
+// u64 hash and 4 bit tests against the pointer's filter.
 // =========================================================
 
 fn bloom_expensive_deref(c: &mut Criterion) {

@@ -22,10 +22,7 @@ fn group_capability_validation(c: &mut Criterion) {
 
     // RaspBatch SoA: 10k pointers stored as parallel u64/u32 vecs so
     // single `vmovdqu` loads pack 4 ptrs / bases / lengths / perms
-    // into SIMD registers with zero GPR->SIMD domain crossings. This
-    // is the sole RASP API; the previous AoS RaspPointer /
-    // RaspWidePointer types have been replaced by this design after
-    // bench data showed AoS+SIMD was 2-3x slower than scalar.
+    // into SIMD registers with zero GPR->SIMD domain crossings.
     let storages: Vec<Vec<u64>> = (0..10_000).map(|i| vec![i as u64]).collect();
     let mut soa: RaspBatch<u64> = RaspBatch::with_capacity(10_000);
     for s in &storages {
@@ -74,7 +71,7 @@ fn group_capability_validation(c: &mut Criterion) {
     drop(soa);
 
     // ReadableCapability: same workload.
-    let read_caps: Vec<ReadableCapability<u64>> = storages.iter().map(|s| {
+    let read_caps: Vec<ReadableCapability<'_, u64>> = storages.iter().map(|s| {
         let (c, _a) = ReadableCapability::from_slice(
             s.as_slice(), CapabilityPermission::Read as u32,
         );
@@ -108,7 +105,7 @@ fn group_capability_validation(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for s in storages.iter_mut() {
-                let (mut c, _a) = WritableCapability::from_slice_mut(s.as_mut_slice());
+                let mut c = WritableCapability::from_slice_mut(s.as_mut_slice());
                 c.write(42).expect("capability write");
                 if let Ok(v) = c.read() { sum = sum.wrapping_add(v); }
             }
@@ -148,7 +145,7 @@ fn group_owned_capability_raii(c: &mut Criterion) {
         b.iter(|| {
             for i in 0..1_000u64 {
                 let owned = OwnedReadableCapability::new(i);
-                black_box(owned.read().expect("capability read"));
+                black_box(owned.cap().read().expect("capability read"));
                 // Dropped at end of iteration; RAII reclaims Box.
             }
         });
@@ -159,7 +156,7 @@ fn group_owned_capability_raii(c: &mut Criterion) {
             for i in 0..1_000u64 {
                 let mut owned = OwnedWritableCapability::new(i);
                 owned.cap_mut().write(i.wrapping_add(1)).expect("capability write");
-                black_box(owned.read().expect("capability read"));
+                black_box(owned.cap().read().expect("capability read"));
                 // Dropped at end of iteration; RAII reclaims Box.
             }
         });

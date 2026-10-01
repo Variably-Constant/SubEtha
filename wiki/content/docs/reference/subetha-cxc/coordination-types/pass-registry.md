@@ -22,17 +22,16 @@ ID -> closure mapping; any process can dispatch via
 `Pass { id, args }`.
 
 > **The "ship a closure across processes via ID indirection"
-> primitive.** `execute` at 78.40 ns vs direct closure call
-> 59.39 ns (the registry adds ~19 ns of RwLock-read + HashMap
-> lookup + Box deref). `register` at 53.00 ns. `is_registered`
-> at 17.97 ns. The architectural value is the dispatch
+> primitive.** The architectural value is the dispatch
 > convention, not raw perf: closures can't cross processes,
-> but ID+args can.
+> but ID+args can. The map is copied on write, so a dispatch
+> never waits on a registration and a registration never waits
+> on a running handler.
 
 **Constraints (read first):**
 
 - **In-process static registry**: each process maps `u32 id` to
-  its own `Box<dyn Fn(&[u8]) -> PassResult>`. There is no
+  its own `Arc<dyn Fn(&[u8]) -> PassResult>`. There is no
   shared MMF; cross-process value is the convention.
 - **Same ID must register the same closure in every
   participating process**: if process A's id=42 differs from
@@ -92,27 +91,29 @@ same closure semantics.
 ### register(id, f)
 
 ```text
-guard = REGISTRY.write()
-prev = guard.insert(id, Box::new(f))
-return prev    # Some(old_handler) or None
+replaced = REGISTRY.rcu(|map| copy of map with id -> Arc::new(f))
+return replaced.get(id)    # Some(old_handler) or None
 ```
 
-One RwLock write + HashMap insert. The replaced handler (if any)
-is returned; in the `register_pass!` macro it is dropped
+One copy of the map, one HashMap insert and one atomic swap of
+the map pointer; a registration that loses the swap to another
+copies the newer map and tries again. The replaced handler (if
+any) is returned; in the `register_pass!` macro it is dropped
 immediately.
 
 ### execute(pass)
 
 ```text
-guard = REGISTRY.read()
-match guard.get(&pass.closure_id):
+handler = REGISTRY.load().get(&pass.closure_id).cloned()
+match handler:
    Some(handler) -> handler(&pass.args)
    None -> Err(UnknownClosureId(pass.closure_id))
 ```
 
-One RwLock read + HashMap lookup + Box dispatch. The handler
-runs while the read guard is held; long-running handlers block
-concurrent registrations (but not concurrent executes).
+One atomic load, one HashMap lookup and one reference-count
+increment, then the handler runs holding nothing: a
+registration during the call swaps in a new map without
+waiting, and the call keeps the handler it found.
 
 ### `register_pass!` macro
 
@@ -130,18 +131,20 @@ binds the name only for documentation.
 ### Lifecycle accessors
 
 `unregister(id) -> Option<PassHandler>` removes a handler (returning it if
-present) - call it on graceful shutdown so the boxed `dyn Fn` and anything it
-captured drop. `is_registered(id) -> bool` and `registered_count() -> usize`
-are the read-side probes (one RwLock-read each); `registered_count` reports the
-number of handlers in this process's registry.
+present) - call it on graceful shutdown so the handler and anything it
+captured drop once no dispatch still holds it. `is_registered(id) -> bool` and
+`registered_count() -> usize` are the read-side probes (one atomic load each);
+`registered_count` reports the number of handlers in this process's registry.
 
 ---
 
 ## Bench evidence
 
-Bench harness: `crates/subetha-cxc/benches/pass_registry.rs`.
-Captured 2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
-`--sample-size=15 --warm-up-time=1 --measurement-time=2`.
+Bench harness: `crates/subetha-cxc/benches/pass_registry.rs`, run
+with Criterion's defaults (3 s warm-up, 100 samples over 5 s) on
+Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built for the
+x86-64 baseline, while other work kept 3.5 to 4.0 of the machine's 24
+hardware threads busy.
 
 Workload: registry pre-populated with 10 closures; dispatch
 selects id=5; args = 5-byte buffer; closure allocates a Vec for
@@ -149,32 +152,31 @@ the result.
 
 | Op | Time | Notes |
 |---|---:|---|
-| execute / global | **78.40 ns** | RwLock-read + HashMap lookup + dispatch |
-| direct_call / baseline | 59.39 ns | closure-only, no lookup layer |
-| execute / local_rwlock | 81.74 ns | same protocol, local instance |
-| execute / local_mutex | 80.71 ns | Mutex<HashMap> baseline |
-| register / global | 53.00 ns | RwLock-write + HashMap insert |
-| is_registered / global | 17.97 ns | RwLock-read + HashMap contains |
+| execute / global | **37.62 ns** | map load + HashMap lookup + reference-count increment + dispatch |
+| direct_call / baseline | 33.69 ns | closure-only, no lookup layer |
+| execute / local_rwlock | 40.88 ns | the same lookup behind a local `RwLock<HashMap>` |
+| execute / local_mutex | 44.80 ns | the same lookup behind a local `Mutex<HashMap>` |
+| register / global | 148.35 ns | copy of the map + HashMap insert + pointer swap |
+| is_registered / global | 8.04 ns | map load + HashMap contains |
 
 ### Reading the trade-offs
 
-1. **Registry indirection costs ~19 ns** over a direct closure
-   call (78.40 ns vs 59.39 ns). The lookup layer adds:
-   RwLock-read acquire + HashMap u32 lookup + Box deref +
-   RwLock-read release.
-2. **RwLock vs Mutex is tied on single-thread reads**
-   (81.74 ns vs 80.71 ns). The RwLock advantage materializes
-   under concurrent readers, which this bench does not measure.
-3. **register at 53 ns** includes RwLock-write + HashMap insert
-   (Vec allocation for the new Box) + drop of any prior handler.
-4. **is_registered at 17.97 ns** is the cheapest probe:
-   RwLock-read + HashMap contains + RwLock-read release.
+1. **Registry indirection costs ~3.9 ns** over a direct closure
+   call (37.62 ns vs 33.69 ns): one atomic load of the map, one
+   HashMap u32 lookup and one reference-count increment.
+2. **The copy-on-write map dispatches faster than a lock around
+   the same map**, single-threaded: 37.62 ns against 40.88 ns
+   behind an `RwLock` and 44.80 ns behind a `Mutex`.
+3. **register at 148 ns** pays for the copy: the 10-entry map is
+   cloned, the handler inserted and the new map swapped in.
+4. **is_registered at 8.04 ns** is the cheapest probe: one
+   atomic load and one HashMap contains.
 
 ### Rule 3b bench audit
 
 - **Fair contenders**: direct call (no registry; pure closure
-  cost), local `RwLock<HashMap>` (same protocol as global
-  static), local `Mutex<HashMap>` (alternate sync primitive).
+  cost), local `RwLock<HashMap>` and local `Mutex<HashMap>` (the
+  same lookup behind a lock).
 - **No `thread::spawn` inside `b.iter`**: single-threaded.
   Concurrent-correctness lives in source unit tests.
 - **Sizing**: 10 pre-registered closures (representative working
@@ -189,13 +191,12 @@ the result.
   A sends `Pass { id, args }` via any IPC; Process B's registry
   executes the same closure. Neither closures themselves nor
   function pointers can cross processes, but IDs + bytes can.
-- **Concurrent reader scaling**: under N concurrent executors,
-  the RwLock allows N readers in parallel; the Mutex
-  serializes. Single-thread bench does not capture this.
+- **Concurrent scaling**: executors read the map in parallel,
+  and a registration does not stall them. The single-threaded
+  bench does not capture this.
 - **Closure-result allocation**: the bench's closure allocates
-  a Vec for the result, dominating the 59 ns direct-call cost.
-  Stateless closures (`Fn(&[u8]) -> Ok(())`) show a much
-  smaller indirection ratio in the dispatch path.
+  a Vec for its result, and every row that calls it, the
+  33.69 ns direct call included, pays for that allocation.
 
 ---
 
@@ -294,13 +295,15 @@ at startup; it picks up the work unchanged.
   library affects every other library in the same binary.
 - **No type safety on args**: `&[u8]` -> `PassResult`. Callers
   must agree on serialization format.
-- **Replaced handler is dropped immediately**: any state
-  captured by the prior handler is dropped on re-register.
-- **RwLock-write on register blocks all readers**: high-
-  frequency re-registration starves dispatchers. Typical use
-  is one-time startup registration.
-- **No automatic unregister on drop**: the registry holds
-  Box<dyn Fn> indefinitely. Long-lived processes should
+- **Replaced handler outlives its registration only as long as
+  someone holds it**: `register` returns it, and a dispatch that
+  found it before the swap finishes running it.
+- **Every registration copies the whole map**: its cost grows
+  with the number of handlers, and a registration that races
+  another copies again. Typical use is one-time startup
+  registration.
+- **No automatic unregister on drop**: the registry holds each
+  handler indefinitely. Long-lived processes should
   unregister on graceful shutdown.
 
 ---
@@ -312,42 +315,31 @@ at startup; it picks up the work unchanged.
   must be enforced by build-time mechanisms (shared constants
   module, code-generation, etc.).
 
-- **Holding the read guard across slow IO inside the closure.**
-  `execute` runs the handler while the read guard is held;
-  registrations from other threads block. Keep handlers fast
-  or move slow IO outside the registry.
-
-- **Calling `execute` from inside another `execute`.** Nested
-  reads work (RwLock is recursive on the read side in many
-  platforms), but assumes the inner closure does not try to
-  register. Avoid mixing registration and execution within one
-  closure chain.
-
 - **Treating the registry as cross-process state.** It is not.
   Each process has its own `static REGISTRY`. Cross-process
   consistency comes from the convention, not the storage.
 
 - **Forgetting that `register` returns the prior handler.**
-  Ignoring the return when a prior handler held resources
-  leaks until the boxed `dyn Fn` is dropped. The
-  `register_pass!` macro drops the return explicitly.
+  A prior handler's captured resources live until the returned
+  handler is dropped. The `register_pass!` macro drops the
+  return explicitly.
 
 ---
 
 ## References
 
-- Source: `crates/subetha-cxc/src/pass_registry.rs` (178 lines, 6
-  unit tests covering register+execute round-trip, unknown
+- Source: `crates/subetha-cxc/src/pass_registry.rs` (6 unit
+  tests covering register+execute round-trip, unknown
   closure id, re-register overwrites, execution error,
   is_registered + count accuracy, and macro registration).
 - Bench: `crates/subetha-cxc/benches/pass_registry.rs` (execute,
   direct_call baseline, local RwLock, local Mutex, register,
   is_registered).
-- Composes with: [PROGRESS_TASK.md](progress-task/) and
-  [PRIORITY_FANOUT.md](priority-fanout/) - the
+- Composes with: [Progress Task](progress-task/) and
+  [Priority Fanout](priority-fanout/) - the
   cross-process dispatch substrates that ship `Pass { id, args }`
   payloads.
-- Composes with: [OWNER_LEASE.md](../ownership-types/owner-lease/) - the
+- Composes with: [Owner Lease](../ownership-types/owner-lease/) - the
   failover primitive that lets a secondary worker take over
   pass dispatch when the primary dies.
 - Architectural reference: Ray (task dispatch via function IDs),

@@ -1,27 +1,27 @@
-//! TLS-local observation ring.
+//! Per-instance observation ring.
 //!
-//! Primitives push small observation records on every flagged op; the
-//! sidecar consumes from the ring asynchronously. Push cost is one
-//! relaxed store + branch + increment - ~3 cycles steady state.
+//! Each primitive instance owns one ring. The threads that operate on
+//! the instance push small observation records into it, and the sidecar
+//! pops them. Until some ring in the process is armed, a push is one
+//! relaxed load of a process-global count and a branch.
 //!
-//! The ring is single-producer (the owning thread) and single-consumer
-//! (the sidecar). The producer never blocks; if the ring is full, the
-//! push is dropped silently (sampling, not coordination).
+//! The ring is multi-producer and single-consumer: any number of threads
+//! push at once, each record lands whole in a slot of its own, and one
+//! consumer at a time pops. A producer never blocks; if the ring is full,
+//! the push is dropped and returns `false` (sampling, not coordination).
 //!
 //! Each observation carries a `producer_thread_id` (a process-local
 //! sequential u32 allocated lazily per-thread via [`thread_id`]). The
-//! sidecar's drain folds these into per-op-kind cardinality tracking on
-//! `InstanceStats`, letting policies detect multi-producer / multi-
-//! consumer patterns directly instead of inferring them from FLAG_FULL
-//! / FLAG_EMPTY proxies.
+//! sidecar's drain folds these into `InstanceStats`' per-op-kind count
+//! of distinct producer threads, which its policies read to tell one
+//! producer from several.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 const RING_CAPACITY: usize = 4096;
 
-/// One observation record. 24 bytes - fits between two consecutive
-/// cache-line boundaries (3 per line, no straddling). The width
-/// carries a per-thread sequential identifier alongside the op data.
+/// One observation record: 24 bytes, 8-byte aligned, carrying a
+/// per-thread sequential identifier alongside the op data.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Observation {
@@ -36,8 +36,9 @@ pub struct Observation {
     /// Process-local sequential thread id of the producer
     /// (returned by [`thread_id`]). 0 = unspecified.
     pub producer_thread_id: u32,
-    /// Reserved for future-proofing the struct size to a multiple of
-    /// 8 bytes; keeps Observation at 24 bytes (3 per cache line).
+    /// Names the four bytes the `u64` field's alignment pads the record
+    /// to, so it has no uninitialized padding. The ring does not carry
+    /// it: a popped record's `_reserved` is 0.
     pub _reserved: u32,
 }
 
@@ -88,15 +89,15 @@ pub fn thread_id() -> u32 {
 /// The hot-path guard [`any_observer_armed`] reads this. When it is 0 - no
 /// consumer has attached a sidecar anywhere in the process, the raw-handle
 /// production case for every primitive - a per-op observation guard is a
-/// single relaxed load on this always-L1-resident global plus a
-/// predicted-not-taken branch, with the actual push kept out-of-line behind
-/// `#[cold]` so the op's hot path stays small enough to inline into its
-/// caller. Incremented on the disarmed->armed edge in [`ObservationRing::arm`];
+/// single relaxed load of this global plus a branch, with the actual push
+/// kept out-of-line behind `#[cold]` so the op's hot path stays small
+/// enough to inline into its caller. Incremented on the disarmed->armed
+/// edge in [`ObservationRing::arm`];
 /// decremented when an armed ring drops.
 pub static ARMED_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// True if any observation ring in the process is currently armed - one
-/// relaxed load on the always-hot [`ARMED_COUNT`] global, touching no
+/// relaxed load of the [`ARMED_COUNT`] global, touching no
 /// primitive state (no `self`, no boxed-ring deref). The intended shape is
 /// `if any_observer_armed() { self.push_<op>_cold() }` where the cold method
 /// is `#[cold] #[inline(never)]`: the raw-handle hot path never reads the
@@ -106,10 +107,29 @@ pub fn any_observer_armed() -> bool {
     ARMED_COUNT.load(Ordering::Relaxed) != 0
 }
 
-/// SPSC ring used by one producer thread (push) and one consumer (sidecar).
+/// One slot of the ring: an [`Observation`]'s fields held in atomics,
+/// and the position the slot is at. A slot at position `p` takes a
+/// record while its sequence is `p`, holds one once it is `p + 1`, and
+/// is free for position `p + RING_CAPACITY` once the consumer has taken
+/// it. The fields are written before the sequence is published and read
+/// after it is seen, so no record is read while it is being written.
+#[repr(C)]
+struct Slot {
+    sequence: AtomicU32,
+    instance_id: AtomicU32,
+    /// `op_kind` in the low 16 bits, `flags` in the high 16.
+    kind_and_flags: AtomicU32,
+    producer_thread_id: AtomicU32,
+    latency_ticks: AtomicU64,
+}
+
+const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Observation>());
+
+/// Multi-producer, single-consumer ring of observations.
 ///
-/// Head is written by the consumer, read by the producer.
-/// Tail is written by the producer, read by the consumer.
+/// `tail` is the next position a producer claims and `head` the next one
+/// the consumer pops. Producers claim a position with a compare-and-swap
+/// on `tail` and never read `head`; only the consumer moves `head`.
 #[repr(C, align(64))]
 pub struct ObservationRing {
     head: AtomicU32,
@@ -123,18 +143,16 @@ pub struct ObservationRing {
     /// cache line the producer already owns.
     armed: AtomicBool,
     _pad_a: [u8; 3],
-    /// Lazily-allocated heap buffer of `RING_CAPACITY` observations, null
-    /// until armed. A raw `create()` handle that never attaches a sidecar
-    /// never allocates the ~96 KiB buffer - the dominant per-instance
-    /// cost of the observation machinery. `arm()` allocates it
-    /// (zero-filled, i.e. all `Observation::ZERO`) and publishes the
-    /// pointer before setting `armed`. Co-located with `tail`/`armed` so
-    /// the producer reads gate + buffer pointer from one cache line.
-    buf: AtomicPtr<core::cell::UnsafeCell<Observation>>,
+    /// Lazily-allocated heap buffer of `RING_CAPACITY` slots, null until
+    /// armed. A raw `create()` handle that never attaches a sidecar never
+    /// allocates the 96 KiB buffer - the dominant per-instance cost of
+    /// the observation machinery. `arm()` allocates it, sets each slot's
+    /// sequence to its index, and publishes the pointer before setting
+    /// `armed`. Co-located with `tail`/`armed` so the producer reads gate
+    /// + buffer pointer from one cache line.
+    buf: AtomicPtr<Slot>,
     _pad1: [u8; 48],
 }
-
-unsafe impl Sync for ObservationRing {}
 
 impl ObservationRing {
     pub const fn new() -> Self {
@@ -152,7 +170,7 @@ impl ObservationRing {
     /// Heap layout of the lazily-allocated observation buffer.
     #[inline]
     fn buf_layout() -> std::alloc::Layout {
-        std::alloc::Layout::array::<core::cell::UnsafeCell<Observation>>(RING_CAPACITY)
+        std::alloc::Layout::array::<Slot>(RING_CAPACITY)
             .expect("observation buffer layout is valid")
     }
 
@@ -165,7 +183,7 @@ impl ObservationRing {
     /// the auto-stamp keeps the per-primitive push sites mechanical.
     #[inline(always)]
     pub fn push(&self, obs: Observation) -> bool {
-        // Hot gate: a single relaxed load on the always-L1 process-global,
+        // Hot gate: a single relaxed load of the process-global,
         // predicted-not-taken on the raw-handle path. Crucially the actual
         // store machinery is out-of-line behind `#[cold]`, so this method's
         // hot path is just load + test + branch - small enough that callers
@@ -217,53 +235,98 @@ impl ObservationRing {
         if obs.producer_thread_id == 0 {
             obs.producer_thread_id = thread_id();
         }
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Acquire);
-        let next = tail.wrapping_add(1);
-        if next.wrapping_sub(head) as usize > RING_CAPACITY {
-            return false;
+        let mut pos = self.tail.load(Ordering::Relaxed);
+        loop {
+            // SAFETY: `buf` holds `RING_CAPACITY` initialized slots for as
+            // long as the ring lives, and the index is reduced modulo that.
+            let slot = unsafe { &*buf.add(pos as usize % RING_CAPACITY) };
+            let lead = slot.sequence.load(Ordering::Acquire).wrapping_sub(pos) as i32;
+            if lead == 0 {
+                // The slot is free for `pos`: claim the position.
+                match self.tail.compare_exchange_weak(
+                    pos,
+                    pos.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        slot.instance_id.store(obs.instance_id, Ordering::Relaxed);
+                        slot.kind_and_flags.store(
+                            u32::from(obs.op_kind) | (u32::from(obs.flags) << 16),
+                            Ordering::Relaxed,
+                        );
+                        slot.producer_thread_id.store(obs.producer_thread_id, Ordering::Relaxed);
+                        slot.latency_ticks.store(obs.latency_ticks, Ordering::Relaxed);
+                        slot.sequence.store(pos.wrapping_add(1), Ordering::Release);
+                        return true;
+                    }
+                    Err(current) => pos = current,
+                }
+            } else if lead < 0 {
+                // The slot still holds the record from one lap back: the
+                // ring is full.
+                return false;
+            } else {
+                // Another producer claimed `pos` first.
+                pos = self.tail.load(Ordering::Relaxed);
+            }
         }
-        let slot = (tail as usize) % RING_CAPACITY;
-        unsafe { *(*buf.add(slot)).get() = obs; }
-        self.tail.store(next, Ordering::Release);
-        true
     }
 
     /// Consumer-side pop. Single-consumer; caller must serialize.
+    ///
+    /// Returns `None` when the next record in order has not been
+    /// published yet, including one a producer has claimed and is still
+    /// writing.
     pub fn pop(&self) -> Option<Observation> {
         let buf = self.buf.load(Ordering::Acquire);
         if buf.is_null() {
             return None;
         }
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head == tail {
+        let pos = self.head.load(Ordering::Relaxed);
+        // SAFETY: as in `push_cold`.
+        let slot = unsafe { &*buf.add(pos as usize % RING_CAPACITY) };
+        if slot.sequence.load(Ordering::Acquire) != pos.wrapping_add(1) {
             return None;
         }
-        let slot = (head as usize) % RING_CAPACITY;
-        let obs = unsafe { *(*buf.add(slot)).get() };
-        self.head.store(head.wrapping_add(1), Ordering::Release);
+        let kind_and_flags = slot.kind_and_flags.load(Ordering::Relaxed);
+        let obs = Observation {
+            instance_id: slot.instance_id.load(Ordering::Relaxed),
+            op_kind: kind_and_flags as u16,
+            flags: (kind_and_flags >> 16) as u16,
+            latency_ticks: slot.latency_ticks.load(Ordering::Relaxed),
+            producer_thread_id: slot.producer_thread_id.load(Ordering::Relaxed),
+            _reserved: 0,
+        };
+        slot.sequence.store(pos.wrapping_add(RING_CAPACITY as u32), Ordering::Release);
+        self.head.store(pos.wrapping_add(1), Ordering::Relaxed);
         Some(obs)
     }
 
     /// Arm the ring so producers begin pushing observations. Called once
     /// when a consumer (the sidecar) registers the owning instance. This
-    /// lazily allocates the ~96 KiB observation buffer (zero-filled, i.e.
-    /// all `Observation::ZERO`) and publishes it before setting `armed`,
+    /// lazily allocates the 96 KiB observation buffer, with each slot free
+    /// for its first position, and publishes it before setting `armed`,
     /// so a raw `create()` handle that never arms pays nothing - neither
     /// the per-push work nor the buffer allocation. Until armed,
-    /// [`push`](Self::push) is a single relaxed load + return. Idempotent;
-    /// the buffer is allocated at most once even under racing callers.
+    /// [`push`](Self::push) is a single relaxed load + return. Idempotent:
+    /// racing callers publish one buffer, and a caller that loses the race
+    /// frees its own.
     pub fn arm(&self) {
         if self.buf.load(Ordering::Acquire).is_null() {
             let layout = Self::buf_layout();
             // SAFETY: layout has non-zero size; alloc_zeroed yields a
-            // valid all-zero block, which is the bit pattern of
-            // `Observation::ZERO` for every slot.
-            let ptr = unsafe { std::alloc::alloc_zeroed(layout) }
-                as *mut core::cell::UnsafeCell<Observation>;
+            // valid all-zero block, and zero is a valid value of every
+            // atomic in a `Slot`.
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) } as *mut Slot;
             if ptr.is_null() {
                 std::alloc::handle_alloc_error(layout);
+            }
+            // Slot `i` starts free for position `i`. The buffer is not
+            // published yet, so nothing else reads these slots.
+            for i in 1..RING_CAPACITY {
+                // SAFETY: `i` is below the `RING_CAPACITY` slots allocated.
+                unsafe { (*ptr.add(i)).sequence.store(i as u32, Ordering::Relaxed) };
             }
             // Publish. If a concurrent caller won the race, free ours.
             if self
@@ -417,5 +480,64 @@ mod tests {
         ring.push(obs);
         let got = ring.pop().unwrap();
         assert_eq!(got.producer_thread_id, 42, "explicit tid should not be overwritten");
+    }
+
+    #[test]
+    fn every_push_from_concurrent_producers_is_popped_once() {
+        // Threads sharing one primitive instance push into its one ring
+        // at once. Each round fills the ring exactly, so every push has
+        // room, and every push that returns true comes out once, whole.
+        const THREADS: u64 = 8;
+        const ROUNDS: usize = 64;
+        let per_thread = RING_CAPACITY as u64 / THREADS;
+        let ring = ObservationRing::new();
+        ring.arm();
+        for round in 0..ROUNDS {
+            let start = std::sync::Barrier::new(THREADS as usize);
+            let accepted: u64 = std::thread::scope(|s| {
+                let pushers: Vec<_> = (0..THREADS)
+                    .map(|t| {
+                        let (ring, start) = (&ring, &start);
+                        s.spawn(move || {
+                            start.wait();
+                            (0..per_thread)
+                                .filter(|i| {
+                                    ring.push(Observation {
+                                        instance_id: t as u32,
+                                        latency_ticks: (t << 32) | i,
+                                        ..Observation::ZERO
+                                    })
+                                })
+                                .count() as u64
+                        })
+                    })
+                    .collect();
+                pushers.into_iter().map(|p| p.join().unwrap()).sum()
+            });
+            let mut popped = std::collections::HashSet::new();
+            while let Some(obs) = ring.pop() {
+                assert_eq!(
+                    u64::from(obs.instance_id),
+                    obs.latency_ticks >> 32,
+                    "round {round}: a record holds fields of two different pushes"
+                );
+                assert!(
+                    popped.insert(obs.latency_ticks),
+                    "round {round}: record {:#x} came out twice",
+                    obs.latency_ticks
+                );
+            }
+            assert_eq!(
+                accepted,
+                THREADS * per_thread,
+                "round {round}: a push was refused with room in the ring"
+            );
+            assert_eq!(
+                popped.len() as u64,
+                accepted,
+                "round {round}: {accepted} pushes returned true and {} records came out",
+                popped.len()
+            );
+        }
     }
 }

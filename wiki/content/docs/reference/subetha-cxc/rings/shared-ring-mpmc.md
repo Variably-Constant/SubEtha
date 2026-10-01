@@ -19,7 +19,9 @@ the consumer-side CAS Vyukov MPMC needs is not present here.
 
 Per-producer FIFO is preserved (each producer's items arrive at
 one consumer in push order). Global FIFO across producers is not
-preserved. When global FIFO matters, use
+preserved: items from different producers interleave at different
+consumers according to which consumer owns which producer's ring.
+When global FIFO matters, use
 [`SharedRing`](../shared-ring/) (Vyukov MPMC).
 
 > **The "composed N x M Lamport grid" primitive.** Push cost is
@@ -73,14 +75,30 @@ Consumers take rings round-robin: consumer `m` drains every ring
 Consumer i owns producer rings i, i + M, i + 2*M, etc. For
 N=4 / M=2: consumer 0 drains rings {0, 2}, consumer 1 drains
 rings {1, 3}. For N=M every consumer owns exactly one ring and
-per-pop cost is pure Lamport SPSC.
+per-pop cost is pure Lamport SPSC. For N > M each consumer
+round-robins its ceil(N / M) rings the way `SharedRingMpsc`'s
+consumer does.
+
+The factory builds N rings, then assigns ring i to consumer
+(i % M). At N=8 / M=2:
+
+```text
+ring 0 -> consumer 0   ring 4 -> consumer 0
+ring 1 -> consumer 1   ring 5 -> consumer 1
+ring 2 -> consumer 0   ring 6 -> consumer 0
+ring 3 -> consumer 1   ring 7 -> consumer 1
+```
 
 Static partitioning means each consumer is sole-drainer of its
 rings. No consumer-side CAS, no work-stealing. The trade is
 load-balance brittleness: if one consumer's producers are
 backlogged and another's are quiet, the second consumer goes
-idle. For workloads with skewed producer rates, a
-[work-stealing deque](../shared-deque/) is the better primitive.
+idle while the first falls behind. For symmetric workloads, N
+producers pushing at similar rates, the partition is already
+balanced. For workloads with skewed producer rates, a
+[work-stealing deque](../shared-deque/) is the better primitive:
+its consumers steal from any ring rather than draining a fixed
+subset.
 
 ## Worked example: symmetric MPMC, in-process
 
@@ -108,6 +126,8 @@ let cons: Vec<_> = consumers.into_iter().map(|c| {
     std::thread::spawn(move || -> u32 {
         let mut got = 0u32;
         let mut out = [0u8; SPSC_PAYLOAD_BYTES];
+        // A fixed count keeps the example short; production code
+        // stops a consumer with an explicit shutdown signal.
         while got < 20_000 {
             if c.try_pop(&mut out).is_ok() {
                 got += 1;
@@ -124,6 +144,17 @@ let totals: Vec<u32> = cons.into_iter().map(|c| c.join().unwrap()).collect();
 assert_eq!(totals.iter().sum::<u32>(), 40_000);
 ```
 
+An asymmetric grid, 4 producers and 2 consumers:
+
+```rust
+use subetha_cxc::SharedRingMpmc;
+
+let (producers, consumers) =
+    SharedRingMpmc::create_anon_grid(4, 2, 256)?;
+// consumer 0 drains rings 0, 2; consumer 1 drains rings 1, 3.
+// Each consumer round-robins its 2-ring subset.
+```
+
 Cross-process file-backed grid:
 
 ```rust
@@ -138,9 +169,10 @@ let (_producers, consumers) =
 // drains the partitioned subset
 ```
 
-The round-robin partition is deterministic from N + M alone, so
-both sides agree on which consumer owns which rings without any
-out-of-band coordination.
+Both sides see the same N producer rings (files `/tmp/mpmc.0.bin`
+through `/tmp/mpmc.3.bin`), and the round-robin partition is
+deterministic from N + M alone, so both sides agree on which
+consumer owns which rings without any out-of-band coordination.
 
 ## Bench evidence
 
@@ -158,7 +190,25 @@ Absolute numbers drift run to run on a desktop host; the ~3x lead
 of the composed grid over both Vyukov MPMC and crossbeam's bounded
 MPMC channel is the stable signal, because every push is pure
 Lamport SPSC (zero CAS contention) and every pop is the same on
-its owning ring.
+its owning ring. Vyukov MPMC under 4 producers + 4 consumers
+fights over two contended cache lines (`producer_seq` and
+`consumer_seq`), and crossbeam's bounded channel coordinates on
+both sides in a similar way.
+
+An earlier capture of the same shootout on the same host measured
+the composed grid at 20.96 M items/s (3.49x Vyukov, 3.10x
+crossbeam), `SharedRing` at 6.00 M items/s (0.89x crossbeam) and
+`crossbeam_channel::bounded(4096)` at 6.75 M items/s (1.13x
+Vyukov).
+
+The comparison is held to:
+
+- **Same shape across contenders**: 4 producers + 4 consumers,
+  250,000 items per producer, 16-byte payloads, capacity 4096.
+- **Same busy-spin Full / Empty loop** for all three.
+- **Best-of-5 with one warmup** to damp Windows scheduler variance.
+- **The composed grid is 4 x 4**, each consumer owning one ring,
+  the cleanest shape.
 
 ## When to reach for `SharedRing` (Vyukov) instead
 
@@ -169,10 +219,13 @@ requirement**:
   consumers in monotonic `producer_seq` order. Composed grids
   give per-producer FIFO only.
 - **Total ordering for a transaction stream**: each consumer
-  needs to see the same ordering of every producer's pushes.
+  needs to see the same ordering of every producer's pushes
+  (composed grids give different consumers different
+  interleavings).
 - **Single MMF file**: the composed grid uses N files (one per
   producer ring). A single `SharedRing` is one file regardless
-  of producer count.
+  of producer count, which matters for cross-process attach
+  protocols that expect one file per channel.
 
 For everything else (work distribution, fan-in pipelines, task
 queues, telemetry aggregation, request dispatch), the composed
@@ -182,14 +235,19 @@ grid is the right default.
 
 - **`n_producers >= n_consumers`**: the factory panics at runtime
   if violated.
-- **Per-producer FIFO only**: use `SharedRing` for global FIFO.
+- **Per-producer FIFO only**: cross-producer ordering is the
+  round-robin drain order, which depends on consumer scheduling.
+  Use `SharedRing` for global FIFO.
 - **Static partitioning**: consumer i owns rings (i mod M)
-  forever. For dynamic load balancing use a
-  [work-stealing deque](../shared-deque/).
-- **N files in file-backed mode**: cross-process attach via
-  `open_grid` opens all N files in parallel.
+  forever. If one consumer's producers go quiet while another's
+  back up, the quiet consumer idles. For dynamic load balancing
+  use a [work-stealing deque](../shared-deque/).
+- **N files in file-backed mode**: `create_grid` makes one MMF
+  per producer ring at `<path_prefix>.{i}.bin`, and cross-process
+  attach via `open_grid` opens all N files in parallel.
 - **Memory scales with N**: each producer ring carries its own
-  header (192 B) + capacity * 64 B payload.
+  header (192 B) + capacity * 64 B payload. At 64 producers and
+  capacity 1024 that is about 4 MB of ring storage.
 
 ## References
 
@@ -206,6 +264,7 @@ grid is the right default.
   [shared-ring](../shared-ring/) (Vyukov MPMC, global-FIFO
   override),
   [shared-broadcast-ring](../shared-broadcast-ring/) (fan-out
-  variant where every consumer sees every item),
+  variant where every consumer sees every item, the other shape
+  sometimes called "MPMC"),
   [shared-deque](../shared-deque/) (work-stealing variants for
   skewed-producer loads).

@@ -9,12 +9,16 @@ weight: 23
 ![Layout](https://img.shields.io/badge/Layout-MMF--backed-green)
 ![Axis](https://img.shields.io/badge/axis-protocol--family-brightgreen)
 
-One-producer many-subscriber broadcast primitive with
+Many-producer many-subscriber broadcast primitive with
 per-subscriber positions. Where a regular ring (`SpscRingCore`)
-has one consumer position, PubSubRing exposes the producer's
-monotonic head as the absolute position and lets each subscriber
-walk positions independently via its own
+has one consumer position, PubSubRing exposes its monotonic head
+as the absolute position and lets each subscriber walk positions
+independently via its own
 [`SubscriberPosition`](../../coordination-types/subscriber-position/).
+Any number of threads or processes publish at once: each publish
+claims its position with one atomic add on the head, and waits only
+when it has come a full lap round to a slot whose earlier item has
+not landed.
 
 ## Slot layout
 
@@ -44,15 +48,15 @@ walk positions independently via its own
 
 | Call | Behavior |
 |---|---|
-| `ring.publish(payload: &[u8]) -> u64` | Single producer writes one item; returns the assigned position. |
+| `ring.publish(payload: &[u8]) -> u64` | Claim a position and write one item there, from any thread or process; returns the position. |
 | `ring.read_at(position, out: &mut [u8]) -> Result<(), PubSubReadError>` | Read at absolute position; copies payload into `out`. |
-| `ring.head() -> u64` | Acquire load of the producer's head. |
+| `ring.head() -> u64` | The next position a publish will claim. A position below it can still be mid-write; `read_at` reports it `Pending` until it lands. |
 | `ring.capacity() -> usize` | Slot count. |
 | `pubsub_ring_file_size(capacity) -> usize` | Bytes required for a capacity-`N` ring. |
 
 `PubSubReadError`:
 - `Pending` - position hasn't been published yet.
-- `Lost` - position has been overwritten by the producer (subscriber lagged > capacity).
+- `Lost` - position has been overwritten by a later publish (subscriber lagged > capacity).
 
 ## PubSubSubscriber wrapper
 
@@ -101,7 +105,7 @@ runs 1 producer + 3 subscribers: subs A and B drain every item
 
 ## When to reach for this primitive
 
-- One producer fans out to N independent subscribers with
+- One or more producers fan out to N independent subscribers with
   separate read positions.
 - Subscribers that want restart-resume via
   [`SubscriberPosition`](../../coordination-types/subscriber-position/).

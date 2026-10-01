@@ -576,6 +576,34 @@ impl OrderingRegion {
         })
     }
 
+    /// Open an existing named-shm region. As [`open`](Self::open) does
+    /// for a file, validates the magic, adopts the creator's stamp kind
+    /// and leaves the layout as it found it, so the live mode flag,
+    /// counters, and watermarks survive the attach.
+    pub fn open_shm(
+        shm: crate::shm_file::ShmFile,
+        max_producers: usize,
+    ) -> Result<Self, RingError> {
+        let total = ordering_region_size(max_producers);
+        let mut shm = shm;
+        if shm.len() < total {
+            return Err(RingError::LayoutMismatch);
+        }
+        let raw_ptr = shm.as_mut_slice().as_mut_ptr();
+        let header = unsafe { &*(raw_ptr as *const OrderingHeader) };
+        if header.magic != ORDERING_MAGIC {
+            return Err(RingError::LayoutMismatch);
+        }
+        let kind = StampKind::from_u32(header.stamp_kind)
+            .ok_or(RingError::LayoutMismatch)?;
+        Ok(Self {
+            _backing: OrderingBacking::Shm(shm),
+            raw_ptr,
+            max_producers,
+            kind,
+        })
+    }
+
     /// Stamp kind this region was created with.
     pub fn stamp_kind(&self) -> StampKind { self.kind }
 

@@ -5,14 +5,19 @@ weight: 40
 # Reading sidecar observations
 
 The [cross-process round-trip](cross-process-roundtrip.md) used a bare
-`SharedHashMap`. To have the sidecar *observe* a primitive - drain its
-op stream into `InstanceStats` - you register it by wrapping it in a
-`SidecarBox`. This chapter wraps a map, drives some ops, and shows what
-the sidecar then saw, in detail.
+map. To have the sidecar *observe* a primitive - drain its op stream
+into `InstanceStats` - you register it: in Rust by wrapping it in a
+`SidecarBox`, and in Python and PowerShell by calling the object's
+`observe()`, which returns a registration. This chapter registers a
+map, drives some ops, and shows what the sidecar then saw, in detail.
+
+Each binding reaches the same sidecar the Rust does: one per process,
+running in the process that registered the object.
 
 ## The Observation record
 
-Each primitive op pushes one `Observation` to its thread-local ring.
+Each primitive op pushes one `Observation` to the observation ring
+that primitive instance owns.
 The struct is 24 bytes, three per cache line, no straddling:
 
 ```rust,no_run
@@ -39,6 +44,9 @@ pub struct Observation {
 
 `InstanceStats` is a snapshot of the drain-and-fold accumulator:
 
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
 ```rust,no_run
 use subetha_cxc::SharedHashMap;
 use subetha_sidecar::{global, SidecarBox};
@@ -53,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..1_000u32 {
         m.insert(i, i as u64)?;   // pushes an OP_INSERT observation
-        let _ = m.get(&i);        // pushes an OP_GET observation
+        m.get(&i);                // pushes an OP_GET observation
     }
     // Force one synchronous scan so the ring drains into stats
     // (the 200 us poll would otherwise pick it up on its own).
@@ -69,12 +77,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+{{< /tab >}}
+
+{{< tab name="Python" >}}
+```python
+import os
+import tempfile
+
+import subetha
+from subetha import sidecar
+
+path = os.path.join(tempfile.gettempdir(), "observed.bin")
+
+with subetha.HashMap(path, 1024, 4, 8) as m:
+    # observe() registers the map with the process's sidecar. A map
+    # nobody observes records nothing; the registration is what plugs it
+    # into the observation pipeline.
+    with m.observe() as registration:
+        for i in range(1000):
+            key = i.to_bytes(4, "little")
+            m.insert(key, i.to_bytes(8, "little"))  # an insert observation
+            m.get(key)                               # a get observation
+        # Force one synchronous scan so the ring drains into stats
+        # (the 200 us poll would otherwise pick it up on its own).
+        sidecar.scan_now()
+
+        s = registration.stats()
+        print("ops_observed          =", s.ops_observed)
+        print(f"contention_rate       = {s.contention_rate():.3f}")
+        print("op_kind_counts        =", s.op_kind_counts)
+        print("average_latency_ticks =", s.average_latency_ticks())
+        print("total_latency_ticks   =", s.total_latency_ticks)
+        print("migrations_triggered  =", s.migrations_triggered)
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+Import-Module SubEtha
+$path = Join-Path ([IO.Path]::GetTempPath()) 'observed.bin'
+
+$m = New-SubEthaHashMap -Path $path -Capacity 1024 -KeySize 4 -ValueSize 8
+# Observe() registers the map with the process's sidecar. A map nobody
+# observes records nothing; the registration is what plugs it into the
+# observation pipeline.
+$registration = $m.Observe()
+foreach ($i in 0..999) {
+    $key = [BitConverter]::GetBytes([uint32]$i)
+    $null = $m.Insert($key, [BitConverter]::GetBytes([uint64]$i)) # an insert observation
+    $null = $m.Get($key)                                           # a get observation
+}
+# Force one synchronous scan so the ring drains into stats
+# (the 200 us poll would otherwise pick it up on its own).
+Invoke-SubEthaSidecarScan
+
+$s = $registration.Stats()
+"OpsObserved         = $($s.OpsObserved)"
+'ContentionRate      = {0:N3}' -f $s.ContentionRate()
+"OpKindCounts        = $($s.OpKindCounts() -join ', ')"
+"AverageLatencyTicks = $($s.AverageLatencyTicks())"
+"TotalLatencyTicks   = $($s.TotalLatencyTicks)"
+"MigrationsTriggered = $($s.MigrationsTriggered)"
+$registration.Close()
+$m.Dispose()
+```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 > [!TIP]
 > **`contention_rate()` is the fraction of ops that reported
 > `flags & 1 != 0`.** Primitives set this bit when they took the
-> slow path (e.g. a `Mutex` `lock()` that had to park, a CAS that
-> lost the race, a SeqLock reader that retried). A workload-driven
+> slow path (e.g. a CAS that lost the race, or a SeqLock reader
+> that retried). A workload-driven
 > `Policy` reads this number and decides whether to migrate.
 
 ## The op_kind histogram
@@ -108,6 +183,14 @@ divides them, returning `0` when `ops_observed == 0`. There is no
 percentile state - the sidecar folds latency into a sum-and-count
 pair so the per-instance stats footprint stays at the fixed-size
 struct, never growing with op-count.
+
+The shipped primitives record through `ObservationRing::push_op`,
+which carries an op kind and flags but no latency, so for them both
+latency fields stay `0`: the map above reports 2000 observations, 1000
+of each kind, and no latency. Latency is filled by an instance that
+measures its own operations: one that pushes a whole `Observation`,
+or, from Python and PowerShell, an `Adaptive` object, whose `record`
+takes the latency as an argument.
 
 > [!IMPORTANT]
 > **`latency_ticks` is raw TSC**, not nanoseconds. Convert with the

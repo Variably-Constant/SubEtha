@@ -12,7 +12,7 @@
 //! # The value is immutable
 //!
 //! Written once by the call that creates the backing and read-only
-//! afterwards, so a reference into the mapping is sound without a lock.
+//! afterward, so a reference into the mapping is sound without a lock.
 //! Mutable shared state goes inside the value: an atomic, a
 //! [`SharedCell`](crate::shared_cell), or a lock such as
 //! [`SharedRWLock`](crate::shared_rw_lock::SharedRWLock) or

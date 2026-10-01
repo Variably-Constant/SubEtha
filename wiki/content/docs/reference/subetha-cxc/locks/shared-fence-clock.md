@@ -304,8 +304,8 @@ without losing or duplicating events near the failure boundary.
   `Mutex<Hlc>` and naive `SystemTime`).
 - Original: Kulkarni, Demirbas, Madappa, Avva, Leone,
   "Logical Physical Clocks", OPODIS 2014.
-- Sibling primitive: [HEARTBEAT.md](../coordination-types/heartbeat/) -
+- Sibling primitive: [Heartbeat Table](../coordination-types/heartbeat/) -
   liveness-only, no HLC. SharedFenceClock adds the causality
   layer.
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the underlying AtomicU64 primitive each slot field uses.

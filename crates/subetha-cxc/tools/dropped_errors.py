@@ -2,8 +2,7 @@
 
 A grep for `.ok();` in this crate returns about a hundred and ten hits,
 and almost all of them are a test removing a file or joining a thread.
-Reading that list by hand is how a survey takes an afternoon and still
-gets an answer wrong, so this does the separation instead:
+This separates them:
 
     python tools/dropped_errors.py            # the production sites
     python tools/dropped_errors.py --all      # every site, grouped
@@ -12,7 +11,7 @@ Three patterns, because each drops a Result in a different disguise:
 `.ok();` discards it outright, `unwrap_or_default()` substitutes a
 value for it, and `if let Ok(` walks past it.
 
-TWO THINGS THE OBVIOUS VERSION GETS WRONG, both of which have:
+Two cases the matching handles:
 
   A test module is not always at column zero and is not always spelled
   `#[cfg(test)]`. fd_handoff.rs gates per platform with `mod tests_unix`

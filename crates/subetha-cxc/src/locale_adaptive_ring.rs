@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::adaptive_ring::{AdaptiveRing, ADAPTIVE_SPSC_PAYLOAD_BYTES};
+use crate::adaptive_ring::{AdaptiveError, AdaptiveRing, ADAPTIVE_SPSC_PAYLOAD_BYTES};
 use crate::ordering::{default_stamp_kind, OrderingMode};
 use crate::shared_atomic::{SharedAtomicU32, SharedAtomicU64};
 use crate::shared_ring::RingError;
@@ -274,6 +274,15 @@ impl LocaleAdaptiveRing {
         self.anon.is_stamped()
     }
 
+    /// Open what other handles have published into the shared-memory
+    /// backing since this handle last looked: a per-producer pair grown
+    /// past the hint, the payload region. The backing's own ops do this
+    /// first; a sidecar does it on every scan, because on Windows a
+    /// section lasts only while some handle holds it.
+    pub(crate) fn sync_shared_backing(&self) {
+        self.shmfs.ensure_synced();
+    }
+
     /// Live ordering mode of the active locale backing (`None`
     /// when unstamped).
     pub fn ordering_mode(&self) -> Option<OrderingMode> {
@@ -322,29 +331,56 @@ impl LocaleAdaptiveRing {
 
     /// Register a producer on all three locale backings so the
     /// active locale always has the registration regardless of which
-    /// one is live. Returns the producer_id (same on all backings
-    /// since they are sized identically and called in lockstep).
-    pub fn register_producer(&self) -> Result<usize, crate::adaptive_ring::AdaptiveError> {
-        let anon_id = self.anon.register_producer()?;
-        let file_id = self.file.register_producer()?;
-        let shmfs_id = self.shmfs.register_producer()?;
-        assert_eq!(anon_id, file_id,
-                   "LocaleAdaptiveRing producer registrations must stay in lockstep (anon vs file)");
-        assert_eq!(anon_id, shmfs_id,
-                   "LocaleAdaptiveRing producer registrations must stay in lockstep (anon vs shmfs)");
-        Ok(anon_id)
+    /// one is live. The id is claimed on the file backing, whose peer
+    /// directory every handle on this base path shares, and carried onto
+    /// the shared-memory and anonymous backings under the same id. A
+    /// backing that refuses it gives back the claims this call made.
+    pub fn register_producer(&self) -> Result<usize, AdaptiveError> {
+        let id = self.file.register_producer()?;
+        let shm_claimed = match self.shmfs.carry_producer(id) {
+            Ok(claimed) => claimed,
+            Err(e) => {
+                // A growth refusal leaves the carried claim in place.
+                if e == AdaptiveError::GrowthFailed {
+                    self.shmfs.unregister_producer(id);
+                }
+                self.file.unregister_producer(id);
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.anon.carry_producer(id) {
+            if e == AdaptiveError::GrowthFailed {
+                self.anon.unregister_producer(id);
+            }
+            if shm_claimed {
+                self.shmfs.unregister_producer(id);
+            }
+            self.file.unregister_producer(id);
+            return Err(e);
+        }
+        Ok(id)
     }
 
-    /// Register a consumer on all three locale backings.
-    pub fn register_consumer(&self) -> Result<usize, crate::adaptive_ring::AdaptiveError> {
-        let anon_id = self.anon.register_consumer()?;
-        let file_id = self.file.register_consumer()?;
-        let shmfs_id = self.shmfs.register_consumer()?;
-        assert_eq!(anon_id, file_id,
-                   "LocaleAdaptiveRing consumer registrations must stay in lockstep (anon vs file)");
-        assert_eq!(anon_id, shmfs_id,
-                   "LocaleAdaptiveRing consumer registrations must stay in lockstep (anon vs shmfs)");
-        Ok(anon_id)
+    /// Register a consumer on all three locale backings, the id claimed on
+    /// the file backing and carried onto the others as
+    /// [`register_producer`](Self::register_producer) does.
+    pub fn register_consumer(&self) -> Result<usize, AdaptiveError> {
+        let id = self.file.register_consumer()?;
+        let shm_claimed = match self.shmfs.carry_consumer(id) {
+            Ok(claimed) => claimed,
+            Err(e) => {
+                self.file.unregister_consumer(id);
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.anon.carry_consumer(id) {
+            if shm_claimed {
+                self.shmfs.unregister_consumer(id);
+            }
+            self.file.unregister_consumer(id);
+            return Err(e);
+        }
+        Ok(id)
     }
 
     /// Send a payload through the currently-active locale.
@@ -449,12 +485,24 @@ impl Drop for LocaleAdaptiveRing {
 
         remove_laid_out(&with_suffix(&self.base_path, ".locale.tag.bin"));
         remove_laid_out(&with_suffix(&self.base_path, ".locale.gen.bin"));
-        remove_laid_out(&with_suffix(&file_prefix, ".spsc.bin"));
-        remove_laid_out(&with_suffix(&file_prefix, ".vyukov.bin"));
-        remove_laid_out(&with_suffix(&file_prefix, ".ordering.bin"));
-        for i in 0..max_p {
-            remove_laid_out(&with_suffix(&file_prefix, &format!(".mpsc.{i}.bin")));
-            remove_laid_out(&with_suffix(&file_prefix, &format!(".mpmc.{i}.bin")));
+        // Every region of the file backing, its peer directory and the
+        // per-producer pairs registration grew past the hint among them.
+        let report = AdaptiveRing::unlink(&file_prefix, max_p);
+        if report.failed != 0
+            && let Some((path, kind, text)) = &report.first_failure
+        {
+            eprintln!("subetha: locale ring file {} not removed: {kind:?} {text}", path.display());
+        }
+
+        // The shared-memory backing's names go with the files, as a plain
+        // shm ring's would go with its unlink. On Windows they go with the
+        // last handle and this removes nothing.
+        let shm_prefix = shmfs_name_prefix_for(&self.base_path);
+        let report = AdaptiveRing::unlink_shmfs(&shm_prefix, max_p);
+        if report.failed != 0
+            && let Some((name, kind, text)) = &report.first_failure
+        {
+            eprintln!("subetha: locale ring shared memory {} not removed: {kind:?} {text}", name.display());
         }
     }
 }
@@ -606,7 +654,8 @@ impl LocalePolicy for DefaultLocalePolicy {
 /// now"). The scanner samples this on every tick, builds a
 /// [`LocalePolicyObservation`], asks the policy, and only migrates
 /// when the policy returns `Some` and the hysteresis cooldown has
-/// elapsed.
+/// elapsed. Each tick first opens what other handles have published
+/// into the shared-memory backing since the last one.
 pub struct LocaleAdaptiveRingSidecar {
     handle: Option<std::thread::JoinHandle<()>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -655,6 +704,10 @@ impl LocaleAdaptiveRingSidecar {
             let mut last_migrate = std::time::Instant::now();
             let mut gate = crate::policy_gate::ConfidenceGate::new(gate_cfg);
             while !stop_c.load(Ordering::Acquire) {
+                // Keep the shared-memory backing's view current whether or
+                // not the caller is making calls, so this handle holds what
+                // other handles publish into it.
+                ring.sync_shared_backing();
                 let req = Locale::from_u32(requested_c.load(Ordering::Acquire));
                 let obs = LocalePolicyObservation {
                     current_locale: ring.current_locale(),
@@ -732,6 +785,159 @@ mod tests {
         let r = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
         assert_eq!(r.current_locale(), Locale::Anon);
         assert_eq!(r.locale_generation(), 0);
+    }
+
+    /// Removes whatever shared-memory names a ring under test leaves, so a
+    /// failing run leaves nothing in the host's shared memory either.
+    struct Leftovers<'a>(&'a str);
+
+    impl Drop for Leftovers<'_> {
+        fn drop(&mut self) {
+            let report = AdaptiveRing::unlink_shmfs(self.0, 1);
+            if report.failed != 0 {
+                eprintln!("the test ring {} kept names it could not remove: {:?}", self.0, report.first_failure);
+            }
+        }
+    }
+
+    /// A locale ring's shared-memory backing goes when the ring drops, as
+    /// its files do, whichever locale it ran in, so a ring leaves nothing
+    /// in the host's shared memory.
+    #[test]
+    fn dropping_a_locale_ring_removes_its_shared_memory_names() {
+        let path = tmp("drop_shm");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let r = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
+        let live = AdaptiveRing::open_shmfs(&prefix, 1, 1, 64);
+        assert!(live.is_ok(), "the shm backing is there while the ring lives: {:?}", live.as_ref().err());
+        drop(live);
+        drop(r);
+        let after = AdaptiveRing::open_shmfs(&prefix, 1, 1, 64);
+        assert!(
+            matches!(&after, Err(RingError::IoError(std::io::ErrorKind::NotFound))),
+            "an attach after the ring dropped reported {:?}",
+            after.as_ref().err()
+        );
+    }
+
+    /// The names in `path`'s directory that begin with its file name: the
+    /// files a ring under that base path laid out.
+    fn files_under(path: &Path) -> Vec<String> {
+        let dir = path.parent().expect("the test path has a directory");
+        let stem = path.file_name().expect("the test path names a file").to_string_lossy().into_owned();
+        std::fs::read_dir(dir)
+            .expect("the temp directory lists")
+            .map(|entry| entry.expect("the directory entry reads").file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&stem))
+            .collect()
+    }
+
+    /// A locale ring's drop removes every file it laid out, the file
+    /// backing's peer directory and the per-producer pairs registration
+    /// grew past the construction hint among them.
+    #[test]
+    fn dropping_a_locale_ring_removes_every_file_it_laid_out() {
+        let path = tmp("drop_files");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let r = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
+        for _ in 0..4 {
+            r.register_producer().expect("a producer registers, growing the backings past the hint");
+        }
+        assert!(!files_under(&path).is_empty(), "the ring laid out its files under {}", path.display());
+        drop(r);
+        assert_eq!(files_under(&path), Vec::<String>::new(), "files the dropped ring left behind");
+    }
+
+    /// A ring created under the base path of one that dropped starts with
+    /// no registrations on any backing: its first producer is 0 on all
+    /// three.
+    #[test]
+    fn a_locale_ring_created_where_one_dropped_starts_with_no_registrations() {
+        let path = tmp("recreate");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let first = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
+        for _ in 0..4 {
+            first.register_producer().expect("a producer registers");
+        }
+        drop(first);
+        let second = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create where the first ring was");
+        assert_eq!(second.register_producer().expect("the first producer registers"), 0);
+    }
+
+    /// A handle opened beside one that registered a producer registers its
+    /// own under the next id the shared directory hands out, held on its
+    /// anonymous and shared-memory backings as well.
+    #[test]
+    fn a_second_handle_registers_a_producer_after_the_owners() {
+        let path = tmp("second_handle_producer");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let owner = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
+        assert_eq!(owner.register_producer().expect("the owner's producer registers"), 0);
+        let peer = LocaleAdaptiveRing::open(&path, 1, 1, 64, false).expect("a peer attaches");
+        let id = peer.register_producer().expect("the peer's producer registers");
+        assert_eq!(id, 1, "the peer's producer takes the next id the shared directory hands out");
+        assert!(peer.anon.producer_ids().contains(&id), "the peer's anonymous backing holds producer {id}");
+        assert!(peer.shmfs.producer_ids().contains(&id), "the shared-memory backing holds producer {id}");
+    }
+
+    /// A handle opened beside one that registered a consumer registers its
+    /// own under the next id the shared directory hands out, held on its
+    /// anonymous and shared-memory backings as well.
+    #[test]
+    fn a_second_handle_registers_a_consumer_after_the_owners() {
+        let path = tmp("second_handle_consumer");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let owner = LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create");
+        assert_eq!(owner.register_consumer().expect("the owner's consumer registers"), 0);
+        let peer = LocaleAdaptiveRing::open(&path, 1, 1, 64, false).expect("a peer attaches");
+        let id = peer.register_consumer().expect("the peer's consumer registers");
+        assert_eq!(id, 1, "the peer's consumer takes the next id the shared directory hands out");
+        assert!(peer.anon.consumer_ids().contains(&id), "the peer's anonymous backing holds consumer {id}");
+        assert!(peer.shmfs.consumer_ids().contains(&id), "the shared-memory backing holds consumer {id}");
+    }
+
+    /// A locale ring's sidecar opens what another handle publishes into
+    /// the shared-memory backing, so a per-producer pair a peer grew there
+    /// is held when the peer drops, and the owner receives what the peer
+    /// sent into it. Unopened, the pair would be gone: on Windows its
+    /// sections go with the peer's handles, and on Unix the peer's drop
+    /// removes its names.
+    #[test]
+    fn a_locale_rings_sidecar_holds_a_pair_a_peer_grew_in_shared_memory() {
+        use crate::test_races::{within_lost, LOST};
+
+        let path = tmp("sidecar_shm_pair");
+        let prefix = shmfs_name_prefix_for(&path);
+        let _leftovers = Leftovers(&prefix);
+        let owner = Arc::new(LocaleAdaptiveRing::create(&path, 1, 1, 64).expect("create"));
+        owner.migrate_to(Locale::ShmFs).expect("the ring runs in shared memory");
+        let consumer = owner.register_consumer().expect("the owner consumes");
+        // The cadence managed mode is driven at in the adaptive ring's
+        // sidecar tests.
+        let sidecar = LocaleAdaptiveRingSidecar::spawn(
+            Arc::clone(&owner),
+            DefaultLocalePolicy::default(),
+            std::time::Duration::from_micros(1000),
+        );
+        let peer = LocaleAdaptiveRing::open(&path, 1, 1, 64, false).expect("a peer attaches");
+        peer.register_producer().expect("the first producer registers");
+        let grown = peer.register_producer().expect("registration past the hint grows the backing");
+        peer.try_send(grown, b"kept").expect("send into the grown pair");
+        assert!(
+            within_lost(|| owner.shmfs.held_pairs() == 2),
+            "the owner's sidecar did not open the grown pair within {LOST:?}"
+        );
+        drop(peer);
+
+        let mut out = [0u8; ADAPTIVE_SPSC_PAYLOAD_BYTES];
+        owner.try_recv(consumer, &mut out).expect("the owner receives what the peer sent");
+        assert_eq!(&out[..4], b"kept");
+        sidecar.shutdown();
     }
 
     #[test]

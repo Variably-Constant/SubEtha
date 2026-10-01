@@ -14,10 +14,8 @@ process restart). The crate is one of two primitive families on
 the shared substrate; the other is
 [`subetha-pointers`](../subetha-pointers/) for the workload axis.
 
-Roughly forty primitives, grouped into the categories below. Each
-primitive ships with its own prose doc in
-`crates/subetha-cxc/docs/pointers/*.md`; the wiki pages below
-summarize each group and link to the canonical source-tree docs.
+Roughly forty primitives, grouped into the categories below, each
+group summarized on its own page.
 
 ## How the family is organized
 

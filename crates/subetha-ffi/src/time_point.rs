@@ -210,7 +210,7 @@ pub unsafe extern "C" fn subetha_tile_insert(
 /// Free `lane`.
 ///
 /// The version is cleared before the lane is released, so a lane reclaimed
-/// afterwards cannot be seen through its predecessor's version.
+/// afterward cannot be seen through its predecessor's version.
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_tile_remove(handle: subetha_handle, lane: u32) -> i32 {
     with_tile(handle, |t| {

@@ -22,6 +22,10 @@
 //! repository root.
 
 #![warn(missing_docs)]
+// clippy::disallowed_types names the lock types, and this crate keeps its
+// locks: C may call one handle from several threads, and the handle table
+// and per-handle guards serialize those calls.
+#![allow(clippy::disallowed_types)]
 
 pub mod arena;
 pub mod atomic;

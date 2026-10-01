@@ -5,6 +5,9 @@
 //! per insert. HashSet pays unbounded memory growth + lock + hash
 //! + bucket lookup per insert.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashSet;
 use std::hint::black_box;
 use std::sync::Mutex;

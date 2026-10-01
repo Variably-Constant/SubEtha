@@ -39,11 +39,16 @@
 //!   bench_throughput spsc anon 4096 1 1 1000000
 //!   bench_throughput vyukov shmfs 1024 4 4 1000000
 //!   bench_throughput crossbeam - 4096 4 1 1000000
+//!
+//! A run's file-backed ring lives in a directory of the run's own under
+//! the temp directory, `subetha_bench_<pid>_<nanos>`, removed with
+//! everything in it once the result line is out.
 
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use subetha_cxc::adaptive_ring::{AdaptiveRing, RingShape};
 use subetha_cxc::capacity_adaptive_ring::CapacityAdaptiveRing;
@@ -72,6 +77,14 @@ fn main() {
     let n_consumers: usize = args[5].parse().expect("n_consumers must be usize");
     let n_items: u64 = args[6].parse().expect("n_items must be u64");
 
+    let run_dir = match make_run_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            let skip = BenchResult::Skip(format!("run-dir-failed-{e}"));
+            emit_result(primitive, locale, capacity, n_producers, n_consumers, n_items, skip);
+            return;
+        }
+    };
     let result = match primitive {
         "spsc" => bench_spsc(locale, capacity, n_items),
         "mpsc" => bench_mpsc_composed(locale, capacity, n_producers, n_items),
@@ -116,11 +129,44 @@ fn main() {
         "std-mpsc" => bench_std_mpsc(capacity, n_producers, n_items),
         other => {
             eprintln!("unknown primitive: {other}");
+            remove_run_dir(&run_dir);
             std::process::exit(2);
         }
     };
 
     emit_result(primitive, locale, capacity, n_producers, n_consumers, n_items, result);
+    remove_run_dir(&run_dir);
+}
+
+/// The directory this run's file-backed ring lives in, made by `main`
+/// before the cell runs. A ring's files outlive its handles and a create
+/// attaches to a region it finds under its name, so no run uses a name
+/// another run did.
+static RUN_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Make this run's directory under the temp directory and record it for
+/// [`run_path`].
+fn make_run_dir() -> std::io::Result<PathBuf> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock reads at or past the unix epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("subetha_bench_{}_{nanos}", std::process::id()));
+    std::fs::create_dir(&dir)?;
+    RUN_DIR.set(dir.clone()).expect("the run directory is made once");
+    Ok(dir)
+}
+
+/// `name` in this run's directory.
+fn run_path(name: &str) -> PathBuf {
+    RUN_DIR.get().expect("main makes the run directory before a cell runs").join(name)
+}
+
+/// Remove this run's directory with everything in it, reporting a refusal.
+fn remove_run_dir(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        eprintln!("run directory {} not removed: {e}", dir.display());
+    }
 }
 
 enum BenchResult {
@@ -159,6 +205,20 @@ fn emit_result(
             println!(
                 "primitive={primitive} locale={locale} cap={cap} reqP={req_p} reqC={req_c} reqN={req_n} SKIP={reason}"
             );
+        }
+    }
+}
+
+/// Removes a shm ring's names when a bench cell ends, however it ends: a
+/// ring's names outlive every handle, and the next cell of a different
+/// producer count would leave the extra per-producer pairs behind.
+struct ShmNames(String);
+
+impl Drop for ShmNames {
+    fn drop(&mut self) {
+        let removed = AdaptiveRing::unlink_shmfs(&self.0, 1);
+        if removed.failed != 0 {
+            eprintln!("shmfs ring '{}' not fully removed: {:?}", self.0, removed.first_failure);
         }
     }
 }
@@ -397,8 +457,7 @@ fn bench_vyukov(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_vyukov_{}.bin", std::process::id()));
+            let path = run_path("vyukov.bin");
             match SharedRing::create(&path, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -482,8 +541,7 @@ fn bench_broadcast(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_broadcast_{}.bin", std::process::id()));
+            let path = run_path("broadcast.bin");
             match SharedBroadcastRing::create(&path, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -556,8 +614,7 @@ fn bench_pubsub(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_pubsub_{}.bin", std::process::id()));
+            let path = run_path("pubsub.bin");
             match PubSubRing::create(&path, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e}")),
@@ -655,26 +712,25 @@ fn bench_adaptive(
 ) -> BenchResult {
     let max_p = n_producers.max(1);
     let max_c = n_consumers.max(1);
+    let shm_name = format!("bench_adaptive_{}", std::process::id());
+    // Bound before the ring, so it drops after it.
+    let _shm_names = (locale == "shmfs").then(|| ShmNames(shm_name.clone()));
     let ring: Arc<AdaptiveRing> = match locale {
         "anon" => match AdaptiveRing::create_anon(max_p, max_c, capacity) {
             Ok(r) => Arc::new(r),
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_adaptive_{}", std::process::id()));
+            let path = run_path("adaptive");
             match AdaptiveRing::create(&path, max_p, max_c, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
             }
         }
-        "shmfs" => {
-            let name = format!("bench_adaptive_{}", std::process::id());
-            match AdaptiveRing::create_shmfs(&name, max_p, max_c, capacity) {
-                Ok(r) => Arc::new(r),
-                Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
-            }
-        }
+        "shmfs" => match AdaptiveRing::create_shmfs(&shm_name, max_p, max_c, capacity) {
+            Ok(r) => Arc::new(r),
+            Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
+        },
         _ => return BenchResult::Skip(format!("locale-{locale}-unknown")),
     };
     for _ in 0..n_producers {
@@ -774,8 +830,9 @@ fn bench_locale_adaptive(
         "shmfs" => Locale::ShmFs,
         other => return BenchResult::Skip(format!("locale-{other}-unknown")),
     };
-    let path = std::env::temp_dir()
-        .join(format!("bench_locale_adaptive_{}", std::process::id()));
+    // The shared-memory backing takes its names from this file name, which
+    // keeps the process id so those names stay this process's own.
+    let path = run_path(&format!("bench_locale_adaptive_{}", std::process::id()));
     let ring = match LocaleAdaptiveRing::create(&path, max_p, max_c, capacity) {
         Ok(r) => Arc::new(r),
         Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -891,8 +948,7 @@ fn bench_capacity_adaptive(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_capadapt_{}.bin", std::process::id()));
+            let path = run_path("capadapt.bin");
             match CapacityAdaptiveRing::create(&path, max_p, max_c, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -993,8 +1049,7 @@ fn bench_capacity_broadcast(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_capbcast_{}.bin", std::process::id()));
+            let path = run_path("capbcast.bin");
             match CapacityBroadcastRing::create(&path, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -1061,8 +1116,7 @@ fn bench_capacity_pubsub(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_cappubsub_{}.bin", std::process::id()));
+            let path = run_path("cappubsub.bin");
             match CapacityPubSubRing::create(&path, capacity) {
                 Ok(r) => r,
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -1245,26 +1299,25 @@ fn bench_adaptive_pinned(
 ) -> BenchResult {
     let max_p = n_producers.max(1);
     let max_c = n_consumers.max(1);
+    let shm_name = format!("bench_adaptive_pinned_{}", std::process::id());
+    // Bound before the ring, so it drops after it.
+    let _shm_names = (locale == "shmfs").then(|| ShmNames(shm_name.clone()));
     let ring: Arc<AdaptiveRing> = match locale {
         "anon" => match AdaptiveRing::create_anon(max_p, max_c, capacity) {
             Ok(r) => Arc::new(r),
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_adaptive_pinned_{}", std::process::id()));
+            let path = run_path("adaptive_pinned");
             match AdaptiveRing::create(&path, max_p, max_c, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
             }
         }
-        "shmfs" => {
-            let name = format!("bench_adaptive_pinned_{}", std::process::id());
-            match AdaptiveRing::create_shmfs(&name, max_p, max_c, capacity) {
-                Ok(r) => Arc::new(r),
-                Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
-            }
-        }
+        "shmfs" => match AdaptiveRing::create_shmfs(&shm_name, max_p, max_c, capacity) {
+            Ok(r) => Arc::new(r),
+            Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
+        },
         _ => return BenchResult::Skip(format!("locale-{locale}-unknown")),
     };
     for _ in 0..n_producers {
@@ -1379,8 +1432,7 @@ fn bench_capacity_pinned(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_cap_pinned_{}.bin", std::process::id()));
+            let path = run_path("cap_pinned.bin");
             match CapacityAdaptiveRing::create(&path, max_p, max_c, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
@@ -1501,8 +1553,7 @@ fn bench_capacity_broadcast_pinned(
             Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),
         },
         "file" => {
-            let path = std::env::temp_dir()
-                .join(format!("bench_capbcast_pinned_{}.bin", std::process::id()));
+            let path = run_path("capbcast_pinned.bin");
             match CapacityBroadcastRing::create(&path, capacity) {
                 Ok(r) => Arc::new(r),
                 Err(e) => return BenchResult::Skip(format!("create-failed-{e:?}")),

@@ -103,6 +103,7 @@ Against the `AtomicU32` refcount it replaces.
 | `table.publish(slot, payload)` | Fill in a reserved slot. Panics on a reserved sentinel. |
 | `table.claim(payload) -> Option<usize>` | Reserve and publish in one step. |
 | `table.release(slot)` | Return a slot to the table. |
+| `table.release_if(slot, pid, payload) -> bool` | Return a slot only while it still holds the pid and payload the caller observed; a holder that claimed it since stays. |
 | `table.payload(slot) -> Option<u64>` | The payload, or `None` if free or forming. |
 | `table.live() -> usize` | Slots held, reservations included. |
 | `table.try_fold(init, f) -> Option<T>` | Fold over published payloads; `None` if a slot was mid-claim. |
@@ -149,6 +150,11 @@ table.release(slot);
 - **Bounded capacity**: no auto-grow.
 - **One `u64` of payload per slot**, with two values reserved.
 - **A crashed holder's slot stands** until something calls `reap_dead`.
+  `reap_dead` asks only whether the pid is alive, so a crashed holder
+  whose pid the OS has given to another process stands until that
+  process exits. A claimant that can tell the claim is stale, from a
+  process creation time it put in the payload, frees it with
+  `release_if` given the pid and payload it observed.
 
 ---
 

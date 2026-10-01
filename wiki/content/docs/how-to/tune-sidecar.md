@@ -6,51 +6,71 @@ weight: 50
 
 The sidecar exposes a deliberately small tuning surface. Most of
 its constants - poll interval, observation ring capacity, drain
-safety cap - are fixed by design because the workload-vs-cost
-trade-off has been measured and pinned. The constants that
-remain user-tunable, plus the patterns for changing the rest by
-swapping the observation source, are the topic of this page.
+safety cap - are fixed. This page covers the one setting you
+can change, the instance cap, and what each fixed constant does.
 
 ## What is tunable: instance cap
 
 The default cap on simultaneously-registered instances is
 `DEFAULT_MAX_INSTANCES = 10_000`. Raise it via:
 
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
 ```rust,no_run
 use subetha_sidecar::global;
 
 global().set_max_instances(100_000);
 ```
+{{< /tab >}}
+
+{{< tab name="Python" >}}
+```python
+from subetha import sidecar
+
+sidecar.set_max_instances(100_000)
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+Set-SubEthaSidecar -MaxInstances 100000
+```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 The cap exists because the worst-case scan cost grows linearly
-with registered instance count. At 10,000 instances and the
-worst-case 80 µs per instance per scan (a fully-saturated ring),
-one scan iteration takes 800 ms - already a problem. The 10,000
-default is well above any realistic production load (typical
-production processes sit between 10 and 1,000 instances) but low
-enough that a misconfigured benchmark crashes early instead of
-exhausting host memory at 100,000+ registrations.
+with registered instance count. A fully saturated ring drains 4096
+observations at about 10 ns each, about 40 µs per instance per
+scan, so 10,000 saturated instances make one scan iteration take
+about 400 ms. The 10,000 default sits above the 10 to 1,000
+instances production processes carry. A benchmark that registers
+an instance on every iteration reaches it and panics, an order of
+magnitude before the host runs out near 94,000 registrations.
 
 Raise the cap only when you have measured your steady-state
 instance count and have headroom on the scan cost. Two questions
 to answer first:
 
 - What is your steady-state instance count?
-  `Sidecar::instance_count()` is the live reading.
+  `Sidecar::instance_count()` is the live reading
+  (`sidecar.instance_count()` in Python, `InstanceCount` from
+  `Get-SubEthaSidecar` in PowerShell).
 - What is your worst-case per-instance drain cost?
   The bench at `crates/subetha-cxc/benches/adaptive_ipc_overhead.rs`
   measures the substrate floor (native primitive vs adaptive-path
   per-op cost); multiply by your expected ops per scan window
   (POLL_INTERVAL is 200 µs, so 200 µs times your per-thread op rate).
 
-If the product exceeds your latency budget, the right move is
-to reduce per-instance op-rate or shed observation pushes (see
-[PMU offload](#pmu-offload), below), not to raise the cap.
+If the product exceeds your latency budget, reduce the
+per-instance op rate or register fewer instances, not raise the
+cap. An instance that is not registered with the sidecar pushes no
+observations and is never scanned.
 
 ## What is fixed by design
 
-Four constants are deliberately not tunable through the public
-API. Each has the reasoning baked into its definition.
+The constants below have no setter in the public API.
 
 ### `POLL_INTERVAL = 200 µs`
 
@@ -63,8 +83,10 @@ interval; longer intervals make migrations sluggish on workloads
 that flip strategies mid-burst.
 
 If your workload genuinely needs a different cadence, the
-escape hatch is `Sidecar::scan_now()`. It runs one synchronous
-scan iteration across every NUMA node from the calling thread.
+escape hatch is `Sidecar::scan_now()` (`sidecar.scan_now()` in
+Python, `Invoke-SubEthaSidecarScan` in PowerShell). It has every
+NUMA node's scan thread scan at once and waits for them; the
+calling thread drains nothing itself.
 Tests use it to skip the poll wait. A latency-critical app
 calling `scan_now()` after a known-significant op pushes
 adaptation latency from ~1 ms down to the time it takes the
@@ -87,21 +109,15 @@ below user-perceivable thresholds.
 
 ### `RING_CAPACITY = 4096`
 
-Each `ObservationRing` holds 4096 slots of 24 bytes each =
-~96 KB per ring. There is one ring per active producer thread
-that ever touched an adaptive primitive, not one per
-primitive, so the total ring footprint scales with thread count,
-not instance count.
+Each `ObservationRing` holds 4096 slots of 24 bytes each, 96 KiB
+per ring. Every adaptive primitive instance carries its own ring,
+and its buffer is allocated when the sidecar registers the
+instance and arms the ring; an instance that is never registered
+allocates no buffer. The ring footprint scales with the registered
+instance count.
 
-The 4096 figure balances two things. Smaller rings drop
-observations under burst; larger rings cost more memory and
-take longer to drain. 4096 is the pinned `RING_CAPACITY` constant
-(`subetha-core/src/observation.rs`), chosen for the production
-op-stream patterns - SPSC steady-state, occasional millisecond
-bursts of contention. If your producer rate is much higher (say,
-hundreds of millions of ops per second per thread), drop rates
-become non-trivial and the right answer is the PMU offload
-described below.
+A push to a full ring is dropped. 4096 is the `RING_CAPACITY`
+constant in `subetha-core/src/observation.rs`.
 
 ### `N_OP_KINDS = 8`, `MAX_TRACKED_THREADS_PER_KIND = 4`
 
@@ -125,8 +141,9 @@ NUMA routing is automatic and does not need tuning. At
 registration time (`SidecarBox::new(...)` or
 `Sidecar::register_raw(...)`), the sidecar calls
 `current_numa_node()` and pins the instance to that node's slot
-table. The scan thread for that node is the only thread that
-touches the instance.
+table. That node's scan thread drains the instance, and
+`Sidecar::scan_now()` has that thread scan at once rather than
+draining the instance from the caller.
 
 The mechanism:
 
@@ -142,8 +159,9 @@ The mechanism:
 
 If you want a specific instance on a specific node, the move is
 to pin the constructing thread to that node before calling
-`SidecarBox::new`. There is no `register_on_node(node_idx, ...)`
-API; the sidecar trusts `current_numa_node` to decide.
+`SidecarBox::new`, or before `observe()` from Python and
+PowerShell. There is no `register_on_node(node_idx, ...)` API; the
+sidecar trusts `current_numa_node` to decide.
 
 `Sidecar::node_count()` returns the number of NUMA-pinned scan
 threads in the pool. On a single-socket workstation this is
@@ -154,6 +172,9 @@ follow the pattern `subetha-sidecar-node{N}`.
 
 Three accessors expose the sidecar's live state:
 
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
 ```rust,no_run
 use subetha_sidecar::global;
 
@@ -162,17 +183,99 @@ println!("instances:    {}", s.instance_count());
 println!("cap:          {}", s.max_instances());
 println!("numa nodes:   {}", s.node_count());
 ```
+{{< /tab >}}
 
-`instance_count()` is monotone over the sidecar's lifetime,
-incremented on `register_raw` and decremented on `unregister`.
+{{< tab name="Python" >}}
+```python
+from subetha import sidecar
+
+print("instances:   ", sidecar.instance_count())
+print("cap:         ", sidecar.max_instances())
+print("numa nodes:  ", sidecar.node_count())
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+Get-SubEthaSidecar
+```
+
+```text
+InstanceCount : 0
+MaxInstances  : 10000
+NodeCount     : 1
+```
+{{< /tab >}}
+
+{{< /tabs >}}
+
+`instance_count()` is the number of instances registered now:
+`register_raw` adds one and `unregister` removes one.
 Diverging from your application's expected instance count
 indicates either a leaked `SidecarBox` (registered but never
-dropped) or a registration that bypassed the wrapper.
+dropped) or a registration that bypassed the wrapper; from
+Python and PowerShell, a registration still held somewhere.
 
 `Sidecar::stats(id)` returns the live `InstanceStats` snapshot
-for one instance. Combined with `scan_now()`, this is how
+for one instance, as a registration's `stats()` does in Python and
+its `Stats()` in PowerShell. Combined with a scan, this is how
 test harnesses verify migration decisions without waiting for
 the poll interval.
+
+## A managed ring's own sidecar
+
+A managed ring is apart from all of the above. A `Ring`,
+`CapacityRing` or `LocaleRing` built as managed runs a sidecar
+thread of its own that scans only that ring, at the interval its
+caller names, and it neither counts toward the instance cap nor
+waits on the global scan.
+
+{{< tabs >}}
+
+{{< tab name="Rust" >}}
+```rust,no_run
+use std::sync::Arc;
+use std::time::Duration;
+use subetha_cxc::adaptive_ring::{
+    AdaptiveRing, AdaptiveRingSidecar, DefaultRingShapePolicy, SCAN_INTERVAL_DEFAULT_US,
+};
+
+let ring = Arc::new(AdaptiveRing::create("/tmp/events.bin", 1, 1, 4096).unwrap());
+let sidecar = AdaptiveRingSidecar::spawn(
+    Arc::clone(&ring),
+    DefaultRingShapePolicy::default(),
+    Duration::from_micros(SCAN_INTERVAL_DEFAULT_US),
+);
+```
+{{< /tab >}}
+
+{{< tab name="Python" >}}
+```python
+# A Ring scans every 250 microseconds unless told otherwise.
+ring = subetha.Ring(path, 4096, managed=True)
+# A CapacityRing and a LocaleRing name no default.
+grows = subetha.CapacityRing(grows_path, 64, managed=True, scan_interval_us=1_000)
+```
+{{< /tab >}}
+
+{{< tab name="PowerShell" >}}
+```powershell
+# A Ring scans every 250 microseconds unless told otherwise.
+$ring = New-SubEthaRing -Path $path -Capacity 4096 -Managed
+# A CapacityRing and a LocaleRing name no default.
+$grows = New-SubEthaCapacityRing -Path $growsPath -Capacity 64 -Managed -ScanIntervalUs 1000
+```
+{{< /tab >}}
+
+{{< /tabs >}}
+
+The interval is a latency budget rather than a tuned optimum:
+measured on Linux and FreeBSD from 250 to 10,000 microseconds, a
+request/response round trip through a managed ring costs one
+interval and a streaming caller costs nothing, with no knee in that
+range. The 250 microsecond default is `SCAN_INTERVAL_DEFAULT_US`,
+which the C ABI's `SUBETHA_SCAN_INTERVAL_DEFAULT_US` and both
+bindings share.
 
 ## What you do not get
 
@@ -180,7 +283,9 @@ The sidecar does not expose:
 
 - A way to disable adaptation per instance at runtime. The
   closest thing is registering with `Box::new(NoMigrationPolicy)`
-  at construction time, which makes the policy a no-op.
+  at construction time, which makes the policy a no-op; from
+  Python and PowerShell, closing the registration and observing
+  the object again without a policy.
 - A way to migrate across NUMA nodes after registration. The
   instance is pinned to whatever node the registering thread was
   on. Moving an instance between nodes requires unregistering
@@ -188,7 +293,8 @@ The sidecar does not expose:
 - A way to bulk-drain rings. The scan thread is the single
   consumer; calling `ring().pop()` from anywhere else races the
   scan. If you need a one-shot snapshot, use
-  `Sidecar::stats(id)` after `scan_now()` instead.
+  `Sidecar::stats(id)` after `scan_now()` instead, or a
+  registration's stats after a scan from Python and PowerShell.
 
 ## See also
 

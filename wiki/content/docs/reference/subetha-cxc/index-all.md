@@ -4,11 +4,10 @@ weight: 100
 
 # Alphabetical index
 
-Every primitive that ships a canonical `docs/pointers/*.md` design
-doc, alphabetized, with a link to that doc. The polymorphic-substrate
-rings, the blocking/async wrappers, the cross-host bridges, and the
-OS-specific primitives are documented in source rather than a
-`pointers/*.md`; the [master catalog](catalog.md) lists those too.
+The primitives below, alphabetized, each with a link to its reference
+page. The polymorphic-substrate rings, the blocking/async wrappers, the
+cross-host bridges, and the OS-specific primitives are not listed here;
+the [master catalog](catalog.md) lists them.
 
 For category-grouped pages with prose, see
 [the subetha-cxc index](../) and the per-category pages it
@@ -17,54 +16,54 @@ links to.
 ## B
 
 - `BackgroundScheduler` -
-  [SCHEDULER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SCHEDULER.md)
+  [Background Scheduler](coordination-types/scheduler/)
   (see [coordination.md](coordination.md#backgroundscheduler))
 
 ## E
 
 - `EpochBarrier` -
-  [EPOCH_BARRIER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/EPOCH_BARRIER.md)
+  [Epoch Barrier](coordination-types/epoch-barrier/)
   (see [coordination.md](coordination.md#epochbarrier))
 - `EventStateLog` -
-  [EVENT_STATE_LOG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/EVENT_STATE_LOG.md)
+  [Event State Log](coordination-types/event-state-log/)
   (see [coordination.md](coordination.md#eventstatelog))
 
 ## F
 
 - `FailoverWatchdog` -
-  [FAILOVER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/FAILOVER.md)
+  [Failover Watchdog](coordination-types/failover/)
   (see [coordination.md](coordination.md#failoverwatchdog))
 
 ## H
 
 - `HeartbeatTable` -
-  [HEARTBEAT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HEARTBEAT.md)
+  [Heartbeat Table](coordination-types/heartbeat/)
   (see [coordination.md](coordination.md#heartbeattable))
 - `HolderTable` -
-  [HOLDER_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/HOLDER_TABLE.md)
+  [Holder Table](coordination-types/holder-table/)
   (see [coordination-types/holder-table.md](coordination-types/holder-table.md))
 
 ## K
 
 - `KTowerCascade` -
-  [K_TOWER_CASCADE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/K_TOWER_CASCADE.md)
+  [K-Tower Cascade](coordination-types/k-tower-cascade/)
   (see [coordination.md](coordination.md#ktowercascade))
 
 ## L
 
 - `LanedVersionedMap` -
-  [LANED_VERSIONED_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LANED_VERSIONED_MAP.md)
+  [Laned Versioned Map](maps/laned-versioned-map/)
   (see [maps/laned-versioned-map.md](maps/laned-versioned-map.md))
 - `LazyConfig` -
-  [LAZY_CONFIG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LAZY_CONFIG.md)
+  [Lazy Config](ownership-types/lazy-config/)
   (see [ownership.md](ownership.md#lazyconfig))
 
 ## O
 
 - `OffsetPtr` -
-  [OFFSET_PTR.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/OFFSET_PTR.md)
+  [Offset Pointer](pointers/offset-ptr/)
 - `OwnerLease` -
-  [OWNER_LEASE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/OWNER_LEASE.md)
+  [Owner Lease](ownership-types/owner-lease/)
   (see [ownership.md](ownership.md#ownerlease))
 
 ## P
@@ -73,143 +72,146 @@ links to.
   `register` / `unregister` / `execute` /
   `is_registered` / `registered_count`, plus the
   `register_pass!` macro) -
-  [PASS_REGISTRY.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PASS_REGISTRY.md)
-  (see [coordination.md](coordination.md#passregistry))
+  [Pass Registry](coordination-types/pass-registry/)
+  (see [coordination.md](coordination.md#pass_registry))
 - `PriorityFanout` -
-  [PRIORITY_FANOUT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PRIORITY_FANOUT.md)
+  [Priority Fanout](coordination-types/priority-fanout/)
   (see [coordination.md](coordination.md#priorityfanout))
 - `ProgressTask` -
-  [PROGRESS_TASK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/PROGRESS_TASK.md)
+  [Progress Task](coordination-types/progress-task/)
   (see [coordination.md](coordination.md#progresstask))
 
 ## S
 
 - `SharedAsyncPointer` -
-  [SHARED_ASYNC_POINTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ASYNC_POINTER.md)
+  [Shared Async Pointer](coordination-types/shared-async-pointer/)
   (see [coordination.md](coordination.md#sharedasyncpointer))
 - `SharedAtomicBool` / `SharedAtomicU32` / `SharedAtomicU64` -
-  [SHARED_ATOMIC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ATOMIC.md)
+  [Shared Atomic](atomics/shared-atomic/)
   (see [shared-atomic.md](shared-atomic.md))
 - `SharedBitVec` -
-  [SHARED_BIT_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BIT_VEC.md)
+  [Shared Bit Vec](sketches/shared-bit-vec/)
   (see [shared-sketches.md](shared-sketches.md#sharedbitvec))
 - `SharedBloomFilter` -
-  [SHARED_BLOOM_FILTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BLOOM_FILTER.md)
+  [Shared Bloom Filter](sketches/shared-bloom-filter/)
   (see [shared-sketches.md](shared-sketches.md#sharedbloomfilter))
 - `SharedBlockedBloomFilter` -
-  [SHARED_BLOCKED_BLOOM_FILTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BLOCKED_BLOOM_FILTER.md)
+  [Shared Blocked Bloom Filter](sketches/shared-blocked-bloom-filter/)
   (see [sketches/shared-blocked-bloom-filter.md](sketches/shared-blocked-bloom-filter.md))
 - `SharedBroadcastRing` -
-  [SHARED_BROADCAST_RING.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BROADCAST_RING.md)
+  [Shared Broadcast Ring](rings/shared-broadcast-ring/)
   (see [shared-ring.md](shared-ring.md#sharedbroadcastring))
 - `SharedCell` -
-  [SHARED_CELL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_CELL.md)
+  [Shared Cell](cells/shared-cell/)
   (see [shared-cell.md](shared-cell.md#sharedcell))
 - `SharedCountMinSketch` -
-  [SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md)
+  [Shared Count-Min Sketch](sketches/shared-count-min-sketch/)
   (see [shared-sketches.md](shared-sketches.md#sharedcountminsketch))
 - `SharedArc` -
-  [SHARED_ARC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARC.md)
+  [Shared Arc](ownership-types/shared-arc/)
   (see [ownership-types/shared-arc.md](ownership-types/shared-arc.md))
 - `SharedEpochs` -
-  [SHARED_EPOCHS.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_EPOCHS.md)
+  [Shared Epochs](coordination-types/shared-epochs/)
   (see [coordination-types/shared-epochs.md](coordination-types/shared-epochs.md))
 - `SharedFenceClock` -
-  [SHARED_FENCE_CLOCK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_FENCE_CLOCK.md)
+  [Shared Fence Clock](locks/shared-fence-clock/)
   (see [shared-locks.md](shared-locks.md#sharedfenceclock))
 - `SharedGraph` -
-  [SHARED_GRAPH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_GRAPH.md)
+  [Shared Graph](specialized/shared-graph/)
   (see [coordination.md](coordination.md#sharedgraph))
 - `SharedHandleTable` -
-  [SHARED_HANDLE_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HANDLE_TABLE.md)
+  [Shared Handle Table](arenas/shared-handle-table/)
   (see [shared-sketches.md](shared-sketches.md#sharedhandletable))
 - `SharedHashMap` -
-  [SHARED_HASH_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HASH_MAP.md)
+  [Shared Hash Map](maps/shared-hash-map/)
   (see [shared-hash-map.md](shared-hash-map.md#sharedhashmapk-v))
 - `SharedHistogram` -
-  [SHARED_HISTOGRAM.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HISTOGRAM.md)
+  [Shared Histogram](sketches/shared-histogram/)
   (see [shared-sketches.md](shared-sketches.md#sharedhistogram))
 - `SharedHyperLogLog` -
-  [SHARED_HYPER_LOG_LOG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HYPER_LOG_LOG.md)
+  [Shared HyperLogLog](sketches/shared-hyper-log-log/)
   (see [shared-sketches.md](shared-sketches.md#sharedhyperloglog))
 - `SharedLeaderElection` -
-  [SHARED_LEADER_ELECTION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LEADER_ELECTION.md)
+  [Shared Leader Election](ownership-types/shared-leader-election/)
   (see [ownership.md](ownership.md#sharedleaderelection))
 - `SharedLinkedList` -
-  [SHARED_LINKED_LIST.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LINKED_LIST.md)
+  [Shared Linked List](maps/shared-linked-list/)
   (see [coordination.md](coordination.md#vec-and-linked-list))
 - `SharedLRUCache` -
-  [SHARED_LRU_CACHE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LRU_CACHE.md)
+  [Shared LRU Cache](caches/shared-lru-cache/)
   (see [shared-lru-cache.md](shared-lru-cache.md))
+- `SharedNamedValues` -
+  [Shared Named Values](maps/shared-named-values/)
+  (see [maps/shared-named-values.md](maps/shared-named-values.md))
 - `SharedNaNTaggedValue` / `SharedNaNValue` -
-  [SHARED_NAN_TAGGED_VALUE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_NAN_TAGGED_VALUE.md),
-  [SHARED_NAN_VALUE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_NAN_VALUE.md)
+  [Shared NaN-Tagged Value](specialized/shared-nan-tagged-value/),
+  [Shared NaN Value](specialized/shared-nan-value/)
   (see [coordination.md](coordination.md#sharednanvalue-and-sharednantaggedvalue))
 - `SharedOnceCell` -
-  [SHARED_ONCE_CELL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ONCE_CELL.md)
+  [Shared Once Cell](cells/shared-once-cell/)
   (see [shared-cell.md](shared-cell.md#sharedoncecell))
 - `SharedRateLimiter` -
-  [SHARED_RATE_LIMITER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RATE_LIMITER.md)
+  [Shared Rate Limiter](locks/shared-rate-limiter/)
   (see [shared-locks.md](shared-locks.md#sharedratelimiter))
 - `SharedRegion` -
-  [SHARED_REGION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_REGION.md)
+  [Shared Region](arenas/shared-region/)
   (see [coordination.md](coordination.md#sharedregion))
 - `SharedReservoirSampler` -
-  [SHARED_RESERVOIR_SAMPLER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RESERVOIR_SAMPLER.md)
+  [Shared Reservoir Sampler](sketches/shared-reservoir-sampler/)
   (see [shared-sketches.md](shared-sketches.md#sharedreservoirsampler))
 - `SharedRing` -
-  [SHARED_RING.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RING.md)
+  [Shared Ring](rings/shared-ring/)
   (see [shared-ring.md](shared-ring.md#sharedring))
 - `SharedRWLock` -
-  [SHARED_RW_LOCK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RW_LOCK.md)
+  [Shared RW Lock](locks/shared-rw-lock/)
   (see [shared-locks.md](shared-locks.md#sharedrwlock))
 - `SharedSemaphore` -
-  [SHARED_SEMAPHORE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SEMAPHORE.md)
+  [Shared Semaphore](locks/shared-semaphore/)
   (see [shared-locks.md](shared-locks.md#sharedsemaphore))
 - `SharedBTreeMap` -
-  [SHARED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BTREE_MAP.md)
+  [Shared B-Tree Map](maps/shared-btree-map/)
   (see [shared-hash-map.md](shared-hash-map.md#sharedbtreemap))
 - `SharedSlab` -
-  [SHARED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_SLAB.md)
+  [Shared Slab](specialized/shared-slab/)
   (see [specialized/shared-slab.md](specialized/shared-slab.md))
 - `SharedArray` -
-  [SHARED_ARRAY.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_ARRAY.md)
+  [Shared Array](specialized/shared-array/)
   (see [specialized/shared-array.md](specialized/shared-array.md))
 - `SharedStringArena` -
-  [SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md)
+  [Shared String Arena](arenas/shared-string-arena/)
   (see [shared-sketches.md](shared-sketches.md#sharedstringarena))
 - `SharedTimePointTile` -
-  [SHARED_TIME_POINT.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TIME_POINT.md)
+  [Shared Time Point](specialized/shared-time-point/)
   (see [coordination.md](coordination.md#sharedtimepointtile))
 - `SharedTopologyMap` -
-  [SHARED_TOPOLOGY_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TOPOLOGY_MAP.md)
+  [Shared Topology Map](specialized/shared-topology-map/)
   (see [coordination.md](coordination.md#sharedtopologymap))
 - `SharedTreiberStack` -
-  [SHARED_TREIBER_STACK.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_TREIBER_STACK.md)
+  [Shared Treiber Stack](rings/shared-treiber-stack/)
   (see [shared-ring.md](shared-ring.md#sharedtreiberstack))
 - `SharedUmbraPointer` -
-  [SHARED_UMBRA_POINTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_UMBRA_POINTER.md)
+  [Shared Umbra Pointer](specialized/shared-umbra-pointer/)
   (see [coordination.md](coordination.md#sharedumbrapointer))
 - `SharedUniversal` -
-  [SHARED_UNIVERSAL.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_UNIVERSAL.md)
+  [Shared Universal](specialized/shared-universal/)
   (see [coordination.md](coordination.md#shareduniversal))
 - `SharedVec` -
-  [SHARED_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VEC.md)
+  [Shared Vec](specialized/shared-vec/)
   (see [coordination.md](coordination.md#vec-and-linked-list))
 - `SharedVersionedChain` -
-  [SHARED_VERSIONED_CHAIN.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_CHAIN.md)
+  [Shared Versioned Chain](specialized/shared-versioned-chain/)
   (see [coordination.md](coordination.md#sharedversionedchain))
 - `SharedVersionedSlab` -
-  [SHARED_VERSIONED_SLAB.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_VERSIONED_SLAB.md)
+  [Shared Versioned Slab](specialized/shared-versioned-slab/)
   (see [specialized/shared-versioned-slab.md](specialized/shared-versioned-slab.md))
 
 ## T
 
 - `TaggedOffsetPtr` -
-  [TAGGED_OFFSET_PTR.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/TAGGED_OFFSET_PTR.md)
+  [Tagged Offset Pointer](pointers/tagged-offset-ptr/)
 
 ## V
 
 - `VersionedBTreeMap` -
-  [VERSIONED_BTREE_MAP.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/VERSIONED_BTREE_MAP.md)
+  [Versioned BTree Map](maps/versioned-btree-map/)
   (see [maps/versioned-btree-map.md](maps/versioned-btree-map.md))

@@ -1,14 +1,17 @@
 //! Substrate for adaptive primitives.
 //!
-//! The four core abstractions actually consumed by the IPC stack:
+//! The five core abstractions actually consumed by the IPC stack:
 //!
 //! - [`HandshakeHeader`] - per-instance generation counter and in-flight tracker.
-//! - [`ObservationRing`] - TLS-local ring buffer for op observations.
+//! - [`ObservationRing`] - per-instance multi-producer ring of op observations.
 //! - [`migration`] - dual-stack migration protocol primitives.
 //! - [`Marshal`] - type-system contract for "this value can cross an
 //!   address-space boundary byte-identically." Stricter than `Send`;
 //!   required by every cross-process primitive in `subetha-cxc` that
 //!   stores typed values (e.g. `SharedDeque<T>`).
+//! - [`SwapCell`] - an `Arc` swapped atomically and read without
+//!   touching its reference count; a replaced value is dropped when its
+//!   last reader lets go.
 //!
 //! Plus the architecture catalog ([`Axis`] / [`AxisMask`]) for direction
 //! signatures and the [`cpuid`] helpers for CPU-feature detection.
@@ -27,9 +30,11 @@ pub mod handshake;
 pub mod marshal;
 pub mod migration;
 pub mod observation;
+pub mod swap_cell;
 
 pub use axis_signature::{Axis, AxisMask, Fusion};
 pub use cpuid::{has_movdir64b, has_waitpkg};
+pub use swap_cell::{SwapCell, SwapCellOption};
 pub use handshake::HandshakeHeader;
 pub use marshal::{Marshal, MarshalError};
 pub use migration::{Generation, MigrationGuard};

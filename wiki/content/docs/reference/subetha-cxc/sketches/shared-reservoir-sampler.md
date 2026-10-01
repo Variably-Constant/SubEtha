@@ -184,5 +184,5 @@ the full stream.
   `Mutex<Vec>` Vitter R).
 - Original: Vitter, "Random sampling with a reservoir", ACM
   Trans. Math. Software 1985.
-- Sibling primitive: [SHARED_HISTOGRAM.md](shared-histogram/) -
+- Sibling primitive: [Shared Histogram](shared-histogram/) -
   bucketed distribution; reservoir samples the raw stream.

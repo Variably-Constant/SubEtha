@@ -16,7 +16,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -26,6 +25,7 @@ use crate::cross_process_waker::{
 use crate::phase_estimator::{PhaseConfig, PhaseEstimator};
 use crate::shared_ring::RingError;
 use crate::spsc_ring::SpscRingCore;
+use crate::take_slot::TakeSlot;
 
 /// Instrumentation for [`BlockingSpscRing::recv_phase_locked`]: how
 /// each item was caught. The headline ratio is `spin_catches` (no
@@ -106,7 +106,7 @@ struct PhaseControl {
     /// Consecutive fast-path catches while in wait mode; a long run
     /// means the consumer has caught up and prediction is moot -
     /// leave wait mode. Atomic so the fast path touches it without
-    /// the estimator lock or an `Instant::now`.
+    /// the estimator or an `Instant::now`.
     consecutive_fast: AtomicU32,
     /// Consecutive empty-ring waits. Prediction fires only after a
     /// sustained run, so a mixed regime (small backlog, only
@@ -119,9 +119,14 @@ struct PhaseControl {
     /// (the syscall-free path). Observability - proves the mechanism
     /// fired, surviving the tail-drain estimator reset.
     predictive_catches: AtomicU64,
-    /// The arrival estimator. Locked only on the wait path (already
-    /// slow), never on the fast path.
-    est: Mutex<PhaseEstimator>,
+    /// The arrival estimator. The consumer takes it on the wait path
+    /// (already slow), never on the fast path, and puts it back before
+    /// it parks; a second thread that finds it taken does without it for
+    /// that wait.
+    est: TakeSlot<PhaseEstimator>,
+    /// The estimator's engaged state as the consumer last left it,
+    /// readable without taking the estimator.
+    engaged: AtomicBool,
 }
 
 impl PhaseControl {
@@ -135,8 +140,19 @@ impl PhaseControl {
             consecutive_waits: AtomicU32::new(0),
             guard_band: Duration::from_micros(3),
             predictive_catches: AtomicU64::new(0),
-            est: Mutex::new(PhaseEstimator::new(PhaseConfig::default())),
+            est: TakeSlot::new(PhaseEstimator::new(PhaseConfig::default())),
+            engaged: AtomicBool::new(false),
         }
+    }
+
+    /// Runs `f` on the estimator, or returns `None` when another thread
+    /// holds it.
+    fn with_estimator<R>(&self, f: impl FnOnce(&mut PhaseEstimator) -> R) -> Option<R> {
+        self.est.with(|est| {
+            let out = f(est);
+            self.engaged.store(est.engaged(), Ordering::Relaxed);
+            out
+        })
     }
 }
 
@@ -154,7 +170,6 @@ pub struct BlockingSpscRing {
     phase: PhaseControl,
 }
 
-const PRE_PARK_SPIN: u32 = 32;
 /// Consecutive fast-path catches that take the consumer out of wait
 /// mode (it has caught up; prediction is moot until it waits again).
 const PHASE_EXIT_FAST_RUN: u32 = 64;
@@ -286,7 +301,7 @@ impl BlockingSpscRing {
                 Err(RingError::Full) => {}
                 Err(e) => return Err(BlockingError::Ring(e)),
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.producer_waker.spin_rounds() {
                 if self.inner.try_push(payload).is_ok() {
                     self.consumer_waker.wake_up_to(self.inner.head());
                     return Ok(());
@@ -344,14 +359,14 @@ impl BlockingSpscRing {
     }
 
     /// Whether the arrival predictor is currently engaged (regular
-    /// cadence, enough samples). Observability accessor - locks the
-    /// estimator, so not for the hot path. Note: the estimator resets
+    /// cadence, enough samples), as the consumer last left it.
+    /// Note: the estimator resets
     /// when the consumer leaves wait mode, so this can read false at
     /// the end of a run even after heavy engagement - use
     /// [`phase_predictive_catches`](Self::phase_predictive_catches)
     /// for a sticky "did it fire" signal.
     pub fn phase_engaged(&self) -> bool {
-        self.phase.est.lock().unwrap().engaged()
+        self.phase.engaged.load(Ordering::Relaxed)
     }
 
     /// Sticky count of items caught by the predictive guard-band spin
@@ -374,24 +389,25 @@ impl BlockingSpscRing {
             // the next wait re-learns a fresh cadence.
             self.phase.in_wait_mode.store(false, Ordering::Relaxed);
             self.phase.consecutive_fast.store(0, Ordering::Relaxed);
-            *self.phase.est.lock().unwrap() =
-                PhaseEstimator::new(PhaseConfig::default());
+            self.phase
+                .with_estimator(|est| *est = PhaseEstimator::new(PhaseConfig::default()));
         }
     }
 
     /// Wait-path catch: feed the estimator (this is already the slow
-    /// path, so the lock + `Instant` are free relative to the park).
+    /// path, so taking the estimator and an `Instant` are free relative
+    /// to the park).
     fn phase_on_wait(&self, now: Instant) {
         self.phase.consecutive_fast.store(0, Ordering::Relaxed);
         self.phase.consecutive_waits.fetch_add(1, Ordering::Relaxed);
-        self.phase.est.lock().unwrap().record(now);
+        self.phase.with_estimator(|est| est.record(now));
     }
 
     /// The engaged predictive path: park to just before the predicted
     /// arrival, then spin the guard band. Returns `Ok(Some(n))` on a
     /// catch, `Ok(None)` when disengaged or the prediction missed
     /// (fall through to the doorbell), `Err` on timeout. Never holds
-    /// the estimator lock across the park.
+    /// the estimator across the park.
     fn phase_predict_and_spin(
         &self,
         out: &mut [u8],
@@ -404,9 +420,10 @@ impl BlockingSpscRing {
         {
             return Ok(None);
         }
-        let (engaged, predicted) = {
-            let est = self.phase.est.lock().unwrap();
-            (est.engaged(), est.predict_next())
+        let Some((engaged, predicted)) =
+            self.phase.with_estimator(|est| (est.engaged(), est.predict_next()))
+        else {
+            return Ok(None);
         };
         let Some(predicted) = predicted.filter(|_| engaged) else {
             return Ok(None);
@@ -495,7 +512,7 @@ impl BlockingSpscRing {
                 Err(RingError::Empty) => {}
                 Err(e) => return Err(BlockingError::Ring(e)),
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.consumer_waker.spin_rounds() {
                 if let Ok(n) = self.inner.try_pop(out) {
                     self.producer_waker.wake_up_to(self.inner.tail());
                     if adaptive && self.phase.in_wait_mode.load(Ordering::Relaxed) {
@@ -645,7 +662,7 @@ impl BlockingSpscRing {
                 stats.doorbell_catches += 1;
                 return Ok(n);
             }
-            for _ in 0..PRE_PARK_SPIN {
+            for _ in 0..self.consumer_waker.spin_rounds() {
                 if let Ok(n) = self.try_pop(out) {
                     estimator.record(Instant::now());
                     stats.doorbell_catches += 1;
@@ -771,15 +788,259 @@ mod tests {
             }
             producer.join().unwrap();
 
-            // The estimator must have engaged and caught a meaningful
-            // share of items via the syscall-free guard-band spin.
-            if est.engaged() || stats.spin_catches > 0 {
-                assert!(stats.spin_catches > 0,
-                        "engaged mode must catch items via the guard-band spin");
+            // The estimator must have engaged and caught items via the
+            // syscall-free guard-band spin. An attempt that engaged but
+            // whose every predicted wake missed the guard band, as a
+            // descheduled consumer's can, is another attempt rather than a
+            // verdict.
+            if stats.spin_catches > 0 {
                 engaged_once = true;
                 break;
             }
         }
-        assert!(engaged_once, "a regular cadence must engage the predictor");
+        assert!(
+            engaged_once,
+            "a regular cadence must engage the predictor and catch items via the guard-band spin"
+        );
+    }
+
+    /// Cells of the two-process round trip, each with a fresh pair of
+    /// processes.
+    const ECHO_CELLS: u64 = 40;
+    /// Frames each cell sends and has echoed.
+    const ECHO_FRAMES: u64 = 2_000;
+    /// How long one receive may wait before its wake counts as lost.
+    const ECHO_LOST_WAKE: Duration = Duration::from_secs(30);
+    /// Slots in each direction's ring.
+    const ECHO_SLOTS: usize = 4;
+    /// Bytes in one region block.
+    const ECHO_BLOCK_BYTES: usize = 4096;
+    /// Blocks in each direction's region: one per ring slot, one the
+    /// sender holds before its descriptor is in the ring, and one the
+    /// receiver holds between taking a descriptor and freeing its block.
+    const ECHO_BLOCKS: usize = ECHO_SLOTS + 2;
+    /// The frame the peer sends once it has opened both directions.
+    const ECHO_READY: [u8; 1] = [0x52];
+
+    fn with_suffix(base: &Path, suffix: &str) -> std::path::PathBuf {
+        let mut name = base.as_os_str().to_owned();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    }
+
+    /// The four files one direction at `base` maps, removed when the
+    /// guards drop. Declared before the direction, they drop after it.
+    fn direction_files(base: &Path) -> [crate::test_paths::TmpFile; 4] {
+        let name = base
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("the direction's base name is text");
+        [".ring.bin", ".cw.bin", ".pw.bin", ".region.bin"]
+            .map(|suffix| crate::test_paths::TmpFile::new(format!("{name}{suffix}")))
+    }
+
+    /// One direction of the round trip, carrying a frame the way a stage
+    /// boundary does: its bytes in a region block, and a descriptor
+    /// naming the block, `[len: u32][block: u32]`, through the ring. Each
+    /// frame costs a block allocated, written, read and freed, and each
+    /// receive a fresh slot buffer.
+    struct EchoDirection {
+        ring: BlockingSpscRing,
+        region: crate::frame_region::FrameRegion,
+    }
+
+    impl EchoDirection {
+        fn create(base: &Path) -> Self {
+            Self {
+                ring: BlockingSpscRing::create(base, ECHO_SLOTS).expect("the ring is created"),
+                region: crate::frame_region::FrameRegion::create(
+                    with_suffix(base, ".region.bin"),
+                    ECHO_BLOCK_BYTES,
+                    ECHO_BLOCKS,
+                )
+                .expect("the region is created"),
+            }
+        }
+
+        fn open(base: &Path) -> Result<Self, String> {
+            Ok(Self {
+                ring: BlockingSpscRing::open(base, ECHO_SLOTS)
+                    .map_err(|e| format!("the ring: {e:?}"))?,
+                region: crate::frame_region::FrameRegion::open(
+                    with_suffix(base, ".region.bin"),
+                    ECHO_BLOCK_BYTES,
+                    ECHO_BLOCKS,
+                )
+                .map_err(|e| format!("the region: {e:?}"))?,
+            })
+        }
+
+        /// Copies `frame` into a free block and sends the descriptor; a
+        /// send that fails gives the block back.
+        fn send(&self, frame: &[u8]) -> Result<(), String> {
+            let block = self.region.alloc().ok_or("no region block was free")?;
+            self.region.write_block(block, frame);
+            let len = u32::try_from(frame.len()).expect("a frame fits a block");
+            let mut descriptor = [0u8; 8];
+            descriptor[..4].copy_from_slice(&len.to_le_bytes());
+            descriptor[4..].copy_from_slice(&block.to_le_bytes());
+            self.ring
+                .send_blocking(&descriptor, Some(ECHO_LOST_WAKE))
+                .map_err(|e| {
+                    self.region.free(block);
+                    format!("{e:?}")
+                })
+        }
+
+        /// Takes a descriptor, copies its block into `out` and frees the
+        /// block.
+        fn recv(&self, out: &mut Vec<u8>) -> Result<(), String> {
+            let mut slot = vec![0u8; crate::spsc_ring::SPSC_PAYLOAD_BYTES];
+            self.ring
+                .recv_blocking(&mut slot, Some(ECHO_LOST_WAKE))
+                .map_err(|e| format!("{e:?}"))?;
+            let len = u32::from_le_bytes(slot[..4].try_into().expect("4 bytes")) as usize;
+            let block = u32::from_le_bytes(slot[4..8].try_into().expect("4 bytes"));
+            out.clear();
+            self.region.read_block_into(block, len, out);
+            self.region.free(block);
+            Ok(())
+        }
+    }
+
+    /// The peer half of the round trip: when the test binary is re-run
+    /// with `SUBETHA_RING_ECHO_PEER` naming a cell's base path, it opens
+    /// both directions, announces itself and echoes every frame, exiting
+    /// 1 on the first receive or send that fails; otherwise it passes at
+    /// once.
+    #[test]
+    fn ring_echo_peer_role() {
+        let Some(base) = std::env::var_os("SUBETHA_RING_ECHO_PEER") else {
+            return;
+        };
+        fn fail(what: String) -> ! {
+            eprintln!("ring echo peer: {what}");
+            std::process::exit(1);
+        }
+        let base = std::path::PathBuf::from(base);
+        let to_peer = EchoDirection::open(&with_suffix(&base, ".out"))
+            .unwrap_or_else(|e| fail(format!("opening the outbound direction: {e}")));
+        let to_coordinator = EchoDirection::open(&with_suffix(&base, ".in"))
+            .unwrap_or_else(|e| fail(format!("opening the inbound direction: {e}")));
+        if let Err(e) = to_coordinator.send(&ECHO_READY) {
+            fail(format!("announcing: {e}"));
+        }
+        let mut frame = Vec::new();
+        for i in 0..ECHO_FRAMES {
+            if let Err(e) = to_peer.recv(&mut frame) {
+                fail(format!("frame {i}: receiving: {e}"));
+            }
+            if let Err(e) = to_coordinator.send(&frame) {
+                fail(format!("frame {i}: echoing: {e}"));
+            }
+        }
+        std::process::exit(0);
+    }
+
+    /// Kills the echo peer when a cell ends before reaping it, so a lost
+    /// wake leaves no process waiting on its own.
+    struct EchoPeer(Option<std::process::Child>);
+
+    impl EchoPeer {
+        fn reap(mut self) -> std::process::ExitStatus {
+            let mut child = self.0.take().expect("the peer is reaped once");
+            child.wait().expect("the peer is waited on")
+        }
+    }
+
+    impl Drop for EchoPeer {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                if let Err(e) = child.kill() {
+                    eprintln!("the echo peer was not killed: {e}");
+                }
+                if let Err(e) = child.wait() {
+                    eprintln!("the echo peer was not reaped: {e}");
+                }
+            }
+        }
+    }
+
+    /// Frames cross between two processes and back with no hold, over a
+    /// fresh pair of processes per cell, each frame in a region block
+    /// that a descriptor through the ring names. A producer's head store
+    /// followed by its wake scan races a consumer's parked-mask set
+    /// followed by its re-check of the ring; a receive that waits out its
+    /// timeout lost that race.
+    #[test]
+    fn a_round_trip_between_two_processes_loses_no_wake() {
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let mut problems = Vec::new();
+        for cell in 0..ECHO_CELLS {
+            let base = std::env::temp_dir()
+                .join(format!("subetha-ring-echo-{}-{cell}", std::process::id()));
+            let _outbound_files = direction_files(&with_suffix(&base, ".out"));
+            let _inbound_files = direction_files(&with_suffix(&base, ".in"));
+            let to_peer = EchoDirection::create(&with_suffix(&base, ".out"));
+            let to_coordinator = EchoDirection::create(&with_suffix(&base, ".in"));
+            let peer = EchoPeer(Some(
+                std::process::Command::new(&exe)
+                    .arg("blocking_spsc_ring::tests::ring_echo_peer_role")
+                    .arg("--exact")
+                    .arg("--nocapture")
+                    .env("SUBETHA_RING_ECHO_PEER", &base)
+                    .spawn()
+                    .expect("the peer process spawns"),
+            ));
+            let mut frame = Vec::new();
+            match to_coordinator.recv(&mut frame) {
+                Ok(()) if frame == ECHO_READY => {}
+                Ok(()) => {
+                    problems.push(format!("cell {cell}: the peer announced {frame:?}"));
+                    continue;
+                }
+                Err(e) => {
+                    problems.push(format!("cell {cell}: the peer's announcement: {e}"));
+                    continue;
+                }
+            }
+            let mut lost = None;
+            for i in 0..ECHO_FRAMES {
+                let sent = i.to_le_bytes();
+                if let Err(e) = to_peer.send(&sent) {
+                    lost = Some(format!("cell {cell} frame {i}: sending: {e}"));
+                    break;
+                }
+                let start = Instant::now();
+                match to_coordinator.recv(&mut frame) {
+                    Ok(()) if frame == sent => {}
+                    Ok(()) => {
+                        lost = Some(format!("cell {cell} frame {i}: the echo was {frame:?}"));
+                        break;
+                    }
+                    Err(e) => {
+                        lost = Some(format!(
+                            "cell {cell} frame {i}: receiving the echo: {e} after {:?}",
+                            start.elapsed()
+                        ));
+                        break;
+                    }
+                }
+            }
+            match lost {
+                Some(line) => problems.push(line),
+                None => {
+                    let status = peer.reap();
+                    if !status.success() {
+                        problems.push(format!("cell {cell}: the peer ended with {status}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} of {ECHO_CELLS} cells failed: {problems:?}",
+            problems.len()
+        );
     }
 }

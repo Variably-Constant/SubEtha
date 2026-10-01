@@ -8,10 +8,16 @@ use std::sync::Arc;
 
 use pwrs::prelude::*;
 
-use subetha_cxc::adaptive_ring::AdaptiveRing;
-use subetha_cxc::capacity_adaptive_ring::CapacityAdaptiveRing;
+use subetha_cxc::adaptive_ring::{
+    AdaptiveRing, AdaptiveRingSidecar, DefaultRingShapePolicy, SCAN_INTERVAL_DEFAULT_US,
+};
+use subetha_cxc::capacity_adaptive_ring::{
+    CapacityAdaptiveRing, CapacityAdaptiveRingSidecar, DefaultCapacityPolicy,
+};
 use subetha_cxc::frame_region::FrameRegion as SubethaFrameRegion;
-use subetha_cxc::locale_adaptive_ring::{Locale as SubethaLocale, LocaleAdaptiveRing};
+use subetha_cxc::locale_adaptive_ring::{
+    DefaultLocalePolicy, Locale as SubethaLocale, LocaleAdaptiveRing, LocaleAdaptiveRingSidecar,
+};
 use subetha_cxc::ordering::{OrderingMode as SubethaOrderingMode, StampKind as SubethaStampKind, STAMPED_PAYLOAD_BYTES};
 use subetha_cxc::protocol_pubsub::{PubSubReadError, PubSubRing, PUBSUB_PAYLOAD_BYTES};
 use subetha_cxc::raw_deque::RawDeque;
@@ -25,6 +31,7 @@ use subetha_cxc::spsc_ring::{SpscRingCore, SPSC_PAYLOAD_BYTES};
 
 use crate::common::{arg_err, assert_send, bytes, full_path, op_err, open_err, out_bytes, power_of_two, size, StampedItem};
 use crate::primitives::layout;
+use crate::sidecar::{observe, scan_cadence, Registration};
 
 assert_send!(
     SpscRing, BroadcastRing, CapacityRing, LocaleRing, Ring, OrderedReceiver, ReorderWindow, Stack, Deque, PubSub, Subscriber,
@@ -349,7 +356,7 @@ pub struct BroadcastRing {
     /// The bytes one slot carries; a longer item is refused.
     pub payload_size: u64,
     #[psfield(skip)]
-    inner: SharedBroadcastRing,
+    inner: Arc<SharedBroadcastRing>,
 }
 
 impl BroadcastRing {
@@ -357,7 +364,7 @@ impl BroadcastRing {
         let slots = size(capacity, "the capacity")?;
         let inner = if open { SharedBroadcastRing::open(&path, slots) } else { SharedBroadcastRing::create(&path, slots) }
             .map_err(|e| open_err("the broadcast ring", &path, e))?;
-        Ok(Self { path, capacity, payload_size: BROADCAST_PAYLOAD_BYTES as u64, inner })
+        Ok(Self { path, capacity, payload_size: BROADCAST_PAYLOAD_BYTES as u64, inner: Arc::new(inner) })
     }
 
     fn try_push(&self, item: &[u8]) -> PsResult<bool> {
@@ -380,6 +387,12 @@ impl BroadcastRing {
 /// The operations of a `SubEtha.BroadcastRing`.
 #[psmethods]
 impl BroadcastRing {
+    /// Registers this ring with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Takes a consumer position. Every registered consumer sees every
     /// item published after it registered.
     pub fn register_consumer(&self) -> PsResult<u64> {
@@ -405,7 +418,7 @@ impl BroadcastRing {
     /// the window is however long starting a worker takes. Publishing
     /// only once the readers are here closes it.
     ///
-    /// It promises nothing about afterwards. A consumer counted here can
+    /// It promises nothing about afterward. A consumer counted here can
     /// unregister, or its process can end, the moment this returns.
     pub fn wait_for_consumers(&self, want: u64, timeout_seconds: f64) -> PsResult<u64> {
         if !(timeout_seconds.is_finite() && timeout_seconds > 0.0) {
@@ -540,16 +553,24 @@ pub struct CapacityRing {
     /// Whether the items carry ordering stamps, fixed when the ring is
     /// built.
     pub stamped: bool,
+    /// Whether this handle runs a capacity sidecar, which doubles a ring
+    /// 85 percent full and halves one 10 percent full, within 64 to 65536
+    /// slots and no sooner than 100 ms after its last resize.
+    pub managed: bool,
     #[psfield(skip)]
-    inner: CapacityAdaptiveRing,
+    inner: Arc<CapacityAdaptiveRing>,
+    #[psfield(skip)]
+    sidecar: Option<CapacityAdaptiveRingSidecar>,
 }
 
 impl CapacityRing {
-    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamped: bool, open: bool) -> PsResult<Self> {
+    #[allow(clippy::too_many_arguments)]
+    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamped: bool, open: bool, managed: bool, scan_interval_us: Option<u64>) -> PsResult<Self> {
         let slots = power_of_two(capacity)?;
         if producers < 1 || consumers < 1 {
             return Err(arg_err("a ring needs at least one producer and one consumer"));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "capacity ring")?;
         let p = size(producers, "the producer count")?;
         let c = size(consumers, "the consumer count")?;
         let inner = if open {
@@ -560,7 +581,11 @@ impl CapacityRing {
             CapacityAdaptiveRing::create(&path, p, c, slots)
         }
         .map_err(|e| open_err("the ring", &path, e))?;
-        Ok(Self { path, max_producers: producers, max_consumers: consumers, stamped, inner })
+        let inner = Arc::new(inner);
+        let sidecar = cadence.map(|every| {
+            CapacityAdaptiveRingSidecar::spawn(Arc::clone(&inner), DefaultCapacityPolicy::default(), every)
+        });
+        Ok(Self { path, max_producers: producers, max_consumers: consumers, stamped, managed: sidecar.is_some(), inner, sidecar })
     }
 
     fn try_send(&self, producer: usize, item: &[u8]) -> PsResult<bool> {
@@ -583,6 +608,17 @@ impl CapacityRing {
 /// The operations of a `SubEtha.CapacityRing`.
 #[psmethods]
 impl CapacityRing {
+    /// Resizes this handle's sidecar has made; zero on a strict ring.
+    pub fn sidecar_morphs(&self) -> PsResult<u64> {
+        Ok(self.sidecar.as_ref().map_or(0, CapacityAdaptiveRingSidecar::morphs_triggered))
+    }
+
+    /// Backings this handle's sidecar built ahead of a resize it saw
+    /// coming; zero on a strict ring.
+    pub fn sidecar_prewarms(&self) -> PsResult<u64> {
+        Ok(self.sidecar.as_ref().map_or(0, CapacityAdaptiveRingSidecar::prewarms_issued))
+    }
+
     /// The capacity right now, which a morph changes.
     pub fn capacity(&self) -> PsResult<u64> {
         Ok(self.inner.current_capacity() as u64)
@@ -715,12 +751,20 @@ pub struct NewSubEthaCapacityRing {
     /// Inversions read. Stamps cost space and a write per item.
     #[param]
     pub stamped: bool,
+    /// Run a capacity sidecar that resizes the ring as it fills and
+    /// idles. Needs ScanIntervalUs.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds. The
+    /// library names no default for this ring.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for NewSubEthaCapacityRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(CapacityRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, false)?)
+        ps.write(CapacityRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, false, self.managed, self.scan_interval_us)?)
     }
 }
 
@@ -748,12 +792,18 @@ pub struct OpenSubEthaCapacityRing {
     /// The ring was created with ordering stamps.
     #[param]
     pub stamped: bool,
+    /// Run a capacity sidecar of this handle's own. Needs ScanIntervalUs.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for OpenSubEthaCapacityRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(CapacityRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, true)?)
+        ps.write(CapacityRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, true, self.managed, self.scan_interval_us)?)
     }
 }
 
@@ -779,16 +829,24 @@ pub struct LocaleRing {
     /// Whether the items carry ordering stamps, fixed when the ring is
     /// built.
     pub stamped: bool,
+    /// Whether this handle runs a locale sidecar, which moves the ring to
+    /// the locale RequestLocale last asked for, no sooner than 250 ms
+    /// after its last move.
+    pub managed: bool,
     #[psfield(skip)]
-    inner: LocaleAdaptiveRing,
+    inner: Arc<LocaleAdaptiveRing>,
+    #[psfield(skip)]
+    sidecar: Option<LocaleAdaptiveRingSidecar>,
 }
 
 impl LocaleRing {
-    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamped: bool, open: bool) -> PsResult<Self> {
+    #[allow(clippy::too_many_arguments)]
+    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamped: bool, open: bool, managed: bool, scan_interval_us: Option<u64>) -> PsResult<Self> {
         let slots = power_of_two(capacity)?;
         if producers < 1 || consumers < 1 {
             return Err(arg_err("a ring needs at least one producer and one consumer"));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, None, "locale ring")?;
         let p = size(producers, "the producer count")?;
         let c = size(consumers, "the consumer count")?;
         let inner = if open {
@@ -799,7 +857,11 @@ impl LocaleRing {
             LocaleAdaptiveRing::create(&path, p, c, slots)
         }
         .map_err(|e| open_err("the ring", &path, e))?;
-        Ok(Self { path, capacity, max_producers: producers, max_consumers: consumers, stamped, inner })
+        let inner = Arc::new(inner);
+        let sidecar = cadence.map(|every| {
+            LocaleAdaptiveRingSidecar::spawn(Arc::clone(&inner), DefaultLocalePolicy::default(), every)
+        });
+        Ok(Self { path, capacity, max_producers: producers, max_consumers: consumers, stamped, managed: sidecar.is_some(), inner, sidecar })
     }
 
     fn try_send(&self, producer: usize, item: &[u8]) -> PsResult<bool> {
@@ -822,6 +884,24 @@ impl LocaleRing {
 /// The operations of a `SubEtha.LocaleRing`.
 #[psmethods]
 impl LocaleRing {
+    /// Moves this handle's sidecar has made; zero on a strict ring.
+    pub fn sidecar_migrations(&self) -> PsResult<u64> {
+        Ok(self.sidecar.as_ref().map_or(0, LocaleAdaptiveRingSidecar::migrations_triggered))
+    }
+
+    /// Asks a managed ring's sidecar to move the ring to `locale`. The
+    /// sidecar moves it on a later scan, once 250 ms have passed since its
+    /// last move. A strict ring has no sidecar to ask; MigrateTo moves it.
+    pub fn request_locale(&self, locale: Locale) -> PsResult<()> {
+        match &self.sidecar {
+            Some(sidecar) => {
+                sidecar.request_locale(locale.rust());
+                Ok(())
+            }
+            None => Err(arg_err("RequestLocale asks a managed ring's sidecar; a strict ring moves with MigrateTo")),
+        }
+    }
+
     /// Where the bytes are right now.
     pub fn locale(&self) -> PsResult<Locale> {
         Ok(Locale::from_rust(self.inner.current_locale()))
@@ -877,8 +957,12 @@ impl LocaleRing {
     /// Moves the ring to another locale, carrying what is already in
     /// it. On a stamped ring the transfer keeps the order every sender
     /// saw; on an unstamped one the drain can interleave senders, as a
-    /// shape change can.
+    /// shape change can. On a managed ring the move is also what its
+    /// sidecar is asked to keep, so the sidecar holds the ring there.
     pub fn migrate_to(&self, locale: Locale) -> PsResult<()> {
+        if let Some(sidecar) = &self.sidecar {
+            sidecar.request_locale(locale.rust());
+        }
         self.inner.migrate_to(locale.rust()).map_err(|e| op_err("migrating", e))
     }
 
@@ -927,12 +1011,20 @@ pub struct NewSubEthaLocaleRing {
     /// migration preserve order across every sender.
     #[param]
     pub stamped: bool,
+    /// Run a locale sidecar that moves the ring where RequestLocale asks.
+    /// Needs ScanIntervalUs.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds. The
+    /// library names no default for this ring.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for NewSubEthaLocaleRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(LocaleRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, false)?)
+        ps.write(LocaleRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, false, self.managed, self.scan_interval_us)?)
     }
 }
 
@@ -960,12 +1052,18 @@ pub struct OpenSubEthaLocaleRing {
     /// The ring was created with ordering stamps.
     #[param]
     pub stamped: bool,
+    /// Run a locale sidecar of this handle's own. Needs ScanIntervalUs.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for OpenSubEthaLocaleRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(LocaleRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, true)?)
+        ps.write(LocaleRing::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamped, true, self.managed, self.scan_interval_us)?)
     }
 }
 
@@ -989,15 +1087,23 @@ pub struct Ring {
     /// The kind of mark the items carry, or `$null` on a ring whose
     /// items are unmarked.
     pub stamps: Option<StampKind>,
+    /// Whether this handle runs a shape sidecar, which morphs the ring to
+    /// the cheapest shape its registered producers and consumers fit, no
+    /// sooner than 100 ms after its last morph.
+    pub managed: bool,
     #[psfield(skip)]
     inner: Arc<AdaptiveRing>,
+    #[psfield(skip)]
+    sidecar: Option<AdaptiveRingSidecar>,
 }
 
 impl Ring {
-    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamps: Option<StampKind>, open: bool) -> PsResult<Self> {
+    #[allow(clippy::too_many_arguments)]
+    fn obtain(path: String, capacity: u64, producers: u64, consumers: u64, stamps: Option<StampKind>, open: bool, managed: bool, scan_interval_us: Option<u64>) -> PsResult<Self> {
         if producers < 1 || consumers < 1 {
             return Err(arg_err("a ring needs at least one producer and one consumer"));
         }
+        let cadence = scan_cadence(managed, scan_interval_us, Some(SCAN_INTERVAL_DEFAULT_US), "ring")?;
         let slots = size(capacity, "the capacity")?;
         let p = size(producers, "the producer count")?;
         let c = size(consumers, "the consumer count")?;
@@ -1008,7 +1114,11 @@ impl Ring {
             None => ring,
         };
         let stamps = ring.stamp_kind().map(StampKind::from_rust);
-        Ok(Self { path, max_producers: producers, max_consumers: consumers, stamps, inner: Arc::new(ring) })
+        let inner = Arc::new(ring);
+        let sidecar = cadence.map(|every| {
+            AdaptiveRingSidecar::spawn(Arc::clone(&inner), DefaultRingShapePolicy::default(), every)
+        });
+        Ok(Self { path, max_producers: producers, max_consumers: consumers, stamps, managed: sidecar.is_some(), inner, sidecar })
     }
 
     fn try_send(&self, producer: usize, item: &[u8]) -> PsResult<bool> {
@@ -1031,6 +1141,18 @@ impl Ring {
 /// The operations of a `SubEtha.Ring`.
 #[psmethods]
 impl Ring {
+    /// Shape morphs this handle's sidecar has made; zero on a strict
+    /// ring. Morphs the ring makes on its own are not counted here.
+    pub fn sidecar_morphs(&self) -> PsResult<u64> {
+        Ok(self.sidecar.as_ref().map_or(0, AdaptiveRingSidecar::morphs_triggered))
+    }
+
+    /// Registers this ring with the process's sidecar, under `policy`
+    /// when given one; see SubEtha.Registration.
+    pub fn observe(&self, policy: Option<PsObject>) -> PsResult<Registration> {
+        observe(Arc::clone(&self.inner), policy)
+    }
+
     /// Whether this ring marks its items with the order their senders
     /// made them, which is fixed when the ring is built.
     pub fn stamped(&self) -> PsResult<bool> {
@@ -1189,12 +1311,19 @@ pub struct NewSubEthaRing {
     /// and it costs nothing.
     #[param]
     pub stamps: Option<StampKind>,
+    /// Run a shape sidecar that morphs the ring to fit its peers.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds; 250
+    /// when absent.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for NewSubEthaRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(Ring::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamps, false)?)
+        ps.write(Ring::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamps, false, self.managed, self.scan_interval_us)?)
     }
 }
 
@@ -1222,12 +1351,19 @@ pub struct OpenSubEthaRing {
     /// The kind of stamps the ring was created with.
     #[param]
     pub stamps: Option<StampKind>,
+    /// Run a shape sidecar of this handle's own.
+    #[param]
+    pub managed: bool,
+    /// How often a managed ring's sidecar scans, in microseconds; 250
+    /// when absent.
+    #[param]
+    pub scan_interval_us: Option<u64>,
 }
 
 impl Cmdlet for OpenSubEthaRing {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
         let path = full_path(ps, &self.path)?;
-        ps.write(Ring::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamps, true)?)
+        ps.write(Ring::obtain(path, self.capacity, self.max_producers.unwrap_or(1), self.max_consumers.unwrap_or(1), self.stamps, true, self.managed, self.scan_interval_us)?)
     }
 }
 

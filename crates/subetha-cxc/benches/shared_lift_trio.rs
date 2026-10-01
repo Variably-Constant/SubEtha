@@ -6,6 +6,9 @@
 //! "comparable to in-process and works cross-process and persists
 //! to disk." The in-process versions provide none of (2) or (3).
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

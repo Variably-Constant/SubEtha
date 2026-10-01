@@ -14,7 +14,7 @@
 //!
 //! - Tiny set (<= 8 elements) -> linear scan
 //! - Medium (<= 1024) -> sort-merge
-//! - Large (> 1M) -> hash join
+//! - Large (> 1024) -> hash join
 //!
 //! Without [`CardinalityPointer`] you either keep cardinality in a
 //! parallel metadata table (extra cache line per lookup) or
@@ -25,24 +25,19 @@
 //!
 //! # Bit budget
 //!
-//! - 8 bits in the high byte: log2(cardinality) ranges 0..=255,
-//!   so cardinalities up to 2^255 are encodable. (Realistic
-//!   cardinalities cap around 2^40, so 6-7 of those bits will
-//!   always be zero in practice; remaining bits are reserved for
-//!   future use.)
-//! - 56 bits of address: enough for any single process on x86_64
-//!   (current canonical addresses are 48 bits) and Apple Silicon
-//!   (Top Byte Ignored hardware accepts 56-bit pointers natively).
+//! - 8 bits in the high byte hold log2(cardinality). A `u64`
+//!   cardinality gives a log2 of 0..=64, so the top bit of the byte
+//!   is always zero.
+//! - 56 bits of address: enough for any user-space pointer on x86_64
+//!   (48 bits with 4-level paging, below 2^56 with 5-level) and on
+//!   Apple Silicon (Top Byte Ignored hardware accepts 56-bit pointers
+//!   natively).
 //!
 //! # Portability
 //!
-//! On AArch64 with Top Byte Ignored enabled (Apple Silicon, modern
-//! Linux on ARM), the hardware automatically masks the top byte on
-//! every dereference, so no explicit masking is needed. On x86_64
-//! the [`CardinalityPointer::as_raw`] accessor explicitly masks the
-//! address before exposing it. This module ships the portable
-//! masked variant; a hardware-TBI fast path can be added when
-//! cross-platform `cfg` blocks are available.
+//! [`CardinalityPointer::as_raw`] masks the cardinality byte off on
+//! every target, including AArch64 hosts with Top Byte Ignored, where
+//! the hardware would also ignore it.
 
 use std::marker::PhantomData;
 
@@ -72,8 +67,8 @@ impl<T> CardinalityPointer<T> {
     );
 
     /// Construct from a raw pointer and a cardinality estimate.
-    /// `cardinality_hint` is bucketed to its `log2`; values from
-    /// 0 (single element) to 2^255 are encodable.
+    /// `cardinality_hint` is bucketed to `ceil(log2)`, so every `u64`
+    /// encodes, as a log2 of 0..=64; 0 and 1 both encode as 0.
     ///
     /// **Runtime-checks** that the address fits in the 56-bit
     /// envelope and panics on violation. For trusted hot paths
@@ -114,11 +109,9 @@ impl<T> CardinalityPointer<T> {
     ///
     /// In addition to the standard `from_raw` safety contract:
     /// caller asserts that `(target as u64) & !ADDR_MASK == 0`.
-    /// On x86-64 with 4-level paging (the canonical configuration)
-    /// this holds for any user-space pointer; on 5-level paging
-    /// or with hardware MTE/TBI features that occupy the high byte
-    /// it does not hold and using this constructor is undefined
-    /// behavior.
+    /// On x86-64 this holds for any user-space pointer, with 4- or
+    /// 5-level paging; with hardware MTE/TBI tags in the high byte it
+    /// does not hold and using this constructor is undefined behavior.
     pub unsafe fn from_raw_unchecked(target: *const T, cardinality_hint: u64) -> Self {
         let addr = target as u64;
         let log2_card = if cardinality_hint == 0 {
@@ -140,14 +133,14 @@ impl<T> CardinalityPointer<T> {
         (self.raw & ADDR_MASK) as *const T
     }
 
-    /// Encoded `log2(cardinality)` value (0..=255).
+    /// Encoded `log2(cardinality)` value (0..=64).
     #[inline]
     pub const fn log2_cardinality(&self) -> u8 {
         (self.raw >> CARD_SHIFT) as u8
     }
 
-    /// Reconstructed cardinality estimate. Caps at 2^63 (the max u64
-    /// representable in one `1 << k` operation).
+    /// Reconstructed cardinality estimate: `2^log2`, or `u64::MAX`
+    /// when the log2 is 63 or more.
     #[inline]
     pub fn cardinality(&self) -> u64 {
         let k = self.log2_cardinality();
@@ -176,7 +169,7 @@ impl<T> CardinalityPointer<T> {
         let k = self.log2_cardinality();
         match k {
             0..=3 => SizeTier::Tiny,        // <= 8 elements
-            4..=10 => SizeTier::Medium,     // 16..=1024
+            4..=10 => SizeTier::Medium,     // 9..=1024
             _ => SizeTier::Large,           // > 1024
         }
     }
@@ -300,10 +293,6 @@ mod tests {
     #[should_panic(expected = "has high byte set")]
     fn from_raw_panics_on_out_of_envelope_address() {
         // High byte set: must panic in both debug and release.
-        // The constructor never returns; the binding is only here to
-        // satisfy the let-form. Underscore-prefixed name suppresses
-        // the unused-binding warning without triggering the
-        // anonymous-discard hook.
         let bad: *const u64 = 0xFF00_0000_0000_0000_u64 as *const u64;
         let _p = unsafe { CardinalityPointer::<u64>::from_raw(bad, 100) };
     }

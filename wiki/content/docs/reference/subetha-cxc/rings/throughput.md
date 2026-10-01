@@ -18,7 +18,7 @@ and links the rest.
 
 The bench harness is a single binary (`bench_throughput`) that
 dispatches per primitive; the matrix on the results page is the
-cross product of the cells it lists, at `n_items = 100000` with 3
+cross product of the cells it lists, at `n_items = 100000` with 5
 runs per cell (median published).
 
 ```bash
@@ -41,7 +41,7 @@ cargo build --release --example bench_throughput -p subetha-cxc
 | `adaptive-{spsc,mpsc,mpmc,vyukov}` | [`AdaptiveRing`](../shared-ring-adaptive/) | shape morphs at runtime; unpinned dispatch (one Acquire + match + delegate per call) | anon / file / shmfs |
 | `adaptive-pinned-{spsc,mpsc,mpmc,vyukov}` | [`AdaptiveRing`](../shared-ring-adaptive/) via [`PinnedRing`](../shared-ring-adaptive/) | Pinned hot path: native primitive speed, validity-checked at meaningful intervals | anon / file / shmfs |
 | `locale-adaptive` | [`LocaleAdaptiveRing`](../locale-adaptive-ring/) | any shape across any locale; unpinned dispatch (locale tag load + delegate) | anon / file / shmfs |
-| `capacity-{spsc,mpsc,mpmc,vyukov}` | [`CapacityAdaptiveRing`](../capacity-adaptive-ring/) | Unpinned dispatch through wrapper (one ArcSwap + stale-walk + AdaptiveRing dispatch + delegate per call) | anon / file / shmfs |
+| `capacity-{spsc,mpsc,mpmc,vyukov}` | [`CapacityAdaptiveRing`](../capacity-adaptive-ring/) | Unpinned dispatch through wrapper (one SwapCell load + stale-walk + AdaptiveRing dispatch + delegate per call) | anon / file / shmfs |
 | `capacity-pinned-{spsc,mpsc,mpmc,vyukov}` | [`CapacityAdaptiveRing`](../capacity-adaptive-ring/) via PinnedCapacity + PinnedRing | Pinned hot path: skip wrapper and skip AdaptiveRing dispatch; near-native | anon / file / shmfs |
 | `capacity-broadcast` / `capacity-pinned-broadcast` | `CapacityBroadcastRing` (un/pinned variants) | slot count morphs; pinned hot-loops on the inner SharedBroadcastRing | anon / file / shmfs |
 | `capacity-pubsub` | `CapacityPubSubRing` (publish path holds chain lock by design; subscribe path is lock-free) | slot count morphs | anon / file / shmfs |
@@ -54,7 +54,7 @@ For each primitive the sweep runs every combination of:
 - **Producers:** 1, 4, 8
 - **Consumers:** 1, 4, 8 (and 2 / 4 / 8 for fan-out)
 - **Locale:** anon, file, shmfs (where the primitive supports it)
-- **Runs:** 3 per cell by default (`-Runs` raises it); min / median / mean / max reported, and median is the headline because run-to-run jitter at small workloads has long tails
+- **Runs:** 5 per cell; min / median / mean / max reported, and median is the headline because run-to-run jitter at small workloads has long tails
 
 ## Pinned vs unpinned: what the two numbers mean
 
@@ -70,7 +70,7 @@ The pinned path approximates the underlying native primitive (`spsc`, `mpsc`, `m
 - **M items / s** = total items pushed-and-popped divided by wall time.
 - Each item is a 52- or 56-byte payload (matches the per-slot payload size of the primitive).
 - Producers + consumers run on dedicated OS threads. The bench harness's main thread participates only as the !Sync MPSC / MPSC-fifo consumer (those types' Consumer is a per-thread token by design).
-- "anon" = in-process anonymous mmap. "file" = mmap-backed file in `%TEMP%` (cross-process via OS page cache). "shmfs" = named shared-memory region (cross-process, RAM-resident, never touches the page cache; on Linux this is `/dev/shm`, on Windows it's named-section mapping).
+- "anon" = in-process anonymous mmap. "file" = mmap-backed file in a directory of the run's own under the temp directory (`%TEMP%` on Windows), removed when the run ends (cross-process via OS page cache). "shmfs" = named shared-memory region (cross-process, RAM-resident, never touches the page cache; on Linux this is `/dev/shm`, on Windows it's named-section mapping).
 
 ## What the numbers don't mean
 

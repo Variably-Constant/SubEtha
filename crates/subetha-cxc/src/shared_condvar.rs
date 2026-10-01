@@ -12,29 +12,20 @@
 //! # Cross-process semantics
 //!
 //! Two processes mmap the same condvar base; both call `wait` /
-//! `notify_*` directly. On Linux the wake call crosses the process
-//! boundary via shared `futex` (keyed by inode + offset, so two
-//! different mmaps of the same file page do match). On Windows /
-//! macOS the primitive runs intra-process via `WaitOnAddress` /
-//! spin fallback.
+//! `notify_*` directly. The wake crosses the process boundary
+//! wherever the waker's does: shared `futex` on Linux (keyed by
+//! inode + offset, so two different mmaps of the same file page do
+//! match), non-private `_umtx_op` on FreeBSD,
+//! `os_sync_wait_on_address` with its shared flag on macOS 14.4+,
+//! and on Windows the named event a parked waiter publishes in its
+//! slot. Older macOS re-checks every millisecond.
 //!
 //! # Intra-process sharing: use Arc::clone rather than create+open
 //!
 //! Within a single process, share one `SharedCondvar` through
-//! `Arc<SharedCondvar>` + `Arc::clone`. Calling `create` and then
-//! `open` on the same path in the same process produces two
-//! independent mmaps with different virtual-address ranges aliased
-//! to the same file pages. Windows `WaitOnAddress` is keyed by
-//! virtual address, so a `notify_*` on the second handle leaves a
-//! reach a `wait` on the first handle - the wake hashtable lookup
-//! misses on the differing virtual address. Linux shared `futex`
-//! keys by the underlying file page, which works across separate
-//! mmaps, but the rule "use one `Arc<SharedCondvar>` per process"
-//! is cross-platform safe.
-//!
-//! The `open` constructor is exclusively for joiners in separate
-//! processes that need to find the file the creator already
-//! initialized.
+//! `Arc<SharedCondvar>` + `Arc::clone`. A second `open` of the same path
+//! works, since none of the parks above is keyed by virtual address, but
+//! costs a second mapping. `open` is for joiners in other processes.
 //!
 //! # Predicate ownership
 //!
@@ -426,18 +417,10 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_millis(10));
     }
 
-    /// Intra-process file-backed sharing uses Arc::clone rather than
-    /// create+open). The `open` constructor is for callers in
-    /// separate processes joining a file the creator already
-    /// initialized; calling `open` in the process that called `create`
-    /// produces a second mmap with a different virtual-address
-    /// range aliased to the same file pages. On Windows that
-    /// breaks the wake path because `WaitOnAddress` /
-    /// `WakeByAddressSingle` are keyed by virtual address, not by
-    /// the underlying file page. Cross-process Linux works via
-    /// shared `futex` (keyed by inode-offset); see
-    /// `examples/condvar_xproc_*.rs` + the matching sweep script
-    /// for that path.
+    /// Intra-process file-backed sharing through `Arc::clone`: a
+    /// waiter on one handle is woken by a notify from another thread
+    /// on the same handle. The cross-process path is
+    /// `examples/condvar_xproc_*.rs` plus the matching sweep script.
     #[test]
     fn file_backed_create_then_arc_clone_round_trip() {
         let dir = std::env::temp_dir();

@@ -226,9 +226,46 @@ impl PeerDirectory {
         namespace: crate::shm_file::ShmNamespace,
         sddl: Option<&str>,
     ) -> Result<Self, RingError> {
-        let mut shm = crate::shm_file::ShmFile::create_or_open_named_secured(
+        let shm = crate::shm_file::ShmFile::create_or_open_named_secured(
             name, peer_directory_size(), namespace, sddl,
         ).map_err(|e| RingError::IoError(e.kind()))?;
+        Self::from_shm(shm)
+    }
+
+    /// As [`create_or_open_shm_secured`](Self::create_or_open_shm_secured)
+    /// for the directory's creator, whose handle owns the region's name
+    /// even when a leftover of that name was there: on Unix it is the one
+    /// that removes the name when it drops.
+    pub fn create_shm_secured(
+        name: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        sddl: Option<&str>,
+    ) -> Result<Self, RingError> {
+        let shm = crate::shm_file::ShmFile::create_named_secured(
+            name, peer_directory_size(), namespace, sddl,
+        ).map_err(|e| RingError::IoError(e.kind()))?;
+        Self::from_shm(shm)
+    }
+
+    /// Attach to a named-shm directory that must already exist: one that
+    /// is not there is `IoError(NotFound)` rather than a fresh empty
+    /// directory. `sddl` is kept for objects made beside the region, as
+    /// [`ShmFile::open_named_secured`](crate::shm_file::ShmFile::open_named_secured)
+    /// describes.
+    pub fn open_shm_secured(
+        name: &str,
+        namespace: crate::shm_file::ShmNamespace,
+        sddl: Option<&str>,
+    ) -> Result<Self, RingError> {
+        let shm = crate::shm_file::ShmFile::open_named_secured(
+            name, peer_directory_size(), namespace, sddl,
+        ).map_err(|e| RingError::IoError(e.kind()))?;
+        Self::from_shm(shm)
+    }
+
+    /// Lay the directory out when its magic is absent, or wait for the
+    /// handle that is laying it out, whichever side reached it first.
+    fn from_shm(mut shm: crate::shm_file::ShmFile) -> Result<Self, RingError> {
         if shm.len() < peer_directory_size() {
             return Err(RingError::LayoutMismatch);
         }
@@ -253,6 +290,14 @@ impl PeerDirectory {
             }
         }
         Ok(dir)
+    }
+
+    /// Give up a shared-memory directory's name, so it outlives this
+    /// handle: see [`ShmFile::keep_name`](crate::shm_file::ShmFile::keep_name).
+    pub(crate) fn keep_name(&mut self) {
+        if let DirBacking::Shm(shm) = &mut self._backing {
+            shm.keep_name();
+        }
     }
 
     #[inline]
@@ -340,6 +385,30 @@ impl PeerDirectory {
         self.producer_pid_word(slot).store(std::process::id() as u64, AtomOrd::Release);
         self.bump_epoch();
         Some(slot)
+    }
+
+    /// Claim the producer slot `slot` in particular, for a caller that
+    /// carries a producer's id from one ring to another. Answers whether
+    /// this call claimed it: a slot already held stays with its holder.
+    /// Counted before the bit for the reason
+    /// [`claim_producer_slot`](Self::claim_producer_slot) gives.
+    pub(crate) fn claim_producer_slot_at(&self, slot: usize) -> bool {
+        if slot >= PRODUCER_SLOT_CEILING {
+            return false;
+        }
+        self.header().active_producers.fetch_add(1, AtomOrd::AcqRel);
+        if !self.claim_bit_at(OFF_P_BITMAP, slot) {
+            self.header().active_producers.fetch_sub(1, AtomOrd::AcqRel);
+            return false;
+        }
+        self.producer_pid_word(slot).store(std::process::id() as u64, AtomOrd::Release);
+        self.bump_epoch();
+        true
+    }
+
+    /// The producer slots claimed right now.
+    pub(crate) fn claimed_producer_slots(&self) -> Vec<usize> {
+        self.claimed_slots(OFF_P_BITMAP, P_WORDS)
     }
 
     /// Release a producer slot claimed by
@@ -443,6 +512,23 @@ impl PeerDirectory {
         self.pid_word(slot).store(std::process::id() as u64, AtomOrd::Release);
         self.bump_epoch();
         Some(slot)
+    }
+
+    /// Claim the consumer slot `slot` in particular, as
+    /// [`claim_producer_slot_at`](Self::claim_producer_slot_at) claims a
+    /// producer slot. Answers whether this call claimed it.
+    pub(crate) fn claim_consumer_slot_at(&self, slot: usize) -> bool {
+        if slot >= CONSUMER_SLOT_CEILING {
+            return false;
+        }
+        self.header().active_consumers.fetch_add(1, AtomOrd::AcqRel);
+        if !self.claim_bit_at(OFF_C_BITMAP, slot) {
+            self.header().active_consumers.fetch_sub(1, AtomOrd::AcqRel);
+            return false;
+        }
+        self.pid_word(slot).store(std::process::id() as u64, AtomOrd::Release);
+        self.bump_epoch();
+        true
     }
 
     /// Release a consumer slot. The caller transfers its ring
@@ -632,6 +718,13 @@ impl PeerDirectory {
             }
         }
         None
+    }
+
+    /// Set the bit for `slot`, which the caller has bounded to its
+    /// bitmap; whether it was clear before.
+    fn claim_bit_at(&self, base: usize, slot: usize) -> bool {
+        let mask = 1u64 << (slot % 64);
+        self.bitmap_word(base, slot / 64).fetch_or(mask, AtomOrd::AcqRel) & mask == 0
     }
 
     fn release_bit(&self, base: usize, words: usize, slot: usize) -> bool {

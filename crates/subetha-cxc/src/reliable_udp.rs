@@ -856,8 +856,9 @@ pub struct Decoder {
     /// Session epoch this decoder's state belongs to, learned from the
     /// first data datagram. `None` before any arrives.
     session_epoch: Option<u32>,
-    /// The most recent epoch seen that is not [`session_epoch`]. Either a
-    /// restarted peer or a forgery; the receiver challenges it and calls
+    /// The most recent epoch seen that is not
+    /// [`session_epoch`](Self::session_epoch). Either a restarted peer or a
+    /// forgery; the receiver challenges it and calls
     /// [`adopt_epoch`](Self::adopt_epoch) only on a valid answer.
     unknown_epoch: Option<u32>,
     window: BTreeMap<u32, RxBlock>,
@@ -1311,8 +1312,8 @@ impl Decoder {
 
     /// Attempt to reconstruct a whole-lost data block from its segment's
     /// surviving blocks plus outer parity. On success, inserts a decoded
-    /// block into the window so [`drain_in_order`] delivers it. Returns
-    /// `true` if the block was recovered.
+    /// block into the window so [`drain_in_order`](Self::drain_in_order)
+    /// delivers it. Returns `true` if the block was recovered.
     fn try_tower_recover(&mut self, block_id: u32) -> bool {
         let big_d = self.tower_d;
         let r_outer = self.tower_r_outer;

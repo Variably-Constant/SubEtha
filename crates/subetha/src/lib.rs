@@ -14,8 +14,8 @@
 //!   pointers (content-prefix, bloom, strided, CHERI-style, ...).
 //! - [`sidecar`] (`subetha-sidecar`) - the adaptive control plane.
 //! - [`cxc`] (`subetha-cxc`) - the MMF-backed cross-process primitives:
-//!   `AdaptiveRing`, `SharedRing`, the Big* of shared data structures,
-//!   and the QUIC / TCP / reliable-UDP bridges.
+//!   `AdaptiveRing`, `SharedRing`, the shared data structures, and the
+//!   QUIC / TCP / reliable-UDP bridges.
 //!
 //! Most users reach for [`cxc`]:
 //!

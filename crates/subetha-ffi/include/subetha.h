@@ -12,7 +12,7 @@
 #ifndef SUBETHA_H
 #define SUBETHA_H
 
-/* Generated with cbindgen:0.28.0 */
+/* Generated with cbindgen:0.29.4 */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -1234,6 +1234,16 @@
 #define SUBETHA_SHM_MACHINE 1
 
 /**
+ * Shared-memory names resolve in the named-object directory of the
+ * AppContainer that `shm_container_sid` names (Windows), reached from
+ * outside the container. A process inside the container reaches the same
+ * objects with `SUBETHA_SHM_SESSION`. The directory exists only while a
+ * process of the container runs. On other platforms the names are the
+ * same in every namespace.
+ */
+#define SUBETHA_SHM_APPCONTAINER 2
+
+/**
  * The shape sidecar's scan cadence when a managed-mode caller names
  * none, in microseconds.
  *
@@ -1629,7 +1639,8 @@ typedef struct subetha_ring_contract {
 /**
  * Options every ring constructor takes. A C initializer that names the
  * first three fields and leaves the rest zero asks for no stamps, no
- * contract, the lazily created frame region and no security descriptor.
+ * contract, the lazily created frame region, no security descriptor and
+ * no AppContainer.
  */
 typedef struct subetha_ring_options {
     /**
@@ -1681,8 +1692,8 @@ typedef struct subetha_ring_options {
      * Holder slots in the ring's holder table, which is the number of
      * handles that may hold the backings open at once. Zero takes no
      * hold at all, which is the behavior of a ring that names no
-     * holder table: the backings outlive every handle. A file-backed
-     * ring only; see `last_holder`.
+     * holder table: the backings outlive every handle. A file-backed or
+     * shared-memory ring only; see `last_holder`.
      */
     uint32_t max_holders;
     /**
@@ -1690,8 +1701,9 @@ typedef struct subetha_ring_options {
      * becomes of the backings when the last holder releases. Unlinking
      * needs `max_holders`, and the library names no default for it, so
      * asking to unlink with `max_holders` zero is refused rather than
-     * given a number nobody chose. Only a file-backed ring has files to
-     * remove; anonymous and shared-memory rings refuse a hold.
+     * given a number nobody chose. A file-backed ring's backings are
+     * files and a shared-memory ring's are names; an anonymous ring has
+     * neither and refuses a hold.
      */
     uint32_t last_holder;
     /**
@@ -1703,6 +1715,14 @@ typedef struct subetha_ring_options {
      * platforms without descriptors.
      */
     const char *shm_sddl;
+    /**
+     * With `SUBETHA_SHM_APPCONTAINER`, the container's SID in its string
+     * form, `S-1-15-2-...`, which names the directory the object's
+     * regions and events are in; the descriptor in `shm_sddl` must then
+     * admit that SID. Required with that namespace, and ignored with the
+     * others.
+     */
+    const char *shm_container_sid;
 } subetha_ring_options;
 
 /**
@@ -4645,7 +4665,7 @@ int32_t subetha_broadcast_lag(subetha_handle handle, uint32_t consumer, uint64_t
  * succeeds, the ring does not error, and a reader that started late is
  * indistinguishable from one that is slow. Across processes the window
  * is however long starting one takes. Publishing only once the readers
- * are here is the only thing that closes it, because afterwards there
+ * are here is the only thing that closes it, because afterward there
  * is nothing left to detect.
  *
  * `timeout_ms` must be a real timeout. `SUBETHA_WAIT_FOREVER` is
@@ -5452,7 +5472,7 @@ int32_t subetha_pin_sees(subetha_handle handle, uint64_t token, uint64_t superse
 
 /**
  * Let the pin `token` names go. The reclaim horizon is free to pass its
- * epoch as soon as this returns, and the token names nothing afterwards.
+ * epoch as soon as this returns, and the token names nothing afterward.
  *
  * A token released twice is refused rather than freeing a pin slot
  * another scan has since taken.
@@ -5495,7 +5515,7 @@ int32_t subetha_epochs_held(subetha_handle handle, uint64_t *out_pins, uint64_t 
 /**
  * Make the write visible: every record stamped with this ticket's epoch
  * is seen by every pin taken from now on, all at once. The token names
- * nothing afterwards.
+ * nothing afterward.
  *
  * A token published twice is refused rather than freeing a ticket slot
  * another writer has since taken. A caller abandoning a compound write
@@ -6187,7 +6207,8 @@ int32_t subetha_capacity_subscriber_next_wait(subetha_handle handle,
                                               int64_t timeout_ms);
 
 /**
- * Where the subscriber stands: the backing's index in the chain into
+ * Where the subscriber stands: the generation of the backing it reads (0
+ * for the ring's first backing, one more for each morph after it) into
  * `out_backing` and the position within it into `out_position`; either
  * may be null.
  *
@@ -6933,7 +6954,9 @@ int32_t subetha_locale_ring_pop_wait(subetha_handle handle,
 /**
  * Move the ring to `locale`, one of the `SUBETHA_LOCALE_` constants,
  * carrying the items in flight across. A migration to the live locale
- * is a no-op.
+ * is a no-op. In managed mode the locale is also what the sidecar is
+ * asked for, as `subetha_locale_ring_request` asks, so the sidecar keeps
+ * the ring there.
  */
 int32_t subetha_locale_ring_migrate(subetha_handle handle, uint32_t locale);
 
@@ -7630,7 +7653,7 @@ uint64_t subetha_nan_nil(void);
  * A NaN going in comes back as the one canonical quiet NaN, so its bits
  * can never be mistaken for a boxed value. That means a caller cannot
  * round-trip a particular NaN payload through here: every NaN is the
- * same NaN afterwards.
+ * same NaN afterward.
  */
 uint64_t subetha_nan_from_f64(double value);
 
@@ -7785,7 +7808,7 @@ int32_t subetha_tile_insert(subetha_handle handle,
  * Free `lane`.
  *
  * The version is cleared before the lane is released, so a lane reclaimed
- * afterwards cannot be seen through its predecessor's version.
+ * afterward cannot be seen through its predecessor's version.
  */
 int32_t subetha_tile_remove(subetha_handle handle, uint32_t lane);
 
@@ -11365,9 +11388,18 @@ int32_t subetha_ring_open(const char *path_prefix,
 
 /**
  * Create a ring in named shared memory under `name`, in the namespace
- * `SUBETHA_SHM_SESSION` or `SUBETHA_SHM_MACHINE`. The regions are named
+ * `SUBETHA_SHM_SESSION`, `SUBETHA_SHM_MACHINE` or
+ * `SUBETHA_SHM_APPCONTAINER` with `shm_container_sid`. The regions are named
  * `{name}_spsc`, `{name}_mpsc_<i>`, `{name}_mpmc_<i>`, `{name}_vyukov`,
- * plus `{name}_cwaker` and `{name}_pwaker`.
+ * `{name}_peers`, plus `{name}_cwaker`, `{name}_pwaker` and the notifier
+ * record `{name}_notify`.
+ *
+ * The names outlive every handle, as a file-backed ring's files do,
+ * including the ones made later by whichever handle needed them: a
+ * per-producer backing a peer grew, the payload region of the first
+ * oversized frame. `subetha_ring_unlink_shm` removes them, as does the
+ * last holder of a ring created with `max_holders`. On Windows a name goes
+ * with the last handle to its region whatever the ring does.
  *
  * # Safety
  * `name` is a NUL-terminated UTF-8 string; `options` and `out` are valid
@@ -11383,8 +11415,8 @@ int32_t subetha_ring_create_shm(const char *name,
 
 /**
  * Attach to a ring another process created in named shared memory. The
- * namespace must match the creator's: a mismatch resolves a different,
- * empty set of regions rather than failing.
+ * attach makes nothing: a ring that is not there, including one created
+ * under another namespace, fails with `SUBETHA_E_RING_IO`.
  *
  * # Safety
  * `name` is a NUL-terminated UTF-8 string; `options` and `out` are valid
@@ -11696,12 +11728,18 @@ int32_t subetha_ring_recv_frame_wait(subetha_handle handle,
                                      int64_t timeout_ms);
 
 /**
- * A shared-memory ring's names are released by the OS with the last
- * handle that maps them: on Unix the creating handle unlinks each name
- * when it is destroyed, on Windows the section vanishes when the last
- * handle closes. There is nothing to remove by name, so this reports zero
- * removed and succeeds; it exists so the two locales have the same
- * lifecycle calls.
+ * Remove every name a shared-memory ring under `name` holds, so no later
+ * process attaches to it: the ring's regions, its two wakers, its
+ * notifier record, and on Unix the notifier FIFOs a consumer that died
+ * without detaching left behind. Handles still open keep their mappings
+ * until destroyed. The ring's peer directory names how many per-producer
+ * backings it has; with the directory gone, none are looked for. The
+ * counts land in `report` when it is not null. Returns
+ * `SUBETHA_E_RING_IO` when any removal was refused, with the first refusal
+ * named in the detail; a missing name is not a refusal.
+ *
+ * On Windows a section's name goes with the last handle to it, so there
+ * is nothing to remove by name: this reports zero and succeeds.
  *
  * # Safety
  * `name` is a NUL-terminated UTF-8 string; `report` is null or a valid
@@ -11792,7 +11830,7 @@ uint64_t subetha_live_handles(void);
  * thread waiting inside it (those calls return `SUBETHA_E_DESTROYED`),
  * waits for every call in flight to leave, then drops the object, joining
  * any thread it owns. A poisoned handle is destroyed the same way. The
- * handle names nothing afterwards, and can never name anything again.
+ * handle names nothing afterward, and can never name anything again.
  */
 int32_t subetha_handle_destroy(subetha_handle handle);
 
@@ -11968,7 +12006,7 @@ int32_t subetha_rwlock_read_stats(subetha_handle handle, struct subetha_rwlock_s
 
 /**
  * Give the lock back and close this hold's handle, which names nothing
- * afterwards. Another process waiting on the lock is free to take it as
+ * afterward. Another process waiting on the lock is free to take it as
  * soon as this returns.
  *
  * This is the call to use to unlock. `subetha_handle_destroy` on a hold
@@ -12049,7 +12087,7 @@ int32_t subetha_semaphore_acquire(subetha_handle handle, int64_t timeout_ms, uin
 /**
  * Give the permit `token` names back. Another process waiting on the
  * semaphore is free to take it as soon as this returns, and the token
- * names nothing afterwards.
+ * names nothing afterward.
  *
  * A token given back twice is refused rather than returning a permit the
  * semaphore never lent, and so is a token from a permit that ended whose
@@ -12994,7 +13032,8 @@ int32_t subetha_vyukov_open(const char *path,
 
 /**
  * Create a Vyukov ring in the named shared-memory region `name`, in the
- * namespace `SUBETHA_SHM_SESSION` or `SUBETHA_SHM_MACHINE`, with its
+ * namespace `SUBETHA_SHM_SESSION`, `SUBETHA_SHM_MACHINE` or
+ * `SUBETHA_SHM_APPCONTAINER` with `shm_container_sid`, with its
  * wakers in `{name}_cwaker` and `{name}_pwaker`.
  *
  * # Safety

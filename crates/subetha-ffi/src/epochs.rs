@@ -401,14 +401,14 @@ pub unsafe extern "C" fn subetha_pin_sees(handle: subetha_handle, token: u64, su
 }
 
 /// Let the pin `token` names go. The reclaim horizon is free to pass its
-/// epoch as soon as this returns, and the token names nothing afterwards.
+/// epoch as soon as this returns, and the token names nothing afterward.
 ///
 /// A token released twice is refused rather than freeing a pin slot
 /// another scan has since taken.
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_pin_release(handle: subetha_handle, token: u64) -> i32 {
     with_epochs(handle, |e| {
-        // Read the slot before releasing the token: afterwards the entry
+        // Read the slot before releasing the token: afterward the entry
         // belongs to whoever claims it next.
         let index = (slot_of(token)).min(e.pin_state.len().saturating_sub(1));
         let slot = e.pin_state[index].slot.load(Ordering::Acquire);
@@ -500,7 +500,7 @@ pub unsafe extern "C" fn subetha_epochs_held(handle: subetha_handle, out_pins: *
 
 /// Make the write visible: every record stamped with this ticket's epoch
 /// is seen by every pin taken from now on, all at once. The token names
-/// nothing afterwards.
+/// nothing afterward.
 ///
 /// A token published twice is refused rather than freeing a ticket slot
 /// another writer has since taken. A caller abandoning a compound write
@@ -508,7 +508,7 @@ pub unsafe extern "C" fn subetha_epochs_held(handle: subetha_handle, out_pins: *
 #[unsafe(no_mangle)]
 pub extern "C" fn subetha_ticket_publish(handle: subetha_handle, token: u64) -> i32 {
     with_epochs(handle, |e| {
-        // Read the slot before releasing the token: afterwards the entry
+        // Read the slot before releasing the token: afterward the entry
         // belongs to whoever claims it next.
         let index = (slot_of(token)).min(e.ticket_state.len().saturating_sub(1));
         let slot = e.ticket_state[index].slot.load(Ordering::Acquire);

@@ -23,6 +23,9 @@
 //! honest cost difference between "cross-process visible" and
 //! "in-process only". Both are reported.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::collections::VecDeque;

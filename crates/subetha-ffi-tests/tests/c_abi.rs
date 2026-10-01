@@ -1366,7 +1366,7 @@ fn epochs_exchange() {
 
 /// This process takes every block of a file-backed frame region and writes
 /// each block's own index into it; a C peer opens it, checks them, frees
-/// them all and takes them all back. What this process sees afterwards is
+/// them all and takes them all back. What this process sees afterward is
 /// a region with nothing left to hand out, which it can only be if the
 /// peer's frees and the peer's allocations both landed in the same file.
 fn frame_region_exchange() {

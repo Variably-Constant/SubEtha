@@ -1,14 +1,13 @@
 # subetha-pointers
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-pointers/LICENSE-MIT)
 [![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/)
 
 Exotic pointer types for the
 [SubEtha](https://github.com/Variably-Constant/SubEtha) (CXC) adaptive
-primitives library. Each pointer carries a fixed-size auxiliary payload
-beside the address, and declares a `K_*` direction signature via
-`subetha_core::AxisMask` so the MMF dispatcher can route a workload to
-the right pointer kind by signature containment.
+primitives library. Each pointer carries an auxiliary payload beside
+the address, and declares the `K_*` axes it engages as a
+`subetha_core::AxisMask` in its `SIGNATURE` constant.
 
 | Module | Public types | Carries beside the address |
 |---|---|---|
@@ -16,10 +15,10 @@ the right pointer kind by signature containment.
 | `bloom_pointer` | `BloomPointer<T>`, `Bloom64`, `BloomFine`, `BloomCascade` | probabilistic set summary for membership pre-checks |
 | `kstep_pointer` | `KStepPointer<T>`, `StridedIter<T>` | a log2 stride for branch-free strided iteration |
 | `k_tower_pointer` | `KTower2<T>`, `KTower3<T>` | 2- or 3-segment address space for multi-region payloads |
-| `self_desc_pointer` | `SelfDescPointer<T>`, `LayoutShape`, `SizeTier` | a type / layout discriminant read at deref |
-| `versioned_pointer` | `VersionedPointer<T>`, `HlcVersionedPointer<T>`, `VectorClock`, `HybridLogicalClock`, `VersionedChain` | version metadata (vector clock / hybrid logical clock) |
-| `cardinality_pointer` | `CardinalityPointer<T>` | a cardinality estimate tag |
-| `adaptive_cheri_pointer` | `ReadableCapability`, `OwnedReadableCapability`, `OwnedWritableCapability` | CHERI-style bounds + permissions enforced at deref |
+| `self_desc_pointer` | `SelfDescPointer<T>`, `LayoutShape` | a type / layout discriminant read at deref |
+| `versioned_pointer` | `VersionedPointer<T>`, `HlcVersionedPointer<T>`, `VectorClockPointer<T, N>`, `VectorClock`, `HybridLogicalClock`, `VersionedChain` | a version: a counter, a hybrid logical clock, or a vector clock |
+| `cardinality_pointer` | `CardinalityPointer<T>`, `SizeTier` | log2 of a cardinality estimate, in the address's high byte |
+| `adaptive_cheri_pointer` | `ReadableCapability`, `WritableCapability`, `OwnedReadableCapability`, `OwnedWritableCapability` | CHERI-style bounds + permissions enforced at deref |
 | `adaptive_rasp_batch` | `RaspBatch`, `RaspBatchIndex` | a batched bounds-checked access table |
 
 ## What it ships
@@ -34,16 +33,17 @@ the right pointer kind by signature containment.
   `StridedIter` walks it with shifts instead of multiplies.
 - **Multi-segment (`KTower2` / `KTower3`)**. Two or three address
   segments behind one handle for payloads split across regions.
-- **Self-describing (`SelfDescPointer`)**. A type / layout discriminant
-  (`LayoutShape`, `SizeTier`) travels with the address.
-- **Versioned (`VersionedPointer` / `HlcVersionedPointer`)**. Carries a
-  `VectorClock` or `HybridLogicalClock` for causal-order checks;
-  `VersionedChain` links successive versions.
+- **Self-describing (`SelfDescPointer`)**. A type ID and a layout shape
+  (`LayoutShape`) travel with the address.
+- **Versioned (`VersionedPointer` / `HlcVersionedPointer` /
+  `VectorClockPointer`)**. Carry a counter, a `HybridLogicalClock` or a
+  `VectorClock` for snapshot and causal-order checks; `VersionedChain`
+  links successive versions.
 - **Cardinality-tagged (`CardinalityPointer`)**. A cardinality estimate
-  rides alongside the address for sizing decisions.
+  rides alongside the address for sizing decisions (`SizeTier`).
 - **CHERI-style capabilities (`adaptive_cheri_pointer`)**. Bounds and
-  read / write permissions checked at every deref, with owned and
-  borrowed capability forms.
+  read / write permissions checked at every deref, over borrowed or
+  owned memory; a capability cannot outlive what it was made from.
 
 ## Where it sits
 
@@ -56,7 +56,7 @@ your code
        -> subetha-core     (substrate: AxisMask, handshake, observation)
 ```
 
-It depends only on `subetha-core` and `parking_lot`.
+It depends only on `subetha-core`.
 
 ## Requirements
 
@@ -71,4 +71,4 @@ Full reference at the published wiki:
 
 ## License
 
-MIT. See [LICENSE-MIT](LICENSE-MIT).
+MIT. See [LICENSE-MIT](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-pointers/LICENSE-MIT).

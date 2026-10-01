@@ -38,15 +38,10 @@
 //!   Same cross-process semantics as the Linux arm.
 //! - Windows: `WaitOnAddress` / `WakeByAddressSingle` for
 //!   process-private (anon-backed) wakers - those calls are
-//!   intra-process only per Microsoft's docs. Cross-process
-//!   (file / named-shm backed) wakers wait on the hardware
-//!   `MONITOR` tier instead (`crate::monitor_wait`): monitors are
-//!   physical-address based, so a store from another process to
-//!   the shared MMF line wakes the waiter - the platform's only
-//!   non-polling cross-process wake. On Windows hosts without
-//!   MONITORX/WAITPKG, cross-process waits fall back to the
-//!   wait-timeout + re-check recovery the blocking wrappers
-//!   already run.
+//!   intra-process only per Microsoft's docs. A cross-process
+//!   (file / named-shm backed) waiter waits on the `MONITOR` tier
+//!   (`crate::monitor_wait`), then sleeps on a named event whose id
+//!   it publishes in its slot, which the waker sets.
 //! - macOS / other: polling fallback (correct, but wastes CPU
 //!   when idle).
 //!
@@ -70,6 +65,7 @@
 //! |   state: AtomicU32 (STATE_*)          |
 //! |   _pad                                |
 //! |   target_seq: AtomicU64               |
+//! |   park_event: AtomicU64               |
 //! |   _pad                                |
 //! +--------------------------------------+
 //! | WakerSlot[1] ... WakerSlot[N-1]      |
@@ -94,7 +90,11 @@
 //!    before sleeping (Linux's futex_wait semantics; Windows'
 //!    WaitOnAddress likewise); if a producer's wake-CAS already
 //!    landed (`state == STATE_WOKEN`), wait returns immediately without
-//!    entering the kernel sleep path.
+//!    entering the kernel sleep path. On Windows with a file or shm
+//!    backing the kernel sleep is on the slot's park event instead:
+//!    store the event's id in `park_event`, re-check `state`, sleep on
+//!    the event re-checking at least every 20 ms, and store zero on the
+//!    way out.
 //! 6. On return, store state back to `STATE_FREE` and release the slot.
 //!
 //! ## Producer (waker) side
@@ -107,11 +107,15 @@
 //!    the parker's Release-store, so prior writes (incl. target_seq)
 //!    are visible.
 //! 3. If `producer_seq >= target_seq`, CAS state from `STATE_PARKED` to
-//!    `STATE_WOKEN`. On CAS success, call the platform's wake-one syscall
-//!    on `&slot.state` and increment the wake counter.
+//!    `STATE_WOKEN`. On CAS success, set the park event a non-zero
+//!    `park_event` names (Windows), call the platform's wake-one
+//!    syscall on `&slot.state` and increment the wake counter.
 //!
 //! The CAS guards against a double-wake when multiple producers
-//! race to wake the same slot.
+//! race to wake the same slot. It and the `park_event` load pair with
+//! the parker's store of `park_event` and its re-check of `state`: all
+//! four are SeqCst, so either the parker reads `STATE_WOKEN` before it
+//! sleeps or the waker reads the id of the event it sleeps on.
 //!
 //! # Wake-before-park race
 //!
@@ -121,7 +125,11 @@
 //! double-check in the blocking-recv wrapper: after parking,
 //! re-call try_recv before calling wait. If try_recv succeeds,
 //! release the token and return. Only if it still returns Empty
-//! does the consumer call wait.
+//! does the consumer call wait. The double-check holds because
+//! `try_park` ends with a SeqCst fence and every wake scan starts
+//! with one: publish-then-scan and park-then-re-check are each a
+//! store followed by a load, which x86 and ARM64 both reorder
+//! without a full fence.
 //!
 //! # Linux-futex-raw escape hatch
 //!
@@ -159,9 +167,10 @@ struct WakerHeader {
     /// zero mask makes the no-waiters case - the overwhelmingly
     /// common one on a healthy ring - a single cache line instead of
     /// `capacity` slot lines. The bit is advisory: stale-set bits
-    /// are filtered by the per-slot state check, and a not-yet-set
-    /// bit is covered by the parker's pre-wait double-check, the
-    /// same race window the full scan always had. Capacities > 64
+    /// are filtered by the per-slot state check, and a bit a scan
+    /// does not see yet is covered by the parker's pre-wait
+    /// double-check, which the fences in `try_park` and
+    /// `wake_candidates` order against the scan. Capacities > 64
     /// skip the mask and full-scan.
     parked_mask: AtomicU64,
     _pad: [u8; 64 - 24],
@@ -172,7 +181,11 @@ struct WakerSlot {
     state: AtomicU32,
     _pad1: [u8; 4],
     target_seq: AtomicU64,
-    _pad2: [u8; 64 - 16],
+    /// The id of the event a Windows waiter sleeps on while it is in a
+    /// kernel park, and zero at every other time.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    park_event: AtomicU64,
+    _pad2: [u8; 64 - 24],
 }
 
 const _: () = {
@@ -246,6 +259,10 @@ pub struct CrossProcessWaker {
     _backing: WakerBacking,
     raw_ptr: *mut u8,
     capacity: usize,
+    /// The events this waker's waiters sleep on and its wakers set, for
+    /// a file or shm backing; `None` for an anonymous one.
+    #[cfg(windows)]
+    park: Option<crate::park_event::ParkEvents>,
 }
 
 unsafe impl Send for CrossProcessWaker {}
@@ -275,13 +292,33 @@ unsafe fn init_waker_layout_raw(ptr: *mut u8, capacity: usize) {
                 state: AtomicU32::new(STATE_FREE),
                 _pad1: [0; 4],
                 target_seq: AtomicU64::new(0),
-                _pad2: [0; 64 - 16],
+                park_event: AtomicU64::new(0),
+                _pad2: [0; 64 - 24],
             });
         }
     }
 }
 
 impl CrossProcessWaker {
+    /// A waker over `backing`, whose mapping starts at `raw_ptr`.
+    fn with_backing(backing: WakerBacking, raw_ptr: *mut u8, capacity: usize) -> Self {
+        #[cfg(windows)]
+        let park = match &backing {
+            WakerBacking::Anon(_) => None,
+            WakerBacking::File(..) => Some(crate::park_event::ParkEvents::file(capacity)),
+            WakerBacking::Shm(shm) => {
+                Some(crate::park_event::ParkEvents::shm(shm.directory(), shm.sddl(), capacity))
+            }
+        };
+        Self {
+            _backing: backing,
+            raw_ptr,
+            capacity,
+            #[cfg(windows)]
+            park,
+        }
+    }
+
     /// Anon (in-process) waker. Cross-thread only; for cross-
     /// process use `create` (file) or `create_from_shm` (named).
     pub fn create_anon(capacity: usize) -> Result<Self, WakerError> {
@@ -290,11 +327,7 @@ impl CrossProcessWaker {
         let mut mmap = MmapOptions::new().len(total).map_anon()?;
         let raw_ptr = mmap.as_mut_ptr();
         unsafe { init_waker_layout_raw(raw_ptr, capacity); }
-        Ok(Self {
-            _backing: WakerBacking::Anon(mmap),
-            raw_ptr,
-            capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::Anon(mmap), raw_ptr, capacity))
     }
 
     /// File-backed waker, cross-process visible via the OS page cache.
@@ -317,11 +350,7 @@ impl CrossProcessWaker {
         if hdr.capacity as usize != capacity {
             return Err(WakerError::LayoutMismatch);
         }
-        Ok(Self {
-            _backing: WakerBacking::File(file, mmap),
-            raw_ptr,
-            capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::File(file, mmap), raw_ptr, capacity))
     }
 
     /// Reinitialize the waker at `path`, discarding any parked waiters a live
@@ -333,11 +362,7 @@ impl CrossProcessWaker {
             init_waker_layout_raw(ptr, capacity)
         })?;
         let raw_ptr = mmap.as_mut_ptr();
-        Ok(Self {
-            _backing: WakerBacking::File(file, mmap),
-            raw_ptr,
-            capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::File(file, mmap), raw_ptr, capacity))
     }
 
     /// Open an existing file-backed waker. Validates magic +
@@ -357,11 +382,7 @@ impl CrossProcessWaker {
         if hdr.magic != WAKER_MAGIC || hdr.capacity as usize != expected_capacity {
             return Err(WakerError::LayoutMismatch);
         }
-        Ok(Self {
-            _backing: WakerBacking::File(file, mmap),
-            raw_ptr,
-            capacity: expected_capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::File(file, mmap), raw_ptr, expected_capacity))
     }
 
     /// Build a fresh waker on top of a named-shm region. Cross-
@@ -378,11 +399,7 @@ impl CrossProcessWaker {
         }
         let raw_ptr = shm.as_mut_slice().as_mut_ptr();
         unsafe { init_waker_layout_raw(raw_ptr, capacity); }
-        Ok(Self {
-            _backing: WakerBacking::Shm(shm),
-            raw_ptr,
-            capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::Shm(shm), raw_ptr, capacity))
     }
 
     /// Open an existing named-shm waker without re-initializing
@@ -400,11 +417,7 @@ impl CrossProcessWaker {
         if hdr.magic != WAKER_MAGIC || hdr.capacity as usize != expected_capacity {
             return Err(WakerError::LayoutMismatch);
         }
-        Ok(Self {
-            _backing: WakerBacking::Shm(shm),
-            raw_ptr,
-            capacity: expected_capacity,
-        })
+        Ok(Self::with_backing(WakerBacking::Shm(shm), raw_ptr, expected_capacity))
     }
 
     /// Slot count fixed at construction.
@@ -447,26 +460,23 @@ impl CrossProcessWaker {
                 // Publish the slot to producers.
                 slot.state.store(STATE_PARKED, Ordering::Release);
                 self.mask_set(idx);
+                // The parker's half of the fence pair in wake_candidates:
+                // the caller's re-check of its ring comes after this, so
+                // either that re-check sees the producer's item or the
+                // producer's scan sees this slot.
+                std::sync::atomic::fence(Ordering::SeqCst);
                 return Ok(WakerToken { slot: idx as u32 });
             }
         }
         Err(WakerError::Full)
     }
 
-    /// Block until either some producer wakes this token or the
-    /// optional timeout elapses. After return (Ok or Err), the
-    /// token's slot is released; the caller does not need to
-    /// call `release` separately.
-    ///
-    /// If the slot's state was already transitioned to `WOKEN`
-    /// before the wait call entered the kernel, the wait returns
-    /// immediately (no kernel sleep).
     /// Whether this waker's backing is reachable from other
     /// processes (file / named-shm) rather than process-private
-    /// anonymous memory. Windows' wait ladder branches on this:
-    /// `WaitOnAddress` never receives a cross-process wake, so
-    /// cross-process-backed waits stay on the hardware monitor
-    /// tier (physical-address based) for their whole duration.
+    /// anonymous memory. The platform wait and wake calls take their
+    /// process-shared form by it, and on Windows a cross-process-backed
+    /// wait with no park event stays on the hardware monitor tier,
+    /// since `WaitOnAddress` never receives a wake from another process.
     fn is_cross_process(&self) -> bool {
         !matches!(self._backing, WakerBacking::Anon(_))
     }
@@ -496,8 +506,14 @@ impl CrossProcessWaker {
     /// Iterator over candidate slot indices for a wake scan: the
     /// parked-mask bits when the mask covers every slot, else the
     /// full range.
+    ///
+    /// It starts with a SeqCst fence, paired with the one at the end of
+    /// `try_park`. The caller has just published an item (a ring's head
+    /// store), so either this scan sees the parked slot or the parker's
+    /// re-check sees the item.
     #[inline]
     fn wake_candidates(&self) -> WakeCandidates {
+        std::sync::atomic::fence(Ordering::SeqCst);
         if self.capacity <= 64 {
             WakeCandidates::Mask(
                 self.header().parked_mask.load(Ordering::Acquire),
@@ -507,61 +523,142 @@ impl CrossProcessWaker {
         }
     }
 
+    /// Block until either some producer wakes this token or the
+    /// optional timeout elapses. After return (Ok or Err), the
+    /// token's slot is released; the caller does not need to
+    /// call `release` separately.
+    ///
+    /// If the slot's state was already transitioned to `WOKEN`
+    /// before the wait call entered the kernel, the wait returns
+    /// immediately (no kernel sleep).
+    ///
+    /// On Windows a wait on a file or shm backing that outlasts the
+    /// monitor budget sleeps on the slot's park event, and a failure
+    /// of that sleep returns [`WakerError::IoError`].
     pub fn wait(
         &self,
         token: WakerToken,
         timeout: Option<Duration>,
     ) -> Result<(), WakerError> {
-        let slot = self.slot(token.slot as usize);
-        let cross_process = self.is_cross_process();
-        let result = match timeout {
-            None => {
-                loop {
-                    let cur = slot.state.load(Ordering::Acquire);
-                    if cur != STATE_PARKED {
-                        break Ok(());
-                    }
-                    platform_wait::wait_forever(
-                        &slot.state, STATE_PARKED, cross_process,
-                    );
-                }
-            }
-            Some(d) => {
-                // Deadline re-check loop. The wait syscall is only a
-                // hint: futex and the `MONITOR` / `MWAIT` tier can both
-                // wake spuriously, so `state`, not the syscall's return,
-                // is the authority. A spurious wake re-loops and waits
-                // the remaining time; only a real producer transition
-                // (state != STATE_PARKED) returns Ok, and only an elapsed
-                // deadline returns Timeout, so a wait neither ends early
-                // nor frees the slot before a wake_all can see it.
-                let deadline = Instant::now() + d;
-                loop {
-                    if slot.state.load(Ordering::Acquire) != STATE_PARKED {
-                        break Ok(());
-                    }
-                    match deadline.checked_duration_since(Instant::now()) {
-                        Some(remaining) if !remaining.is_zero() => {
-                            platform_wait::wait_with_timeout(
-                                &slot.state, STATE_PARKED, remaining, cross_process,
-                            );
-                        }
-                        _ => {
-                            // Deadline reached; one last check catches a
-                            // wake that landed at the wire.
-                            break if slot.state.load(Ordering::Acquire) != STATE_PARKED {
-                                Ok(())
-                            } else {
-                                Err(WakerError::Timeout)
-                            };
-                        }
-                    }
-                }
-            }
+        let plan = crate::wait_active::active_plan(self.park_kind());
+        self.wait_with_plan(token, timeout, &plan)
+    }
+
+    /// As [`wait`](Self::wait), with `plan`'s monitor phase in place of
+    /// the process's active plan.
+    pub fn wait_with_plan(
+        &self,
+        token: WakerToken,
+        timeout: Option<Duration>,
+        plan: &crate::wait_plan::Plan,
+    ) -> Result<(), WakerError> {
+        let idx = token.slot as usize;
+        let slot = self.slot(idx);
+        let deadline = timeout.map(|d| Instant::now() + d);
+        let monitor = plan.monitor.as_ref();
+        #[cfg(windows)]
+        let parked = self.wait_on_park_event(idx, deadline, monitor);
+        #[cfg(not(windows))]
+        let parked: Option<Result<(), WakerError>> = None;
+        let result = match parked {
+            Some(result) => result,
+            None => self.wait_on_state(slot, deadline, monitor),
         };
         slot.state.store(STATE_FREE, Ordering::Release);
-        self.mask_clear(token.slot as usize);
+        self.mask_clear(idx);
         result
+    }
+
+    /// How this waker's waiters park: [`ParkKind::CrossProcess`] on a file
+    /// or shm backing, [`ParkKind::Local`] on anonymous memory.
+    ///
+    /// [`ParkKind::CrossProcess`]: crate::wait_plan::ParkKind::CrossProcess
+    /// [`ParkKind::Local`]: crate::wait_plan::ParkKind::Local
+    pub fn park_kind(&self) -> crate::wait_plan::ParkKind {
+        if self.is_cross_process() {
+            crate::wait_plan::ParkKind::CrossProcess
+        } else {
+            crate::wait_plan::ParkKind::Local
+        }
+    }
+
+    /// The spin rounds a waiter on this waker takes before it parks, from
+    /// the process's active plan for this waker's park kind.
+    pub fn spin_rounds(&self) -> u32 {
+        crate::wait_active::active_plan(self.park_kind()).spin_rounds
+    }
+
+    /// The Windows kernel park of a waiter on a file or shm backing:
+    /// the monitor tier once, then the slot's park event. `None` when
+    /// this waker has no park events or the slot's event cannot be
+    /// created, which leaves the wait to
+    /// [`wait_on_state`](Self::wait_on_state).
+    #[cfg(windows)]
+    fn wait_on_park_event(
+        &self,
+        idx: usize,
+        deadline: Option<Instant>,
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
+    ) -> Option<Result<(), WakerError>> {
+        let park = self.park.as_ref()?;
+        let slot = self.slot(idx);
+        if slot.state.load(Ordering::Acquire) != STATE_PARKED
+            || platform_wait::monitor_tier(&slot.state, STATE_PARKED, monitor)
+        {
+            return Some(Ok(()));
+        }
+        park.park(idx, &slot.state, STATE_PARKED, &slot.park_event, deadline)
+    }
+
+    /// Wait on the slot's state word itself: the monitor tier, then the
+    /// platform's futex-shaped wait, until the state leaves
+    /// `STATE_PARKED` or `deadline` passes.
+    fn wait_on_state(
+        &self,
+        slot: &WakerSlot,
+        deadline: Option<Instant>,
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
+    ) -> Result<(), WakerError> {
+        let cross_process = self.is_cross_process();
+        match deadline {
+            None => loop {
+                if slot.state.load(Ordering::Acquire) != STATE_PARKED {
+                    break Ok(());
+                }
+                platform_wait::wait_forever(
+                    &slot.state, STATE_PARKED, cross_process, monitor,
+                );
+            },
+            // Deadline re-check loop. The wait syscall is only a
+            // hint: futex and the `MONITOR` / `MWAIT` tier can both
+            // wake spuriously, so `state`, not the syscall's return,
+            // is the authority. A spurious wake re-loops and waits
+            // the remaining time; only a real producer transition
+            // (state != STATE_PARKED) returns Ok, and only an elapsed
+            // deadline returns Timeout, so a wait neither ends early
+            // nor frees the slot before a wake_all can see it.
+            Some(deadline) => loop {
+                if slot.state.load(Ordering::Acquire) != STATE_PARKED {
+                    break Ok(());
+                }
+                match deadline.checked_duration_since(Instant::now()) {
+                    Some(remaining) if !remaining.is_zero() => {
+                        platform_wait::wait_with_timeout(
+                            &slot.state, STATE_PARKED, remaining, cross_process, monitor,
+                        );
+                    }
+                    _ => {
+                        // Deadline reached; one last check catches a
+                        // wake that landed at the wire.
+                        break if slot.state.load(Ordering::Acquire) != STATE_PARKED {
+                            Ok(())
+                        } else {
+                            Err(WakerError::Timeout)
+                        };
+                    }
+                }
+            },
+        }
     }
 
     /// Release a parked slot without waiting. Used by the
@@ -603,12 +700,12 @@ impl CrossProcessWaker {
                 .compare_exchange(
                     STATE_PARKED,
                     STATE_WOKEN,
-                    Ordering::AcqRel,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                platform_wait::wake_one(&slot.state, self.is_cross_process());
+                self.wake_slot(idx);
                 count += 1;
             }
         }
@@ -637,12 +734,12 @@ impl CrossProcessWaker {
                 .compare_exchange(
                     STATE_PARKED,
                     STATE_WOKEN,
-                    Ordering::AcqRel,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                platform_wait::wake_one(&slot.state, self.is_cross_process());
+                self.wake_slot(idx);
                 return 1;
             }
         }
@@ -661,16 +758,32 @@ impl CrossProcessWaker {
                 .compare_exchange(
                     STATE_PARKED,
                     STATE_WOKEN,
-                    Ordering::AcqRel,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                platform_wait::wake_one(&slot.state, self.is_cross_process());
+                self.wake_slot(idx);
                 count += 1;
             }
         }
         count
+    }
+
+    /// Wake the waiter of slot `idx`, which this thread has just moved
+    /// from `STATE_PARKED` to `STATE_WOKEN`: set its park event when it
+    /// is sleeping on one, then fire the platform's wake on the state.
+    #[inline]
+    fn wake_slot(&self, idx: usize) {
+        let slot = self.slot(idx);
+        #[cfg(windows)]
+        if let Some(park) = &self.park {
+            let id = slot.park_event.load(Ordering::SeqCst);
+            if id != 0 {
+                park.signal(idx, id);
+            }
+        }
+        platform_wait::wake_one(&slot.state, self.is_cross_process());
     }
 }
 
@@ -731,12 +844,10 @@ impl Iterator for WakeCandidates {
 //   give one key value" - _umtx_op(2)), so waiters across
 //   processes sharing an MMF page join one queue.
 // - Windows: WaitOnAddress is intra-process only per the docs,
-//   so it serves anon-backed wakers; file / shm-backed wakers
-//   stay on the monitor tier for their whole wait (the
-//   cross_process flag below selects this), which is
-//   cross-process because hardware monitors key on physical
-//   addresses. Hosts without MONITORX/WAITPKG fall back to the
-//   wait-timeout + re-check recovery in the blocking wrappers.
+//   so it serves anon-backed wakers. A file / shm-backed waiter
+//   parks on its named event (crate::park_event) and reaches this
+//   module only when that event cannot be created; it then stays
+//   on the monitor tier (the cross_process flag below).
 // - macOS / others: polling fallback; correct but wastes CPU
 //   under heavy idle.
 // ============================================================================
@@ -799,39 +910,58 @@ mod platform_wait {
     /// inside the budget: the producer's wake is its existing
     /// state-CAS (no syscall on either side), and - because
     /// hardware monitors are physical-address based - the wake
-    /// crosses process boundaries on shared MMF pages, which on
-    /// Windows is the only non-polling cross-process wake the
-    /// platform offers (WaitOnAddress is intra-process). Returning
-    /// `false` (budget expired / unsupported CPU /
-    /// SUBETHA_NO_MONITOR_WAIT=1) falls through to the kernel
-    /// park, which re-checks the value itself - so the tier can
-    /// never lose a wake, only hand off.
+    /// crosses process boundaries on shared MMF pages without a
+    /// kernel object. Returning `false` (budget expired /
+    /// unsupported CPU / SUBETHA_NO_MONITOR_WAIT=1) falls through to
+    /// the kernel park, which re-checks the value itself - so the
+    /// tier can never lose a wake, only hand off.
     #[inline]
-    fn monitor_tier(atomic: &AtomicU32, expected: u32) -> bool {
-        crate::monitor_wait::monitor_wait_u32(
-            atomic,
-            expected,
-            crate::monitor_wait::monitor_wait_budget_cycles(),
-        )
+    pub fn monitor_tier(
+        atomic: &AtomicU32,
+        expected: u32,
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
+    ) -> bool {
+        monitor.is_some_and(|phase| {
+            crate::monitor_wait::run_monitor_phase_u32(phase, atomic, expected)
+        })
     }
 
-    pub fn wait_forever(atomic: &AtomicU32, expected: u32, _cross_process: bool) {
-        if monitor_tier(atomic, expected) {
+    /// The phase a Windows cross-process wait with no park event re-arms:
+    /// the plan's, or the fixed phase for the detected family when the
+    /// plan has none. `None` when the host has no family or the
+    /// environment switched it off.
+    #[cfg(windows)]
+    fn monitor_only_phase(
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
+    ) -> Option<crate::wait_plan::MonitorPhase> {
+        let kind = crate::monitor_wait::monitor_wait_kind()?;
+        Some(monitor.copied().unwrap_or_else(|| {
+            crate::monitor_wait::fixed_phase(
+                kind,
+                crate::monitor_wait::monitor_wait_budget_cycles(),
+            )
+        }))
+    }
+
+    pub fn wait_forever(
+        atomic: &AtomicU32,
+        expected: u32,
+        _cross_process: bool,
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
+    ) {
+        if monitor_tier(atomic, expected, monitor) {
             return;
         }
-        // Windows + cross-process backing: WaitOnAddress never
-        // receives a wake from another process, so the monitor is
-        // the wait - re-arm in budget-sized chunks until the value
-        // changes. The core holds C0.1 light sleep rather than
-        // releasing to the OS; that is the only non-polling
-        // cross-process wait the platform offers.
+        // Windows + cross-process backing whose park event could not
+        // be created: WaitOnAddress never receives a wake from
+        // another process, so the monitor is the wait, re-armed a
+        // phase at a time until the value changes.
         #[cfg(windows)]
         if _cross_process
-            && crate::monitor_wait::monitor_wait_kind().is_some()
+            && let Some(phase) = monitor_only_phase(monitor)
         {
-            let budget = crate::monitor_wait::monitor_wait_budget_cycles();
             while atomic.load(std::sync::atomic::Ordering::Acquire) == expected {
-                crate::monitor_wait::monitor_wait_u32(atomic, expected, budget);
+                crate::monitor_wait::run_monitor_phase_u32(&phase, atomic, expected);
             }
             return;
         }
@@ -921,9 +1051,10 @@ mod platform_wait {
         expected: u32,
         timeout: Duration,
         _cross_process: bool,
+        monitor: Option<&crate::wait_plan::MonitorPhase>,
     ) -> bool {
         let monitor_start = std::time::Instant::now();
-        if monitor_tier(atomic, expected) {
+        if monitor_tier(atomic, expected, monitor) {
             return true;
         }
         // The monitor budget counts against the caller's timeout;
@@ -935,16 +1066,15 @@ mod platform_wait {
                     != expected;
             }
         };
-        // Windows + cross-process backing: stay on the monitor for
-        // the whole timeout (see wait_forever).
+        // Windows + cross-process backing with no park event: stay on
+        // the monitor for the whole timeout (see wait_forever).
         #[cfg(windows)]
         if _cross_process
-            && crate::monitor_wait::monitor_wait_kind().is_some()
+            && let Some(phase) = monitor_only_phase(monitor)
         {
             let deadline = std::time::Instant::now() + timeout;
-            let budget = crate::monitor_wait::monitor_wait_budget_cycles();
             loop {
-                if crate::monitor_wait::monitor_wait_u32(atomic, expected, budget) {
+                if crate::monitor_wait::run_monitor_phase_u32(&phase, atomic, expected) {
                     return true;
                 }
                 if std::time::Instant::now() >= deadline {
@@ -1207,5 +1337,288 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
         assert_eq!(waker.wake_all(), 4);
         for h in handles { h.join().unwrap(); }
+    }
+
+    /// Rounds the peer process parks through.
+    const XPROC_ROUNDS: u64 = 10_000;
+    /// Rounds each in-process exchange parks through.
+    const INPROC_ROUNDS: u64 = 1_000;
+    /// How long one test wait may run before its wake counts as lost.
+    const LOST_WAKE: Duration = Duration::from_secs(30);
+    /// The kernel-park timeout test's timeout, and how late past it the
+    /// wait may return.
+    const PARK_TIMEOUT: Duration = Duration::from_millis(200);
+    const PARK_TIMEOUT_SLACK: Duration = Duration::from_secs(5);
+
+    fn tmp(name: &str) -> crate::test_paths::TmpFile {
+        crate::test_paths::TmpFile::new(format!("subetha-waker-{name}-{}", std::process::id()))
+    }
+
+    fn random_seed() -> u64 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .expect("the clock reads after the epoch");
+        nanos | 1
+    }
+
+    /// A xorshift step: the tests need spread, not quality.
+    fn next_random(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    /// Park on slot 0 at targets 1 to `rounds` and wait each one out,
+    /// returning a line for every wait a wake did not end. A wait that
+    /// runs to its timeout counts even when it returns `Ok`: its final
+    /// check sees a slot a waker exchanged without waking it.
+    fn park_rounds(waiter: &CrossProcessWaker, rounds: u64) -> Vec<String> {
+        let mut problems = Vec::new();
+        for round in 0..rounds {
+            let token = match waiter.try_park(round + 1) {
+                Ok(token) => token,
+                Err(e) => {
+                    problems.push(format!("round {round}: no slot to park in: {e}"));
+                    continue;
+                }
+            };
+            let start = Instant::now();
+            let result = waiter.wait(token, Some(LOST_WAKE));
+            let took = start.elapsed();
+            if result.is_err() || took >= LOST_WAKE {
+                problems.push(format!("round {round}: the wait ended in {result:?} after {took:?}"));
+            }
+        }
+        problems
+    }
+
+    /// Wake the waiter parked on slot 0 in `round`, once its state and
+    /// its parked-mask bit are both set, since a wake scan reads the mask.
+    /// Even rounds wake at a random point up to twice the monitor budget;
+    /// odd rounds once the waiter sleeps in the kernel.
+    fn wake_round(waker: &CrossProcessWaker, round: u64, rng: &mut u64) {
+        let target = round + 1;
+        let slot = waker.slot(0);
+        let since = Instant::now();
+        while slot.state.load(Ordering::Acquire) != STATE_PARKED
+            || slot.target_seq.load(Ordering::Relaxed) != target
+            || waker.header().parked_mask.load(Ordering::Acquire) & 1 == 0
+        {
+            assert!(
+                since.elapsed() < LOST_WAKE,
+                "round {round}: the waiter was not seen parked within {LOST_WAKE:?}; its last wake was lost or it has gone"
+            );
+            std::hint::spin_loop();
+        }
+        let budget = crate::monitor_wait::monitor_wait_budget_cycles();
+        let spin = |cycles: u64| {
+            let start = crate::ordering::read_tsc();
+            while crate::ordering::read_tsc().wrapping_sub(start) < cycles {
+                std::hint::spin_loop();
+            }
+        };
+        if round.is_multiple_of(2) {
+            spin(next_random(rng) % (2 * budget + 1));
+        } else {
+            #[cfg(windows)]
+            while slot.park_event.load(Ordering::SeqCst) == 0 {
+                assert!(
+                    since.elapsed() < LOST_WAKE,
+                    "round {round}: the waiter never reached its park event"
+                );
+                std::hint::spin_loop();
+            }
+            #[cfg(not(windows))]
+            spin(2 * budget);
+        }
+        assert_eq!(waker.wake_up_to(target), 1, "round {round}: the wake found its waiter");
+    }
+
+    /// `waiter` parks through `INPROC_ROUNDS` on a thread of its own while
+    /// `waker`, a second instance over the same backing, wakes it. On
+    /// Windows the waiter's heal is off, so a lost event shows as a wait
+    /// that runs to its timeout.
+    fn exchange_in_process(waiter: CrossProcessWaker, waker: &CrossProcessWaker) {
+        #[cfg(windows)]
+        waiter
+            .park
+            .as_ref()
+            .expect("a cross-process backing has park events")
+            .turn_heal_off();
+        let parked = thread::spawn(move || park_rounds(&waiter, INPROC_ROUNDS));
+        let seed = random_seed();
+        println!("seed {seed}");
+        let mut rng = seed;
+        for round in 0..INPROC_ROUNDS {
+            wake_round(waker, round, &mut rng);
+        }
+        let problems = parked.join().expect("the waiting thread");
+        assert!(problems.is_empty(), "seed {seed}: {problems:?}");
+    }
+
+    /// Every wake crosses from one instance's slot table to the other's,
+    /// as it does between processes.
+    #[test]
+    fn a_file_backed_wait_is_woken_through_a_second_instance() {
+        let path = tmp("two-instances");
+        let waiter = CrossProcessWaker::create(&path, 1).expect("create");
+        let waker = CrossProcessWaker::open(&path, 1).expect("open");
+        exchange_in_process(waiter, &waker);
+    }
+
+    #[test]
+    fn a_shm_backed_wait_is_woken_through_a_second_instance() {
+        let name = format!("waker_two_instances_{}", std::process::id());
+        let size = waker_region_size(1);
+        let region = crate::shm_file::ShmFile::create_or_open_named(&name, size).expect("create region");
+        let second = crate::shm_file::ShmFile::create_or_open_named(&name, size).expect("open region");
+        let waiter = CrossProcessWaker::create_from_shm(region, 1).expect("create");
+        let waker = CrossProcessWaker::open_from_shm(second, 1).expect("open");
+        exchange_in_process(waiter, &waker);
+    }
+
+    /// The peer half of the cross-process test: parks through every round
+    /// when the test binary is re-run with `SUBETHA_WAKER_PEER` naming the
+    /// waker file, and passes at once otherwise.
+    #[test]
+    fn waker_peer_role() {
+        let Some(path) = std::env::var_os("SUBETHA_WAKER_PEER") else {
+            return;
+        };
+        let waiter = CrossProcessWaker::open(&path, 1).expect("the peer opens the waker");
+        #[cfg(windows)]
+        waiter
+            .park
+            .as_ref()
+            .expect("a file-backed waker has park events")
+            .turn_heal_off();
+        let problems = park_rounds(&waiter, XPROC_ROUNDS);
+        for problem in &problems {
+            eprintln!("waker peer: {problem}");
+        }
+        std::process::exit(if problems.is_empty() { 0 } else { 1 });
+    }
+
+    /// Kills the peer when the test fails before reaping it, so a failed
+    /// run leaves no process parking on its own.
+    struct Peer(Option<std::process::Child>);
+
+    impl Peer {
+        fn reap(mut self) -> std::process::ExitStatus {
+            let mut child = self.0.take().expect("the peer is reaped once");
+            child.wait().expect("the peer is waited on")
+        }
+    }
+
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                if let Err(e) = child.kill() {
+                    eprintln!("the waker peer was not killed: {e}");
+                }
+                if let Err(e) = child.wait() {
+                    eprintln!("the waker peer was not reaped: {e}");
+                }
+            }
+        }
+    }
+
+    /// A waiter in another process is woken every round; on Windows half
+    /// of the rounds go through its park event.
+    #[test]
+    fn a_wait_is_woken_from_another_process() {
+        let path = tmp("xproc");
+        let waker = CrossProcessWaker::create(&path, 1).expect("create");
+        let peer = Peer(Some(
+            std::process::Command::new(std::env::current_exe().expect("the test binary's own path"))
+                .arg("cross_process_waker::tests::waker_peer_role")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("SUBETHA_WAKER_PEER", &*path)
+                .spawn()
+                .expect("the peer process spawns"),
+        ));
+        let seed = random_seed();
+        println!("seed {seed}");
+        let mut rng = seed;
+        for round in 0..XPROC_ROUNDS {
+            wake_round(&waker, round, &mut rng);
+        }
+        let status = peer.reap();
+        assert!(status.success(), "seed {seed}: the peer reported lost wakes: {status}");
+    }
+
+    /// A wait that outlasts the monitor budget ends at its timeout. On
+    /// Windows a set already on its park event, left by a wake whose
+    /// waiter had gone, does not end it early, and the wait's first sleep
+    /// on the event consumes it.
+    #[test]
+    fn a_kernel_parked_wait_times_out_on_time() {
+        let path = tmp("timeout");
+        let waker = CrossProcessWaker::create(&path, 1).expect("create");
+        #[cfg(windows)]
+        let park = waker.park.as_ref().expect("a file-backed waker has park events");
+        #[cfg(windows)]
+        {
+            // A park on a slot that is not parked makes the slot's event
+            // and returns at once.
+            let slot = waker.slot(0);
+            assert_eq!(
+                park.park(0, &slot.state, STATE_PARKED, &slot.park_event, None),
+                Some(Ok(()))
+            );
+            park.signal(0, park.own_id(0).expect("the park made the event"));
+        }
+        let token = waker.try_park(1).expect("park");
+        let start = Instant::now();
+        assert_eq!(waker.wait(token, Some(PARK_TIMEOUT)), Err(WakerError::Timeout));
+        let took = start.elapsed();
+        assert!(took >= PARK_TIMEOUT, "the wait returned {took:?} into its {PARK_TIMEOUT:?}");
+        assert!(
+            took < PARK_TIMEOUT + PARK_TIMEOUT_SLACK,
+            "the wait overran its {PARK_TIMEOUT:?} to {took:?}"
+        );
+        #[cfg(windows)]
+        assert!(!park.take_set(0), "the wait slept on its event and consumed the late set");
+    }
+
+    /// A wake that sets no event, like one from a waker that dies between
+    /// its exchange and its set, still ends the wait at the waiter's next
+    /// check of its slot.
+    #[cfg(windows)]
+    #[test]
+    fn a_wake_that_sets_no_event_is_healed() {
+        let path = tmp("heal");
+        let waiter = Arc::new(CrossProcessWaker::create(&path, 1).expect("create"));
+        let token = waiter.try_park(1).expect("park");
+        let parked = {
+            let waiter = Arc::clone(&waiter);
+            thread::spawn(move || {
+                let start = Instant::now();
+                let result = waiter.wait(token, Some(LOST_WAKE));
+                (result, start.elapsed())
+            })
+        };
+        let slot = waiter.slot(0);
+        let since = Instant::now();
+        while slot.park_event.load(Ordering::SeqCst) == 0 {
+            assert!(since.elapsed() < LOST_WAKE, "the waiter never reached its park event");
+            std::hint::spin_loop();
+        }
+        // The exchange a waker makes, without the set that follows it.
+        let exchanged = slot.state.compare_exchange(
+            STATE_PARKED,
+            STATE_WOKEN,
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        );
+        exchanged.expect("the slot was parked when the waker exchanged it");
+        let (result, took) = parked.join().expect("the waiting thread");
+        result.expect("the heal ends the wait as woken");
+        assert!(took < LOST_WAKE, "the wait ran to its timeout instead of healing: {took:?}");
     }
 }

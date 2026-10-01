@@ -32,7 +32,7 @@ returns it, and `strong_count` is how many are held.
   arrays of them; a caller writes `unsafe impl ShmValue for MyStruct {}`
   for a `#[repr(C)]` struct of its own.
 - **The value is immutable.** Written once by the call that creates the
-  backing and read-only afterwards, so a reference into the mapping is
+  backing and read-only afterward, so a reference into the mapping is
   sound without a lock. Mutable shared state goes inside the value: an
   atomic, a [Shared Cell](../../shared-cell/), or a lock.
 - **`create` attaches to a live backing rather than overwriting**, so

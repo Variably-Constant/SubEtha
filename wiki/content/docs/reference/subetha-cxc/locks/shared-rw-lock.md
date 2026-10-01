@@ -260,8 +260,8 @@ even under reader pressure.
 - Bench: `crates/subetha-cxc/benches/shared_rw_lock.rs` (try_read,
   try_write, 4-thread concurrent readers vs std::sync::RwLock
   and parking_lot::RwLock).
-- Sibling primitive: [SHARED_SEMAPHORE.md](shared-semaphore/) -
+- Sibling primitive: [Shared Semaphore](shared-semaphore/) -
   counting variant; SharedRWLock is a specialization with
   one-writer-many-readers semantics.
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) - the
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) - the
   underlying atomic primitive the packed state builds on.

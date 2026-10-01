@@ -90,7 +90,7 @@ Bench file:
 ## Publish strategy: MOVDIR64B vs scalar stores
 
 URD's owner side has two publish modes, dispatched at construction
-time by the [`PublishStrategy::pick`](./#publishstrategy) helper that
+time by the `PublishStrategy::pick` helper that
 reads [`subetha_core::has_movdir64b`](../../subetha-core/):
 
 - **`Movdir64b`** (`MOVDIR64B` + `SFENCE`): the owner builds a
@@ -112,7 +112,7 @@ mailbox state word's `CLAIM_READY` bit gates payload visibility.
 ## Wait strategy: UMWAIT vs PAUSE-spin
 
 URD's thief side has two wait modes, dispatched at construction
-time by the [`WaitStrategy::pick`](./#waitstrategy) helper that
+time by the `WaitStrategy::pick` helper that
 reads [`subetha_core::has_waitpkg`](../../subetha-core/):
 
 - **`Waitpkg`** (`UMONITOR` + `UMWAIT`): the thief calls `UMONITOR`

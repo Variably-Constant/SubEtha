@@ -90,7 +90,7 @@ impl HandshakeHeader {
 | Method | When to use |
 |---|---|
 | `set_tag(new_tag)` | Switching strategy that does not require data-layout migration (e.g., wait-strategy in a once-shot primitive). PIC-only update. |
-| `migrate(new_tag)` | Switching strategy that does require data-layout migration. Bumps generation and swaps tag atomically. Returns the old gen so the caller can drain it. |
+| `migrate(new_tag)` | Switching strategy that does require data-layout migration. Stores the new tag, then bumps generation with a Release store, so an op that sees the new generation sees the new tag. Returns the old gen so the caller can drain it. |
 | `bump_generation()` | Data-layout migration with no strategy change (the primitive swaps its internal storage but keeps the same tag). Tag unchanged; returns old gen. |
 | `drain(old_gen)` | After `migrate` or `bump_generation`, wait for in-flight readers on the old gen to complete. Spins. |
 

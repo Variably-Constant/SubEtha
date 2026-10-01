@@ -1,10 +1,5 @@
 //! Bench: KTower2 region-table pointer resolve cost vs a native
 //! (region_id, offset) struct and a pre-resolved direct pointer.
-//!
-//! Only the KTower2 group of the upstream hybrid-pointers bench is
-//! ported here; the other upstream groups (CompactQueryPtr, GraphPtr,
-//! TieredAddr, TimePointTile) cover types that are not part of this
-//! crate.
 
 use std::hint::black_box;
 
@@ -13,19 +8,11 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use subetha_pointers::k_tower_pointer::KTower2;
 
 // =========================================================
-// KTower2 resolve cost vs native (region_id, offset) struct
-// vs pre-resolved direct pointer.
-//
-// Audit: comparing KTower's 1 indirection (table lookup +
-// offset add + deref) against a pre-resolved *const u64 (zero
-// indirection) is a surplus-indirection asymmetry. The fair
-// contender is a native (region_id: u32, offset: u32) tuple doing
-// the same table lookup + offset add + deref. KTower's storage is
-// 8 B (packed u64); the native struct is also 8 B with the same
-// layout - so the bench isolates the KTower API cost vs the
-// raw-encoding cost. The 'direct_ptr' contender is the absolute
-// floor (pre-resolved access, the alternative when cross-process
-// portability is not needed).
+// Three contenders over 1024 pointers spread across 8 regions:
+// KTower2::resolve; a (region_id: u32, offset: u32) tuple doing the
+// same table lookup, offset add and load, so the gap between the two
+// is the cost of the packed encoding; and a pre-resolved *const u64,
+// the floor when no position independence is needed.
 // =========================================================
 
 fn ktower_resolve(c: &mut Criterion) {

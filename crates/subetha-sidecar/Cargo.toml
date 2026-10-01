@@ -13,7 +13,6 @@ description = "Sidecar control plane for CXC / SubEtha adaptive primitives: per-
 
 [dependencies]
 subetha-core = { workspace = true }
-parking_lot = { workspace = true }
 once_cell = { workspace = true }
 
 [dev-dependencies]

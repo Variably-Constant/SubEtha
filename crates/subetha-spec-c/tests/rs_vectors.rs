@@ -349,8 +349,11 @@ fn an_outer_block_id_that_names_nothing_is_refused() {
 
     // A segment with no data blocks, or no parity for them, names
     // nothing decodable. Both fields are one-based on the wire, and a
-    // sender must never emit either.
+    // sender must never emit either. Each id spells out its zero field,
+    // which is the field under test.
+    #[allow(clippy::identity_op)]
     let no_data = 0x8000_0000u32 | (0 << 27) | (2 << 24) | (0x1234 << 8) | 0x56;
+    #[allow(clippy::identity_op)]
     let no_parity = 0x8000_0000u32 | (3 << 27) | (0 << 24) | (0x1234 << 8) | 0x56;
     assert_eq!(rs::outer_id_read(no_data), None);
     assert_eq!(rs::outer_id_read(no_parity), None);

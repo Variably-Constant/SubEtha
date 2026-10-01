@@ -187,11 +187,11 @@ indices stable across processes that map the same file.
   visibility, disk persistence, and ABA safety).
 - Bench: `crates/subetha-cxc/benches/shared_region.rs` (allocate,
   alloc_free_cycle, get vs `Mutex<Vec>` arena).
-- Consumer: [SHARED_LINKED_LIST.md](../maps/shared-linked-list/) -
+- Consumer: [Shared Linked List](../maps/shared-linked-list/) -
   nodes allocated from a SharedRegion.
-- Consumer: [SHARED_GRAPH.md](../specialized/shared-graph/) - separate
+- Consumer: [Shared Graph](../specialized/shared-graph/) - separate
   node and edge regions.
-- Consumer: [K_TOWER_CASCADE.md](../coordination-types/k-tower-cascade/) - each
+- Consumer: [K-Tower Cascade](../coordination-types/k-tower-cascade/) - each
   cascade level reads a SharedRegion slot.
-- Sibling primitive: [OFFSET_PTR.md](../pointers/offset-ptr/) - the
+- Sibling primitive: [Offset Pointer](../pointers/offset-ptr/) - the
   u32 handle type returned by allocate.

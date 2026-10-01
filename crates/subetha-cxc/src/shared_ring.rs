@@ -317,7 +317,7 @@ impl LazySharedRing {
 
 /// Initialize the Vyukov ring layout in a freshly-mapped buffer.
 /// Sets the header magic + capacity + counters, then writes each
-/// slot's sequence number to its index (Vyukov: slot[i] is ready
+/// slot's sequence number to its index (Vyukov: `slot[i]` is ready
 /// for producer i).
 ///
 /// Shared by [`SharedRing::create`] (file-backed),
@@ -917,15 +917,15 @@ impl SharedRing {
     /// Returns `Some(pos)` for the first stuck position, `None` if
     /// every claimed slot has been published.
     ///
-    /// **Use for:** sidecar-driven recovery from a producer that
-    /// crashed between claiming a slot (CAS on `producer_seq`) and
-    /// publishing it (Release-store on `slot.sequence`). The window
-    /// where a crash leaves a permanent hole is narrow but real for
-    /// any Vyukov MPMC; this is the scan that finds those holes.
+    /// **Use for:** recovery from a producer that crashed between
+    /// claiming a slot (CAS on `producer_seq`) and publishing it
+    /// (Release-store on `slot.sequence`). The window where a crash
+    /// leaves a permanent hole is narrow but real for any Vyukov MPMC;
+    /// this is the scan that finds those holes.
+    /// [`FailoverWatchdog`](crate::FailoverWatchdog) runs it on the
+    /// rings it watches.
     ///
-    /// **Hot-path cost:** zero. This method is only called by the
-    /// sidecar when its Empty-observation analysis decides a ring is
-    /// stuck. `try_push` and `try_pop` never touch it.
+    /// **Hot-path cost:** zero; `try_push` and `try_pop` never touch it.
     ///
     /// **Scan cost:** O(producer_seq - consumer_seq) in the worst
     /// case (typically small; if the window is large the ring is
@@ -949,9 +949,9 @@ impl SharedRing {
     /// Heal a slot stuck in the claimed-but-never-published state by
     /// advancing its sequence number from `pos` to `pos + 1`. The
     /// next consumer at this position drains the slot in normal
-    /// `try_pop` order; its payload bytes are whatever the dying
-    /// producer happened to write before crashing (or initial zeros
-    /// if the producer crashed before any payload write).
+    /// `try_pop` order; its payload bytes are whatever the slot held
+    /// when the producer died: what the producer wrote, else the item
+    /// an earlier lap left there, or zeros on the slot's first lap.
     ///
     /// **Caller contract:** the caller must independently confirm
     /// that the producer which claimed this slot will never publish
@@ -965,25 +965,24 @@ impl SharedRing {
     /// so the CAS just returns `Ok(false)`) but the consumer drains
     /// a slot the producer never finished writing.
     ///
-    /// **Where the dead-producer signal comes from:** the canonical
-    /// signal is [`HeartbeatTable`](crate::HeartbeatTable) +
-    /// [`FailoverWatchdog`](crate::FailoverWatchdog). Register each
-    /// producer with a heartbeat; the watchdog declares a process
-    /// dead when its heartbeat goes stale beyond the grace period,
-    /// then walks the rings that producer touched and calls
-    /// `heal_stuck_slot(pos)` for each stuck position
-    /// [`next_stuck_slot`](Self::next_stuck_slot) returns.
+    /// **Who calls it:** [`FailoverWatchdog::scan`](crate::FailoverWatchdog::scan)
+    /// heals the rings handed to
+    /// [`FailoverWatchdog::watch_ring`](crate::FailoverWatchdog::watch_ring):
+    /// a position [`next_stuck_slot`](Self::next_stuck_slot) returns on
+    /// two consecutive scans, once some process registered in its
+    /// [`HeartbeatTable`](crate::HeartbeatTable) is more than the
+    /// watchdog's grace behind. A caller with a dead-producer signal
+    /// of its own calls it directly.
     ///
     /// **Returns:** `Ok(true)` if the slot was stuck and is now
     /// healed (CAS succeeded; consumer can drain it).
     /// `Ok(false)` if the slot was not stuck (sequence already at
     /// `pos + 1` or beyond, or `pos` outside the
-    /// `[consumer_seq, producer_seq)` window). Returns `Err` only
-    /// on `PayloadTooLarge` style protocol misuse.
+    /// `[consumer_seq, producer_seq)` window). Every path returns `Ok`.
     ///
-    /// **Hot-path cost:** zero. Only invoked from sidecar recovery.
-    /// The heal itself is one atomic CAS on the slot's sequence
-    /// number; no payload write, no other state touched.
+    /// **Hot-path cost:** zero; the heal is one atomic CAS on the
+    /// slot's sequence number, with no payload write and no other
+    /// state touched.
     pub fn heal_stuck_slot(&self, pos: u64) -> Result<bool, RingError> {
         let header = self.header();
         let producer_seq = header.producer_seq.load(Ordering::Acquire);

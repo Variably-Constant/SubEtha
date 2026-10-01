@@ -17,12 +17,17 @@ process has stopped beating. Each scan ticks the global epoch by
 one and identifies every slot with
 `last_seen_epoch < global - grace_epochs` and a non-zero
 in-flight bitmap; those slots are returned in a `ReclaimReport`
-so the caller (typically a scheduler) can reassign the work.
+so the caller (typically a scheduler) can reassign the work. It
+also heals the [`SharedRing`](../rings/shared-ring/)s handed to
+`watch_ring`: a slot a producer claimed and never published, found
+at the same position on two consecutive scans, is healed once any
+registered process is more than `grace_epochs` behind, and the
+report's `healed_slots` lists what the scan healed.
 
 > **The "detect and recover from dead workers in one scan"
-> primitive.** 64-slot scan: **752.76 ns** vs `Vec<Mutex<u64>>`
-> 1.05 µs (**1.39x faster** - lock-free atomic loads per slot
-> vs lock-per-slot). Scan cost is O(slots) and **independent of
+> primitive.** 64-slot scan: **307 ns**, against 198 ns for an
+> in-process `Vec<Mutex<u64>>` scan (1.55x slower,
+> single-threaded). Scan cost is O(slots) and **independent of
 > dead count** - every slot must be examined to detect staleness.
 > The architectural lever is cross-process visibility: the
 > mutex baseline is in-process only at any cost.
@@ -48,6 +53,13 @@ so the caller (typically a scheduler) can reassign the work.
 - **`clear_dead_bitmap` silences re-reports**: after the caller
   has reassigned the work, clear the bitmap so subsequent scans
   do not re-emit the same slot.
+- **`watch_ring(&ring)` hands it a ring to heal** and returns the
+  index `ReclaimReport::healed_slots` and `heal_errors` name that
+  ring by. A heal needs two things: the slot stuck at the same
+  position on the previous scan too (a publish takes nanoseconds,
+  so a live producer is not mid-publish across a scan interval),
+  and some registered process more than `grace_epochs` behind,
+  whether or not it holds in-flight bits.
 - **Cross-process backed by MMF** (via the heartbeat table).
 
 ---
@@ -69,7 +81,7 @@ so the caller (typically a scheduler) can reassign the work.
 
 ```mermaid
 flowchart BT
-    W["FailoverWatchdog (stateless wrapper)<br/>table: &amp;HeartbeatTable, grace_epochs: u64"]
+    W["FailoverWatchdog<br/>table: &amp;HeartbeatTable, grace_epochs: u64, watched rings"]
     T["HeartbeatTable - table.bin (external dependency)<br/>slot i: pid + last_seen; global_epoch atomic"]
     W -- reads staleness, acts on it --> T
     classDef wdC fill:#9a3412,color:#ffffff
@@ -78,10 +90,10 @@ flowchart BT
     class T tblC
 ```
 
-The watchdog itself holds no state beyond a reference to the
-heartbeat table and the grace threshold. All staleness
-information lives in the table; the watchdog is the protocol for
-reading and acting on it.
+The watchdog holds a reference to the heartbeat table, the grace
+threshold, and the rings it watches, each with the stuck positions
+its last scan found there. All staleness information lives in the
+table; the watchdog is the protocol for reading and acting on it.
 
 ---
 
@@ -92,13 +104,25 @@ reading and acting on it.
 ```text
 new_epoch = table.tick_global_epoch()
 dead = []
+lapsed = false
 for each slot i in 0..capacity:
    snap = table.snapshot(i)
    if snap.pid != EMPTY:
        lag = new_epoch - snap.last_seen_epoch
-       if lag > grace_epochs and snap.in_flight_bitmap != 0:
-           dead.push((i, snap))
-return ReclaimReport { dead_slots: dead, new_global_epoch: new_epoch }
+       if lag > grace_epochs:
+           lapsed = true
+           if snap.in_flight_bitmap != 0:
+               dead.push((i, snap))
+for each watched ring r:
+   still_stuck = []
+   for each position p that r.next_stuck_slot walks to:
+       if lapsed and p in r.suspects:
+           r.heal_stuck_slot(p)          # into healed_slots
+       else:
+           still_stuck.push(p)
+   r.suspects = still_stuck
+return ReclaimReport { dead_slots: dead, new_global_epoch: new_epoch,
+                       healed_slots, heal_errors }
 ```
 
 Single-pass linear scan. Each per-slot check is one atomic load
@@ -128,35 +152,39 @@ of the same dead slot on the next scan.
 
 ## Bench evidence
 
-Bench harness: `crates/subetha-cxc/benches/failover.rs`. Captured
-2026-06-02 on Windows 11 / Zen+ R7 2700, Criterion with
-`--sample-size=15 --warm-up-time=1 --measurement-time=2`.
+Bench harness: `crates/subetha-cxc/benches/failover.rs`, run with
+Criterion's defaults (3 s warm-up, 100 samples over 5 s) on Windows
+11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built for the x86-64
+baseline, while other work kept 2.2 to 5.4 of the machine's 24
+hardware threads busy.
 
 | Op | `FailoverWatchdog` (mmf) | `Vec<Mutex<u64>>` naive | Relative |
 |---|---:|---:|---:|
-| scan 64 slots, all alive | **752.76 ns** | 1.05 µs | **1.39x faster** |
-| scan 64 slots, 4 dead | 711.86 ns | n/a | (dead count is free) |
-| scan 1024 slots, all alive | 5.33 µs | n/a | ~5 ns/slot |
-| iter_in_flight_bits (6 bits set) | 51.41 ns | n/a | ~8.5 ns/bit |
+| scan 64 slots, all alive | **306.86 ns** | 198.18 ns | 1.55x slower |
+| scan 64 slots, 4 dead | 305.34 ns | n/a | (dead count is free) |
+| scan 1024 slots, all alive | 2.86 µs | n/a | ~2.8 ns/slot |
+| iter_in_flight_bits (6 bits set) | 16.29 ns | n/a | ~2.7 ns/bit |
 
 ### Reading the trade-offs
 
 The story the numbers tell:
 
-1. **1.39x faster than the mutex baseline.** Every slot check is
-   one atomic Acquire load vs a full Mutex lock+unlock per slot.
-   The lock-free per-slot read scales with reader-count where the
-   mutex baseline serializes.
-2. **Dead count is essentially free.** scan_64_all_alive (752
+1. **1.55x slower than the mutex baseline, single-threaded.** The
+   baseline reads one `u64` per slot behind an uncontended lock
+   in process-local memory; the watchdog advances the shared
+   global epoch, reads each slot's heartbeat snapshot from the
+   mapped table and records the scan in the table's observation
+   ring. The bench runs one thread, so it does not measure scans
+   while workers beat.
+2. **Dead count is essentially free.** scan_64_all_alive (307
    ns) is statistically indistinguishable from scan_64_4dead
-   (712 ns) - the work is O(slots), not O(dead). Every slot must
+   (305 ns) - the work is O(slots), not O(dead). Every slot must
    be examined to detect staleness, so a few extra dead slots add
    only a small constant per-dead push onto the report vector.
 3. **Linear scan scales sublinearly.** 16x more slots (64 → 1024)
-   yield 7x more time (752 ns → 5.3 µs) - cache-line streaming
-   amortizes the per-slot atomic load cost. The dominant cost
-   becomes memory bandwidth rather than per-slot instruction
-   count.
+   yield 9.3x more time (307 ns → 2.86 µs), about 2.8 ns per slot
+   at 1024: the per-scan work outside the slot loop spreads over
+   more slots.
 4. **The mutex baseline cannot do what FailoverWatchdog does.**
    Cross-process visibility is unavailable to
    `Vec<Mutex<u64>>` at any cost; FailoverWatchdog scans the
@@ -329,12 +357,12 @@ external coordinator.
 - Bench: `crates/subetha-cxc/benches/failover.rs` (scan 64 alive,
   scan 64 with 4 dead, scan 1024 alive, iter_in_flight_bits,
   vs `Vec<Mutex<u64>>` naive baseline).
-- Dependency: [HEARTBEAT.md](heartbeat/) - the heartbeat
+- Dependency: [Heartbeat Table](heartbeat/) - the heartbeat
   table FailoverWatchdog scans.
 - Sibling primitive:
-  [SHARED_LEADER_ELECTION.md](../ownership-types/shared-leader-election/) -
+  [Shared Leader Election](../ownership-types/shared-leader-election/) -
   same heartbeat dependency; leader-election picks
   lowest-live-PID, failover reclaims dead-worker bits.
-- Sibling primitive: [EPOCH_BARRIER.md](epoch-barrier/) -
+- Sibling primitive: [Epoch Barrier](epoch-barrier/) -
   same heartbeat dependency; barrier excludes dead peers from
   release count, failover reclaims their in-flight work.

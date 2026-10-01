@@ -379,11 +379,11 @@ cluster-wide progress reporting.
   (current_progress, fraction_complete, advance, cycle_100 vs
   `Arc<AtomicU64>` + `Arc<AtomicBool>` + `Arc<Mutex<R>>` naive
   in-process baseline).
-- Underlying primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Underlying primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the AtomicU64 progress / total counters + AtomicBool done flag.
-- Underlying primitive: [SHARED_CELL.md](../cells/shared-cell/) -
+- Underlying primitive: [Shared Cell](../cells/shared-cell/) -
   the SeqLock result cell.
-- Sibling primitive: [EVENT_STATE_LOG.md](event-state-log/) -
+- Sibling primitive: [Event State Log](event-state-log/) -
   event-sourced state; ProgressTask is the simpler counter-shape
   observable that EVENT_STATE_LOG generalizes with full event
   history.

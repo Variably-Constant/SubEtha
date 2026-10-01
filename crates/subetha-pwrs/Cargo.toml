@@ -2,7 +2,9 @@
 name = "subetha-pwrs"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# PoWerRuSt 0.3.2 builds with rustc 1.98 and later, so this module does
+# too, where the rest of the workspace needs 1.96.
+rust-version = "1.98"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -17,8 +19,9 @@ in place rather than copied, and a lock or a hold comes back as an object that \
 releases on Release(), Dispose() or collection. Every cmdlet answers to a shorter \
 name with the SE prefix. Bound directly to Rust with PoWerRuSt (pwrs), Rust \
 bindings for writing PowerShell binary modules in the spirit of PyO3: the cmdlets \
-are the library, not a wrapper over a command line. Windows x64 and Linux x64 in \
-one module, on PowerShell 7 and Windows PowerShell 5.1. Source and issues at \
+are the library, not a wrapper over a command line. Windows x64, Linux x64, macOS \
+arm64 and FreeBSD x64 in one module, on PowerShell 7 and Windows PowerShell 5.1. \
+Source and issues at \
 https://github.com/Variably-Constant/SubEtha; the binding framework at \
 https://github.com/Variably-Constant/PWRS and https://crates.io/crates/PoWerRuSt."""
 # The gallery's tags. `cargo pwrs` writes `pwrs` and then these, so the
@@ -40,25 +43,39 @@ publish = false
 [package.metadata.pwrs]
 license-uri = "https://github.com/Variably-Constant/SubEtha/blob/main/LICENSE-MIT"
 icon-uri = "https://raw.githubusercontent.com/Variably-Constant/SubEtha/main/assets/icon.png"
-copyright = "Copyright (c) 2026 Markus Newton"
+copyright = "Copyright (c) 2026 Mark Newton"
 company = "Variably Constant"
-release-notes = """A broadcast producer can wait for its readers. A consumer \
-registers at the head, so anything published before it registered is lost to it \
-and nothing reports that: the push succeeds, and a reader that started late looks \
-exactly like one that is slow. WaitForConsumers closes that window and answers how \
-many readers are present when the wait ends, so a shortfall is a number rather than \
-a hang. Lag now answers $null instead of a number when the id names no live \
-consumer, which covers an id past the table and one that has been given back; a \
-script that only ever passes a registered id sees no change. The module also has a \
-documentation surface it did not have: a reference generated from the module's own \
-help covering all 135 cmdlets and 118 classes, a page showing what each value \
-actually looks like when a scenario is run against the built module, and a guide \
-covering installing, choosing a structure, runspaces and lifetimes, bridging two \
-hosts and troubleshooting. Every cmdlet, class, enum and method the module exports \
-is reached by the Pester suite, and a gate suite fails the run when one is not: 181 \
-tests pass in PowerShell 7.6.6 and Windows PowerShell 5.1 on Windows x64, and in \
-PowerShell 7.6.5 on Ubuntu on Linux x64. Both native libraries ship in the one \
-module folder."""
+release-notes = """The module reaches the process's sidecar: twenty-six structures \
+and a new Adaptive object register with it through Observe(), a registration reads \
+the InstanceStats the sidecar drains, and a ScriptBlock policy decides on the \
+sidecar's own thread which tag an object runs at. Get-SubEthaSidecar, \
+Set-SubEthaSidecar and Invoke-SubEthaSidecarScan manage it, and the Ring, CapacityRing \
+and LocaleRing cmdlets take -Managed and -ScanIntervalUs to run a ring's own sidecar. \
+The module imports in PowerShell 7.4 and later, where 0.5.1 \
+needed 7.6, and in Windows PowerShell 5.1 as before. It is built with PoWerRuSt and \
+cargo-pwrs 0.3.2, which compile its PowerShell 7 half against .NET 8 whichever \
+machine builds it. It adds the shm: drive: $shm:name = value publishes a value \
+every process of the user reads as $shm:name, live, outliving the session. 0.5.1 said the module works on FreeBSD x64, but that half \
+referenced .NET 10 and did not import in FreeBSD's PowerShell 7.5.5; this one does. \
+In Windows PowerShell 5.1, where the first PWRS module a session imports serves every \
+later one, import it before a module built by an older cargo-pwrs: after one built \
+by 0.2.x through 0.3.1 it fails with pwrs_module_init status 4, and after one built by 0.1.8 or \
+earlier with a type initializer error, as \
+https://variably-constant.github.io/SubEtha/docs/how-to/powershell/troubleshoot/ \
+describes. On Windows a lock, semaphore or condition wait sleeps in the kernel once \
+its monitor budget runs out, where it held a processor for as long as it waited: an \
+idle waiter is charged 0.000 to 0.003 of a core rather than 0.953 to 1.008, measured \
+on Windows 11 / Ryzen 9 7900X. The waker behind those waits starts each wake scan \
+and ends each park with a fence, which closes a lost wake shown on blocking rings, \
+where a consumer slept beside an item until its timeout. A QUIC bridge client no \
+longer writes a line of UDP counts to stderr each time it finishes, and no longer \
+fails with a lost connection after the server has received every item: over 200 \
+round trips on Linux x86-64, 4 failed that way in PowerShell 7.4.20 and 3 in 7.6.5 \
+before, and none in either after. A LocaleRing from Open-SubEthaLocaleRing takes \
+producer and consumer ids beside the handles already registered on the ring, where \
+its RegisterProducer() or RegisterConsumer() panicked in the native library once \
+another handle had registered. The module's 227 Pester tests pass on Windows \
+(PowerShell 7.6.6 and Windows PowerShell 5.1), Linux x64, macOS arm64 and FreeBSD x64."""
 
 [lib]
 crate-type = ["cdylib"]
@@ -70,6 +87,9 @@ subetha-cxc = { workspace = true, features = ["tcp-bridge", "quic-bridge"] }
 # The Marshal contract, which the typed front door takes its payloads
 # through.
 subetha-core = { workspace = true }
+# The process's sidecar: registration, InstanceStats and the Policy a
+# ScriptBlock stands behind.
+subetha-sidecar = { workspace = true }
 # The value types that ride beside a pointer: the word-sized blooms and
 # the two clocks.
 subetha-pointers = { workspace = true }
@@ -77,8 +97,12 @@ subetha-pointers = { workspace = true }
 # a class and its build tool generates the managed shell around the
 # library. Registered under the project's own name because crates.io
 # carries an unrelated `pwrs` from 2015; the library it builds is still
-# `pwrs`, which is what the source writes.
-pwrs = { package = "PoWerRuSt", version = "0.1.4" }
+# `pwrs`, which is what the source writes. 0.3.0 is what lets the
+# sidecar's own thread run a policy ScriptBlock, through
+# attach_current_thread. The version is exact because the module is
+# built by the cargo-pwrs of the same version, whose managed runtime and
+# this native must agree on the host table.
+pwrs = { package = "PoWerRuSt", version = "=0.3.2" }
 
 # The bridges are written against an async runtime; the module holds one
 # for all of them and starts it the first time a bridge needs it.

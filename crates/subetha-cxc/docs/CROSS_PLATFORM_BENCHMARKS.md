@@ -155,6 +155,6 @@ under the same flags. The 2012 Mac ran the same suite minus the
 8-thread capacity-adaptive-ring stress bench, which is pathological on a
 2-core CPU. MMF files were backed by disk on every host (the benches
 that mmap large files need a backing store with free space, not a small
-`tmpfs`). The per-primitive docs under `docs/pointers/` carry the full
-op tables, contender rationale, and trade-off discussion for the
-canonical (Zen+) hardware; this file is the cross-platform summary.
+`tmpfs`). This file is the cross-platform summary; each primitive has
+its own page in the
+[subetha-cxc reference](https://variably-constant.github.io/SubEtha/docs/reference/subetha-cxc/).

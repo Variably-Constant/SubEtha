@@ -10,7 +10,7 @@ weight: 50
 ## `Generation<'a>` - op-side RAII
 
 ```rust,no_run
-#[must_use = "Generation captures an in-flight slot; drop or pass to exit_op"]
+#[must_use = "Generation holds an in-flight slot until it drops"]
 pub struct Generation<'a> {
     pub(crate) header: &'a HandshakeHeader,
     pub(crate) value: u32,
@@ -29,15 +29,15 @@ impl<'a> Drop for Generation<'a> {
 ```
 
 `Generation::enter(header)` calls `header.enter_op()` and returns a
-guard. The guard derefs to its captured generation `u32` value via
-`.value()`. Drop releases the in-flight slot.
+guard. `.value()` gives its captured generation `u32`. Drop releases
+the in-flight slot.
 
 > [!NOTE]
-> **`#[must_use]` is load-bearing.** A primitive that captures a
-> generation and then drops it on the floor without `exit_op` leaves
-> the in-flight counter unbalanced; the next migration `drain` spins
-> forever. The `#[must_use]` lint catches the most common accident
-> at compile time.
+> **`#[must_use]` is load-bearing.** A statement
+> `Generation::enter(&header);` drops its guard at once, releasing the
+> in-flight slot before the op it was meant to cover, so a migration
+> can drain and free the representation the op then reads. The
+> `#[must_use]` lint flags that statement at compile time.
 
 ## `MigrationGuard<'a>` - coordinator-side RAII
 
@@ -92,6 +92,8 @@ The unit tests in `crates/subetha-core/src/migration.rs` assert:
   the current generation.
 - The guard's `Drop` releases the in-flight slot.
 - `header.drain(captured)` returns after the guard drops.
+- `MigrationGuard::begin(header, 1)` installs tag 1, and
+  `wait_quiescent()` returns with `old_generation()` at 0.
 
 ## See also
 

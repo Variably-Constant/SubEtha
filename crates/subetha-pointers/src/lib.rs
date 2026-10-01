@@ -1,8 +1,7 @@
 //! CXC exotic pointer types.
 //!
-//! Each pointer type declares a `K_*` direction signature via
-//! [`subetha_core::AxisMask`], so CXC's MMF dispatcher can route
-//! workloads to the right pointer kind by signature containment.
+//! Each pointer type declares the `K_*` axes it engages as a
+//! [`subetha_core::AxisMask`] in its `SIGNATURE` constant.
 //!
 //! - [`umbra_pointer::UmbraPointer<T>`] for content-prefix
 //! - [`bloom_pointer::BloomPointer<T>`] for probabilistic set summary

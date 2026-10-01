@@ -14,17 +14,16 @@ weight: 70
 A typed strided pointer that encodes the iteration stride as
 `log2` (k_step: u8) instead of a runtime `usize`. The byte
 stride between consecutive elements is
-`size_of::<T>() << k_step`. Because the multiplier is a const
-shift amount rather than a multiplicand, the compiler can emit
-`SHL` with an immediate operand instead of `IMUL` per step.
+`size_of::<T>() << k_step`, one shift per pointer, and element
+`i` sits `i * stride` bytes past the base; when `k_step` is known
+at compile time the stride is a constant.
 
-> **The "stride is a shift, not a multiply" primitive.** Same
+> **The "stride is a power-of-two shift" primitive.** Same
 > architectural shape as BLAS row/column strides and NumPy
 > strided arrays - but with the stride encoded as `k_step: u8`
-> (log2-of-stride-multiplier) so it survives as a const through
-> the codegen pipeline. The advantage is small but measurable
-> on loops where the stride arithmetic is a meaningful fraction
-> of the body.
+> (log2-of-stride-multiplier), always a power-of-two multiple of
+> the element size. The measured speed advantage over a stride
+> read at run time is about 1% on a strided load loop.
 
 **Constraints (read first):**
 
@@ -41,9 +40,11 @@ shift amount rather than a multiplicand, the compiler can emit
   cannot adapt its stride mid-iteration. For variable-stride
   workloads (e.g. CSR sparse matrices with per-row strides) use
   a different abstraction.
-- **`k_step: u8` limits stride to `sizeof(T) << 255`.** In
-  practice the cap is the address space; usable values are
-  `0..=12` (covers tight packing through page-aligned strides).
+- **`k_step` is a `u8`, but a shift of 64 or more overflows
+  `usize`.** `stride()` and `at()` panic on it in debug builds and
+  mask the shift amount in release builds. Usable values are those
+  whose stride stays inside the allocation; `0..=12` covers tight
+  packing through page-sized strides.
 - **Iteration yields shared references.** `KStepPointer<T>`
   exposes `&T`; strided mutable access goes through the raw
   pointer `at(i)` gives back and the caller's own unsafe
@@ -52,9 +53,10 @@ shift amount rather than a multiplicand, the compiler can emit
   pointer (8 bytes, 8-byte alignment) + u8 + PhantomData. Rust
   rounds up to 16 bytes for the next 8-byte boundary, so
   `KStepPointer<u64>` is twice the size of a bare pointer.
-- **Modern x86 `IMUL` is 3-cycle pipelined.** The bench wins
-  are modest (~4% on the shipped scan); on older or simpler
-  architectures the gap is larger.
+- **The measured gain is small.** On the bench host the typed path
+  was 3% faster than a stride read at run time (74.7 ns against
+  77.2 ns over 256 loads) and within noise of a compile-time
+  constant stride.
 
 ---
 
@@ -88,7 +90,7 @@ pub struct KStepPointer<T> {
 The address of element `i` is computed as:
 
 ```rust
-addr_i = base + i * (size_of::<T>() << k_step)
+addr_i = base + ((i * size_of::<T>()) << k_step)
 ```
 
 The `<< k_step` is the load-bearing piece: it's a single
@@ -120,25 +122,22 @@ for i in 0..n {
 }
 ```
 
-This compiles to an `IMUL` per step (multiply `i * stride`).
-On modern x86, `IMUL` is 3-cycle latency on a dedicated unit,
-pipelined to one result per cycle. On older / simpler chips
-(early Atom, in-order ARM, RISC-V without M extension) `IMUL`
-costs more.
+The offset is a multiply by a value the compiler cannot see, and
+any stride is accepted, including one that splits an element.
 
 With `KStepPointer`, the stride is encoded as `k_step: u8`
-where the actual byte stride is `size_of::<T>() << k_step`. The
-codegen pattern becomes:
+where the actual byte stride is `size_of::<T>() << k_step`:
 
 ```text
-load addr_offset = i << k_step_constant
+stride = size_of::<T>() << k_step
+addr_offset = i * stride
 load base + addr_offset
 ```
 
-`SHL` with immediate is 1-cycle latency, every cycle, on every
-modern architecture. The compiler emits the immediate when the
-caller constructs the pointer with a compile-time-known
-`k_step`.
+When the caller builds the pointer with a `k_step` the compiler
+can see, the stride is a constant. The stride is
+always a power-of-two multiple of `size_of::<T>()`, so an aligned
+base gives aligned elements at every index.
 
 ## Layout
 
@@ -159,10 +158,8 @@ flowchart LR
     class P pad
 ```
 
-The 7 bytes of padding are Rust's natural alignment requirement
-for the `*const T` field. The struct could be made smaller via
-`#[repr(packed)]` but at the cost of misaligned pointer access
-which is undefined behavior on some targets.
+The 7 bytes of padding come from the `*const T` field's 8-byte
+alignment.
 
 ## k_step values
 
@@ -257,17 +254,19 @@ assert_eq!(all, (0..16u64).collect::<Vec<_>>());
 ## Benchmark results
 
 256 strided loads (1024-element matrix walked at stride 32).
-Measured on Windows 11 / Zen+ R7 2700, criterion at
-`--measurement-time 2 --warm-up-time 1 --sample-size 30` (middle
-estimate of each [low, mid, high] triple).
+Measured on Windows 11 Pro 10.0.26200 on an AMD Ryzen 9 7900X, built
+for the x86-64 baseline, with Criterion's defaults (3 s warm-up, 100
+samples over 5 s; middle estimate of each [low, mid, high] triple),
+while other work kept 8.4 to 8.9 of the machine's 24 hardware threads
+busy.
 
-### Bench fairness
+### Bench design
 
 The runtime-stride contender sources its stride from a `Vec<usize>`
 indexed by a `black_box`'d value, so the compiler cannot constant-fold
-it. **A local `let stride: usize = 32;` would fold into
-SHL-with-immediate**, identical to the typed k_step path - parity that
-measures the fold, not the pointer. A third contender,
+it. A local `let stride: usize = 32;` would be a constant the
+compiler can see, like the typed k_step path, and a comparison with
+it would measure the fold, not the pointer. A third contender,
 `compile_const_stride_baseline`, keeps that compile-time-foldable case
 visible for reference.
 
@@ -275,82 +274,33 @@ visible for reference.
 
 | Contender | Time | Per-step | Stride determination |
 |---|---:|---:|---|
-| `runtime_stride_usize` | 77.2 ns | ~0.30 ns | `Vec<usize>::index` at runtime, defeats compiler folding |
-| **`compile_const_stride_baseline`** | **74.0 ns** | **~0.29 ns** | `const STRIDE: usize = 32` - compiler folds to SHL |
-| `typed_k_step` (the primitive) | 74.7 ns | ~0.29 ns | `k_step: u8` const, compiler folds to SHL |
+| `runtime_stride_usize` | 42.1 ns | ~0.16 ns | `Vec<usize>::index` at runtime, defeats compiler folding |
+| **`compile_const_stride_baseline`** | **41.6 ns** | **~0.16 ns** | `const STRIDE: usize = 32` |
+| `typed_k_step` (the primitive) | 41.6 ns | ~0.16 ns | `k_step = 2`, set where the compiler can see it |
 
 The two compile-time-stride paths (`typed_k_step` and
 `compile_const_stride_baseline`) are within measurement noise of
-each other (74.7 ns vs 74.0 ns) and both are ~1.03x faster than the
-truly-runtime path (77.2 ns). Communicating the stride at compile
-time - whether via the typed `k_step` field or a `const` - lands at
-the same speed; the runtime path pays ~3 ns more for the IMUL.
+each other (41.56 ns vs 41.60 ns), and the run-time stride took
+0.5 ns longer over the 256 loads, 1.01x. That is about 2 ps per
+load, a small fraction of one cycle, so it is not a multiply per
+step; the bench does not isolate what it is.
 
-### Why each result lands where it does
+### What each contender computes
 
-<details>
-<summary><b>typed_k_step ties compile_const_stride: both produce the same SHL</b></summary>
+The typed path computes `base + i * (8 << 2)` with `k_step = 2`
+set by `KStepPointer::new(base, 2)` in the same function. The
+constant baseline computes `base + i * 32` with `STRIDE = 32` a
+`const`. Both strides are known to the compiler, and the two run
+at the same speed.
 
-Both paths compute `addr = base + i * sizeof(T) << K`. The
-typed kstep path has `K = k_step` (a u8 field). The
-compile-const baseline has `K = 5` (since `32 = 1 << 5`).
+The runtime contender reads its stride from
+`strides_table[black_box(1)]` once per timed iteration and uses it
+for all 256 loads.
 
-When `kp.get(i)` is called with a `KStepPointer` constructed
-via `KStepPointer::new(base, 2)`, the compiler sees the
-construction and propagates `k_step = 2` through the call,
-emitting `shl 5, %rax` (since `sizeof(u64) << 2 = 32 = 2^5`).
-
-When `i * STRIDE` is computed with `STRIDE = 32` as a `const`,
-the compiler emits the same `shl 5, %rax`.
-
-The SHL with immediate is 1-cycle latency on every modern
-architecture. Both paths run at the same speed.
-
-</details>
-
-<details>
-<summary><b>runtime_stride_usize: 3 ns slower per loop, ~12 ps per iteration</b></summary>
-
-When the stride comes from `strides_table[black_box(1)]`, the
-compiler emits:
-
-1. `mov` from the array (memory load, L1 cache hit, ~4 cycles)
-2. `imul` to compute `i * stride` (3 cycles, pipelined)
-
-vs. the SHL path's single cycle. The difference is 3 ns
-across 256 iterations = ~12 ps per step. Modern x86 has so
-many parallel execution units that even this small per-step
-difference washes out across loop unrolling and dependency
-chains.
-
-**The architectural lesson**: typed `k_step` codifies a
-compile-time-known stride at the type level, which **prevents
-the caller from accidentally letting the stride become
-runtime-dynamic**. The codegen win is small (4% on this
-workload); the larger value is type-system enforcement.
-
-</details>
-
-<details>
-<summary><b>Where the win grows: older / simpler architectures</b></summary>
-
-Modern Intel/AMD chips have:
-- `IMUL r64, r64, imm`: 3-cycle latency, fully pipelined.
-- `SHL r64, imm`: 1-cycle latency, fully pipelined.
-
-The gap is 2 cycles per step, washed out by out-of-order
-execution on a deep ROB. On in-order ARM (Cortex-M, RISC-V
-without B extension), older Atom, or any architecture without
-a dedicated multiplier:
-
-- `IMUL`: 5-20+ cycles, blocks pipeline.
-- `SHL`: 1 cycle.
-
-The 4% bench gap on x86 widens to ~20-40% on those targets.
-The architectural value of `k_step` is portability of the
-codegen win across silicon tiers.
-
-</details>
+`k_step` does not force a compile-time stride: it is a `u8` field,
+and `KStepPointer::new` accepts one computed at run time. What the
+type does guarantee is the stride's shape, a power-of-two multiple
+of `size_of::<T>()`.
 
 ## Use case patterns
 
@@ -370,18 +320,13 @@ strided.
 </details>
 
 <details>
-<summary><b>Pattern 2: SIMD lane stride for AoS-to-SoA gathers</b></summary>
+<summary><b>Pattern 2: AoS-to-SoA gathers need a power-of-two stride</b></summary>
 
 An array-of-structures `Vec<Vec3>` where `Vec3 = (f32, f32, f32)`
-has 12 bytes per element. SoA gathers reading just the x
-component want stride 12; with `KStepPointer<f32>` and
-`k_step = 1` the stride is `4 << 1 = 8`... wait, 12 isn't a
-power of 2.
-
-This is a limitation: `k_step` encodes log2 strides only.
-Non-power-of-2 element sizes don't fit. For those, use a
-runtime `stride: usize` (the slower path) or pad the structure
-to the next power of 2.
+has 12 bytes per element. Gathering just the x components needs
+stride 12, which is 3 times `size_of::<f32>()` and not a power of
+two, so no `k_step` expresses it. Use a runtime `stride: usize`
+or pad the structure to 16 bytes, which `k_step = 2` covers.
 
 </details>
 
@@ -389,25 +334,24 @@ to the next power of 2.
 <summary><b>Pattern 3: cache-line-stride prefetching</b></summary>
 
 When walking a large array and intentionally touching every
-cache line (e.g. for warming the TLB or measuring memory
-latency), `KStepPointer::cache_line(base)` picks the right
+cache line (e.g. to warm the cache or measure memory latency),
+`KStepPointer::cache_line(base)` picks the right
 `k_step` for the element size. For T=u64 it's `k_step=3`
 (stride 64); for T=u8 it's `k_step=6` (also stride 64).
 
 </details>
 
 <details>
-<summary><b>Pattern 4: typed compile-time stride enforcement</b></summary>
+<summary><b>Pattern 4: a stride that cannot split an element</b></summary>
 
 In a code base where stride values are passed around between
-helpers, encoding the stride into the type prevents the silent
-runtime-stride mistake. A function taking `KStepPointer<T>`
-cannot be called with a wrong-stride pointer at runtime; the
-caller must construct the pointer with the correct k_step at
-the call site.
+helpers, a `KStepPointer<T>` carries its stride as a power-of-two
+multiple of `size_of::<T>()`, so no stride it holds lands between
+elements or misaligns one.
 
 A function taking `(base: *const T, stride: usize)` accepts any
-runtime stride, including the wrong one.
+byte stride, including one that is not a multiple of the element
+size.
 
 </details>
 
@@ -434,21 +378,21 @@ runtime stride, including the wrong one.
 6. **Strided mutable access is hand-rolled.** It goes through
    `at(i) as *mut T` and the caller's own unsafe deref.
 
-7. **Codegen win is ~4% on modern x86.** The architectural
-   claim "SHL vs IMUL" is real but small because modern IMUL is
-   pipelined. The win grows on older / simpler architectures.
+7. **The measured speed gain is 3-4%.** The bench host ran the
+   typed path 1.03x faster than a stride read at run time, and
+   the difference is far less than a multiply per step.
 
-8. **`cache_line` cap is `k_step = 6`.** For T smaller than 1
-   byte (which is not expressible in Rust), the cap would still
-   be 6 (giving stride 64 = one cache line).
+8. **`cache_line` caps `k_step` at 6.** For a zero-sized `T` it
+   picks `k_step = 6` and the stride is 0: every index names the
+   same address.
 
-9. **Bench fairness (see above).** The runtime-stride
-   contender uses a truly-runtime stride (not a compile-foldable
-   constant), against which the typed path is ~1.03x faster (and
-   within noise of the compile-const baseline).
+9. **Bench design (see above).** The runtime-stride contender
+   uses a truly-runtime stride (not a compile-foldable constant),
+   against which the typed path is ~1.03x faster (and within
+   noise of the compile-const baseline).
 
-10. **`StridedIter` is double-ended in shape but not in trait.**
-    The iterator goes forward only; reverse iteration requires
+10. **`StridedIter` goes forward only.** It does not implement
+    `DoubleEndedIterator`; reverse iteration requires
     constructing a separate `KStepPointer` from the end of the
     array.
 
@@ -476,7 +420,7 @@ ensuring `i * stride` stays within the allocation.
 struct Vec3 { x: f32, y: f32, z: f32 }  // 12 bytes
 let data: Vec<Vec3> = ...;
 // SoA gather over .x with stride 12 bytes:
-// `12 / sizeof(f32) = 3`, which is NOT a power of 2.
+// `12 / sizeof(f32) = 3`, which is not a power of 2.
 // You cannot pick a k_step that gives stride = 12 for T = f32.
 ```
 
@@ -506,14 +450,11 @@ borrow.
 </details>
 
 <details>
-<summary><b>Pitfall 4: expecting big perf wins on modern x86</b></summary>
+<summary><b>Pitfall 4: expecting a large speedup</b></summary>
 
-The bench shows a 4% win over a truly-runtime stride. On modern
-x86 with deep OoO execution, the IMUL→SHL upgrade is small.
-
-If your workload depends on a measurable speedup from typed
-strides, profile on the target architecture first; the win is
-larger on simpler chips.
+The bench shows a 3-4% win over a truly-runtime stride on one x86
+host. If your workload depends on a measurable speedup from typed
+strides, profile on the target architecture first.
 
 </details>
 

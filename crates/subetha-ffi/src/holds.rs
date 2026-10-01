@@ -47,8 +47,8 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use parking_lot::Mutex;
+use subetha_core::SwapCell;
 
 /// A slot's word: the generation in the high half, and in the low half
 /// the kind the hold was taken as, with bit 0 saying it is claimed.
@@ -146,7 +146,7 @@ pub(crate) enum ReleaseError {
 const BLOCK: usize = 64;
 
 pub(crate) struct HoldTable {
-    blocks: ArcSwap<Vec<Arc<Box<[AtomicU64]>>>>,
+    blocks: SwapCell<Vec<Arc<Box<[AtomicU64]>>>>,
     /// Serializes growth. Claiming and releasing never take it.
     growing: Mutex<()>,
     /// The most slots this table may ever hold, when the primitive
@@ -189,7 +189,7 @@ impl HoldTable {
 
     fn build(ceiling: Option<usize>) -> Self {
         Self {
-            blocks: ArcSwap::from_pointee(vec![fresh_block()]),
+            blocks: SwapCell::new(vec![fresh_block()]),
             growing: Mutex::new(()),
             ceiling,
             hint: AtomicUsize::new(0),
@@ -287,7 +287,7 @@ impl HoldTable {
     /// the caller knows which release to run on the primitive.
     ///
     /// The generation steps here, which is what makes this token unusable
-    /// afterwards.
+    /// afterward.
     pub(crate) fn release(&self, token: u64) -> Result<u32, ReleaseError> {
         if !is_token(token) {
             return Err(ReleaseError::NotAToken);

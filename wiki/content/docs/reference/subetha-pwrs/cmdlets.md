@@ -5,7 +5,7 @@ weight: 10
 
 # Every cmdlet, in full
 
-Every one of the 135 cmdlets the module exports, with each
+Every one of the 139 cmdlets the module exports, with each
 parameter, its type, whether it is required, and what the cmdlet
 writes, followed by the properties and methods of whatever came
 back. Generated from the built module by
@@ -23,6 +23,8 @@ see [What the values look like](../values/). In a shell,
 **[Rings and channels](#rings-and-channels)** (11) - [`New-SubEthaBroadcastRing`](#new-subethabroadcastring), [`New-SubEthaLamportPair`](#new-subethalamportpair), [`New-SubEthaMpmcGrid`](#new-subethampmcgrid), [`New-SubEthaMpscPool`](#new-subethampscpool), [`New-SubEthaPubSub`](#new-subethapubsub), [`New-SubEthaRing`](#new-subetharing), [`New-SubEthaSpscRing`](#new-subethaspscring), [`Open-SubEthaBroadcastRing`](#open-subethabroadcastring), [`Open-SubEthaPubSub`](#open-subethapubsub), [`Open-SubEthaRing`](#open-subetharing), [`Open-SubEthaSpscRing`](#open-subethaspscring)
 
 **[Rings that change themselves](#rings-that-change-themselves)** (4) - [`New-SubEthaCapacityRing`](#new-subethacapacityring), [`New-SubEthaLocaleRing`](#new-subethalocalering), [`Open-SubEthaCapacityRing`](#open-subethacapacityring), [`Open-SubEthaLocaleRing`](#open-subethalocalering)
+
+**[The sidecar](#the-sidecar)** (4) - [`Get-SubEthaSidecar`](#get-subethasidecar), [`Invoke-SubEthaSidecarScan`](#invoke-subethasidecarscan), [`New-SubEthaAdaptive`](#new-subethaadaptive), [`Set-SubEthaSidecar`](#set-subethasidecar)
 
 **[Order](#order)** (1) - [`New-SubEthaReorderWindow`](#new-subethareorderwindow)
 
@@ -278,6 +280,7 @@ Also `New-SEBroadcastRing`.
 |---|---|
 | `ActiveConsumers()` | `ulong` |
 | `Lag(ulong consumer)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `ProducerPosition()` | `ulong` |
 | `Push(object item)` | `bool` |
 | `PushMany(object[] items)` | `ulong` |
@@ -410,11 +413,14 @@ Also `New-SERing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamps` | `SubEtha.StampKind` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.Ring`.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -426,6 +432,7 @@ Also `New-SERing`.
 | `Capacity()` | `ulong` |
 | `IsEmpty()` | `bool` |
 | `MorphRefusals()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OrderedReceiver(ulong consumer)` | `SubEtha.OrderedReceiver` |
 | `Recv(ulong consumer)` | `object` |
 | `RecvFrame(ulong consumer)` | `object` |
@@ -437,6 +444,7 @@ Also `New-SERing`.
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SendPacked(ulong producer, object data, ulong itemLen)` | `ulong` |
 | `Shape()` | `string` |
+| `SidecarMorphs()` | `ulong` |
 | `Stamped()` | `bool` |
 | `TotalCapacity()` | `ulong` |
 
@@ -491,6 +499,7 @@ Also `Open-SEBroadcastRing`.
 |---|---|
 | `ActiveConsumers()` | `ulong` |
 | `Lag(ulong consumer)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `ProducerPosition()` | `ulong` |
 | `Push(object item)` | `bool` |
 | `PushMany(object[] items)` | `ulong` |
@@ -541,11 +550,14 @@ Also `Open-SERing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamps` | `SubEtha.StampKind` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.Ring`.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -557,6 +569,7 @@ Also `Open-SERing`.
 | `Capacity()` | `ulong` |
 | `IsEmpty()` | `bool` |
 | `MorphRefusals()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OrderedReceiver(ulong consumer)` | `SubEtha.OrderedReceiver` |
 | `Recv(ulong consumer)` | `object` |
 | `RecvFrame(ulong consumer)` | `object` |
@@ -568,6 +581,7 @@ Also `Open-SERing`.
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SendPacked(ulong producer, object data, ulong itemLen)` | `ulong` |
 | `Shape()` | `string` |
+| `SidecarMorphs()` | `ulong` |
 | `Stamped()` | `bool` |
 | `TotalCapacity()` | `ulong` |
 
@@ -614,11 +628,14 @@ Also `New-SECapacityRing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamped` | `switch` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.CapacityRing`.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -640,6 +657,8 @@ Also `New-SECapacityRing`.
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMorphs()` | `ulong` |
+| `SidecarPrewarms()` | `ulong` |
 | `StalePops()` | `ulong` |
 | `WarmCapacity()` | `ulong?` |
 | `WarmHits()` | `ulong` |
@@ -657,12 +676,15 @@ Also `New-SELocaleRing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamped` | `switch` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.LocaleRing`.
 
 | Property | Type |
 |---|---|
 | `Capacity` | `ulong` |
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -679,9 +701,11 @@ Also `New-SELocaleRing`.
 | `RecvMany(ulong consumer, ulong maxItems)` | `object[]` |
 | `RegisterConsumer()` | `ulong` |
 | `RegisterProducer()` | `ulong` |
+| `RequestLocale(SubEtha.Locale locale)` | `void` |
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMigrations()` | `ulong` |
 
 ### Open-SubEthaCapacityRing
 
@@ -696,11 +720,14 @@ Also `Open-SECapacityRing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamped` | `switch` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.CapacityRing`.
 
 | Property | Type |
 |---|---|
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -722,6 +749,8 @@ Also `Open-SECapacityRing`.
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMorphs()` | `ulong` |
+| `SidecarPrewarms()` | `ulong` |
 | `StalePops()` | `ulong` |
 | `WarmCapacity()` | `ulong?` |
 | `WarmHits()` | `ulong` |
@@ -739,12 +768,15 @@ Also `Open-SELocaleRing`.
 | `MaxProducers` | `ulong` | - | named | - |
 | `MaxConsumers` | `ulong` | - | named | - |
 | `Stamped` | `switch` | - | named | - |
+| `Managed` | `switch` | - | named | - |
+| `ScanIntervalUs` | `ulong` | - | named | - |
 
 **Writes** `SubEtha.LocaleRing`.
 
 | Property | Type |
 |---|---|
 | `Capacity` | `ulong` |
+| `Managed` | `bool` |
 | `MaxConsumers` | `ulong` |
 | `MaxProducers` | `ulong` |
 | `Path` | `string` |
@@ -761,9 +793,83 @@ Also `Open-SELocaleRing`.
 | `RecvMany(ulong consumer, ulong maxItems)` | `object[]` |
 | `RegisterConsumer()` | `ulong` |
 | `RegisterProducer()` | `ulong` |
+| `RequestLocale(SubEtha.Locale locale)` | `void` |
 | `Send(ulong producer, object item)` | `bool` |
 | `SendMany(ulong producer, object[] items)` | `ulong` |
 | `SetOrderingMode(SubEtha.OrderingMode mode)` | `void` |
+| `SidecarMigrations()` | `ulong` |
+
+## The sidecar
+
+### Get-SubEthaSidecar
+
+Reports the process's sidecar: how many objects it holds, the most it allows, and its scan threads.
+
+Also `Get-SESidecar`.
+
+_No parameters._
+
+**Writes** `SubEtha.SidecarStatus`.
+
+| Property | Type |
+|---|---|
+| `InstanceCount` | `ulong` |
+| `MaxInstances` | `ulong` |
+| `NodeCount` | `ulong` |
+
+### Invoke-SubEthaSidecarScan
+
+Has every scan thread of the process's sidecar scan now, and waits for it: an observation recorded before the call has been drained, and its policy asked, when it returns. With PassThru it writes the sidecar's status once the scan is done; without it, nothing.
+
+Also `Invoke-SESidecarScan`.
+
+| Parameter | Type | Required | Position | Pipeline |
+|---|---|---|---|---|
+| `PassThru` | `switch` | - | named | - |
+
+**Writes** `SubEtha.SidecarStatus`.
+
+| Property | Type |
+|---|---|
+| `InstanceCount` | `ulong` |
+| `MaxInstances` | `ulong` |
+| `NodeCount` | `ulong` |
+
+### New-SubEthaAdaptive
+
+Makes an adaptive object of the script's own, at tag 0.
+
+Also `New-SEAdaptive`.
+
+_No parameters._
+
+**Writes** `SubEtha.Adaptive`.
+
+| Method | Answers |
+|---|---|
+| `Observe(object policy)` | `SubEtha.Registration` |
+| `Record(uint opKind, ulong? latencyTicks, bool? contended, bool? empty)` | `bool` |
+| `SetTag(uint tag)` | `void` |
+| `Tag()` | `uint` |
+
+### Set-SubEthaSidecar
+
+Sets the most objects the process's sidecar holds at once. What one scan can cost grows with the number registered, so raise it for a count you have measured and have room to scan. With PassThru it writes the sidecar's status once the cap is set; without it, nothing.
+
+Also `Set-SESidecar`.
+
+| Parameter | Type | Required | Position | Pipeline |
+|---|---|---|---|---|
+| `MaxInstances` | `ulong` | yes | named | - |
+| `PassThru` | `switch` | - | named | - |
+
+**Writes** `SubEtha.SidecarStatus`.
+
+| Property | Type |
+|---|---|
+| `InstanceCount` | `ulong` |
+| `MaxInstances` | `ulong` |
+| `NodeCount` | `ulong` |
 
 ## Order
 
@@ -826,6 +932,7 @@ Also `New-SEArena`.
 | `Intern(string value)` | `ulong?` |
 | `InternBytes(object value)` | `ulong?` |
 | `InternMany(string[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `RemainingBytes()` | `ulong` |
 | `UsedBytes()` | `ulong` |
 
@@ -856,6 +963,7 @@ Also `New-SEAtomic`.
 | `FetchSub(ulong? value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `FetchXor(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `Load(SubEtha.MemoryOrder? order)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Store(ulong value, SubEtha.MemoryOrder? order)` | `void` |
 | `Swap(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 
@@ -881,6 +989,7 @@ Also `New-SEBitVec`.
 |---|---|
 | `Clear(ulong index)` | `bool` |
 | `Get(ulong index)` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Set(ulong index)` | `bool` |
 | `SetRange(ulong lo, ulong hi)` | `void` |
 | `Toggle(ulong index)` | `bool` |
@@ -1041,6 +1150,7 @@ Also `New-SEGraph`.
 | `Neighbors(uint source)` | `SubEtha.Neighbor[]` |
 | `NodeCount()` | `ulong` |
 | `NodeValue(uint node)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OutDegree(uint source)` | `uint?` |
 | `RemoveEdge(uint source, uint edge)` | `ulong?` |
 
@@ -1074,6 +1184,7 @@ Also `New-SEHandleTable`.
 | `GetMany(ulong[] handles)` | `object[]` |
 | `Insert(object value)` | `ulong` |
 | `InsertMany(object[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(ulong handle)` | `object` |
 
 ### New-SubEthaHashMap
@@ -1108,6 +1219,7 @@ Also `New-SEHashMap`.
 | `GetMany(object[] keys)` | `object[]` |
 | `Insert(object key, object value)` | `SubEtha.InsertOutcome` |
 | `InsertMany(object[] keys, object[] values)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(object key)` | `object` |
 | `Tombstones()` | `ulong` |
 
@@ -1321,6 +1433,7 @@ Also `New-SETopologyMap`.
 | `BusiestSender()` | `SubEtha.FanCount` |
 | `FanIn(uint receiver)` | `uint` |
 | `FanOut(uint sender)` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `PublishedRecommendation()` | `SubEtha.Topology` |
 | `PublishRecommendation()` | `SubEtha.Topology` |
 | `Recommend()` | `SubEtha.Topology` |
@@ -1391,6 +1504,7 @@ Also `New-SEUniversal`.
 | `InsertMany(ulong[] values)` | `ulong` |
 | `MigrateTo(SubEtha.SetStrategy strategy)` | `void` |
 | `Migrations()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OpCounts()` | `SubEtha.OpCounts` |
 | `Snapshot()` | `ulong[]` |
 | `Strategy()` | `SubEtha.SetStrategy` |
@@ -1459,6 +1573,7 @@ Also `Open-SEArena`.
 | `Intern(string value)` | `ulong?` |
 | `InternBytes(object value)` | `ulong?` |
 | `InternMany(string[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `RemainingBytes()` | `ulong` |
 | `UsedBytes()` | `ulong` |
 
@@ -1488,6 +1603,7 @@ Also `Open-SEAtomic`.
 | `FetchSub(ulong? value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `FetchXor(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 | `Load(SubEtha.MemoryOrder? order)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Store(ulong value, SubEtha.MemoryOrder? order)` | `void` |
 | `Swap(ulong value, SubEtha.MemoryOrder? order)` | `ulong` |
 
@@ -1513,6 +1629,7 @@ Also `Open-SEBitVec`.
 |---|---|
 | `Clear(ulong index)` | `bool` |
 | `Get(ulong index)` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Set(ulong index)` | `bool` |
 | `SetRange(ulong lo, ulong hi)` | `void` |
 | `Toggle(ulong index)` | `bool` |
@@ -1672,6 +1789,7 @@ Also `Open-SEGraph`.
 | `Neighbors(uint source)` | `SubEtha.Neighbor[]` |
 | `NodeCount()` | `ulong` |
 | `NodeValue(uint node)` | `ulong?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OutDegree(uint source)` | `uint?` |
 | `RemoveEdge(uint source, uint edge)` | `ulong?` |
 
@@ -1704,6 +1822,7 @@ Also `Open-SEHandleTable`.
 | `GetMany(ulong[] handles)` | `object[]` |
 | `Insert(object value)` | `ulong` |
 | `InsertMany(object[] values)` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(ulong handle)` | `object` |
 
 ### Open-SubEthaHashMap
@@ -1738,6 +1857,7 @@ Also `Open-SEHashMap`.
 | `GetMany(object[] keys)` | `object[]` |
 | `Insert(object key, object value)` | `SubEtha.InsertOutcome` |
 | `InsertMany(object[] keys, object[] values)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(object key)` | `object` |
 | `Tombstones()` | `ulong` |
 
@@ -1949,6 +2069,7 @@ Also `Open-SETopologyMap`.
 | `BusiestSender()` | `SubEtha.FanCount` |
 | `FanIn(uint receiver)` | `uint` |
 | `FanOut(uint sender)` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `PublishedRecommendation()` | `SubEtha.Topology` |
 | `PublishRecommendation()` | `SubEtha.Topology` |
 | `Recommend()` | `SubEtha.Topology` |
@@ -2018,6 +2139,7 @@ Also `Open-SEUniversal`.
 | `InsertMany(ulong[] values)` | `ulong` |
 | `MigrateTo(SubEtha.SetStrategy strategy)` | `void` |
 | `Migrations()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `OpCounts()` | `SubEtha.OpCounts` |
 | `Snapshot()` | `ulong[]` |
 | `Strategy()` | `SubEtha.SetStrategy` |
@@ -2150,6 +2272,7 @@ Also `New-SETimePointTile`.
 | `FlushAsync()` | `void` |
 | `Insert(ulong version, object value)` | `uint` |
 | `IsFull()` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(uint lane)` | `void` |
 | `Visible(ulong version)` | `SubEtha.TileEntry[]` |
 | `VisibleCount(ulong version)` | `uint` |
@@ -2182,6 +2305,7 @@ Also `New-SEVersionChain`.
 | `Current()` | `SubEtha.Versioned` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Push(ulong version, object value)` | `void` |
 | `ReadAt(ulong version)` | `object` |
 
@@ -2344,6 +2468,7 @@ Also `Open-SETimePointTile`.
 | `FlushAsync()` | `void` |
 | `Insert(ulong version, object value)` | `uint` |
 | `IsFull()` | `bool` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Remove(uint lane)` | `void` |
 | `Visible(ulong version)` | `SubEtha.TileEntry[]` |
 | `VisibleCount(ulong version)` | `uint` |
@@ -2375,6 +2500,7 @@ Also `Open-SEVersionChain`.
 | `Current()` | `SubEtha.Versioned` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Push(ulong version, object value)` | `void` |
 | `ReadAt(ulong version)` | `object` |
 
@@ -2497,6 +2623,7 @@ Also `New-SEEpochBarrier`.
 | `Arrived()` | `uint` |
 | `CurrentEpoch()` | `uint` |
 | `LivePeers()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Wait(uint epoch, double? timeout, uint? quorum)` | `bool` |
 
 ### New-SubEthaFenceClock
@@ -2522,6 +2649,7 @@ Also `New-SEFenceClock`.
 | `GetLocal(ulong slot)` | `SubEtha.ClockReading` |
 | `GlobalFence()` | `SubEtha.ClockReading` |
 | `Merge(ulong slot, ulong physicalUs, ulong logical)` | `SubEtha.ClockReading` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `SharedClockUs()` | `ulong` |
 | `Tick(ulong slot)` | `SubEtha.ClockReading` |
@@ -2550,6 +2678,7 @@ Also `New-SEHeartbeat`.
 | `Barrier(string path, ulong? graceEpochs, bool? open)` | `SubEtha.EpochBarrier` |
 | `Beat(ulong slot)` | `void` |
 | `GlobalEpoch()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `Snapshot(ulong slot)` | `SubEtha.HeartbeatSlot` |
 | `TickGlobalEpoch()` | `ulong` |
@@ -2604,6 +2733,7 @@ Also `New-SELeaderElection`.
 | `GlobalEpoch()` | `ulong` |
 | `IsLeader(uint? pid)` | `bool` |
 | `Leader()` | `uint?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `StepDown(uint? pid)` | `bool` |
 | `Term()` | `uint` |
 | `TickEpoch()` | `ulong` |
@@ -2657,6 +2787,7 @@ Also `New-SEOwnerLease`.
 | `FlushAsync()` | `void` |
 | `HeldBy(uint? pid)` | `bool` |
 | `Hold(ulong? graceEpochs, uint? pid)` | `SubEtha.LeaseHold` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Owner()` | `uint?` |
 | `Read(uint? pid)` | `object` |
 | `Release(uint? pid)` | `bool` |
@@ -2683,6 +2814,7 @@ Also `New-SERWLock`.
 
 | Method | Answers |
 |---|---|
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Read()` | `SubEtha.Hold` |
 | `Readers()` | `uint` |
 | `ReadFor(double timeout)` | `SubEtha.Hold` |
@@ -2715,6 +2847,7 @@ Also `New-SESemaphore`.
 | `Acquire()` | `SubEtha.PermitHold` |
 | `AcquireFor(double timeout)` | `SubEtha.PermitHold` |
 | `Available()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `TryAcquire()` | `SubEtha.PermitHold` |
 | `Waiters()` | `uint` |
 
@@ -2765,6 +2898,7 @@ Also `Open-SEEpochBarrier`.
 | `Arrived()` | `uint` |
 | `CurrentEpoch()` | `uint` |
 | `LivePeers()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Wait(uint epoch, double? timeout, uint? quorum)` | `bool` |
 
 ### Open-SubEthaFenceClock
@@ -2790,6 +2924,7 @@ Also `Open-SEFenceClock`.
 | `GetLocal(ulong slot)` | `SubEtha.ClockReading` |
 | `GlobalFence()` | `SubEtha.ClockReading` |
 | `Merge(ulong slot, ulong physicalUs, ulong logical)` | `SubEtha.ClockReading` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `SharedClockUs()` | `ulong` |
 | `Tick(ulong slot)` | `SubEtha.ClockReading` |
@@ -2818,6 +2953,7 @@ Also `Open-SEHeartbeat`.
 | `Barrier(string path, ulong? graceEpochs, bool? open)` | `SubEtha.EpochBarrier` |
 | `Beat(ulong slot)` | `void` |
 | `GlobalEpoch()` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Register(uint? pid)` | `ulong` |
 | `Snapshot(ulong slot)` | `SubEtha.HeartbeatSlot` |
 | `TickGlobalEpoch()` | `ulong` |
@@ -2872,6 +3008,7 @@ Also `Open-SELeaderElection`.
 | `GlobalEpoch()` | `ulong` |
 | `IsLeader(uint? pid)` | `bool` |
 | `Leader()` | `uint?` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `StepDown(uint? pid)` | `bool` |
 | `Term()` | `uint` |
 | `TickEpoch()` | `ulong` |
@@ -2901,6 +3038,7 @@ Also `Open-SEOwnerLease`.
 | `FlushAsync()` | `void` |
 | `HeldBy(uint? pid)` | `bool` |
 | `Hold(ulong? graceEpochs, uint? pid)` | `SubEtha.LeaseHold` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Owner()` | `uint?` |
 | `Read(uint? pid)` | `object` |
 | `Release(uint? pid)` | `bool` |
@@ -2927,6 +3065,7 @@ Also `Open-SERWLock`.
 
 | Method | Answers |
 |---|---|
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Read()` | `SubEtha.Hold` |
 | `Readers()` | `uint` |
 | `ReadFor(double timeout)` | `SubEtha.Hold` |
@@ -2958,6 +3097,7 @@ Also `Open-SESemaphore`.
 | `Acquire()` | `SubEtha.PermitHold` |
 | `AcquireFor(double timeout)` | `SubEtha.PermitHold` |
 | `Available()` | `uint` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `TryAcquire()` | `SubEtha.PermitHold` |
 | `Waiters()` | `uint` |
 
@@ -3043,6 +3183,7 @@ Also `New-SEBlockedBloomFilter`.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ### New-SubEthaBloomFilter
 
@@ -3072,6 +3213,7 @@ Also `New-SEBloomFilter`.
 | `FalsePositiveRate()` | `double` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ### New-SubEthaCountMinSketch
 
@@ -3100,6 +3242,7 @@ Also `New-SECountMinSketch`.
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
 | `InsertN(object item, ulong count)` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TotalInserts()` | `ulong` |
 
@@ -3150,6 +3293,7 @@ Also `New-SEHistogram`.
 |---|---|
 | `Count(ulong bucket)` | `ulong` |
 | `Counts()` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Percentile(double p)` | `ulong` |
 | `Record(ulong value)` | `ulong` |
 | `RecordMany(ulong[] values)` | `ulong` |
@@ -3180,6 +3324,7 @@ Also `New-SEHyperLogLog`.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 
 ### New-SubEthaLruCache
@@ -3240,6 +3385,7 @@ Also `New-SERateLimiter`.
 |---|---|
 | `Available()` | `uint` |
 | `Flush()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TryAcquire(uint? n)` | `bool` |
 
@@ -3267,6 +3413,7 @@ Also `New-SEReservoir`.
 | `Count()` | `ulong` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Record(object value)` | `ulong?` |
 | `RecordMany(object[] values)` | `ulong` |
 | `Reset()` | `void` |
@@ -3328,6 +3475,7 @@ Also `Open-SEBlockedBloomFilter`.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ### Open-SubEthaBloomFilter
 
@@ -3357,6 +3505,7 @@ Also `Open-SEBloomFilter`.
 | `FalsePositiveRate()` | `double` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 
 ### Open-SubEthaCountMinSketch
 
@@ -3385,6 +3534,7 @@ Also `Open-SECountMinSketch`.
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
 | `InsertN(object item, ulong count)` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TotalInserts()` | `ulong` |
 
@@ -3411,6 +3561,7 @@ Also `Open-SEHistogram`.
 |---|---|
 | `Count(ulong bucket)` | `ulong` |
 | `Counts()` | `ulong[]` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Percentile(double p)` | `ulong` |
 | `Record(ulong value)` | `ulong` |
 | `RecordMany(ulong[] values)` | `ulong` |
@@ -3441,6 +3592,7 @@ Also `Open-SEHyperLogLog`.
 | `Flush()` | `void` |
 | `Insert(object item)` | `void` |
 | `InsertMany(object[] items)` | `ulong` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 
 ### Open-SubEthaLruCache
@@ -3501,6 +3653,7 @@ Also `Open-SERateLimiter`.
 |---|---|
 | `Available()` | `uint` |
 | `Flush()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Reset()` | `void` |
 | `TryAcquire(uint? n)` | `bool` |
 
@@ -3528,6 +3681,7 @@ Also `Open-SEReservoir`.
 | `Count()` | `ulong` |
 | `Flush()` | `void` |
 | `FlushAsync()` | `void` |
+| `Observe(object policy)` | `SubEtha.Registration` |
 | `Record(object value)` | `ulong?` |
 | `RecordMany(object[] values)` | `ulong` |
 | `Reset()` | `void` |

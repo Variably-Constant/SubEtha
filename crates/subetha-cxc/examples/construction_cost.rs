@@ -9,8 +9,8 @@
 //!
 //! Each is timed for N_ITERS rounds; the file is removed between
 //! iterations so the OS sees a fresh path each time. Reports per-build
-//! averages and the break-even N (vs the 58.2 ns/item steady-state
-//! SPSC rate captured in SHARED_RING.md).
+//! averages and the break-even N against a steady-state SPSC cost of
+//! 58.2 ns per item (`STEADY_STATE_NS_PER_SEND`).
 //!
 //! Run with:
 //!     cargo run --release --example construction_cost
@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_row("Channel::create (manual shape)", channel_manual_ns);
     print_row("AutoIpc::new(..).build_channel", autoipc_ns);
     println!();
-    println!("Steady-state SPSC: {STEADY_STATE_NS_PER_SEND:.1} ns/send (SHARED_RING.md)");
+    println!("Steady-state SPSC: {STEADY_STATE_NS_PER_SEND:.1} ns/send (baseline constant)");
     println!();
     let anon_vs_file_speedup = raw_ring_ns / anon_ring_ns;
     println!("Anon vs file-backed speedup: {anon_vs_file_speedup:.1}x");

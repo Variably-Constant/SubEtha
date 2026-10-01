@@ -75,7 +75,7 @@
 
 ```toml
 [dependencies]
-subetha-cxc = "0.5"
+subetha-cxc = "0.6"
 ```
 
 ```rust
@@ -123,7 +123,7 @@ Local IPC normally means picking the least-bad option from a menu that all goes 
   <img alt="Cross-process IPC one-way latency comparison" src="docs/platform_ipc_dotplot.png">
 </picture>
 
-Measured **126-499x faster than the fastest canonical kernel IPC mechanism on every platform tested** (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback), and 5.0-11.4x faster than iceoryx2's zero-copy shared memory where it builds. Six platforms, 10,000 round-trips, 8-byte payloads, same backing everywhere. All four pinned channel shapes land between 36.8 and 114.9 ns one-way.
+Measured **126-499x faster than the fastest canonical kernel IPC mechanism on every platform tested** (named pipes, stdio pipes, ipc-channel, TCP/UDP loopback), and 4.9-11.5x faster than iceoryx2's zero-copy shared memory where it builds. Six platforms, 10,000 round-trips, 8-byte payloads, same backing everywhere. All four pinned channel shapes land between 36.8 and 114.9 ns one-way.
 
 The rings are not only a cross-process tool. The same lock-free shapes run thread-to-thread with no mapped file, against `crossbeam_channel`, `flume`, `rtrb` and `std::sync::mpsc`. At 4 producers / 4 consumers a SubEtha shape wins on every multi-core host; the specialists still win where they are built to, and `rtrb` takes raw 1P/1C everywhere. None of that field crosses a process boundary at all.
 
@@ -267,19 +267,19 @@ considerably funnier.
 
 - **Vyukov bounded MPMC queue** (Dmitry Vyukov, 1024cores.net, ~2010) for `SharedRing` and `SharedBroadcastRing`.
 - **Treiber stack** (R. Kent Treiber, IBM RJ 5118, 1986) for `SharedTreiberStack` and the free-lists inside `SharedHandleTable` and `SharedRegion`.
-- **Pugh skip list** (William Pugh, CACM 33(6), 1990) for `SharedSkipList`.
 - **Chase-Lev work-stealing deque** (Chase and Lev, SPAA 2005) for `SharedDeque<T>`, lifted into a memory-mapped file so the same protocol serves cross-thread and cross-process work-stealing.
 - **Blumofe-Leiserson work-stealing scheduler** (Blumofe and Leiserson, JACM 46(5), 1999) for the time- and space-bound results that make `SharedDeque` useful as a scheduler primitive.
 - **RCU / epoch double-check** (McKenney + Slingwine, PDCS 1998) for the `HandshakeHeader` migration protocol.
 - **Seqlock** (formal model: Boehm, MSPC 2012) for `HeartbeatTable`, `EventStateLog`, `OwnerLease`, and `SharedBroadcastRing`'s per-slot writes.
 - **Path expressions** (Campbell + Habermann, 1974) for `RingContract`: a ring's legal operation envelope declared as one artifact the rings enforce at attach time and the policy consults as a feasible-region filter.
-- **Bloom filter** (Burton H. Bloom, CACM 13(7), 1970) and the double-hashing trick (Kirsch + Mitzenmacher, RSA 2008) for `Bloom64` and `BloomPointer`.
+- **Bloom filter** (Burton H. Bloom, CACM 13(7), 1970) for `Bloom64`, `BloomFine`, `BloomPointer` and `SharedBloomFilter`, and the double-hashing trick (Kirsch + Mitzenmacher, RSA 2008) for `SharedBloomFilter` and `SharedCountMinSketch`.
 - **Count-Min Sketch** (Cormode + Muthukrishnan, J. Algorithms 55(1), 2005) for `SharedCountMinSketch`.
 - **HyperLogLog** (Flajolet, Fusy, Gandouet, Meunier, AofA 2007) for `SharedHyperLogLog`.
 - **Vitter's Algorithm R** (Jeffrey Scott Vitter, ACM TOMS 11(1), 1985) for `SharedReservoirSampler`.
 - **Umbra string** (Neumann + Freitag, CIDR 2020) for `UmbraPointer<T>`'s content-prefix layout.
 - **CHERI capabilities** (Watson et al., IEEE S&P 2015) for the `ReadableCapability` / `WritableCapability` bounds model.
 - **FNV-1a** (Fowler, Noll, Vo, 1991, public-domain spec) for the probe hashes in `SharedHashMap`.
+- **MurmurHash3's 64-bit finalizer** (Austin Appleby, SMHasher, 2011, public domain) for `fmix64`, which mixes the hashes of `SharedBloomFilter`, `SharedBlockedBloomFilter`, `SharedCountMinSketch`, `SharedHyperLogLog`, `Bloom64` and `BloomFine`.
 - **POSIX `mmap` with `MAP_SHARED`** (IEEE Std 1003.1-2024) and Windows `CreateFileMapping`, wrapped portably by [`memmap2`](https://crates.io/crates/memmap2), for every `Shared*` type's storage layer.
 - **Closure-id-not-closure-code registry pattern** (Ray, OSDI 2018, pp. 561-577) for `pass_registry`.
 
@@ -291,7 +291,7 @@ considerably funnier.
 
 > *Field researchers for the Guide are notoriously prolific, occasionally insightful, and reliably unreliable in roughly equal measure, which is why the published edition differs from the field drafts by one important step: someone in the editorial office reads it first. The Guide's editors hold that compilation and conviction are different jobs, and that any traveler relying on an entry nobody has checked deserves whatever the universe sends next. SubEtha's documentation observes the same separation of duties.*
 
-The author used Claude (Anthropic) via the Claude Code CLI for code development assistance, documentation drafting, and benchmark scripting during the preparation of this repository. All technical decisions, channel architecture, mmap-backed transport design, and final content were determined by the author. The Rust implementation, unit tests, and benchmark results were independently verified by the author through zero-warning `cargo build` / `cargo clippy` / `cargo doc` passes, the full unit-test suite, and end-to-end executions of the demo binaries and the cross-process IPC benchmark on native Windows, WSL2, Ubuntu Linux, and FreeBSD.
+The author used Claude (Anthropic) via the Claude Code CLI for code development assistance, documentation drafting, and benchmark scripting during the preparation of this repository. All technical decisions, channel architecture, mmap-backed transport design, and final content were determined by the author. The Rust implementation, unit tests, and benchmark results were independently verified by the author through the [release gate](https://variably-constant.github.io/SubEtha/docs/how-to/run-the-release-gate/), `cargo run -p xtask -- gate`, which lints with warnings denied and tests every crate at its defaults and with every feature it declares, and runs the Python package's suite as it ships and with every feature, on native Windows, Ubuntu Linux, and FreeBSD; zero-warning `cargo doc` passes; and end-to-end executions of the demo binaries and the cross-process IPC benchmark on native Windows, WSL2, Ubuntu Linux, and FreeBSD.
 
 ---
 

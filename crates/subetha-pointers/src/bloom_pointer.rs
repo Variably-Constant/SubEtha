@@ -7,29 +7,41 @@
 //! graph node's outgoing edges, the IDs that occupy a B-tree
 //! subtree.
 //!
-//! The architectural win: `bloom_contains(query_key)` rejects
-//! membership queries in one register-compare without touching the
-//! pointed-to data. With a 64-bit filter + 4 hash functions and ~16
-//! items, false-positive rate is ~3%; for ~97% of negative queries
-//! the scan skips the pointer chase entirely.
+//! The architectural win: `might_contain(query_key)` rejects
+//! membership queries with one hash and four bit tests, without
+//! touching the pointed-to data. With a 64-bit filter + 4 hash
+//! functions and ~8 items, the estimated false-positive rate is
+//! ~2.4%; for ~97% of negative queries the scan skips the pointer
+//! chase entirely.
 //!
 //! # K_cascade composition - `BloomCascade<T>`
 //!
-//! Wraps `BloomPointer<BloomPointer<T>>` semantics in a dedicated
-//! struct: coarse 8-byte filter for level-0 rejection, finer 32-byte
-//! filter for level-1 rejection, target pointer for the deref.
-//! Mirrors the LSM-tree multi-level Bloom design.
+//! A coarse 8-byte filter for level-0 rejection and a finer 32-byte
+//! filter over the same keys for level-1 rejection, in front of the
+//! target pointer for the deref.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Fast non-cryptographic hash used to derive Bloom filter bit
-/// indices. FxHash-style rotate-xor-multiply chain; ~2-3 ns per
-/// u64 key on modern x86. Replaces SipHash (`DefaultHasher`) which
-/// at ~15-20 ns per call dominated `might_contain` cost on small-
-/// payload workloads.
+/// indices: an FxHash-style rotate-xor-multiply chain, finished with
+/// [`fmix64`] in [`Bloom64::fast_hash`].
 #[derive(Default)]
 struct FxBloomHasher(u64);
+
+/// MurmurHash3's 64-bit finalizer. A multiply leaves a product's low
+/// bits depending only on the key's low bits, and the filters slice
+/// their indices from fixed bit positions, so every output bit is
+/// mixed from every input bit first.
+#[inline]
+fn fmix64(mut k: u64) -> u64 {
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    k ^= k >> 33;
+    k
+}
 
 const FX_SEED: u64 = 0xCBF2_9CE4_8422_2325;
 const FX_MULT: u64 = 0x517C_C1B7_2722_0A95;
@@ -43,14 +55,12 @@ impl FxBloomHasher {
 impl Hasher for FxBloomHasher {
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            let n = u64::from_le_bytes([
-                c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
-            ]);
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            let n = u64::from_le_bytes(*word);
             self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(FX_MULT);
         }
-        for &b in chunks.remainder() {
+        for &b in rest {
             self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(FX_MULT);
         }
     }
@@ -94,7 +104,7 @@ impl Bloom64 {
     pub(crate) fn fast_hash<K: Hash + ?Sized>(key: &K, seed: u64) -> u64 {
         let mut h = FxBloomHasher::with_seed(seed);
         key.hash(&mut h);
-        h.finish()
+        fmix64(h.finish())
     }
 
     /// 4 indices into the 64-bit filter, derived as 6-bit slices of a
@@ -207,13 +217,9 @@ impl<T> BloomPointer<T> {
 // =========================================================
 
 /// Two-level cascading filter: 8-byte coarse + 32-byte fine. Layer
-/// 0 (coarse) rejects in one register-compare. Layer 1 (fine) holds
-/// 4x as many bits + 8 hash functions; rejects most of the
+/// 0 (coarse) rejects with 4 bit tests on one word. Layer 1 (fine)
+/// holds 4x as many bits + 8 hash functions; rejects most of the
 /// remainder before the target is touched.
-///
-/// Architectural shape: same as LSM-tree multi-level Blooms or the
-/// nested-cache pattern in Bitcoin SPV / LevelDB / RocksDB - exposed
-/// as a typed primitive.
 #[derive(Debug, Clone)]
 pub struct BloomCascade<T> {
     coarse: Bloom64,
@@ -229,15 +235,14 @@ pub struct BloomFine {
 
 impl BloomFine {
     pub const ZERO: Self = Self { bits: [0; 4] };
-    /// ~64 keys before 5% FPR.
-    pub const SUGGESTED_CAPACITY: usize = 64;
+    /// 32 keys: by the standard estimate (256 bits, 8 hashes) the
+    /// false-positive rate is ~2.5%, and ~37 keys keep it under 5%.
+    pub const SUGGESTED_CAPACITY: usize = 32;
 
     /// 8 indices into the 256-bit filter, derived from two fast-hash
     /// calls with different seeds. Each hash output is sliced into 4
     /// 8-bit positions; the two hashes together yield the 8 indices.
-    /// Two seeds (vs four in the original) cuts hash cost in half
-    /// while keeping the slices distinct enough for the 256-bit
-    /// filter's bit-occupancy budget.
+    /// The first call uses `Bloom64`'s seed.
     #[inline]
     fn indices<K: Hash + ?Sized>(key: &K) -> [u8; 8] {
         let h1 = Bloom64::fast_hash(key, 0x9E37_79B9_7F4A_7C15);
@@ -303,10 +308,9 @@ impl<T> BloomCascade<T> {
     pub fn coarse(&self) -> Bloom64 { self.coarse }
     pub fn fine(&self) -> &BloomFine { &self.fine }
 
-    /// Cascade rejection: coarse first (register-only), fine
-    /// second (32 bytes, 4 cache lines worst case). Returns the
-    /// level where the reject fired (0 = coarse rejected, 1 = fine
-    /// rejected, 2 = both layers said maybe-yes).
+    /// Cascade rejection: coarse first (one word), fine second (32
+    /// bytes, at most two cache lines). Returns where the key was
+    /// rejected, or `MightContain` when both layers pass it.
     pub fn cascade_check<K: Hash + ?Sized>(&self, key: &K) -> CascadeOutcome {
         if !self.coarse.might_contain(key) {
             return CascadeOutcome::RejectedAtCoarse;
@@ -454,6 +458,59 @@ mod tests {
         // point at which a fine-tier filter starts being needed.
         assert!(fpr16 > 0.10 && fpr16 < 0.25,
                 "16-key FPR should be in [10%, 25%], got {fpr16}");
+    }
+
+    /// Share of 10,000 absent sequential keys that pass, for a filter
+    /// holding the keys 0..n.
+    fn measured_pass_rates(n: u64) -> (f64, f64) {
+        let mut coarse = Bloom64::ZERO;
+        let mut fine = BloomFine::ZERO;
+        for k in 0..n {
+            coarse.insert(&k);
+            fine.insert(&k);
+        }
+        let queries = 1_000_000..1_010_000u64;
+        let c = queries.clone().filter(|k| coarse.might_contain(k)).count();
+        let f = queries.filter(|k| fine.might_contain(k)).count();
+        (c as f64 / 10_000.0, f as f64 / 10_000.0)
+    }
+
+    #[test]
+    fn absent_keys_pass_at_about_the_standard_estimated_rate() {
+        let fine_estimate = |n: u64| (1.0 - (-8.0 * n as f64 / 256.0).exp()).powi(8);
+        for n in [16u64, 32] {
+            let (coarse, _) = measured_pass_rates(n);
+            let estimate = Bloom64::estimated_fpr(n as usize);
+            assert!(
+                coarse <= estimate * 1.25,
+                "Bloom64 holding {n} keys passed {coarse:.4} of absent keys; the estimate is {estimate:.4}"
+            );
+        }
+        for n in [32u64, 64] {
+            let (_, fine) = measured_pass_rates(n);
+            let estimate = fine_estimate(n);
+            assert!(
+                fine <= estimate * 1.25,
+                "BloomFine holding {n} keys passed {fine:.4} of absent keys; the estimate is {estimate:.4}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fine_filter_at_its_suggested_capacity_passes_few_absent_keys() {
+        let mut fine = BloomFine::ZERO;
+        for k in 0..BloomFine::SUGGESTED_CAPACITY as u64 {
+            fine.insert(&k);
+        }
+        let absent = 10_000usize;
+        let passed = (1_000_000..1_000_000 + absent as u64)
+            .filter(|k| fine.might_contain(k))
+            .count();
+        assert!(
+            passed * 20 <= absent,
+            "{passed} of {absent} absent keys passed a filter holding {} keys",
+            BloomFine::SUGGESTED_CAPACITY
+        );
     }
 
     #[test]

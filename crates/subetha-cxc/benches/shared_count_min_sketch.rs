@@ -4,6 +4,9 @@
 //! regardless of distinct item count) and d atomic increments per
 //! insert. HashMap pays unbounded memory growth + lock per access.
 
+// clippy::disallowed_types is allowed here: this bench measures against lock-based baselines.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::Mutex;

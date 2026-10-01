@@ -338,11 +338,11 @@ need to wait for `grace_epochs`).
   window, step-down, term advance).
 - Bench: `crates/subetha-cxc/benches/shared_leader_election.rs`
   (try_claim idempotent + beat_as_leader + tick_epoch).
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) - the
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) - the
   underlying atomic primitive the CAS protocol builds on.
-- Sibling primitive: [HEARTBEAT.md](../coordination-types/heartbeat/) - the
+- Sibling primitive: [Heartbeat Table](../coordination-types/heartbeat/) - the
   process-liveness primitive that pairs with leader election for
   general fault-detection.
-- Sibling primitive: [FAILOVER.md](../coordination-types/failover/) - the
+- Sibling primitive: [Failover Watchdog](../coordination-types/failover/) - the
   higher-level orchestration primitive that uses leader election
   for primary/secondary failover.

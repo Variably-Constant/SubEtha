@@ -32,7 +32,7 @@ an odd-version-then-memcpy-then-even-version sequence.
   cross-version use.
 - **Payload size up to `PAYLOAD_BYTES = 52`** (source line 41).
   `create` returns `PayloadTooLarge` for larger T. Bigger structs
-  use [SHARED_VEC.md](../specialized/shared-vec/) or a custom layout.
+  use [Shared Vec](../specialized/shared-vec/) or a custom layout.
 - **Alignment up to 8 bytes**: `align_of::<T>() > 8` is rejected.
 - **One writer at a time**: source line 130 has
   `debug_assert!(v_old & 1 == 0)` catching concurrent writers in
@@ -365,7 +365,7 @@ reads it.
 
 - **Treating `version()` as a monotonic clock.** It is a per-cell
   counter that advances by 2 per set. Cross-cell monotonicity
-  requires a [SHARED_FENCE_CLOCK.md](../locks/shared-fence-clock/) or
+  requires a [Shared Fence Clock](../locks/shared-fence-clock/) or
   similar.
 
 ---
@@ -377,10 +377,10 @@ reads it.
   set, disk persistence survives reopen, open rejects wrong size,
   struct payload round-trip, concurrent readers during writes,
   payload-too-large at create).
-- Sibling primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) - for
+- Sibling primitive: [Shared Atomic](../atomics/shared-atomic/) - for
   cross-process atomic ops on primitive widths. SharedAtomic
   for fetch_add semantics; SharedCell for struct snapshots.
-- Sibling primitive: [SHARED_ONCE_CELL.md](shared-once-cell/) -
+- Sibling primitive: [Shared Once Cell](shared-once-cell/) -
   for write-once initialization across processes.
-- Sibling primitive: [OFFSET_PTR.md](../pointers/offset-ptr/) - the
+- Sibling primitive: [Offset Pointer](../pointers/offset-ptr/) - the
   foundational MMF-backed pointer.

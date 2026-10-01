@@ -1,6 +1,6 @@
 # subetha-sidecar
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-sidecar/LICENSE-MIT)
 [![Wiki](https://img.shields.io/badge/wiki-variably--constant.github.io-blue)](https://variably-constant.github.io/SubEtha/docs/reference/subetha-sidecar/)
 
 > **You probably want the [`subetha`](https://crates.io/crates/subetha)
@@ -41,7 +41,7 @@ asks each instance's `Policy` whether to migrate the strategy.
 - **`InstanceStats`**. The drain-and-fold accumulator the
   sidecar maintains per registered instance. Fields:
   `ops_observed`, `total_latency_ticks`, `contention_ops`,
-  `op_kind_counts: [u64; 8]`, `last_seen_us_ago`,
+  `op_kind_counts: [u64; 8]`, `last_drain_us`,
   `migrations_triggered`, plus a per-op-kind distinct-thread
   cache for multi-producer detection.
 
@@ -100,12 +100,9 @@ downstream projects need only a recent stable toolchain.
 
 ## Where it sits
 
-```text
-your code
-    -> subetha / subetha-pointers  (the two primitive families)
-       -> subetha-sidecar            (this crate; control plane)
-          -> subetha-core            (substrate)
-```
+`subetha-sidecar` builds on `subetha-core`. `subetha-cxc`'s primitives
+register with it, and the `subetha` umbrella re-exports it as
+`subetha::sidecar`.
 
 ## Documentation
 
@@ -114,4 +111,4 @@ Full reference at the published wiki:
 
 ## License
 
-MIT. See [LICENSE-MIT](LICENSE-MIT).
+MIT. See [LICENSE-MIT](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-sidecar/LICENSE-MIT).

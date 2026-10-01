@@ -165,8 +165,8 @@ Acquire-only-when-N-released for batch fan-out / fan-in.
 - Bench: `crates/subetha-cxc/benches/shared_semaphore.rs`
   (try_acquire, acquire+release, available vs
   `Arc<(Mutex<u32>, Condvar)>`).
-- Sibling primitive: [SHARED_RW_LOCK.md](shared-rw-lock/) -
+- Sibling primitive: [Shared RW Lock](shared-rw-lock/) -
   reader-writer specialization (1-writer or N-readers).
 - Sibling primitive:
-  [SHARED_RATE_LIMITER.md](shared-rate-limiter/) -
+  [Shared Rate Limiter](shared-rate-limiter/) -
   token-bucket variant with refill.

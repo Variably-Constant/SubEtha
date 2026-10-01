@@ -12,6 +12,7 @@ Keyed lookup and ordered storage primitives.
 | Primitive | Lookup shape |
 |---|---|
 | [Shared Hash Map](shared-hash-map/) | O(1) average; open-addressed; FNV-1a hashing for cross-process determinism |
+| [Shared Named Values](shared-named-values/) | Byte values of any size under case-insensitive names, over a raw hash map, a raw arena and an epoch table |
 | [Shared B-Tree Map](shared-btree-map/) | Ordered; supports range queries |
 | [Versioned BTree Map](versioned-btree-map/) | Ordered with epoch-stamped entries; a scan reads a fixed view while writers run |
 | [Laned Versioned Map](laned-versioned-map/) | One versioned index across n single-writer lanes, so n statements write it at once |

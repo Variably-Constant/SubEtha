@@ -393,6 +393,26 @@ impl SharedBroadcastRing {
         Err(BroadcastError::NoConsumerSlot)
     }
 
+    /// Claim the consumer slot at `idx` in particular, for a caller that
+    /// hands out indices itself, with its cursor at the current producer
+    /// position. Answers whether this call claimed it: a slot already held
+    /// keeps its holder and its cursor, and an index past the table claims
+    /// nothing.
+    pub(crate) fn claim_consumer_slot(&self, idx: usize) -> bool {
+        if idx >= MAX_CONSUMERS {
+            return false;
+        }
+        let hdr = self.header();
+        if hdr.consumer_active[idx].compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return false;
+        }
+        let cur_producer = hdr.producer_seq.load(Ordering::Acquire);
+        hdr.consumer_seqs[idx].store(cur_producer, Ordering::Release);
+        self.ring_sidecar
+            .push_op(crate::sidecar_ops::broadcast_ring::OP_REGISTER, 0);
+        true
+    }
+
     /// Unregister a consumer. After this, the producer no longer
     /// waits for this cursor when reclaiming slots.
     pub fn unregister_consumer(&self, consumer_idx: usize) {
@@ -574,7 +594,7 @@ impl SharedBroadcastRing {
     ///
     /// # What it does not promise
     ///
-    /// That consumers do not leave afterwards. It answers about the
+    /// That consumers do not leave afterward. It answers about the
     /// moment it returns, and a consumer registered then can unregister
     /// or its process can die immediately after. It is a starting gun,
     /// not a guarantee of attendance.

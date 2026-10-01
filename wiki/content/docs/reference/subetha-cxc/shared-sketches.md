@@ -31,7 +31,7 @@ Op kinds: `OP_SET = 1`, `OP_CLEAR = 2`, `OP_GET = 3`,
 `OP_TOGGLE = 4`, `OP_RANGE = 5`, `OP_COUNT_ONES = 6`.
 
 Canonical doc:
-[SHARED_BIT_VEC.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BIT_VEC.md).
+[Shared Bit Vec](sketches/shared-bit-vec/).
 
 ## `SharedBloomFilter`
 
@@ -48,7 +48,7 @@ Op kinds use the `sketch` module: `OP_INSERT = 1`, `OP_QUERY = 2`,
 `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_BLOOM_FILTER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_BLOOM_FILTER.md).
+[Shared Bloom Filter](sketches/shared-bloom-filter/).
 
 ## `SharedCountMinSketch`
 
@@ -62,7 +62,7 @@ Op kinds use the `sketch` module: `OP_INSERT = 1`,
 `OP_QUERY = 2`, `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_COUNT_MIN_SKETCH.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_COUNT_MIN_SKETCH.md).
+[Shared Count-Min Sketch](sketches/shared-count-min-sketch/).
 
 ## `SharedHyperLogLog`
 
@@ -78,26 +78,12 @@ and a smaller standard error at the cost of larger footprint.
 Op kinds use the `sketch` module.
 
 Canonical doc:
-[SHARED_HYPER_LOG_LOG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HYPER_LOG_LOG.md).
+[Shared HyperLogLog](sketches/shared-hyper-log-log/).
 
 ## `SharedHistogram`
 
 Exponentially-bucketed histogram for latency or value
-distributions. Buckets are `[2^k, 2^(k+1))` for `k = 0..N`. Each
-bucket is an `AtomicU64` counter; record is one `fetch_add`,
-percentile is a linear scan over buckets.
-
-```rust,no_run
-pub fn record(&self, value: u64) -> usize;   // returns the bucket index hit
-pub fn count(&self, bucket_idx: usize) -> Result<u64, HistogramError>;
-pub fn percentile(&self, p: f64) -> u64;
-```
-
-Op kinds use the `histogram` module: `OP_RECORD = 1`,
-`OP_COUNT = 2`, `OP_PERCENTILE = 3`.
-
-Canonical doc:
-[SHARED_HISTOGRAM.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HISTOGRAM.md).
+distributions. Buckets are `[Shared Histogram](sketches/shared-histogram/).
 
 ## `SharedReservoirSampler`
 
@@ -111,7 +97,7 @@ analysis. Op kinds use the `reservoir` module: `OP_RECORD = 1`,
 `OP_SNAPSHOT = 2`.
 
 Canonical doc:
-[SHARED_RESERVOIR_SAMPLER.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_RESERVOIR_SAMPLER.md).
+[Shared Reservoir Sampler](sketches/shared-reservoir-sampler/).
 
 ## `SharedStringArena`
 
@@ -128,7 +114,7 @@ Op kinds use the `string_arena` module: `OP_INTERN = 1`,
 `OP_GET_BYTES = 2`, `OP_CLEAR = 3`.
 
 Canonical doc:
-[SHARED_STRING_ARENA.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_STRING_ARENA.md).
+[Shared String Arena](arenas/shared-string-arena/).
 
 ## `SharedHandleTable`
 
@@ -146,7 +132,7 @@ Op kinds use the `ownership` module: `OP_ACQUIRE = 1`,
 `OP_RELEASE = 2`, `OP_GET = 3`, `OP_BEAT = 4`, `OP_CLAIM = 5`.
 
 Canonical doc:
-[SHARED_HANDLE_TABLE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_HANDLE_TABLE.md).
+[Shared Handle Table](arenas/shared-handle-table/).
 
 ## See also
 

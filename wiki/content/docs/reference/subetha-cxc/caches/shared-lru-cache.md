@@ -221,7 +221,7 @@ its components.
   cases).
 - Bench: `crates/subetha-cxc/benches/shared_lru_cache.rs` (get,
   put, get_and_touch vs `Mutex<HashMap + VecDeque>`).
-- Underlying primitive: [SHARED_HASH_MAP.md](../maps/shared-hash-map/).
-- Underlying primitive: [SHARED_LINKED_LIST.md](../maps/shared-linked-list/).
+- Underlying primitive: [Shared Hash Map](../maps/shared-hash-map/).
+- Underlying primitive: [Shared Linked List](../maps/shared-linked-list/).
 - Architectural reference: tokio MokaCache, Java Caffeine -
   the same get / get_and_touch split.

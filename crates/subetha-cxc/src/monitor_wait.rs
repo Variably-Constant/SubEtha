@@ -7,7 +7,7 @@
 //! |---|---|---|---|---|
 //! | spin | `PAUSE` loop | ns | busy | free (the store) |
 //! | **monitor (this module)** | `MONITORX`/`MWAITX` (AMD) or `UMONITOR`/`UMWAIT` (WAITPKG) | us, bounded | light sleep (C0.1) | free (the store) |
-//! | park | futex / `_umtx_op` / `WaitOnAddress` | unbounded | released to the OS | one syscall |
+//! | park | futex / `_umtx_op` / `WaitOnAddress` / a named event (Windows, cross-process) | unbounded | released to the OS | one syscall |
 //!
 //! The monitor tier's two properties the other tiers lack:
 //!
@@ -17,9 +17,10 @@
 //!   on the wake side, unlike every kernel-park mechanism.
 //! - **Monitors are physical-address based** (AMD APM / Intel SDM
 //!   `MONITOR` semantics), so a store from another process that
-//!   mapped the same MMF page wakes the waiter. On Windows - where
-//!   `WaitOnAddress` is intra-process only - this is the first
-//!   non-polling cross-process wake the substrate has.
+//!   mapped the same MMF page wakes the waiter. On Windows, where
+//!   `WaitOnAddress` is intra-process only, it is the one
+//!   cross-process wake that needs no kernel object; past the
+//!   budget a cross-process waiter parks on a named event instead.
 //!
 //! What it is not: a park. `MWAITX` / `UMWAIT` hold the core in a
 //! shallow sleep state with a hardware deadline; the OS cannot
@@ -60,13 +61,13 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ordering::read_tsc;
+use crate::wait_instr::{MwaitxHint, UserWait};
+use crate::wait_plan::{MonitorFamily, MonitorPhase};
 
-/// Default monitor-tier budget in TSC cycles before escalating to
-/// the kernel park: ~25-30 us on contemporary 3-3.5 GHz parts.
-/// Sized to dominate a kernel park+wake round trip (single-digit
-/// us) so waits that resolve quickly never pay the syscall, while
-/// a genuinely idle waiter escalates to the zero-CPU park within
-/// tens of microseconds.
+/// The fixed ladder's monitor phase in TSC cycles, and the budget of
+/// [`monitor_wait_u32`] and [`monitor_wait_u64`] where
+/// `SUBETHA_MONITOR_WAIT_CYCLES` is not set: about 25 to 30 us on a 3 to
+/// 3.5 GHz part.
 pub const DEFAULT_MONITOR_BUDGET_CYCLES: u64 = 90_000;
 
 /// Which monitor-wait instruction family this host runs.
@@ -124,7 +125,11 @@ pub fn monitor_wait_kind() -> Option<MonitorWaitKind> {
     config().kind
 }
 
-/// The active per-wait budget in TSC cycles.
+/// The fixed ladder's monitor budget in counter ticks:
+/// `SUBETHA_MONITOR_WAIT_CYCLES`, or [`DEFAULT_MONITOR_BUDGET_CYCLES`]
+/// (28 us of ticks on aarch64). A calibrated plan's monitor phase has a
+/// length of its own, which
+/// [`active_plan`](crate::wait_active::active_plan) answers.
 pub fn monitor_wait_budget_cycles() -> u64 {
     config().budget_cycles
 }
@@ -215,50 +220,7 @@ pub fn monitor_wait_u32_with(
     expected: u32,
     budget_cycles: u64,
 ) -> bool {
-    let deadline = read_tsc().wrapping_add(budget_cycles);
-    let addr = atomic.as_ptr() as *const u8;
-    loop {
-        // Arm, then check, then wait - the order the hardware
-        // protocol requires for lost-wake freedom.
-        unsafe {
-            match kind {
-                MonitorWaitKind::Waitpkg => umonitor(addr),
-                MonitorWaitKind::Mwaitx => monitorx(addr),
-                // The aarch64 family never reaches the x86_64 body.
-                MonitorWaitKind::ArmWfe => return false,
-            }
-        }
-        if atomic.load(Ordering::Acquire) != expected {
-            return true;
-        }
-        let now = read_tsc();
-        let remaining = deadline.wrapping_sub(now);
-        // wrapping_sub > i64::MAX as u64 means `now` passed the
-        // deadline (the subtraction wrapped negative). remaining of
-        // exactly 0 is also expiry: MWAITX with EBX = 0 and the
-        // timer enabled is not a defined "wait zero cycles", so it
-        // never reaches the instruction.
-        if remaining == 0 || remaining > i64::MAX as u64 {
-            return atomic.load(Ordering::Acquire) != expected;
-        }
-        unsafe {
-            match kind {
-                MonitorWaitKind::Waitpkg => umwait(deadline),
-                MonitorWaitKind::Mwaitx => {
-                    mwaitx(remaining.min(u32::MAX as u64) as u32)
-                }
-                MonitorWaitKind::ArmWfe => return false,
-            }
-        }
-        if atomic.load(Ordering::Acquire) != expected {
-            return true;
-        }
-        if read_tsc().wrapping_sub(deadline) <= i64::MAX as u64 {
-            // Deadline reached or passed.
-            return atomic.load(Ordering::Acquire) != expected;
-        }
-        // Spurious wake (interrupt tripped the monitor): re-arm.
-    }
+    run_monitor_phase_u32(&fixed_phase(kind, budget_cycles), atomic, expected)
 }
 
 /// AArch64 body: `LDAXR` arms the exclusive monitor with acquire
@@ -352,40 +314,7 @@ pub fn monitor_wait_u64_with(
     expected: u64,
     budget_cycles: u64,
 ) -> bool {
-    let deadline = read_tsc().wrapping_add(budget_cycles);
-    let addr = atomic.as_ptr() as *const u8;
-    loop {
-        unsafe {
-            match kind {
-                MonitorWaitKind::Waitpkg => umonitor(addr),
-                MonitorWaitKind::Mwaitx => monitorx(addr),
-                MonitorWaitKind::ArmWfe => return false,
-            }
-        }
-        if atomic.load(Ordering::Acquire) != expected {
-            return true;
-        }
-        let now = read_tsc();
-        let remaining = deadline.wrapping_sub(now);
-        if remaining == 0 || remaining > i64::MAX as u64 {
-            return atomic.load(Ordering::Acquire) != expected;
-        }
-        unsafe {
-            match kind {
-                MonitorWaitKind::Waitpkg => umwait(deadline),
-                MonitorWaitKind::Mwaitx => {
-                    mwaitx(remaining.min(u32::MAX as u64) as u32)
-                }
-                MonitorWaitKind::ArmWfe => return false,
-            }
-        }
-        if atomic.load(Ordering::Acquire) != expected {
-            return true;
-        }
-        if read_tsc().wrapping_sub(deadline) <= i64::MAX as u64 {
-            return atomic.load(Ordering::Acquire) != expected;
-        }
-    }
+    run_monitor_phase_u64(&fixed_phase(kind, budget_cycles), atomic, expected)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -442,81 +371,153 @@ pub fn monitor_wait_u64_with(
     false
 }
 
-// ===================================================================
-// Instruction wrappers. Mnemonics, not .byte soup - LLVM's
-// integrated assembler accepts them without target-feature gates
-// (the Linux kernel compiles the identical `asm volatile("mwaitx")`
-// under clang with no -mmwaitx). Register pinning per the verified
-// conventions above; ECX/EDX are explicitly zeroed for MONITORX
-// because nonzero extension bits raise #GP and the Windows x64 ABI
-// leaves caller garbage in RCX.
-// ===================================================================
+/// Arms that returned within their phase's guard floor with the watched
+/// value unchanged, since this process started.
+static DID_NOT_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn monitorx(addr: *const u8) {
-    unsafe {
-        core::arch::asm!(
-            "monitorx",
-            in("rax") addr,
-            in("ecx") 0u32,
-            in("edx") 0u32,
-            options(nostack, preserves_flags),
-        );
+/// How many monitor arms returned within their phase's guard floor with
+/// the watched value unchanged, the monitor not holding. Each such arm
+/// ended its phase's monitor use: the rest of that phase spun.
+pub fn monitor_arms_that_did_not_hold() -> u64 {
+    DID_NOT_HOLD.load(Ordering::Relaxed)
+}
+
+/// The phase the fixed-budget functions run: `kind` with 0.5.1's states,
+/// C1 for `MWAITX` and C0.1 for `UMWAIT`, one timer unit per TSC cycle,
+/// and no guard floor.
+#[cfg_attr(not(any(target_arch = "x86_64", windows)), allow(dead_code))]
+pub(crate) fn fixed_phase(kind: MonitorWaitKind, budget_cycles: u64) -> MonitorPhase {
+    MonitorPhase {
+        family: match kind {
+            MonitorWaitKind::Mwaitx => MonitorFamily::Mwaitx(MwaitxHint::C1),
+            MonitorWaitKind::Waitpkg => MonitorFamily::Waitpkg(UserWait::C01),
+            MonitorWaitKind::ArmWfe => MonitorFamily::ArmWfe,
+        },
+        budget_cycles,
+        units_per_cycle: 1.0,
+        guard_floor_cycles: None,
     }
 }
 
-/// `EBX` = max wait in TSC-frequency clocks; `ECX` bit 1 enables
-/// the timer; `EAX` hints 0 (C1-class shallow sleep).
+/// Runs `phase` on `atomic` until its value is no longer `expected` or
+/// the phase's budget is spent, and answers whether the value changed.
 ///
-/// RBX is reserved by LLVM for inline asm, so the timeout travels
-/// in a scratch register and swaps through RBX around the
-/// instruction.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn mwaitx(max_cycles: u32) {
-    unsafe {
-        core::arch::asm!(
-            "xchg {scratch}, rbx",
-            "mwaitx",
-            "xchg {scratch}, rbx",
-            scratch = inout(reg) max_cycles as u64 => _,
-            in("eax") 0u32,
-            in("ecx") 2u32,
-            options(nostack, preserves_flags),
-        );
+/// Each arm is re-armed until the deadline, since an interrupt ends an
+/// arm as a store does, and so does a timer that counts faster than the
+/// TSC. An arm that returns within the phase's guard floor with the value
+/// unchanged did not hold: it is counted in
+/// [`monitor_arms_that_did_not_hold`] and the rest of the budget spins. A
+/// remainder shorter than the guard floor spins without arming, since an
+/// arm that short ends within the floor on its timer alone. A family this
+/// host lacks answers `false` at once.
+#[cfg_attr(
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    allow(unused_variables)
+)]
+pub fn run_monitor_phase_u32(phase: &MonitorPhase, atomic: &AtomicU32, expected: u32) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        run_phase(phase, atomic, || atomic.load(Ordering::Acquire) == expected)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        phase.family == MonitorFamily::ArmWfe
+            && monitor_wait_u32_with(MonitorWaitKind::ArmWfe, atomic, expected, phase.budget_cycles)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        false
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn umonitor(addr: *const u8) {
-    unsafe {
-        core::arch::asm!(
-            "umonitor {addr}",
-            addr = in(reg) addr,
-            options(nostack, preserves_flags),
-        );
+/// As [`run_monitor_phase_u32`] for a 64-bit value.
+#[cfg_attr(
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    allow(unused_variables)
+)]
+pub fn run_monitor_phase_u64(
+    phase: &MonitorPhase,
+    atomic: &std::sync::atomic::AtomicU64,
+    expected: u64,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        run_phase(phase, atomic, || atomic.load(Ordering::Acquire) == expected)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        phase.family == MonitorFamily::ArmWfe
+            && monitor_wait_u64_with(MonitorWaitKind::ArmWfe, atomic, expected, phase.budget_cycles)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        false
     }
 }
 
-/// Control bit 0 = 1 selects C0.1 (shallow, fastest wake) - this is
-/// a latency tier. Implicit `EDX:EAX` carries the absolute TSC
-/// deadline. CF (OS-cap expiry) is irrelevant to us: the caller's
-/// loop re-checks value + deadline either way.
+/// The x86_64 phase loop over the line holding `line`. `unchanged`
+/// answers whether the awaited store has still not landed.
 #[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn umwait(deadline_tsc: u64) {
-    let lo = deadline_tsc as u32;
-    let hi = (deadline_tsc >> 32) as u32;
-    unsafe {
-        core::arch::asm!(
-            "umwait {ctl:e}",
-            ctl = in(reg) 1u32,
-            in("eax") lo,
-            in("edx") hi,
-            options(nostack),
-        );
+fn run_phase<L>(phase: &MonitorPhase, line: &L, unchanged: impl Fn() -> bool) -> bool {
+    use crate::wait_instr::{Monitorx, Waitpkg, Waited};
+    use core::num::NonZeroU32;
+
+    let deadline = read_tsc().wrapping_add(phase.budget_cycles);
+    // True once `now` has reached the deadline: the difference wraps
+    // below i64::MAX exactly then.
+    let reached = |now: u64| now.wrapping_sub(deadline) <= i64::MAX as u64;
+    // Spins out the rest of the budget; true when the store lands first.
+    let spin_rest = || {
+        while unchanged() {
+            if reached(read_tsc()) {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        true
+    };
+    loop {
+        if !unchanged() {
+            return true;
+        }
+        let start = read_tsc();
+        if reached(start) {
+            return !unchanged();
+        }
+        let remaining = deadline.wrapping_sub(start);
+        // An arm asked for less than the guard floor ends within it on its
+        // timer alone, which the check below would read as a monitor that
+        // did not hold, so a remainder that short spins instead.
+        if phase.guard_floor_cycles.is_some_and(|floor| remaining < floor) {
+            return spin_rest();
+        }
+        let waited = match phase.family {
+            MonitorFamily::Mwaitx(hint) => {
+                let Some(token) = Monitorx::on_this_host() else {
+                    return false;
+                };
+                let units = (remaining as f64 * phase.units_per_cycle).ceil();
+                let units = if units >= f64::from(u32::MAX) { u32::MAX } else { units.max(1.0) as u32 };
+                let units = NonZeroU32::new(units).unwrap_or(NonZeroU32::MIN);
+                token.wait(line, &unchanged, hint, units)
+            }
+            MonitorFamily::Waitpkg(state) => {
+                let Some(token) = Waitpkg::on_this_host() else {
+                    return false;
+                };
+                token.wait(line, &unchanged, state, deadline)
+            }
+            MonitorFamily::ArmWfe => return false,
+        };
+        if waited == Waited::AlreadyChanged || !unchanged() {
+            return true;
+        }
+        if let Some(floor) = phase.guard_floor_cycles
+            && read_tsc().wrapping_sub(start) < floor
+        {
+            DID_NOT_HOLD.fetch_add(1, Ordering::Relaxed);
+            return spin_rest();
+        }
     }
 }
 

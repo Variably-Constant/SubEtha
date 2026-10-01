@@ -228,10 +228,10 @@ coordination needed.
   that re-opens a reader after a version-wrap).
 - Bench: `crates/subetha-cxc/benches/shared_universal.rs`
   (contains vec vs map, migration cost, insert vec vs map).
-- Sibling primitive: [SHARED_VEC.md](shared-vec/) - the
+- Sibling primitive: [Shared Vec](shared-vec/) - the
   Vec backing.
-- Sibling primitive: [SHARED_HASH_MAP.md](../maps/shared-hash-map/) -
+- Sibling primitive: [Shared Hash Map](../maps/shared-hash-map/) -
   the Map backing.
 - Sibling primitive:
-  [SHARED_VERSIONED_CHAIN.md](shared-versioned-chain/) -
+  [Shared Versioned Chain](shared-versioned-chain/) -
   the version/generation pattern lifted to a primitive.

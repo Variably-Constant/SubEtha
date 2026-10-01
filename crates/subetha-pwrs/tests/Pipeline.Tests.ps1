@@ -38,6 +38,17 @@ Describe 'Send-SubEthaItem and Receive-SubEthaItem' {
         $r.Dispose()
     }
 
+    It 'pipe through a broadcast ring to each of its consumers' {
+        $r = New-SubEthaBroadcastRing -Path (Join-Path $script:dir 'broadcast') -Capacity 8
+        $a = $r.RegisterConsumer()
+        $b = $r.RegisterConsumer()
+        $refused = 'p', 'q', 'r' | Send-SubEthaItem -To $r
+        @($refused).Count | Should -Be 0
+        (Receive-SubEthaItem -From $r -Consumer $a | ForEach-Object { Get-SEText $_ }) -join '' | Should -BeExactly 'pqr'
+        (Receive-SEItem -From $r -Consumer $b -Count 2 | ForEach-Object { Get-SEText $_ }) -join '' | Should -BeExactly 'pq'
+        $r.Dispose()
+    }
+
     It 'pipe through a channel and a deque' {
         $ch = New-SubEthaChannel -Path (Join-Path $script:dir 'channel') -Capacity 8
         'one', 'two' | Send-SubEthaItem -To $ch

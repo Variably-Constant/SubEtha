@@ -54,7 +54,7 @@ Op kinds use the `ownership` module: `OP_ACQUIRE = 1`,
 `OP_RELEASE = 2`, `OP_GET = 3`, `OP_BEAT = 4`, `OP_CLAIM = 5`.
 
 Canonical doc:
-[OWNER_LEASE.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/OWNER_LEASE.md).
+[Owner Lease](ownership-types/owner-lease/).
 
 ## `SharedLeaderElection`
 
@@ -92,7 +92,7 @@ election. `reset` truncates and reinitializes; on Windows it
 succeeds only once every process has unmapped the region.
 
 Canonical doc:
-[SHARED_LEADER_ELECTION.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/SHARED_LEADER_ELECTION.md).
+[Shared Leader Election](ownership-types/shared-leader-election/).
 
 ## `LazyConfig`
 
@@ -123,7 +123,7 @@ Op kinds use the `lazy_config` module: `OP_GET = 1`,
 `OP_FETCH = 2`.
 
 Canonical doc:
-[LAZY_CONFIG.md](https://github.com/Variably-Constant/SubEtha/blob/main/crates/subetha-cxc/docs/pointers/LAZY_CONFIG.md).
+[Lazy Config](ownership-types/lazy-config/).
 
 ## Picking between them
 

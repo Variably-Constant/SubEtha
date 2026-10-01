@@ -150,7 +150,9 @@ impl TcpBridgeServer {
     }
 
     /// Takes one connection, reads it to its end, and returns how many
-    /// items arrived. Waits until the sending end has finished.
+    /// items arrived. Waits until the sending end has finished. The
+    /// server answers no other call while this one waits, so LocalAddr
+    /// is read before this starts on another thread.
     pub fn accept_one(&self) -> PsResult<u64> {
         let listening = Arc::clone(&self.inner);
         let runtime = bridge_runtime()?;
@@ -361,7 +363,8 @@ impl QuicBridgeServer {
     }
 
     /// Takes one connection, reads it to its end, and returns how many
-    /// items arrived.
+    /// items arrived. The server answers no other call while this one
+    /// waits, so LocalAddr is read before this starts on another thread.
     pub fn accept_one(&self) -> PsResult<u64> {
         let listening = Arc::clone(&self.inner);
         let runtime = bridge_runtime()?;

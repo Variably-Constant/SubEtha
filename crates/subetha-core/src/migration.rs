@@ -7,7 +7,9 @@
 //! 4. Wait for old generation's in-flight count to drain to zero.
 //! 5. Drop old representation.
 //!
-//! The [`MigrationGuard`] enforces steps 3-5 in scope.
+//! [`MigrationGuard`] carries steps 3 and 4: `begin` bumps the generation
+//! and swaps the tag, and `wait_quiescent` drains the old generation.
+//! Steps 1, 2 and 5 are the caller's.
 
 use crate::handshake::HandshakeHeader;
 
@@ -15,7 +17,7 @@ use crate::handshake::HandshakeHeader;
 ///
 /// Acts as a witness that the caller holds an in-flight slot. Drop
 /// releases the slot.
-#[must_use = "Generation captures an in-flight slot; drop or pass to exit_op"]
+#[must_use = "Generation holds an in-flight slot until it drops"]
 pub struct Generation<'a> {
     pub(crate) header: &'a HandshakeHeader,
     pub(crate) value: u32,

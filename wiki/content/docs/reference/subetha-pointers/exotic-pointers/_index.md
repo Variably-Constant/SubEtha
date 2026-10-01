@@ -17,7 +17,7 @@ about the target **without dereferencing**.
 | [Umbra Pointer](umbra-pointer/) | Short content prefix (4 bytes) | "Is the prefix equal to X?" |
 | [Bloom Pointer](bloom-pointer/) | 64-bit Bloom filter of the target | "Does the target contain X?" |
 | [Cardinality Pointer](cardinality-pointer/) | log2 element count of the target | "Is the target small, medium, or large?" |
-| [K-Step Pointer](kstep-pointer/) | log2 stride packed into the pointer | "Where is element + N steps?" without multiply |
+| [K-Step Pointer](kstep-pointer/) | log2 stride beside the pointer | "Where is element + N steps?" with a shift for the stride |
 | [K-Tower Pointer](ktower-pointer/) | Multi-segment zone/region/offset address | "Which level of the multi-resolution structure?" |
 | [Self-Describing Pointer](self-desc-pointer/) | Type discriminant | "What type does this point at?" |
 | [Versioned Pointer](versioned-pointer/) | Version tag (or HLC timestamp) | "Read the value as of version V" |
@@ -44,12 +44,10 @@ right snapshot.
 
 ## Direction signatures
 
-Every pointer here declares a `K_*` direction signature via
-[`subetha_core::AxisMask`]. The MMF dispatcher consults the
-signature when routing a workload: a workload asking for strided
-access lands on `KStepPointer`, a workload asking for
-set-membership lands on `BloomPointer`, and a workload asking for
-both can land on a fused encoding.
+Every pointer here declares the `K_*` axes it engages as a
+[`subetha_core::AxisMask`] in its `SIGNATURE` constant:
+`KStepPointer` engages `K_stride`, `BloomPointer` `K_content_prefix`,
+and so on. Nothing in the crates routes on these constants.
 
 ## Composition
 
@@ -61,8 +59,8 @@ consumer; the crate offers each axis as a separable type.
 
 ## See also
 
-- [The bounds-checking siblings](../bounds-check/) - the CHERI
-  capability pair for capability-secured cross-process channels.
+- [The bounds-checking siblings](../bounds-check/) - the CHERI-style
+  capability pair and the `RaspBatch` SIMD validator.
 - [`subetha-cxc` IPC pointers](../../subetha-cxc/pointers/_index.md) -
   the cross-process sibling pointer family (OffsetPtr,
   TaggedOffsetPtr).

@@ -26,7 +26,7 @@ use crate::error::{
 use crate::batch::{run_pop_many, run_push_many};
 use crate::handle::{subetha_handle, Object, SUBETHA_KIND_VYUKOV};
 use crate::ring::{
-    bytes, checked_capacity, deadline_from, finish_unlink, namespace, out_buffer, read_options, shm_region,
+    bytes, checked_capacity, deadline_from, finish_unlink, namespace, namespace_known, out_buffer, read_options, shm_region,
     subetha_ring_options, subetha_unlink_report, text, wakers_for, with_suffix, Locale,
     SUBETHA_RING_PAYLOAD_MAX,
 };
@@ -223,7 +223,8 @@ pub unsafe extern "C" fn subetha_vyukov_open(
 }
 
 /// Create a Vyukov ring in the named shared-memory region `name`, in the
-/// namespace `SUBETHA_SHM_SESSION` or `SUBETHA_SHM_MACHINE`, with its
+/// namespace `SUBETHA_SHM_SESSION`, `SUBETHA_SHM_MACHINE` or
+/// `SUBETHA_SHM_APPCONTAINER` with `shm_container_sid`, with its
 /// wakers in `{name}_cwaker` and `{name}_pwaker`.
 ///
 /// # Safety
@@ -249,7 +250,7 @@ pub unsafe extern "C" fn subetha_vyukov_create_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -261,7 +262,7 @@ pub unsafe extern "C" fn subetha_vyukov_create_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, ring_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, ring_file_size(cap), ns, sddl, true) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -296,7 +297,7 @@ pub unsafe extern "C" fn subetha_vyukov_open_shm(
             Ok(n) => n,
             Err(code) => return code,
         };
-        let ns = match namespace(shm_namespace) {
+        let ns = match unsafe { namespace(shm_namespace, &options) } {
             Ok(ns) => ns,
             Err(code) => return code,
         };
@@ -308,7 +309,7 @@ pub unsafe extern "C" fn subetha_vyukov_open_shm(
             Ok(s) => s,
             Err(code) => return code,
         };
-        let region = match shm_region(name, ring_file_size(cap), ns, sddl) {
+        let region = match shm_region(name, ring_file_size(cap), ns, sddl, false) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -609,7 +610,7 @@ pub unsafe extern "C" fn subetha_vyukov_unlink_shm(name: *const c_char, shm_name
         if let Err(code) = unsafe { text(name, "name") } {
             return code;
         }
-        if let Err(code) = namespace(shm_namespace) {
+        if let Err(code) = namespace_known(shm_namespace) {
             return code;
         }
         if !report.is_null() {

@@ -771,7 +771,7 @@ impl<K: Copy + Ord + Default + 'static, V: Copy + Default + 'static> SharedBTree
     /// returned. Resumption is by key: a node index is not a stable
     /// cursor, because a split moves the upper half of a node's entries
     /// into a new node and promotes the median into the parent, so a
-    /// saved position can name a different entry afterwards, or sit below
+    /// saved position can name a different entry afterward, or sit below
     /// one that has moved above it.
     ///
     /// One call is validated against the seqlock exactly as

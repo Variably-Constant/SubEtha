@@ -91,6 +91,11 @@ on Windows 11 / Zen+ R7 2700, criterion at `--measurement-time 2
 | visible_count | 27.0 ns | n/a | similar to mask |
 | at (resolve known lane) | **2.44 ns** | n/a | one atomic load + read |
 
+An earlier capture, its host not recorded, measured insert at about
+50 ns, `visible_mask` at 113 ns against the `Mutex<Vec>` scan's
+23.91 ns (4.73x slower), `visible_count` at 119 ns and `at` at
+2.51 ns.
+
 ### SIMD tiers, isolated (the AVX-512 row Zen+ cannot run)
 
 `simd_visible_mask_{scalar,avx2,avx512}` benched directly on a
@@ -244,8 +249,8 @@ slots by snapshot version for time-point queries.
   snapshots, cross-handle visibility, and disk persistence).
 - Bench: `crates/subetha-cxc/benches/shared_time_point.rs`
   (insert, visible_mask, visible_count, at vs `Mutex<Vec>`).
-- Underlying primitive: [SHARED_ATOMIC.md](../atomics/shared-atomic/) -
+- Underlying primitive: [Shared Atomic](../atomics/shared-atomic/) -
   the AtomicU32 occupied bitmap + per-slot AtomicU64 versions.
-- Sibling primitive: [SHARED_FENCE_CLOCK.md](../locks/shared-fence-clock/) -
+- Sibling primitive: [Shared Fence Clock](../locks/shared-fence-clock/) -
   cross-process HLC; SharedTimePointTile is the per-slot
   versioned-data layer.

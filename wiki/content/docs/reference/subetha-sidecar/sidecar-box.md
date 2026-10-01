@@ -28,14 +28,15 @@ primitive with the global sidecar and get a value that:
 - **Tracks its registration**. `sb.id()` returns the `InstanceId`;
   `sb.stats()` returns a snapshot of the current `InstanceStats`.
 - **Auto-unregisters on `Drop`.** The internal `SidecarHandle`
-  drops before the inner `Box<T>`, blocking on any in-flight scan
-  cycle so the sidecar cannot see freed memory.
+  drops before the inner `Box<T>`, waiting for a scan inside this
+  instance's registration to leave so the sidecar cannot see freed
+  memory.
 
 ## Field order is load-bearing
 
 ```rust,no_run
 pub struct SidecarBox<T: AdaptiveInstance> {
-    // ORDER MATTERS: handle drops before inner.
+    // Field order is drop order: handle drops before inner.
     handle: SidecarHandle,
     inner: Box<T>,
 }
@@ -44,9 +45,10 @@ pub struct SidecarBox<T: AdaptiveInstance> {
 Rust drops struct fields in declaration order. The handle's `Drop`
 calls `sidecar.unregister(id)`, which:
 
-1. Removes the slot from the registry (subsequent scan iterations
+1. Marks the slot retiring (scans and stats reads that come after
    skip it).
-2. Blocks until any currently-executing scan iteration finishes.
+2. Waits until a scan or stats read already inside the slot leaves
+   it, then frees the slot.
 
 By the time `handle`'s drop returns, no scan thread holds a pointer
 into the instance. Then `inner: Box<T>` drops, freeing the
@@ -96,11 +98,12 @@ trait methods (`header()`, `ring()`, `make_policy()`,
 
 ## When `SidecarBox` doesn't fit
 
-`SidecarBox<T>` owns the primitive. For ownership patterns that
-need `Arc<T>` instead (multiple owners, cross-thread sharing
-without `Send`/`Sync` on the box), use `Sidecar::register_raw`
-directly. The lifetime invariant then moves to the caller: call
-`Sidecar::unregister(id)` before the last `Arc` drop.
+`SidecarBox<T>` owns the primitive, and it is `Send` and `Sync`
+whenever `T` is, so `Arc<SidecarBox<T>>` shares one across threads.
+For a primitive that must live behind its own `Arc<T>` from
+construction, use `Sidecar::register_raw` directly. The lifetime
+invariant then moves to the caller: call `Sidecar::unregister(id)`
+before the last `Arc` drop.
 
 ## See also
 
